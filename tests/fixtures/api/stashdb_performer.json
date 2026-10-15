@@ -1,0 +1,20 @@
+{
+  "data": {
+    "queryPerformers": {
+      "performers": [
+        {
+          "id": "stash-123",
+          "name": "Malik Delgaty",
+          "disambiguation": "Canadian adult star and fitness model.",
+          "birth_date": "2000-09-29",
+          "country": "Canada",
+          "ethnicity": "CAUCASIAN",
+          "aliases": ["Malik", "M. Delgaty"],
+          "images": [
+            {"url": "https://images.stashdb.org/malik-hd.jpg"}
+          ]
+        }
+      ]
+    }
+  }
+}

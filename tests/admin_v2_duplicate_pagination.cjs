@@ -1,0 +1,208 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+
+const source = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
+assert(source.includes("if (tab === 'duplicates') loadDuplicateCandidates({ refresh: true });"),
+  'returning to Duplicates must refresh the cached candidate snapshot');
+const start = source.indexOf('  async function loadDuplicateCandidates(');
+const end = source.indexOf('  function renderDuplicateCandidates(', start);
+assert(start >= 0 && end > start, 'duplicate scan loader must remain available for pagination tests');
+const actionStart = source.indexOf('  async function previewDuplicate(');
+const actionEnd = source.indexOf('  function toggleTheme(', actionStart);
+assert(actionStart >= 0 && actionEnd > actionStart, 'duplicate actions must remain available for pagination tests');
+
+const state = {
+  route: 'organize', duplicateOffset: 0, duplicateTotal: 0, duplicateItems: [],
+  duplicateBusy: false, duplicateRequestSeq: 0, duplicateScans: [], duplicateRequests: new Map(),
+  operationRequestSeq: 0, duplicatePending: null, operationRequest: null, operationPlan: null,
+  operationId: null, operationPreviewContext: null,
+};
+const elements = {
+  '#duplicateFeedback': { textContent: '' },
+  '#duplicateRows': { replaceChildren() {}, querySelectorAll: () => [currentTrigger].filter(Boolean) },
+  '#duplicateNotice': { hidden: true, textContent: '' },
+  '#duplicateCategory': { value: 'same_file' },
+  '#duplicateState': { hidden: true, textContent: '' },
+  '#organizeDuplicatesPane': { hidden: false },
+  '#operationDialog': { open: false },
+};
+const requests = [];
+const rendered = [];
+let fakeNow = 100_000;
+let holdNextFetch = false;
+let releaseFetch;
+let resultTotal = 1200;
+let currentTrigger = null;
+const operationPosts = [];
+const context = vm.createContext({
+  state,
+  V2_API: '/admin/api/v2',
+  DUPLICATE_PAGE_SIZE: 25,
+  DUPLICATE_SCAN_BATCH_SIZE: 200,
+  DUPLICATE_SCAN_CACHE_TTL_MS: 30_000,
+  Date: { now: () => fakeNow },
+  URLSearchParams,
+  Number,
+  Math,
+  $: selector => elements[selector],
+  setText(element, value) { element.textContent = value; },
+  getJson: async url => (await context.fetch(url)).json(),
+  responseError(_payload, fallback) { return fallback; },
+  renderOperationPreview(plan, previewContext) {
+    state.renderedPlan = plan;
+    state.renderedPreviewContext = previewContext;
+  },
+  openDialog(dialog) { dialog.open = true; },
+  renderDuplicateCandidates(payload) {
+    rendered.push({
+      offset: state.duplicateOffset,
+      ids: state.duplicateItems.map(pair => pair.id),
+      total: payload.total,
+    });
+  },
+  fetch: async url => {
+    const parsed = new URL(url, 'http://test');
+    requests.push({
+      offset: Number(parsed.searchParams.get('offset')),
+      limit: Number(parsed.searchParams.get('limit')),
+      category: parsed.searchParams.get('category'),
+    });
+    const offset = requests.at(-1).offset;
+    const limit = requests.at(-1).limit;
+    const pairs = Array.from({ length: Math.min(limit, Math.max(0, resultTotal - offset)) }, (_item, index) => ({ id: offset + index }));
+    const response = { ok: true, async json() {
+      return { ok: true, pairs, total: resultTotal, scanned: 50_400, complete: true, candidate_limit_reached: false };
+    } };
+    if (holdNextFetch) {
+      holdNextFetch = false;
+      return new Promise(resolve => { releaseFetch = () => resolve(response); });
+    }
+    return response;
+  },
+  beginOperationRequest: () => ++state.operationRequestSeq,
+  operationRequestIsCurrent: (sequence, route = state.route) => sequence === state.operationRequestSeq && route === state.route,
+  create: (_tag, _className, text) => ({ textContent: text, href: '' }),
+  announce: () => {},
+  window: {
+    AdminV2: {
+      postJson: async (url, body) => {
+        operationPosts.push({ url, body });
+        if (url.includes('/preview')) return { plan_id: 'plan-1', operation_type: 'hide', items: [] };
+        if (url.includes('/execute')) return { jobs: [{ job_id: 'job-1' }] };
+        return { job_id: 'job-1' };
+      },
+    },
+  },
+});
+vm.runInContext(`${source.slice(start, end)}\n${source.slice(actionStart, actionEnd)}\nglobalThis.loadDuplicateCandidates = loadDuplicateCandidates;\nglobalThis.previewDuplicate = previewDuplicate;\nglobalThis.dismissDuplicateSuggestion = dismissDuplicateSuggestion;`, context);
+
+(async () => {
+  await context.loadDuplicateCandidates();
+  assert.deepEqual(requests, [{ offset: 0, limit: 200, category: 'same_file' }]);
+  assert.deepEqual(rendered.at(-1).ids, Array.from({ length: 25 }, (_item, index) => index));
+
+  state.duplicateOffset = 25;
+  await context.loadDuplicateCandidates();
+  assert.equal(requests.length, 1, 'next visible page must reuse the fetched scan batch');
+  assert.deepEqual(rendered.at(-1).ids, Array.from({ length: 25 }, (_item, index) => index + 25));
+
+  state.duplicateOffset = 175;
+  await context.loadDuplicateCandidates();
+  assert.equal(requests.length, 1, 'the final visible page in a batch must be served locally');
+  assert.deepEqual(rendered.at(-1).ids, Array.from({ length: 25 }, (_item, index) => index + 175));
+
+  state.duplicateOffset = 200;
+  await context.loadDuplicateCandidates();
+  assert.deepEqual(requests.at(-1), { offset: 200, limit: 200, category: 'same_file' });
+  state.duplicateOffset = 175;
+  await context.loadDuplicateCandidates();
+  assert.equal(requests.length, 2, 'recent prior scan batches should remain available for Previous');
+  assert.deepEqual(rendered.at(-1).ids, Array.from({ length: 25 }, (_item, index) => index + 175));
+
+  await context.loadDuplicateCandidates({ refresh: true });
+  assert.equal(requests.length, 3, 'Refresh must force a new server scan');
+  assert.equal(requests.at(-1).offset, 0);
+
+  elements['#duplicateCategory'].value = 'strong';
+  state.duplicateOffset = 0;
+  await context.loadDuplicateCandidates({ refresh: true });
+  assert.deepEqual(requests.at(-1), { offset: 0, limit: 200, category: 'strong' });
+  assert.equal(state.duplicateScans.length, 1, 'changing category must discard prior scan batches');
+
+  fakeNow += 30_001;
+  state.duplicateOffset = 25;
+  await context.loadDuplicateCandidates();
+  assert.deepEqual(requests.at(-1), { offset: 0, limit: 200, category: 'strong' },
+    'expired batches must be rescanned before serving another page');
+
+  const beforeTraversal = requests.length;
+  elements['#duplicateCategory'].value = 'same_file';
+  for (let offset = 0; offset < 1200; offset += 25) {
+    state.duplicateOffset = offset;
+    await context.loadDuplicateCandidates({ refresh: offset === 0 });
+    assert.equal(state.duplicateItems.length, 25, `page at ${offset} should contain 25 candidates`);
+  }
+  assert.equal(requests.length - beforeTraversal, 6,
+    '1,200 candidates should require six complete scans instead of 48 page scans');
+
+  elements['#duplicateCategory'].value = 'review';
+  state.duplicateOffset = 0;
+  const beforeConcurrent = requests.length;
+  holdNextFetch = true;
+  const olderPage = context.loadDuplicateCandidates({ refresh: true });
+  state.duplicateOffset = 25;
+  const newestPage = context.loadDuplicateCandidates();
+  assert.equal(requests.length - beforeConcurrent, 1,
+    'in-flight requests for the same category and scan batch must be shared');
+  releaseFetch();
+  await Promise.all([olderPage, newestPage]);
+  assert.equal(requests.length - beforeConcurrent, 1);
+  assert.deepEqual(rendered.at(-1).ids, Array.from({ length: 25 }, (_item, index) => index + 25),
+    'the newest requested offset must render after a shared in-flight scan');
+
+  resultTotal = 100;
+  state.duplicateOffset = 200;
+  const beforeShrink = requests.length;
+  await context.loadDuplicateCandidates({ refresh: true });
+  assert.deepEqual(requests.slice(beforeShrink).map(request => request.offset), [200, 0],
+    'a refresh whose total shrinks below the current batch must fetch the new last page');
+  assert.equal(state.duplicateOffset, 75, 'the visible offset should clamp to the last existing page');
+  assert.deepEqual(rendered.at(-1).ids, Array.from({ length: 25 }, (_item, index) => index + 75));
+
+  // A duplicate choice must stop at the visible, scoped preview until an operator queues it.
+  state.duplicateOffset = 50;
+  resultTotal = 1200;
+  const cardFeedback = { hidden: true, className: '', textContent: '', appended: [], append(node) { this.appended.push(node); } };
+  const card = {
+    isConnected: true,
+    querySelector: sel => sel === '.duplicate-action-feedback' ? cardFeedback : null,
+  };
+  const trigger = { isConnected: true, disabled: false, textContent: 'Keep this item', closest: sel => sel === '.duplicate-candidate' ? card : null };
+  currentTrigger = trigger;
+  await context.previewDuplicate({ left: { id: 'v1' }, right: { id: 'v2' } }, 'left', trigger);
+  assert.equal(state.duplicateOffset, 50, 'opening a duplicate preview on page 2+ must preserve the current page offset');
+  assert.equal(elements['#operationDialog'].open, false, 'a duplicate action must not open a confirmation screen');
+  assert.equal(trigger.textContent, 'Keep & hide other');
+  assert.equal(trigger.disabled, false, 'duplicate row actions are re-enabled after the request completes');
+  assert.deepEqual(JSON.parse(JSON.stringify(operationPosts)), [{
+    url: '/admin/api/v2/operations/preview',
+    body: { type: 'hide', keeper_id: 'v1', loser_ids: ['v2'] },
+  }, {
+    url: '/admin/api/v2/operations/execute',
+    body: { plan_id: 'plan-1' },
+  }], 'one clearly labeled duplicate action previews and queues the reversible hide without a confirmation screen');
+  assert.equal(cardFeedback.className, 'duplicate-action-feedback is-success');
+  assert.match(cardFeedback.textContent, /No files were deleted/);
+  assert.equal(cardFeedback.appended[0]?.textContent, ' Open task');
+  assert.equal(cardFeedback.appended[0]?.href, '/admin/v2/?job_id=job-1#jobs');
+  assert.equal(state.duplicatePending, null, 'duplicate action lock is released after the request completes');
+
+  state.duplicateOffset = 50;
+  const dismissButton = { isConnected: true, disabled: false };
+  const dismissFeedback = { hidden: true, className: '', textContent: '' };
+  await context.dismissDuplicateSuggestion({ left: { id: 'v1' }, right: { id: 'v2' } }, dismissButton, dismissFeedback);
+  assert.equal(state.duplicateOffset, 50, 'dismissing/rejecting a duplicate on page 2+ must preserve current page offset');
+
+  process.stdout.write('PASS: duplicate results keep 25-card pages while reusing 200-result scan batches\n');
+})().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,0 +1,21 @@
+# Telegram-only fixture for ETAP C contract tests (fictitious channels only).
+sync:
+  interval_minutes: 60
+  retention_days: 30
+  stream_mode_default: redirect
+
+sources:
+  - provider: telegram
+    enabled: true
+    defaults:
+      stream_mode: proxy
+      max_pages: 1
+      min_duration_seconds: 420
+      history_batch_size: 100
+    channels:
+      - id: "@example_channel_contract"
+        enabled: true
+        studio: "Example Studio Contract"
+      - id: "-1001"
+        enabled: true
+        studio: "Example Channel -1001"

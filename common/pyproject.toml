@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adult-hub-common"
+version = "0.2.0"
+description = "Shared config loader and contracts for Adult-Hub (resolver + sync)"
+requires-python = ">=3.11"
+dependencies = ["PyYAML==6.0.3", "psycopg[binary]==3.2.10"]
+
+# The project root (this directory) IS the `common` package directory
+# (it holds __init__.py + config_loader.py), so map the package name to ".".
+[tool.setuptools]
+packages = ["common", "common.migrations"]
+package-dir = { common = "." }

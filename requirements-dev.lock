@@ -1,0 +1,5 @@
+# Meta-lock for the complete development environment. The service locks pin
+# every transitive dependency; requirements-dev.txt adds the test/lint tools.
+-r resolver/requirements.lock
+-r sync/requirements.lock
+-r requirements-dev.txt

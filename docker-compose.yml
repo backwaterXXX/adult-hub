@@ -1,0 +1,163 @@
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:12.1
+    container_name: jellyfin
+    restart: unless-stopped
+    # Host networking supports native DLNA / UPnP discovery on Debian
+    network_mode: host
+    environment:
+      - JELLYFIN_PublishedServerUrl=http://${HOST_IP:-127.0.0.1}:8096
+      - JELLYFIN_FFMPEG_FAST_PROBE=${JELLYFIN_FFMPEG_FAST_PROBE:-true}
+      - JELLYFIN_FFMPEG_ANALYZE_DURATION=${JELLYFIN_FFMPEG_ANALYZE_DURATION:-5M}
+      - JELLYFIN_FFMPEG_PROBE_SIZE=${JELLYFIN_FFMPEG_PROBE_SIZE:-10M}
+    command: ["--ffmpeg", "/usr/local/bin/ffmpeg"]
+    volumes:
+      - ./jf-config:/config
+      - ./jf-cache:/cache
+      - ${MEDIA_PATH:-./media/adult}:/media/adult:ro
+      - ./scripts/jellyfin-ffmpeg.sh:/usr/local/bin/ffmpeg:ro
+      - ./scripts/jellyfin-ffprobe.sh:/usr/local/bin/ffprobe:ro
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "44"
+      - "992"
+
+  resolver:
+    image: ${RESOLVER_IMAGE:-adult-hub-resolver:${APP_VERSION:-dev}}
+    build:
+      context: .
+      dockerfile: resolver/Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    container_name: adult-resolver
+    restart: unless-stopped
+    networks:
+      - default
+      - selfhost
+    ports:
+      # LAN + tailnet (0.0.0.0): resolver may also serve local clients
+      # outside loopback. This does not open internet access by itself (home NAT,
+      # no port forwarding; DNS points to 100.x). Public HTTPS access goes through Caddy.
+      - "8090:8090"
+    environment:
+      - TZ=${TZ:-Europe/Warsaw}
+      - PYTHONUNBUFFERED=1
+      - APP_VERSION=${APP_VERSION:-dev}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
+      - ADMIN_SOURCE_OVERRIDES_PATH=${ADMIN_SOURCE_OVERRIDES_PATH:-/data/admin-source-overrides.json}
+      - DATA_DIR=${DATA_DIR:-/data}
+      - RESOLVER_CONCURRENCY_LIMIT=${RESOLVER_CONCURRENCY_LIMIT:-10}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-1500}
+      - MAX_CACHE_ENTRIES=${MAX_CACHE_ENTRIES:-2000}
+      - DATABASE_URL=${DATABASE_URL:-}
+      - BACKUP_DIR=/data/backups
+      - BACKUP_KEEP_DAYS=${BACKUP_KEEP_DAYS:-7}
+      - BACKUP_RESTORE_DATABASE_URL=${BACKUP_RESTORE_DATABASE_URL:-}
+      - ENABLE_ADMIN=${ENABLE_ADMIN:-true}
+      - ADMIN_PUBLIC=${ADMIN_PUBLIC:-false}
+      - ADMIN_WRITE_TOKEN=${ADMIN_WRITE_TOKEN:-}
+      - ADMIN_DUPLICATE_TOKEN=${ADMIN_DUPLICATE_TOKEN:-}
+      - PUBLIC_DOMAIN=${PUBLIC_DOMAIN:-media.example.org}
+      # Trust proxy protocol headers only from explicitly configured peers.
+      - FORWARDED_ALLOW_IPS=${RESOLVER_TRUSTED_PROXY_IPS:-127.0.0.1,::1}
+      - MEDIA_DIR=/media/adult
+      - LINKCHECK_LOG_PATH=/data/linkcheck.log
+      # Telegram MTProto keeps its resolver session in writable /cache.
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
+      - TELEGRAM_SESSION_PATH=${TELEGRAM_SESSION_PATH:-/cache/telegram.session}
+      # Bounded parallel Telegram streaming (v1, opt-in, default off).
+      - TELEGRAM_PARALLEL_STREAM_ENABLED=${TELEGRAM_PARALLEL_STREAM_ENABLED:-false}
+      - TELEGRAM_DOWNLOAD_WORKERS=${TELEGRAM_DOWNLOAD_WORKERS:-3}
+      - TELEGRAM_DOWNLOAD_GLOBAL_WORKERS=${TELEGRAM_DOWNLOAD_GLOBAL_WORKERS:-6}
+      - TELEGRAM_DOWNLOAD_BLOCK_BYTES=${TELEGRAM_DOWNLOAD_BLOCK_BYTES:-524288}
+      - TELEGRAM_READ_AHEAD_BYTES=${TELEGRAM_READ_AHEAD_BYTES:-33554432}
+      - TELEGRAM_STREAM_CACHE_BYTES=${TELEGRAM_STREAM_CACHE_BYTES:-134217728}
+      - TELEGRAM_STREAM_CACHE_TTL_SECONDS=${TELEGRAM_STREAM_CACHE_TTL_SECONDS:-120}
+      - JELLYFIN_URL=${JELLYFIN_URL:-}
+      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
+      - STASHDB_API_KEY=${STASHDB_API_KEY:-}
+      - STASH_API_KEY=${STASH_API_KEY:-}
+      - STASHDB_API_URL=${STASHDB_API_URL:-https://stashdb.org/graphql}
+      - PHASH_UPLOAD_ENABLED=${PHASH_UPLOAD_ENABLED:-false}
+      - PHASH_ACCEPTED_DECODER_PROFILES=${PHASH_ACCEPTED_DECODER_PROFILES:-}
+      - PHASH_ALLOWED_USER_IDS=${PHASH_ALLOWED_USER_IDS:-}
+      - PHASH_SERVER_BYTE_BUDGET=${PHASH_SERVER_BYTE_BUDGET:-201326592}
+      - PHASH_SERVER_TIMEOUT_SECONDS=${PHASH_SERVER_TIMEOUT_SECONDS:-600}
+      - PHASH_SERVER_BYTES_PER_SECOND=${PHASH_SERVER_BYTES_PER_SECOND:-524288}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/admin/health/ready')"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./config.yaml:/config/config.yaml:ro
+      - ./data/cache:/cache
+      - ./data:/data
+      - ${MEDIA_PATH:-./media/adult}:/media/adult
+
+  sync:
+    image: ${SYNC_IMAGE:-adult-hub-sync:${APP_VERSION:-dev}}
+    build:
+      context: .
+      dockerfile: sync/Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    container_name: adult-sync
+    restart: unless-stopped
+    mem_limit: 1g
+    networks:
+      - default
+      - selfhost
+    depends_on:
+      resolver:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - TZ=${TZ:-Europe/Warsaw}
+      - PYTHONUNBUFFERED=1
+      - APP_VERSION=${APP_VERSION:-dev}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
+      - ADMIN_SOURCE_OVERRIDES_PATH=${ADMIN_SOURCE_OVERRIDES_PATH:-/data/admin-source-overrides.json}
+      - ADMIN_WORKER_CAPABILITIES_PATH=${ADMIN_WORKER_CAPABILITIES_PATH:-/data/cache/worker-capabilities.json}
+      - DATA_DIR=${DATA_DIR:-/data}
+      - RESOLVER_PUBLIC_URL=${RESOLVER_PUBLIC_URL:-http://127.0.0.1:8090}
+      - STREAM_PUBLIC_URL_TELEGRAM=${STREAM_PUBLIC_URL_TELEGRAM:-}
+      - RESOLVER_API_URL=${RESOLVER_API_URL:-http://resolver:8090}
+      - MEDIA_DIR=/media/adult
+      - DATABASE_URL=${DATABASE_URL:-}
+      - BACKUP_RESTORE_DATABASE_URL=${BACKUP_RESTORE_DATABASE_URL:-}
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
+      - TELEGRAM_SESSION_PATH=${TELEGRAM_SESSION_PATH:-/data/telegram.session}
+      - HIDE_UNSUPPORTED_EMBEDS=${HIDE_UNSUPPORTED_EMBEDS:-true}
+      - HIDE_DEAD_STREAMS=${HIDE_DEAD_STREAMS:-true}
+      - JELLYFIN_URL=${JELLYFIN_URL:-}
+      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
+      - THEPORNDB_API_TOKEN=${THEPORNDB_API_TOKEN:-}
+      - THEPORNDB_API_KEY=${THEPORNDB_API_KEY:-}
+      - STASHDB_API_KEY=${STASHDB_API_KEY:-}
+      - STASH_API_KEY=${STASH_API_KEY:-}
+      - STASHDB_API_URL=${STASHDB_API_URL:-https://stashdb.org/graphql}
+      - TELEGRAM_OSHASH_BACKFILL_PER_RUN=${TELEGRAM_OSHASH_BACKFILL_PER_RUN:-200}
+      - TELEGRAM_FINGERPRINTS_ENABLED=${TELEGRAM_FINGERPRINTS_ENABLED:-${LUKAYAN_FINGERPRINTS_ENABLED:-true}}
+      - TELEGRAM_PHASH_ENABLED=${TELEGRAM_PHASH_ENABLED:-${LUKAYAN_PHASH_ENABLED:-false}}
+      - TELEGRAM_PHASH_BYTE_BUDGET=${TELEGRAM_PHASH_BYTE_BUDGET:-${LUKAYAN_PHASH_BYTE_BUDGET:-33554432}}
+      - TELEGRAM_PHASH_TIMEOUT_SECONDS=${TELEGRAM_PHASH_TIMEOUT_SECONDS:-${LUKAYAN_PHASH_TIMEOUT_SECONDS:-30}}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./config.yaml:/config/config.yaml:ro
+      - ${MEDIA_PATH:-./media/adult}:/media/adult
+      - ./data:/data
+      # cleanup_old_transcodes() uses /transcodes.
+      - ./jf-cache/transcodes:/transcodes
+
+networks:
+  selfhost:
+    external: true

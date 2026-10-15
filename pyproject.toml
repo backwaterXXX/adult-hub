@@ -1,0 +1,18 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# Start with correctness-focused rules. Expand after reviewing the existing
+# repository baseline so lint adoption does not turn into a mass reformat.
+select = ["E4", "E7", "E9", "F", "B023"]
+
+[tool.ruff.lint.per-file-ignores]
+# These entry points deliberately add repository directories to sys.path
+# before importing project modules; test modules use the same bootstrap.
+"migrate_db.py" = ["E402"]
+"restore_db.py" = ["E402"]
+"scripts/*.py" = ["E402"]
+"tests/*.py" = ["E402"]
+# sync.py remains a compatibility facade for scripts that import its helpers.
+"sync/sync.py" = ["F401"]

@@ -1,0 +1,5 @@
+2026-10-06 18:00:01 [telegram] OK  telegram:-1001234567890:post-a: proxied playlist OK (8192B)
+2026-10-06 18:00:02 [telegram] FAIL telegram:-1001234567890:post-b: resolver error: HTTP 503 https://resolver.invalid/play?token=private
+2026-10-06 18:00:03 [telegram] FAIL telegram:-1001234567890:post-c: playlist fetch error: timeout
+2026-10-06 18:00:03 [telegram] 1/3 ok -> BROKEN
+2026-10-06 18:00:04 [web] no videos in DB, skipping

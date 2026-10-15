@@ -1,0 +1,30 @@
+.git
+.gitignore
+jf-config/
+jf-cache/
+media/
+data/
+*.db
+*.strm
+*.nfo
+*.jpg
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+# Local / secret config (mounted at runtime, never baked into image)
+config.yaml
+**/config.yaml
+docker-compose.override.yml
+# Private web extension (future submodule) must never leak into public image
+extensions-web/
+**/extensions-web/
+# Local reports and session files
+*.csv
+*_report.*
+dupes_report.csv
+*.session*
+*.tmp
+docs/
+plans/

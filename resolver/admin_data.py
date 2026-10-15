@@ -1,0 +1,398 @@
+"""Read-only data access and domain formatting for the admin panel.
+
+Functions take explicit paths and dependencies so HTTP routing stays separate
+from data handling and can be tested without a web server. Telegram sources are
+identified by their stable channel ID; the studio is only a display label.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from datetime import datetime
+from pathlib import Path
+
+from common import db
+from common.config_loader import ConfigError, load_config
+import admin_data_runtime_files as runtime_files
+
+
+# Reports analyzed by the seven-day summary. `PlaybackDiagnostics.list_reports`
+# caps results, so the summary must disclose when more rows exist.
+PLAYBACK_ANALYSIS_LIMIT = 200
+
+
+def trim_channel_name(name: str, max_len: int = 25) -> str:
+    """Trim channel names that are too long to prevent breaking table layouts."""
+    name = (name or "").strip()
+    return (name[: max_len - 1].rstrip() + "…") if len(name) > max_len else name
+
+
+def channel_labels(config_path: Path | str) -> dict[str, str]:
+    """Map stable Telegram channel IDs to configured studio labels."""
+    mapping: dict[str, str] = {}
+    try:
+        config = load_config(str(config_path))
+    except (ConfigError, OSError, ValueError):
+        return mapping
+    source = config.get_source("telegram")
+    if source is None:
+        return mapping
+    for channel in source.channels:
+        channel_id = str(channel.id or "").strip()
+        if not channel_id:
+            continue
+        label = (channel.studio or channel_id).strip()
+        mapping[channel_id] = label
+        # Video IDs may store the bare numeric channel form; keep both.
+        if channel_id.startswith("-100"):
+            mapping.setdefault(channel_id[4:], label)
+    return mapping
+
+
+def configured_sources(config_path: Path | str) -> dict:
+    """List every configured source and channel, including disabled ones."""
+    try:
+        config = load_config(str(config_path))
+    except (ConfigError, OSError, ValueError):
+        return {"sources": [], "available": False}
+    sources = []
+    for source in config.sources.values():
+        channels = []
+        for channel in source.channels:
+            item = {
+                "id": channel.id,
+                "studio": (channel.studio or channel.id),
+                "enabled": bool(channel.enabled),
+            }
+            # These are effective values: config_loader has already applied
+            # source defaults to fields omitted from an individual channel.
+            if source.provider == "telegram":
+                item.update({
+                    "stream_mode": channel.stream_mode,
+                    "max_pages": channel.max_pages,
+                    "min_duration_seconds": channel.min_duration_seconds,
+                    "history_batch_size": channel.history_batch_size,
+                    "tags_whitelist": list(channel.tags_whitelist),
+                    "tags_blacklist": list(channel.tags_blacklist),
+                })
+            channels.append(item)
+
+        # Expose only the validated, non-secret Telegram defaults, separately
+        # from channel values so the UI can label them as source defaults.
+        defaults = {}
+        if source.provider == "telegram":
+            defaults = {
+                "stream_mode": source.defaults["stream_mode"],
+                "max_pages": source.defaults["max_pages"],
+                "min_duration_seconds": source.defaults["min_duration_seconds"],
+                "history_batch_size": source.defaults["history_batch_size"],
+                "tags_whitelist": list(source.defaults["tags_whitelist"]),
+                "tags_blacklist": list(source.defaults["tags_blacklist"]),
+            }
+        configuration = {}
+        if source.provider != "telegram":
+            # Preserve useful provider-level settings without returning the
+            # configured address, which may contain private host/user data.
+            configuration = {
+                "address_configured": bool(source.address),
+                "stream_mode": source.stream_mode,
+                "sections": list(source.sections),
+                "max_pages": source.max_pages,
+            }
+        sources.append({"provider": source.provider, "enabled": bool(source.enabled),
+                        "channels": channels, "defaults": defaults,
+                        "configuration": configuration})
+    return {"sources": sources, "available": True,
+            "managed_revision": int(getattr(config, "managed_revision", 0))}
+
+
+def db_stats(db_url: str | None, config_path: Path | str) -> dict:
+    out: dict = {
+        "db_ok": False,
+        "db_path": "(postgresql)",
+        # The classic panel showed this backend label alongside DB size. Keep
+        # it explicit for newer clients without exposing DATABASE_URL.
+        "database_backend": "PostgreSQL",
+        "db_size_mb": None,
+        "videos_total": None,
+        "files_total": None,
+        "by_provider": {},
+        "telegram_total": None,
+        "telegram_channels": {},
+        "last_seen": None,
+        "last_seen_human": "—",
+        "fresh_24h": None,
+        "photos_total": None,
+        "bios_total": None,
+        "aliases_total": None,
+        "dead_streams_total": None,
+        "unplayable_total": None,
+    }
+    try:
+        try:
+            conn = db.connect(db_url)
+        except Exception as exc:
+            out["error"] = f"brak połączenia z PostgreSQL: {exc}"[:200]
+            return out
+        try:
+            out["db_size_mb"] = conn.execute(
+                "SELECT round(pg_database_size(current_database()) / 1024.0 / 1024.0, 2)"
+            ).fetchone()[0]
+        except Exception:
+            pass
+        try:
+            out["videos_total"] = conn.execute("SELECT count(*) FROM videos").fetchone()[0]
+            try:
+                out["files_total"] = conn.execute("SELECT count(*) FROM synced_files").fetchone()[0]
+            except Exception:
+                pass
+            try:
+                tg_ch_map = channel_labels(config_path)
+                # Telegram IDs look like ``telegram:<channel>:...``. Use this
+                # stable source identity; videos.studio is production metadata
+                # and can be changed by enrichment.
+                query = """
+                    SELECT
+                        provider,
+                        CASE
+                            WHEN provider = 'telegram' THEN
+                                NULLIF(split_part(id, ':', 2), '')
+                            ELSE ''
+                        END AS ch,
+                        count(*)
+                    FROM videos
+                    GROUP BY provider, ch
+                    ORDER BY count(*) DESC
+                """
+                rows = conn.execute(query).fetchall()
+                by_provider: dict = {}
+                tg_channels: dict = {}
+                tg_total = 0
+                for prov, ch, cnt in rows:
+                    prov_key = prov or "?"
+                    if prov_key == "telegram":
+                        channel_id = str(ch or "unknown")
+                        ch_name = tg_ch_map.get(channel_id, channel_id)
+                        tg_channels[ch_name] = tg_channels.get(ch_name, 0) + cnt
+                        tg_total += cnt
+                        key = f"tg:[{trim_channel_name(ch_name)}]"
+                        by_provider[key] = by_provider.get(key, 0) + cnt
+                    else:
+                        by_provider[prov_key] = by_provider.get(prov_key, 0) + cnt
+
+                out["by_provider"] = dict(sorted(by_provider.items(), key=lambda item: item[1], reverse=True))
+                if tg_total > 0:
+                    out["telegram_total"] = tg_total
+                    out["telegram_channels"] = tg_channels
+            except Exception:
+                pass
+            try:
+                mx = conn.execute("SELECT MAX(last_seen) FROM videos").fetchone()[0]
+                if mx:
+                    out["last_seen"] = int(mx)
+                    out["last_seen_human"] = datetime.fromtimestamp(int(mx)).strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                pass
+            try:
+                day_ago = int(time.time()) - 86400
+                out["fresh_24h"] = conn.execute(
+                    "SELECT count(*) FROM videos WHERE last_seen > %s", (day_ago,)
+                ).fetchone()[0]
+            except Exception:
+                pass
+
+            tables = db.table_names(conn)
+            if "performer_photos" in tables:
+                out["photos_total"] = conn.execute(
+                    "SELECT count(*) FROM performer_photos "
+                    "WHERE btrim(COALESCE(thumb, ''), chr(32) || chr(9) || chr(10) || chr(13)) <> ''"
+                ).fetchone()[0]
+            if "performer_bios" in tables:
+                out["bios_total"] = conn.execute(
+                    "SELECT count(*) FROM performer_bios "
+                    "WHERE btrim(COALESCE(bio, ''), chr(32) || chr(9) || chr(10) || chr(13)) <> ''"
+                ).fetchone()[0]
+            if "performer_aliases" in tables:
+                out["aliases_total"] = conn.execute(
+                    "SELECT count(*) FROM performer_aliases "
+                    "WHERE btrim(COALESCE(alias, ''), chr(32) || chr(9) || chr(10) || chr(13)) <> '' "
+                    "AND btrim(COALESCE(canonical, ''), chr(32) || chr(9) || chr(10) || chr(13)) <> ''"
+                ).fetchone()[0]
+            if "dead_streams" in tables:
+                out["dead_streams_total"] = conn.execute("SELECT count(*) FROM dead_streams").fetchone()[0]
+            if "videos" in tables:
+                cols = db.table_columns(conn, "videos")
+                if "playable" in cols:
+                    out["unplayable_total"] = conn.execute("SELECT count(*) FROM videos WHERE playable = 0").fetchone()[0]
+
+            out["db_ok"] = True
+        finally:
+            conn.close()
+    except Exception as e:
+        out["error"] = str(e)[:200]
+    return out
+
+
+def sync_status(status_file: Path | str) -> dict:
+    return runtime_files.sync_status(status_file)
+
+
+def sync_history(history_file: Path | str, config_path: Path | str, limit: int = 30) -> dict:
+    return runtime_files.sync_history(
+        history_file,
+        config_path,
+        limit,
+        channel_labels=channel_labels,
+        trim_channel_name=trim_channel_name,
+    )
+
+
+def backup_status(backup_dir: Path | str) -> dict:
+    return runtime_files.backup_status(backup_dir)
+
+
+def linkcheck_tail(log_path: Path | str, n: int = 20) -> dict:
+    return runtime_files.linkcheck_tail(log_path, n)
+
+
+def unavailable_videos(db_url: str | None, limit: int = 100, offset: int = 0) -> dict:
+    """Page over known-unavailable library entries without writing anything.
+
+    An entry is unavailable when ``videos.playable = 0`` or it is recorded in
+    ``dead_streams``. Missing tables or columns degrade to an empty page.
+    """
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
+    empty = {"videos": [], "total": 0, "truncated": False, "offset": offset, "available": True}
+    try:
+        conn = db.connect(db_url)
+    except Exception:
+        return {**empty, "available": False}
+    conn.row_factory = db.Record
+    try:
+        tables = db.table_names(conn)
+        if "videos" not in tables:
+            return empty
+        cols = set(db.table_columns(conn, "videos"))
+        has_playable = "playable" in cols
+        has_dead = "dead_streams" in tables
+        if not has_playable and not has_dead:
+            return empty
+        conditions = []
+        if has_playable:
+            conditions.append("COALESCE(v.playable, 1) = 0")
+        if has_dead:
+            conditions.append("d.video_id IS NOT NULL")
+        where = " OR ".join(conditions)
+        select_title = "v.title" if "title" in cols else "''"
+        select_provider = "v.provider" if "provider" in cols else "''"
+        select_studio = "v.studio" if "studio" in cols else "''"
+        select_playable = "v.playable" if has_playable else "NULL"
+        join = "LEFT JOIN dead_streams d ON d.video_id = v.id" if has_dead else ""
+        select_reason = "d.reason" if has_dead else "NULL"
+        select_detected = "d.detected_at" if has_dead else "NULL"
+        total = conn.execute(
+            f"SELECT count(*) FROM videos v {join} WHERE {where}").fetchone()[0]
+        rows = conn.execute(
+            f"SELECT v.id, {select_title} AS title, {select_provider} AS provider, "
+            f"{select_studio} AS studio, {select_playable} AS playable, "
+            f"{select_reason} AS reason, {select_detected} AS detected_at "
+            f"FROM videos v {join} WHERE {where} ORDER BY v.id LIMIT %s OFFSET %s",
+            (limit, offset)).fetchall()
+        return {
+            "videos": [{
+                "id": row["id"], "title": row["title"] or row["id"],
+                "provider": row["provider"] or "", "studio": row["studio"] or "",
+                "playable": row["playable"], "reason": row["reason"],
+                "detected_at": row["detected_at"],
+            } for row in rows],
+            "total": total, "truncated": offset + len(rows) < total,
+            "offset": offset, "available": True,
+        }
+    except db.OperationalError:
+        return empty
+    finally:
+        conn.close()
+
+
+def quarantine_report(db_url: str | None, limit: int = 200, offset: int = 0) -> dict:
+    """Read-only audit of active quarantine/hide decisions without file paths."""
+    limit = max(1, min(int(limit), 1000))
+    offset = max(0, int(offset))
+    empty = {"items": [], "total": 0, "truncated": False, "offset": offset, "available": True}
+    try:
+        conn = db.connect(db_url)
+    except Exception:
+        return {**empty, "available": False}
+    conn.row_factory = db.Record
+    try:
+        tables = db.table_names(conn)
+        if "video_duplicate_decisions" not in tables:
+            return empty
+        total = conn.execute(
+            "SELECT count(*) FROM video_duplicate_decisions WHERE state='active'").fetchone()[0]
+        rows = conn.execute(
+            "SELECT loser_id, keeper_id, operation_id, created_at, snapshot "
+            "FROM video_duplicate_decisions WHERE state='active' "
+            "ORDER BY created_at DESC, loser_id LIMIT %s OFFSET %s",
+            (limit, offset)).fetchall()
+        items = []
+        for row in rows:
+            snapshot = {}
+            try:
+                parsed = json.loads(row["snapshot"]) if row["snapshot"] else {}
+                if isinstance(parsed, dict):
+                    snapshot = parsed
+            except (TypeError, ValueError):
+                snapshot = {}
+            video = snapshot.get("video") if isinstance(snapshot.get("video"), dict) else {}
+            files = snapshot.get("files")
+            items.append({
+                "id": row["loser_id"],
+                "title": video.get("title") or row["loser_id"],
+                "provider": video.get("provider") or "",
+                "operation_id": row["operation_id"],
+                "created_at": row["created_at"],
+                "mode": "quarantine" if row["keeper_id"] == row["loser_id"] else "hide",
+                "files": len(files) if isinstance(files, list) else None,
+            })
+        return {"items": items, "total": total, "truncated": offset + len(items) < total,
+                "offset": offset, "available": True}
+    except db.OperationalError:
+        return empty
+    finally:
+        conn.close()
+
+
+def playback_summary(reports: list[dict], available: int,
+                     analysis_limit: int = PLAYBACK_ANALYSIS_LIMIT, days: int = 7) -> dict:
+    """Group recent playback reports and disclose the analysis bound."""
+    cutoff = time.time() - days * 86400
+    grouped: dict[str, list] = {}
+    for report in reports:
+        if report.get("active") or (report.get("started_epoch") or 0) < cutoff:
+            continue
+        grouped.setdefault(str(report.get("provider") or "unknown"), []).append(report)
+    summary = []
+    for provider, rows in sorted(grouped.items()):
+        durations = sorted(int(row.get("elapsed_ms") or 0) for row in rows)
+        starts = sorted(int(row.get("upstream_first_byte_ms") or 0) for row in rows if row.get("upstream_first_byte_ms") is not None)
+        gaps = sorted(int(row.get("downstream_max_gap_ms") or 0) for row in rows)
+        failures = sum(1 for row in rows if row.get("outcome") == "error" or int(row.get("status_code") or 0) >= 400)
+        summary.append({
+            "provider": provider, "requests": len(rows), "failures": failures,
+            "median_elapsed_ms": durations[len(durations) // 2] if durations else None,
+            "median_start_ms": starts[len(starts) // 2] if starts else None,
+            "median_downstream_gap_ms": gaps[len(gaps) // 2] if gaps else None,
+        })
+    analyzed = sum(len(rows) for rows in grouped.values())
+    return {
+        "days": days,
+        "analysis_limit": analysis_limit,
+        "analyzed": analyzed,
+        "available": int(available),
+        "truncated": int(available) > analyzed,
+        "by_provider": summary,
+        "reports": analyzed,
+    }

@@ -1,0 +1,8 @@
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+pydantic==2.13.5
+telethon==1.45.0
+stash-phash @ git+https://github.com/hyper440/stash-phash.git@689a6b400625d6da2afb58a7f908c88bcdb6f8ab
+PyYAML==6.0.3
+psycopg[binary]==3.2.10

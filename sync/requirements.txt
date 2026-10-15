@@ -1,0 +1,6 @@
+httpx==0.28.1
+PyYAML==6.0.3
+psycopg[binary]==3.2.10
+
+requests==2.34.2
+Pillow==12.3.0

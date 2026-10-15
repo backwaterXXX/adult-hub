@@ -1,0 +1,373 @@
+from __future__ import annotations
+
+import json
+import logging
+from common import db
+from common.performer_catalog import normalize_name
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+
+@dataclass
+class VideoPersistenceServices:
+    stable_media_basename: Callable[[str], str]
+    map_categories: Callable[..., Set[str]]
+    normalize_performers: Callable[[List[str]], List[str]]
+    thumbnail_urls: Callable[[Optional[str]], Tuple[str, str]]
+    load_performer_thumbs: Callable[[db.Connection, List[str]], Dict[str, str]]
+    format_dateadded: Callable[[Any], str]
+    create_nfo_file: Callable[[Dict[str, Any], Set[str], Set[str], Path], None]
+    download_image: Callable[[str, Path], None]
+    write_stream_file: Callable[[Path, str], bool]
+    sync_unique_video: Callable[..., Any]
+    persist_prepared_video: Callable[[db.Connection, Dict[str, Any]], None]
+    logger: logging.Logger
+    time_fn: Callable[[], float] = time.time
+    load_performer_links: Optional[Callable[[db.Connection, List[str]], Dict[str, Dict[str, str]]]] = None
+
+
+def _merge_video_fields(existing: Dict[str, Any], new: Dict[str, Any]) -> None:
+    """Union performers/categories from a duplicate sighting (order-preserving).
+
+    The same video can surface in several sections/categories with partial
+    metadata each time; merging avoids losing performers found elsewhere.
+    """
+    for key in ("performers", "categories"):
+        old = existing.get(key) or []
+        if not isinstance(old, list):
+            old = [old]
+        seen = set(old)
+        merged = list(old)
+        new_vals = new.get(key) or []
+        if not isinstance(new_vals, list):
+            new_vals = [new_vals]
+        for v in new_vals:
+            if v and v not in seen:
+                seen.add(v)
+                merged.append(v)
+        if len(merged) != len(old):
+            existing[key] = merged
+    for key in ("source_text", "source_filename"):
+        if not existing.get(key) and new.get(key):
+            existing[key] = new[key]
+    old_proposals = existing.get("performer_proposals") or []
+    proposal_keys = {(p.get("matched_text"), p.get("reason")) for p in old_proposals}
+    for proposal in new.get("performer_proposals") or []:
+        key = (proposal.get("matched_text"), proposal.get("reason"))
+        if key not in proposal_keys:
+            old_proposals.append(proposal)
+            proposal_keys.add(key)
+    if old_proposals:
+        existing["performer_proposals"] = old_proposals
+
+
+def persist_prepared_video(
+    conn: db.Connection,
+    prepared: Dict[str, Any],
+    time_fn: Callable[[], float] = time.time,
+) -> None:
+    """Persist one media-prepared video inside the caller's DB transaction."""
+    comp_id = prepared["comp_id"]
+    provider = prepared["provider"]
+    video = prepared["video"]
+    mapped_genres = prepared["genres"]
+    tags = prepared.get("tags") or []
+    now = int(time_fn())
+    clean_tags = []
+    for t in tags:
+        st = str(t).strip()
+        if st and st.lower() not in ("telegram", "t.me") and not st.startswith("-100"):
+            clean_tags.append(st)
+    tags_json = json.dumps(sorted(list(set(clean_tags))))
+
+    conn.execute("""
+        INSERT INTO videos (id, provider, title, slug, duration, thumbnail, performers, categories, tags, embed_host, playable, studio, first_seen, last_seen, source_text, source_filename)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT(id) DO UPDATE SET
+            title=excluded.title, duration=excluded.duration,
+            thumbnail=excluded.thumbnail,
+            performers=CASE WHEN excluded.performers IS NULL OR excluded.performers = '[]'::jsonb
+                THEN videos.performers ELSE excluded.performers END,
+            categories=excluded.categories, tags=excluded.tags,
+            embed_host=COALESCE(NULLIF(excluded.embed_host, ''), videos.embed_host),
+            playable=COALESCE(excluded.playable, videos.playable),
+            studio=COALESCE(NULLIF(excluded.studio, ''), videos.studio),
+            last_seen=excluded.last_seen,
+            source_text=CASE WHEN excluded.source_text <> '' THEN excluded.source_text ELSE videos.source_text END,
+            source_filename=CASE WHEN excluded.source_filename <> '' THEN excluded.source_filename ELSE videos.source_filename END
+    """, (comp_id, provider, prepared["title"], video.get("slug", ""),
+          video.get("duration", 0), video.get("thumbnail"),
+          json.dumps(video.get("performers", [])),
+          json.dumps(sorted(list(mapped_genres))), tags_json,
+          video.get("embed_host", ""), video.get("playable"),
+          prepared["studio"] or None, now, now,
+          video.get("source_text") or video.get("description") or "",
+          video.get("source_filename") or ""))
+    for proposal in video.get("performer_proposals") or []:
+        candidate = str(proposal.get("candidate") or "").strip()
+        normalized = normalize_name(candidate)
+        if not normalized:
+            continue
+        conn.execute("""
+            INSERT INTO telegram_performer_proposals
+                (video_id,candidate,normalized,matched_text,source_field,reason,performer_id)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT(video_id,normalized) DO UPDATE SET
+                matched_text=EXCLUDED.matched_text, source_field=EXCLUDED.source_field,
+                reason=EXCLUDED.reason, performer_id=EXCLUDED.performer_id
+            WHERE telegram_performer_proposals.status='pending'
+        """, (comp_id, candidate, normalized, str(proposal.get("matched_text") or ""),
+              str(proposal.get("source_field") or ""), str(proposal.get("reason") or ""),
+              proposal.get("performer_id")))
+    conn.execute("""INSERT INTO synced_files (file_path, video_id, category, created_at)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (file_path) DO UPDATE SET
+            video_id = EXCLUDED.video_id,
+            category = EXCLUDED.category,
+            created_at = EXCLUDED.created_at""", (prepared["strm_file"].name, comp_id,
+                                 ", ".join(sorted(mapped_genres)), now))
+    conn.execute("DELETE FROM video_categories WHERE video_id = %s", (comp_id,))
+    for genre in mapped_genres:
+        if genre and not genre.startswith("Browse"):
+            conn.execute("INSERT INTO video_categories (video_id, category) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                         (comp_id, genre))
+
+
+def sync_unique_video(
+    video: Dict[str, Any],
+    genres: Set[str],
+    tags: Set[str],
+    target_dir: Path,
+    conn: db.Connection,
+    commit: bool = True,
+    *,
+    _prepare_only: bool = False,
+    services: VideoPersistenceServices,
+) -> Optional[Dict[str, Any]]:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    vid_id = video.get("provider_video_id") or video.get("id", "").split(":")[-1]
+    provider = video.get("provider", "telegram")
+    comp_id = f"{provider}:{vid_id}"
+
+    title = video.get("title", vid_id)
+    base_name = services.stable_media_basename(comp_id)
+
+    strm_file = target_dir / f"{base_name}.strm"
+    nfo_file = target_dir / f"{base_name}.nfo"
+    jpg_file = target_dir / f"{base_name}.jpg"
+
+    mapped_genres = services.map_categories(genres, title=title)
+
+    # Studio (per-source override) i data dodania: first_seen z DB dla starych,
+    # teraz dla nowych. Backfilluje tez kolumne studio.
+    now = int(services.time_fn())
+    try:
+        _row = conn.execute(
+            "SELECT first_seen, studio, performers, plot, date_released FROM videos WHERE id = %s", (comp_id,)).fetchone()
+    except Exception:
+        try:
+            _row = conn.execute(
+                "SELECT first_seen, studio, performers FROM videos WHERE id = %s", (comp_id,)).fetchone()
+        except Exception:
+            _row = None
+    first_seen = _row[0] if _row and _row[0] else now
+    studio_val = (video.get("studio") or "").strip()
+    if not studio_val and _row and len(_row) > 1 and _row[1]:
+        studio_val = _row[1]
+    if _row and len(_row) > 3 and _row[3] and not video.get("plot"):
+        video["plot"] = _row[3]
+    if _row and len(_row) > 4 and _row[4] and not video.get("date_released"):
+        video["date_released"] = _row[4]
+
+    # Obsada: swiezy listing wygrywa, ale pusty NIE kasuje tego, co juz mamy
+    # w DB (backfill/matcher) — inaczej NFO traciloby obsade do kolejnego backfillu.
+    _fresh_perfs = services.normalize_performers(video.get("performers", []))
+    if not _fresh_perfs and _row and len(_row) > 2 and _row[2]:
+        try:
+            _db_perfs = json.loads(_row[2]) if isinstance(_row[2], str) else []
+            _fresh_perfs = services.normalize_performers(_db_perfs)
+        except Exception:
+            pass
+
+    # Normalize performers once so NFO and DB stay consistent (deduped order).
+    _perfs = _fresh_perfs
+    public_thumb_url, download_thumb_url = services.thumbnail_urls(video.get("thumbnail"))
+    perf_links = {}
+    if getattr(services, "load_performer_links", None):
+        try:
+            perf_links = services.load_performer_links(conn, _perfs)
+        except Exception:
+            pass
+    video = {**video, "_video_id": comp_id, "performers": _perfs, "thumbnail": public_thumb_url,
+             "performer_thumbs": services.load_performer_thumbs(conn, _perfs),
+             "performer_links": perf_links,
+             "studio": studio_val, "dateadded": services.format_dateadded(first_seen)}
+
+    # Detect production studios and add as tags and production_studios
+    prod_names = []
+    try:
+        from studio_tags import detect_production_studios, detect_production_studio_names
+        detected_studios = detect_production_studios(title, tags)
+        if detected_studios:
+            tags = set(tags) | set(detected_studios)
+        prod_names = detect_production_studio_names(title, tags)
+        if prod_names:
+            video["production_studios"] = prod_names
+    except Exception:
+        pass
+    # For Telegram, distinguish actual production studios from source channel names
+    is_tg_chan = bool(studio_val and (
+        studio_val.lower() in ("telegram", "t.me", "telegram (t.me)")
+        or studio_val.startswith("-100")
+        or (studio_val.startswith("-") and studio_val[1:].isdigit())
+        or any(k in studio_val.lower() for k in (
+            "d - premium", "the g bunker", "gay porn full videos",
+            "gaycest archive", "gymrat kink", "lukayan show",
+            "nakedsword studios media online", "only guys:",
+            "onlyfans x men", "pornbestsgay",
+        ))
+    ))
+    if is_tg_chan:
+        video["channel"] = studio_val
+        video["studio"] = prod_names[0] if prod_names else ""
+    elif prod_names:
+        video["studio"] = prod_names[0]
+
+    db_studio = prod_names[0] if prod_names else (None if (provider == "telegram" and is_tg_chan) else (studio_val or None))
+
+    clean_tags = set()
+    for t in tags:
+        st = str(t).strip()
+        if st and st.lower() not in ("telegram", "t.me") and not st.startswith("-100"):
+            clean_tags.add(st)
+    tags = clean_tags
+
+    # Publish metadata before a new stream becomes visible to library monitoring.
+    services.create_nfo_file(video, mapped_genres, tags, nfo_file)
+
+    # Download thumbnail (.jpg) if not exists (atomic, with negative cache)
+    if download_thumb_url and not jpg_file.exists():
+        services.download_image(download_thumb_url, jpg_file)
+
+    # Keep resolver URLs current when HOST_IP or RESOLVER_PUBLIC_URL changes.
+    services.write_stream_file(strm_file, comp_id)
+
+    prepared = {
+        "comp_id": comp_id, "provider": provider, "title": title,
+        "video": video, "genres": mapped_genres, "tags": tags,
+        "strm_file": strm_file, "studio": db_studio,
+    }
+
+    if _prepare_only:
+        return prepared
+
+    # Record into DB with relative file path and composite video_id.
+    try:
+        services.persist_prepared_video(conn, prepared)
+        if commit:
+            conn.commit()
+    except Exception:
+        if commit:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+    return None
+
+
+def flush_collected(
+    collected: Dict[str, Dict[str, Any]],
+    conn: db.Connection,
+    media_dir: Path,
+    source_name: str = "",
+    *,
+    raise_on_error: bool = False,
+    services: VideoPersistenceServices,
+) -> int:
+    """Flush collected videos to DB and media_dir, merging previously known genres and tags from DB.
+    Clears the dictionary after writing to free memory and prevent re-writing."""
+    if not collected:
+        return 0
+    try:
+        hidden = {r[0] for r in conn.execute(
+            "SELECT loser_id FROM video_duplicate_decisions WHERE state='active'")}
+        if hidden:
+            deliberately_skipped = [vid for vid in collected if vid in hidden]
+            for vid in deliberately_skipped:
+                collected.pop(vid, None)
+            if deliberately_skipped:
+                services.logger.info("Skipped %d intentionally hidden duplicate reference(s)%s",
+                                    len(deliberately_skipped), f" ({source_name})" if source_name else "")
+    except db.OperationalError:
+        # Compatible with old catalogs until init_db has run its migration.
+        pass
+    if not collected:
+        return 0
+    count = len(collected)
+    label = f" ({source_name})" if source_name else ""
+    services.logger.info(f"Writing {count} videos{label} to {media_dir} and DB...")
+
+    errors = []
+    # Merge previously known genres and tags from DB so we don't lose tags across syncs
+    for comp_id, item in collected.items():
+        try:
+            cur = conn.execute("SELECT categories, tags FROM videos WHERE id = %s", (comp_id,))
+            row = cur.fetchone()
+            if row:
+                if row[0]:
+                    item["genres"].update(services.map_categories(json.loads(row[0])))
+                if row[1]:
+                    db_tags = [t for t in json.loads(row[1]) if str(t).lower().strip() not in ("telegram", "t.me") and not str(t).strip().startswith("-100")]
+                    item["tags"].update(db_tags)
+        except Exception as e:
+            errors.append(f"{comp_id} metadata read: {type(e).__name__}: {e}")
+            services.logger.error("Failed to read existing metadata for %s: %s", comp_id, e)
+
+    prepared_items = []
+    for comp_id, item in collected.items():
+        try:
+            prepared = services.sync_unique_video(
+                video=item["video"],
+                genres=item["genres"],
+                tags=item["tags"],
+                target_dir=media_dir,
+                conn=conn,
+                commit=False,
+                _prepare_only=True,
+            )
+            if prepared is not None:
+                prepared_items.append(prepared)
+        except Exception as e:
+            errors.append(f"{comp_id}: {type(e).__name__}: {e}")
+            services.logger.error(f"Failed to write video {comp_id}: {e}")
+
+    written = 0
+    try:
+        # Finish any caller-owned setup writes before opening the media batch.
+        if conn.in_transaction:
+            conn.commit()
+        conn.execute("BEGIN")
+        for prepared in prepared_items:
+            services.persist_prepared_video(conn, prepared)
+            written += 1
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        errors.append(f"database batch: {type(e).__name__}: {e}")
+        services.logger.warning(f"Database batch failed: {e}")
+        written = 0
+
+    if errors:
+        services.logger.warning("Saved %d/%d videos%s; there were %d write/commit errors.", written, count, label, len(errors))
+        if raise_on_error:
+            raise RuntimeError("Catalog persistence incomplete: " + "; ".join(errors[:5]))
+    else:
+        services.logger.info(f"Successfully saved {written}/{count} videos{label} to {media_dir} and DB.")
+    collected.clear()
+    return written

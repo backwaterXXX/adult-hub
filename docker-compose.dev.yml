@@ -1,0 +1,92 @@
+# Isolated resolver development stack. It does not attach to the production
+# selfhost network or mount runtime data, credentials, media, or sessions.
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: adult_hub_dev
+      POSTGRES_USER: adult_hub_dev
+      POSTGRES_PASSWORD: adult_hub_dev
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U adult_hub_dev -d adult_hub_dev"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  db-init:
+    build:
+      context: .
+      dockerfile: sync/Dockerfile
+      args:
+        APP_VERSION: dev
+    command:
+      - python
+      - -c
+      - from db_schema import init_db; conn = init_db(); conn.close()
+    environment:
+      DATABASE_URL: postgresql://adult_hub_dev:adult_hub_dev@database:5432/adult_hub_dev
+      CONFIG_PATH: /config/config.yaml
+      PYTHONDONTWRITEBYTECODE: "1"
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      - ./config.example.yaml:/config/config.yaml:ro
+
+  resolver:
+    build:
+      context: .
+      dockerfile: resolver/Dockerfile
+      args:
+        APP_VERSION: dev
+    command:
+      - uvicorn
+      - app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8090"
+      - --reload
+      - --reload-dir
+      - /workspace/resolver
+    working_dir: /workspace/resolver
+    ports:
+      - "127.0.0.1:18090:8090"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: /workspace/resolver:/workspace
+      DATABASE_URL: postgresql://adult_hub_dev:adult_hub_dev@database:5432/adult_hub_dev
+      CONFIG_PATH: /config/config.yaml
+      DATA_DIR: /data
+      CACHE_DIR: /cache
+      MEDIA_DIR: /media/adult
+      ADMIN_SOURCE_OVERRIDES_PATH: /data/admin-source-overrides.json
+      ADMIN_WORKER_CAPABILITIES_PATH: /data/cache/worker-capabilities.json
+      BACKUP_DIR: /data/backups
+      ADMIN_PUBLIC: "false"
+      ADMIN_WRITE_TOKEN: dev-only-local
+      ADMIN_DUPLICATE_TOKEN: dev-only-local
+      PUBLIC_DOMAIN: dev.invalid
+      RESOLVER_CONCURRENCY_LIMIT: "2"
+      TELEGRAM_SESSION_PATH: /cache/telegram.session
+      TELEGRAM_PARALLEL_STREAM_ENABLED: "false"
+      PHASH_UPLOAD_ENABLED: "false"
+      JELLYFIN_URL: ""
+      JELLYFIN_API_KEY: ""
+      STASHDB_API_KEY: ""
+      STASH_API_KEY: ""
+    depends_on:
+      database:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./resolver:/workspace/resolver:ro
+      - ./common:/workspace/common:ro
+      - ./config.example.yaml:/config/config.yaml:ro
+    tmpfs:
+      - /cache:rw,noexec,nosuid,size=32m,mode=1777
+      - /data:rw,noexec,nosuid,size=64m,mode=1777

@@ -1,0 +1,606 @@
+{
+  "schema_version": 1,
+  "purpose": "Historical migration record mapping legacy Admin UI actions to Admin v2 workflows. v1_ui_modules and ui_action_inventory document the retired interface only and are not read by active route mounting or coverage checks; shared resolver service routes are classified separately and remain independent of the retired Classic UI.",
+  "shared_resolver_routes": [
+    {
+      "method": "GET",
+      "path": "/admin/health",
+      "source": "resolver/app.py",
+      "consumer": "Container health checks and resolver supervisor",
+      "purpose": "Process/provider health endpoint; operational infrastructure route, not a classic Admin UI action.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/performer-photo",
+      "source": "resolver/app.py",
+      "consumer": "sync/photos.py",
+      "purpose": "Provider photo lookup used by the sync worker; not a classic Admin UI action and must remain available while photo backfill is supported.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/performer-bio",
+      "source": "resolver/app.py",
+      "consumer": "External API callers; no in-repository consumer found",
+      "purpose": "Read-only performer information API; not a classic Admin UI action. Retain until runtime usage is checked.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/categories",
+      "source": "resolver/catalog_api.py",
+      "consumer": "sync/category_collector.py",
+      "purpose": "Provider category discovery used during sync; retain independently of Admin UI migration.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/browse",
+      "source": "resolver/catalog_api.py",
+      "consumer": "Shared provider catalog API",
+      "purpose": "Provider browse API, not a classic Admin UI action.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/category/{category_id}",
+      "source": "resolver/catalog_api.py",
+      "consumer": "sync/telegram_pipeline.py",
+      "purpose": "Paged provider category ingestion used by sync; retain independently of Admin UI migration.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/telegram/history/{channel_id}",
+      "source": "resolver/catalog_api.py",
+      "consumer": "sync/telegram_pipeline.py",
+      "purpose": "Authorized Telegram history retrieval used by sync; retain independently of Admin UI migration.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/search",
+      "source": "resolver/catalog_api.py",
+      "consumer": "Shared provider catalog API",
+      "purpose": "Provider search API, not a classic Admin UI action.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/unsupported-embeds",
+      "source": "resolver/catalog_api.py",
+      "consumer": "sync/sync.py",
+      "purpose": "Provider embed restrictions used by sync; retain independently of Admin UI migration.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/video-performers",
+      "source": "resolver/catalog_api.py",
+      "consumer": "sync/performer_enrichment.py",
+      "purpose": "Single-video performer metadata lookup used during sync; retain independently of Admin UI migration.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/thumb",
+      "source": "resolver/catalog_api.py",
+      "consumer": "sync/thumbnails.py and Admin v2 catalog previews",
+      "purpose": "Authorized thumbnail proxy used by media and catalog clients; retain independently of Admin UI migration.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/play/{video_id:path}/stream",
+      "source": "resolver/app.py",
+      "consumer": "Media players and Jellyfin STRM files",
+      "purpose": "Resolver playback and source failover endpoint; retain independently of Admin UI migration.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "HEAD",
+      "path": "/admin/play/{video_id:path}/stream",
+      "source": "resolver/app.py",
+      "consumer": "Media players and Jellyfin STRM files",
+      "purpose": "Resolver playback metadata/probe request; retain independently of Admin UI migration.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    }
+  ],
+  "client_integration_routes": [
+    {
+      "method": "GET",
+      "path": "/admin/api/v1/video-phash/status",
+      "source": "resolver/admin_v1_phash.py",
+      "consumer": "Adult Hub TV client (external repository)",
+      "purpose": "Optional status check for validated client-extracted pHash frames; client integration endpoint, not a classic Admin UI route.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/v1/video-phash/frames",
+      "source": "resolver/admin_v1_phash.py",
+      "consumer": "Adult Hub TV client (external repository)",
+      "purpose": "Optional authenticated intake of validated client-extracted pHash frames; keep disabled unless the compatible client and allowlisted decoder profile are configured.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/api/v1/video-phash/generate",
+      "source": "resolver/admin_v1_phash.py",
+      "consumer": "Adult Hub TV client (external repository)",
+      "purpose": "Server-side pHash frame extraction independent of TV codecs; client integration endpoint, not a classic Admin UI route.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/api/v1/video-phash/thumbnail",
+      "source": "resolver/admin_v1_phash.py",
+      "consumer": "Adult Hub TV client (external repository)",
+      "purpose": "Thumbnail retrieval for generated pHash frames; client integration endpoint, not a classic Admin UI route.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    }
+  ],
+  "v1_ui_modules": [
+    "api.js",
+    "shell.js",
+    "app.js",
+    "dashboard.js",
+    "sources.js",
+    "library.js",
+    "duplicates.js",
+    "performers.js",
+    "jobs.js",
+    "diagnostics.js",
+    "playback.js"
+  ],
+  "ui_action_inventory": [
+    {
+      "area": "Shell and navigation",
+      "v1_modules": [
+        "api.js",
+        "shell.js",
+        "app.js"
+      ],
+      "v1_actions": [
+        "navigate between Overview, Sources, Duplicates, Performers, Playback, Library, and Tasks",
+        "refresh current view",
+        "show access and worker capability state"
+      ],
+      "v2_replacement": "Admin v2 navigation and shared state header; matching views use capability status and explicit read-only/write state",
+      "acceptance": "direct links, back/forward navigation, keyboard focus, and unavailable worker state",
+      "owner": "Frontend",
+      "dependencies": [
+        "TASK-00",
+        "TASK-01"
+      ],
+      "side_effects": "URL/history and local display preferences only; no server mutation.",
+      "acceptance_evidence": "Browser smoke for direct routes, back/forward, keyboard navigation, read-only state, and worker unavailable state.",
+      "parity_tests": [
+        "tests/admin_ui_contract.cjs",
+        "tests/admin_v2_jobs_deeplink.cjs"
+      ]
+    },
+    {
+      "area": "Overview and maintenance",
+      "v1_modules": [
+        "dashboard.js"
+      ],
+      "v1_actions": [
+        "view resolver/database/sync/backup/capability status",
+        "review sync activity and retry a source",
+        "trigger sync",
+        "refresh Jellyfin library",
+        "refresh collections",
+        "clear resolver cache",
+        "read link-check report and manual CLI instructions"
+      ],
+      "v2_replacement": "Home status/issues; Sources per-source sync; System maintenance and link-check views; durable work appears in Tasks",
+      "acceptance": "distinguish request accepted from job complete and external Jellyfin result; compare safe link-check summaries and empty/error states",
+      "owner": "API, frontend, and sync worker",
+      "dependencies": [
+        "TASK-04",
+        "TASK-05",
+        "TASK-14"
+      ],
+      "side_effects": "Status reads are read-only; sync, cache, Jellyfin, and collections controls enqueue or execute bounded maintenance actions.",
+      "acceptance_evidence": "Shared fixture status/API tests, write authorization matrix, worker result tests, and controlled Jellyfin integration.",
+      "parity_tests": [
+        "tests/test_admin_v2_status.py",
+        "tests/admin_v2_home_issue_links.cjs",
+        "tests/admin_v2_maintenance_contract.cjs",
+        "tests/admin_v2_linkcheck_contract.cjs",
+        "tests/admin_v2_sync_activity_contract.cjs"
+      ]
+    },
+    {
+      "area": "Sources",
+      "v1_modules": [
+        "sources.js"
+      ],
+      "v1_actions": [
+        "view configured/disabled channels",
+        "inspect and filter sync history",
+        "retry a failed source",
+        "refresh source view"
+      ],
+      "v2_replacement": "Sources configured-channel list, status/search filters, detail view, history and per-source scheduled/new/backfill sync",
+      "acceptance": "disabled/never-synced/failed states, history unavailable, large list pagination and correct source identity",
+      "owner": "Config, sync worker, and frontend",
+      "dependencies": [
+        "TASK-07"
+      ],
+      "side_effects": "Preview is read-only; save changes managed source overrides; sync/check actions call Telegram and enqueue sync work.",
+      "acceptance_evidence": "Shared V1/V2 source fixture, revision/conflict tests, disabled/never-synced UI contract, and worker result tests.",
+      "parity_tests": [
+        "tests/test_admin_v2_status.py",
+        "tests/admin_v2_sources_pagination.cjs",
+        "tests/admin_ui_contract.cjs",
+        "tests/test_managed_sources.py",
+        "tests/test_http_api.py"
+      ]
+    },
+    {
+      "area": "Library and quarantine",
+      "v1_modules": [
+        "library.js"
+      ],
+      "v1_actions": [
+        "list unavailable videos",
+        "refresh unavailable list",
+        "quarantine a video",
+        "export the complete quarantine report",
+        "restore a quarantined file"
+      ],
+      "v2_replacement": "Library availability filter; Organize quarantine export and operation-plan restore",
+      "acceptance": "complete export over multiple pages, restore preview/execute, safe paths and recoverable errors",
+      "owner": "Catalog API, operation service, worker, and frontend",
+      "dependencies": [
+        "TASK-02",
+        "TASK-03",
+        "TASK-06",
+        "TASK-10"
+      ],
+      "side_effects": "Reads and exports are read-only; availability checks enqueue network work; quarantine/restore move registered media files.",
+      "acceptance_evidence": "Catalog pagination fixture, bounded export test, preview/execute/restore worker tests, and path-containment tests.",
+      "parity_tests": [
+        "tests/test_admin_v2_read.py",
+        "tests/test_admin_v2_availability.py",
+        "tests/admin_v2_quarantine_export.cjs",
+        "tests/test_admin_operations.py",
+        "tests/test_video_duplicate_jobs.py"
+      ]
+    },
+    {
+      "area": "Duplicates",
+      "v1_modules": [
+        "duplicates.js"
+      ],
+      "v1_actions": [
+        "filter same-file/strong/review candidates",
+        "preview candidate",
+        "merge exact files",
+        "choose keeper",
+        "dismiss pair as different",
+        "undo hide/dismiss",
+        "review operation history"
+      ],
+      "v2_replacement": "Organize duplicate categories and operation preview/execute; Jobs operation result/history",
+      "acceptance": "same-fixture decisions and effects, stale preview, group sizes above two, retry, undo conflict",
+      "owner": "Duplicate API, operation service, worker, and frontend",
+      "dependencies": [
+        "TASK-05",
+        "TASK-06",
+        "TASK-09"
+      ],
+      "side_effects": "Hide/merge decisions mutate catalog state; quarantine and restore can move media files.",
+      "acceptance_evidence": "Shared decision fixture, stale preview, idempotent retry, group-size, undo-conflict, and worker recovery tests.",
+      "parity_tests": [
+        "tests/test_video_duplicates.py",
+        "tests/test_video_duplicate_jobs.py",
+        "tests/admin_v2_jobs_deeplink.cjs",
+        "tests/admin_v2_organize_tabs.cjs",
+        "tests/admin_ui_contract.cjs",
+        "tests/test_admin_operations.py"
+      ]
+    },
+    {
+      "area": "Performers",
+      "v1_modules": [
+        "performers.js"
+      ],
+      "v1_actions": [
+        "review Telegram proposals",
+        "search catalogue",
+        "approve/reject or create local performer",
+        "scan fuzzy variants",
+        "preview and confirm merge"
+      ],
+      "v2_replacement": "Performers proposals and paginated name-variant scan; operation preview/execute; Jobs result",
+      "acceptance": "alias/catalogue effects, manual override conflict, refresh outcome, merge consent and worker result",
+      "owner": "Performer catalog service, worker, and frontend",
+      "dependencies": [
+        "TASK-08",
+        "TASK-09"
+      ],
+      "side_effects": "Proposal review changes performer aliases/catalog data; merge queues a non-undoable catalog/file operation.",
+      "acceptance_evidence": "Shared proposal fixture, conflict/rollback tests, explicit merge consent, durable worker result and recovery tests.",
+      "parity_tests": [
+        "tests/test_performer_proposals_integration.py",
+        "tests/test_admin_v2_performers.py",
+        "tests/admin_v2_performers_contract.cjs"
+      ]
+    },
+    {
+      "area": "Tasks",
+      "v1_modules": [
+        "jobs.js"
+      ],
+      "v1_actions": [
+        "filter task history by state/action",
+        "inspect job detail",
+        "retry terminal task",
+        "cancel queued task",
+        "inspect duplicate operation jobs"
+      ],
+      "v2_replacement": "Tasks filters/detail and V2 retry/cancel routes with durable job outcomes",
+      "acceptance": "all states, allowed/denied retry/cancel, sanitized result, worker recovery",
+      "owner": "Job API, durable queue, worker, and frontend",
+      "dependencies": [
+        "TASK-05",
+        "TASK-06"
+      ],
+      "side_effects": "Retry creates/reuses durable work; cancel is allowed only for queued jobs.",
+      "acceptance_evidence": "State matrix for retry/cancel, queue/claim race, sanitized detail, idempotency, and worker restart tests.",
+      "parity_tests": [
+        "tests/test_admin_v2_jobs_contract.py",
+        "tests/test_runner.py",
+        "tests/admin_v2_jobs_deeplink.cjs",
+        "tests/admin_ui_contract.cjs",
+        "tests/test_video_duplicate_jobs.py"
+      ]
+    },
+    {
+      "area": "Playback diagnostics",
+      "v1_modules": [
+        "diagnostics.js",
+        "playback.js"
+      ],
+      "v1_actions": [
+        "view diagnostic status/summary/reports",
+        "enable for 24 hours",
+        "disable collection",
+        "inspect a report",
+        "clear reports"
+      ],
+      "v2_replacement": "System playback diagnostics summary/status/reports/detail/export/clear",
+      "acceptance": "retention, report privacy, clear confirmation, export limits, empty/error states",
+      "owner": "Diagnostics service, API, and frontend",
+      "dependencies": [
+        "TASK-13"
+      ],
+      "side_effects": "Enable/disable changes collection state; clear permanently deletes collected reports; export reads bounded data.",
+      "acceptance_evidence": "Shared report fixture, authorization/privacy/retention tests, export bounds, clear confirmation, and empty/error UI tests.",
+      "parity_tests": [
+        "tests/admin_diagnostics_report_export.cjs",
+        "tests/test_admin_v2_status.py"
+      ]
+    }
+  ],
+  "groups": [
+    {
+      "area": "Playback diagnostics",
+      "v1_routes": [
+        "GET /api/playback-diagnostics/summary",
+        "GET /api/playback-diagnostics/status",
+        "POST /api/playback-diagnostics/enable",
+        "POST /api/playback-diagnostics/disable",
+        "GET /api/playback-diagnostics/reports",
+        "GET /api/playback-diagnostics/reports/{report_id}",
+        "DELETE /api/playback-diagnostics/reports"
+      ],
+      "v2_routes": [
+        "GET /api/v2/diagnostics/playback/summary",
+        "GET /api/v2/diagnostics/playback/status",
+        "POST /api/v2/diagnostics/playback/enable",
+        "POST /api/v2/diagnostics/playback/disable",
+        "GET /api/v2/diagnostics/playback/reports",
+        "GET /api/v2/diagnostics/playback/reports/{report_id}",
+        "DELETE /api/v2/diagnostics/playback/reports",
+        "GET /api/v2/diagnostics/playback/export"
+      ],
+      "status": "implemented; V1/V2 shared-fixture parity and keyboard acceptance passed; live retention/runtime acceptance pending",
+      "owner": "Diagnostics service, API, and frontend",
+      "dependencies": [
+        "TASK-13"
+      ],
+      "side_effects": "Enable/disable changes collection state; clear permanently deletes collected reports; export reads bounded data.",
+      "acceptance_evidence": "Shared V1/V2 report fixture and privacy tests; fixture-backed Chromium keyboard coverage for report detail redaction, enable/disable, export range, clear cancel/confirm, and success feedback; clear confirmation, export bounds, and empty/error UI contracts. Live retention/runtime acceptance remains pending.",
+      "parity_tests": [
+        "tests/admin_diagnostics_report_export.cjs",
+        "tests/test_admin_v2_status.py"
+      ]
+    },
+    {
+      "area": "Duplicates and jobs",
+      "v1_routes": [
+        "GET /api/videos/duplicates",
+        "POST /api/videos/duplicates/actions",
+        "POST /api/videos/duplicates/auto-merge-exact",
+        "GET /api/videos/duplicates/preview",
+        "GET /api/jobs",
+        "GET /api/videos/duplicates/jobs",
+        "GET /api/jobs/{job_id}",
+        "GET /api/videos/duplicates/jobs/{job_id}",
+        "POST /api/jobs/{job_id}/retry",
+        "POST /api/jobs/{job_id}/cancel"
+      ],
+      "v2_routes": [
+        "GET /api/v2/duplicates",
+        "POST /api/v2/duplicates/actions",
+        "GET /api/v2/jobs",
+        "GET /api/v2/jobs/{job_id}",
+        "GET /api/v2/tasks",
+        "GET /api/v2/tasks/{queue}/{task_id}",
+        "POST /api/v2/jobs/{job_id}/retry",
+        "POST /api/v2/jobs/{job_id}/cancel",
+        "POST /api/v2/operations/preview",
+        "POST /api/v2/operations/execute"
+      ],
+      "status": "implemented; shared-fixture decision/retry/cancel parity, durable recovery, undo, and stale-preview keyboard acceptance passed; target-runtime acceptance pending",
+      "owner": "Duplicate API, operation service, queue, and worker",
+      "dependencies": [
+        "TASK-05",
+        "TASK-06",
+        "TASK-09"
+      ],
+      "side_effects": "Routes can create durable jobs, mutate duplicate decisions, move files, or undo supported operations.",
+      "acceptance_evidence": "V1/V2 shared decision fixture plus durable retry/cancel, idempotency, stale-plan, undo and recovery tests. Fixture-backed Chromium keyboard acceptance verifies that hide and generic operation plans are disabled after a stale-plan 409 and require a fresh preview before queueing; transient failures preserve retry focus. See docs/admin-v2/visual-acceptance-2026-10-07/duplicate-hide-conflict-keyboard.mjs and operation-preview-conflict-keyboard.mjs.",
+      "parity_tests": [
+        "tests/test_video_duplicates.py",
+        "tests/test_admin_v2_jobs_contract.py",
+        "tests/test_admin_v2_release_smoke.py",
+        "tests/test_video_duplicate_jobs.py",
+        "tests/test_runner.py"
+      ]
+    },
+    {
+      "area": "Library and quarantine",
+      "v1_routes": [
+        "GET /api/library/unavailable",
+        "GET /api/library/quarantine",
+        "POST /api/library/quarantine"
+      ],
+      "v2_routes": [
+        "GET /api/v2/library/videos",
+        "GET /api/v2/issues",
+        "GET /api/v2/organize/quarantine",
+        "POST /api/v2/operations/preview",
+        "POST /api/v2/operations/execute"
+      ],
+      "status": "implemented; disposable restore verified; live backup and runtime acceptance pending",
+      "owner": "Catalog API, operation service, worker",
+      "dependencies": [
+        "TASK-02",
+        "TASK-03",
+        "TASK-06",
+        "TASK-10"
+      ],
+      "side_effects": "Read/export routes do not mutate; operation execute may move registered files or update availability.",
+      "acceptance_evidence": "V1/V2 shared unavailable/quarantine fixture, >1,000-row export, restore worker and safe-path tests, fixture-backed Chromium restore preview→keyboard execute→queued status, and real pg_restore_test against a synthetic PostgreSQL 17 archive. Live registered-file/Jellyfin effects and the restricted production restore target remain operational gates.",
+      "parity_tests": [
+        "tests/test_admin_v2_read.py",
+        "tests/test_admin_v2_availability.py",
+        "tests/admin_v2_quarantine_export.cjs",
+        "tests/test_admin_operations.py",
+        "tests/test_video_duplicate_jobs.py"
+      ]
+    },
+    {
+      "area": "Maintenance",
+      "v1_routes": [
+        "POST /api/cache/clear",
+        "POST /api/sync/trigger",
+        "POST /api/jellyfin/refresh",
+        "POST /api/jellyfin/collections/refresh"
+      ],
+      "v2_routes": [
+        "POST /api/v2/maintenance/cache/clear",
+        "POST /api/v2/maintenance/sync",
+        "POST /api/v2/maintenance/jellyfin/refresh",
+        "POST /api/v2/maintenance/collections/refresh"
+      ],
+      "status": "implemented; external integration acceptance pending",
+      "owner": "Maintenance API and sync worker",
+      "dependencies": [
+        "TASK-04",
+        "TASK-05",
+        "TASK-14"
+      ],
+      "side_effects": "Actions clear cache, enqueue sync/Jellyfin work, or request external library/collection changes.",
+      "acceptance_evidence": "Write-policy/capability tests, durable job lifecycle tests, and controlled external-integration acceptance.",
+      "parity_tests": [
+        "tests/test_admin_v2_maintenance.py",
+        "tests/admin_v2_maintenance_contract.cjs",
+        "tests/test_http_api.py"
+      ]
+    },
+    {
+      "area": "Performers",
+      "v1_routes": [
+        "GET /api/performers/proposals",
+        "GET /api/performers/catalog",
+        "POST /api/performers/proposals/{proposal_id}",
+        "GET /api/performers/fuzzy",
+        "GET /api/performers/merge/preview",
+        "POST /api/performers/merge"
+      ],
+      "v2_routes": [
+        "GET /api/v2/performers/proposals",
+        "GET /api/v2/performers/catalog",
+        "POST /api/v2/performers/proposals/{proposal_id}",
+        "GET /api/v2/performers/fuzzy",
+    "GET /api/v2/organize/people",
+    "GET /api/v2/organize/people/{name}",
+        "POST /api/v2/operations/preview",
+        "POST /api/v2/operations/execute"
+      ],
+      "status": "implemented; proposal pagination and performer-merge conflict/retry keyboard acceptance passed; integration and target-runtime acceptance pending",
+      "owner": "Performer catalog service, worker, and frontend",
+      "dependencies": [
+        "TASK-08",
+        "TASK-09"
+      ],
+      "side_effects": "Proposal review changes performer aliases/catalog data; merge queues a non-undoable catalog/file operation.",
+  "acceptance_evidence": "Shared proposal fixture, conflict/rollback tests, explicit merge consent, durable worker result and recovery tests. Organize → People searches both provider bio aliases and explicit local mappings, displays deduplicated aliases, and keeps paginated filmography; PostgreSQL/API and browser contracts cover alias search/rendering and stale alias-merge rejection. Chromium keyboard acceptance covers transient execute retry, stale-plan 409 invalidation, renewed irreversible-action consent, and accepted task feedback; see docs/admin-v2/visual-acceptance-2026-10-07/performer-merge-conflict-keyboard.mjs. Live upstream effects and target-runtime acceptance remain pending.",
+      "parity_tests": [
+        "tests/test_performer_proposals_integration.py",
+        "tests/test_admin_v2_performers.py",
+        "tests/admin_v2_performers_contract.cjs",
+    "tests/test_performer_proposals_service.py",
+    "tests/test_http_api.py",
+    "tests/admin_v2_operation_races.cjs",
+    "tests/test_admin_operations.py"
+      ]
+    },
+    {
+      "area": "Status, sources, backup inventory",
+      "v1_routes": [
+        "GET /api/status",
+        "GET /api/sync/history",
+        "GET /api/sync/activity",
+        "GET /api/sources",
+        "GET /api/backups/status",
+        "GET /api/capabilities"
+      ],
+      "v2_routes": [
+        "GET /api/v2/status",
+        "GET /api/v2/status/jellyfin",
+        "GET /api/v2/sources/sync-history",
+        "GET /api/v2/sync/activity",
+        "GET /api/v2/sources/list",
+        "GET /api/v2/sources/search",
+        "GET /api/v2/backups",
+        "GET /api/v2/capabilities"
+      ],
+      "status": "implemented; runtime and operational source acceptance pending",
+      "owner": "Status API, source config, backup service, and frontend",
+      "dependencies": [
+        "TASK-00",
+        "TASK-07",
+        "TASK-12"
+      ],
+      "side_effects": "Read-only status/config/inventory; backup verification reads archives without restoring them.",
+      "acceptance_evidence": "Shared V1/V2 status/source fixture; GET-only release smoke compares Home metrics and the Sources configuration/revisions plus latest sync outcome, timing, counts, and retry/429 aggregates in memory without exposing channel IDs; bounded command-palette source lookup returns only provider, ID, label, enabled state and never secret config; missing/error/stale semantics; redacted per-provider link-check summary and bounded individual sample results; safe sync activity summaries for source failures; write/retention/availability progress; backup inventory and verification contracts.",
+      "parity_tests": [
+        "tests/test_admin_v2_status.py",
+        "tests/test_admin_v2_backups.py",
+        "tests/test_admin_v2_release_smoke.py",
+        "tests/admin_v2_sources_pagination.cjs",
+        "tests/test_managed_sources.py",
+        "tests/test_http_api.py",
+        "tests/test_backup_db.py"
+      ]
+    }
+  ]
+}

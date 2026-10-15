@@ -1,0 +1,534 @@
+import json
+import os
+import sys
+import time
+import signal
+import subprocess
+import threading
+import tempfile
+from common.logging_setup import configure_logging
+
+LOGGER = configure_logging("sync.runner")
+
+try:
+    from common.config_loader import ConfigError
+except ImportError:
+    class ConfigError(Exception):
+        pass
+
+try:
+    from common.job_queue import claim_job, finish_job, heartbeat_job, requeue_processing, pending_actions, WORKER_ACTIONS, ALL_ACTIONS
+except Exception:  # pragma: no cover - the shared package ships in both images
+    claim_job = finish_job = requeue_processing = None
+    heartbeat_job = None
+    pending_actions = None
+    WORKER_ACTIONS = ()
+    ALL_ACTIONS = ()
+
+try:
+    from common.worker_capabilities import publish_worker_capabilities
+except Exception:  # pragma: no cover - older deployments do not publish capabilities
+    publish_worker_capabilities = None
+
+try:
+    from common.admin_schedules import dispatch_due_schedules
+except Exception:  # pragma: no cover - older deployments may not have migrations yet
+    dispatch_due_schedules = None
+
+try:
+    from common.app_version import __version__ as APP_VERSION
+except ImportError:
+    APP_VERSION = os.getenv("APP_VERSION", "0+unknown")
+
+try:
+    from common.config_loader import load_config
+    cfg = load_config()
+    interval = cfg.sync.interval_minutes * 60
+    daily_at = getattr(cfg.sync, "daily_at", None)
+    run_on_startup = getattr(cfg.sync, "run_on_startup", True)
+    BASE_BACKOFF_SECONDS = cfg.sync.retry_backoff_base_seconds
+    MAX_BACKOFF_SECONDS = cfg.sync.retry_backoff_max_seconds
+except ConfigError as ce:
+    LOGGER.critical(f"[sync-daemon] FATAL CONFIG ERROR: {ce}")
+    sys.exit(1)
+except Exception as e:
+    LOGGER.critical(f"[sync-daemon] FATAL: config load failed unexpectedly: {e}")
+    sys.exit(1)
+
+stop_event = threading.Event()
+current_process = None
+consecutive_errors = 0
+requested_source = None
+requested_sync_mode = "scheduled"
+SYNC_JOB_HEARTBEAT_INTERVAL_SECONDS = 15
+
+def signal_handler(signum, frame):
+    LOGGER.info("[sync-daemon] Received shutdown signal, stopping...")
+    stop_event.set()
+    global current_process
+    if current_process and current_process.poll() is None:
+        try:
+            current_process.terminate()
+        except Exception:
+            pass
+
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
+def calculate_next_sleep_seconds(daily_at_time, default_interval: int) -> float:
+    if not daily_at_time:
+        return float(default_interval)
+    import datetime
+    parts = daily_at_time.split(":")
+    target_h, target_m = int(parts[0]), int(parts[1])
+    now = datetime.datetime.now()
+    target = now.replace(hour=target_h, minute=target_m, second=0, microsecond=0)
+    if target <= now:
+        target += datetime.timedelta(days=1)
+    return max(1.0, (target - now).total_seconds())
+
+def format_duration(seconds: float) -> str:
+    total_sec = int(round(seconds))
+    hours = total_sec // 3600
+    minutes = (total_sec % 3600) // 60
+    secs = total_sec % 60
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0 or hours > 0:
+        parts.append(f"{minutes}m")
+    parts.append(f"{secs}s")
+    return " ".join(parts)
+
+if daily_at:
+    LOGGER.info(f"[sync-daemon] Adult-Hub {APP_VERSION}; scheduled daily sync at {daily_at} (retry base {BASE_BACKOFF_SECONDS}s, max {MAX_BACKOFF_SECONDS}s)...")
+else:
+    LOGGER.info(f"[sync-daemon] Adult-Hub {APP_VERSION}; starting periodic sync runner (every {interval//60} min, retry base {BASE_BACKOFF_SECONDS}s, max {MAX_BACKOFF_SECONDS}s)...")
+
+TRIGGER_FILE = os.getenv("SYNC_TRIGGER_FILE", "/data/cache/sync.trigger")
+STATUS_FILE = os.getenv("SYNC_STATUS_FILE", "/data/cache/sync_status.json")
+DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None
+WORKER_CAPABILITIES_FILE = os.getenv("ADMIN_WORKER_CAPABILITIES_PATH", "/data/cache/worker-capabilities.json")
+SYNC_HISTORY_FILE = os.getenv("SYNC_HISTORY_FILE", "/data/cache/sync_history.json")
+
+
+def _failed_sync_sources(started_at: int, ended_at: int, source_filter: str | None) -> list[dict]:
+    """Read safe per-source failures for the sync child that just finished."""
+    try:
+        with open(SYNC_HISTORY_FILE, encoding="utf-8") as history_file:
+            history = json.load(history_file)
+        runs = history.get("runs", []) if isinstance(history, dict) else []
+        matching = [run for run in runs if isinstance(run, dict)
+                    and type(run.get("started_at")) is int
+                    and started_at - 2 <= run["started_at"] <= ended_at
+                    and run.get("source_filter") == source_filter]
+        if not matching:
+            return []
+        run = max(matching, key=lambda item: item.get("started_at", 0))
+        failures = []
+        for source in run.get("sources", []):
+            if not isinstance(source, dict) or source.get("success") is not False:
+                continue
+            label = source.get("label")
+            error = source.get("error")
+            if isinstance(label, str) and len(label) <= 256:
+                item = {"label": label}
+                if isinstance(error, str) and error in {
+                    "Sync failed (RuntimeError).", "Sync failed (TimeoutError).",
+                    "Sync failed (ValueError).", "Sync failed (OSError).",
+                }:
+                    item["error"] = error
+                if (str(source.get("source", "")).startswith("telegram:")
+                        and error == "Sync failed (RuntimeError)."):
+                    detail = source.get("detail")
+                    if isinstance(detail, str) and 0 < len(detail) <= 700:
+                        item["detail"] = detail
+                    else:
+                        item["detail"] = "Telegram fetch/history operation failed."
+                failures.append(item)
+        return failures[:100]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def publish_worker_heartbeat(running: bool = True) -> None:
+    if publish_worker_capabilities is None:
+        return
+    try:
+        publish_worker_capabilities(
+            WORKER_CAPABILITIES_FILE, version=APP_VERSION, actions=ALL_ACTIONS, running=running
+        )
+    except Exception as e:
+        LOGGER.warning(f"[sync-daemon] Could not publish worker capabilities: {e}")
+
+
+def worker_heartbeat_loop() -> None:
+    while not stop_event.is_set():
+        publish_worker_heartbeat()
+        stop_event.wait(5.0)
+
+
+def update_sync_status(running: bool, exit_code: int = None, success: bool = None, source: str = None):
+    try:
+        import json
+        from pathlib import Path
+        p = Path(STATUS_FILE)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "running": running,
+            "updated_at": int(time.time()),
+            "updated_human": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        if running:
+            data["started_at"] = int(time.time())
+            data["active_source"] = source
+        else:
+            data["last_exit_code"] = exit_code
+            data["last_success"] = success
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{p.name}.", suffix=".tmp", dir=str(p.parent))
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f)
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                os.chmod(tmp_name, 0o666)
+            except OSError:
+                pass
+            os.replace(tmp_name, p)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+    except Exception as e:
+        LOGGER.warning(f"[sync-daemon] Could not update status file: {e}")
+
+
+def run_jobs_worker() -> int:
+    """Run sync.py --jobs-only to process queued jobs without full sync."""
+    global current_process
+    LOGGER.info("[sync-daemon] On-demand jobs trigger detected, executing jobs-only worker...")
+    try:
+        proc = subprocess.Popen([sys.executable, "sync.py", "--jobs-only"])
+        current_process = proc
+        while proc.poll() is None:
+            if stop_event.is_set():
+                _stop_child(proc)
+                break
+            time.sleep(0.2)
+        code = proc.returncode if proc.returncode is not None else 0
+        if code != 0:
+            LOGGER.warning(f"[sync-daemon] Jobs worker exited with code {code}")
+        return code
+    except Exception as e:
+        LOGGER.warning(f"[sync-daemon] Jobs worker execution error: {e}")
+        return -1
+    finally:
+        current_process = None
+
+
+def wait_with_trigger(duration: float):
+    global requested_source, requested_sync_mode
+    from pathlib import Path
+    trig = Path(TRIGGER_FILE)
+    step = 1.0
+    deadline = time.monotonic() + duration
+    next_worker_attempt = 0.0
+    next_queue_error_log = 0.0
+    next_schedule_dispatch = 0.0
+    next_schedule_error_log = 0.0
+    while not stop_event.is_set():
+        actions = set()
+        worker_wake = False
+        if dispatch_due_schedules and time.monotonic() >= next_schedule_dispatch:
+            try:
+                worker_wake = dispatch_due_schedules(DB_URL) > 0
+            except Exception as e:
+                if time.monotonic() >= next_schedule_error_log:
+                    LOGGER.warning(f"[sync-daemon] Could not dispatch Admin schedules: {e}")
+                    next_schedule_error_log = time.monotonic() + 60.0
+            next_schedule_dispatch = time.monotonic() + 30.0
+        if pending_actions:
+            try:
+                actions = pending_actions(DB_URL)
+            except Exception as e:
+                if time.monotonic() >= next_queue_error_log:
+                    LOGGER.warning(f"[sync-daemon] Could not inspect durable queue: {e}")
+                    next_queue_error_log = time.monotonic() + 30.0
+        if "sync" in actions:
+            # A wake file may be missing or overwritten by another action.
+            # Claim through the runner; a failed claim must not fall through
+            # to an unrelated scheduled full sync.
+            if run_pending_sync_jobs():
+                continue
+        if trig.exists():
+            try:
+                import json
+                payload = json.loads(trig.read_text()) if trig.stat().st_size else {}
+            except Exception:
+                payload = {}
+
+            if isinstance(payload, dict) and payload.get("action") == "jobs":
+                trig.unlink(missing_ok=True)
+                worker_wake = True
+            elif isinstance(payload, dict) and payload.get("action") == "sync":
+                # Durable signals carry no request themselves. The next poll
+                # finds the persisted job, even if this signal was stale.
+                trig.unlink(missing_ok=True)
+            else:
+                # Retain compatibility with manually written legacy triggers.
+                requested_source = payload.get("source") if isinstance(payload, dict) else None
+                requested_mode = payload.get("sync_mode", "scheduled") if isinstance(payload, dict) else "scheduled"
+                trig.unlink(missing_ok=True)
+                label = f" for {requested_source}" if requested_source else ""
+                LOGGER.info(f"[sync-daemon] On-demand sync trigger detected{label}, executing sync immediately!")
+                requested_sync_mode = requested_mode if requested_mode in {"scheduled", "new", "backfill"} else "scheduled"
+                return True
+        if (worker_wake or actions.intersection(WORKER_ACTIONS)) and time.monotonic() >= next_worker_attempt:
+            run_jobs_worker()
+            # Avoid respawning rapidly when an external full sync owns the
+            # lock or the child fails. It alone owns recovery of processing.
+            next_worker_attempt = time.monotonic() + 5.0
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        stop_event.wait(timeout=min(step, remaining))
+    return False
+
+
+def _stop_child(process, grace_seconds: float = 10.0):
+    """Ask the sync child to stop, then force and reap it after a grace period."""
+    if process.poll() is not None:
+        return process.wait()
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return process.wait()
+    try:
+        return process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return process.wait()
+
+
+def run_full_sync(source_filter=None, sync_mode="scheduled"):
+    """Execute one full sync child and publish its status. Returns (success, exit_code)."""
+    global current_process
+    source_arg = ["--source", source_filter] if source_filter else []
+    # Preserve the legacy child invocation for the default mode; only explicit
+    # administrative modes need an additional CLI argument.
+    mode_arg = ["--sync-mode", sync_mode] if sync_mode != "scheduled" else []
+    LOGGER.info(f"[sync-daemon] Executing sync{f' for {source_filter}' if source_filter else ''}...")
+    update_sync_status(running=True, source=source_filter)
+    success = False
+    exit_code = -1
+    try:
+        current_process = subprocess.Popen([sys.executable, "sync.py", *source_arg, *mode_arg])
+        while current_process.poll() is None:
+            if stop_event.is_set():
+                _stop_child(current_process)
+                break
+            time.sleep(0.5)
+
+        if not stop_event.is_set():
+            exit_code = current_process.returncode
+            if exit_code == 0:
+                success = True
+            elif consecutive_errors < 3:
+                LOGGER.warning(f"[sync-daemon] Sync exited with code {exit_code}")
+    except Exception as e:
+        if consecutive_errors < 3:
+            LOGGER.warning(f"[sync-daemon] Sync execution error: {e}")
+    finally:
+        if current_process is not None:
+            try:
+                if current_process.poll() is None:
+                    _stop_child(current_process)
+                current_process.wait()
+            except Exception as e:
+                LOGGER.warning(f"[sync-daemon] Could not reap sync process: {e}")
+        current_process = None
+        update_sync_status(running=False, exit_code=exit_code, success=success)
+    return success, exit_code
+
+
+def _clear_sync_trigger() -> None:
+    """Drop a satisfied wake signal so it cannot start a redundant full sync."""
+    from pathlib import Path
+    try:
+        trig = Path(TRIGGER_FILE)
+        if not trig.exists():
+            return
+        payload = json.loads(trig.read_text()) if trig.stat().st_size else {}
+        if isinstance(payload, dict) and payload.get("action") == "sync":
+            trig.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def run_pending_sync_jobs() -> bool:
+    """Claim and run one durable on-demand sync job. Returns True if one ran.
+
+    Requests survive a worker restart because they are persisted in the shared
+    jobs table; the signal file only wakes the runner.
+    """
+    if not (claim_job and finish_job):
+        return False
+    try:
+        job = claim_job(DB_URL, "sync")
+    except Exception as e:
+        LOGGER.warning(f"[sync-daemon] Could not claim sync job: {e}")
+        return False
+    if not job:
+        return False
+    try:
+        payload = json.loads(job.get("payload") or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    source = payload.get("source") if isinstance(payload, dict) else None
+    sync_mode = payload.get("sync_mode", "scheduled") if isinstance(payload, dict) else "scheduled"
+    if sync_mode not in {"scheduled", "new", "backfill"}:
+        sync_mode = "scheduled"
+    label = f" for {source}" if source else ""
+    LOGGER.info(f"[sync-daemon] Running durable sync job {job['id']}{label}...")
+    heartbeat_stop = threading.Event()
+
+    def heartbeat_loop():
+        while not heartbeat_stop.wait(SYNC_JOB_HEARTBEAT_INTERVAL_SECONDS):
+            try:
+                if heartbeat_job:
+                    heartbeat_job(DB_URL, job["id"])
+            except Exception as exc:
+                LOGGER.warning(f"[sync-daemon] Could not update sync-job heartbeat ({type(exc).__name__}).")
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_loop,
+        name=f"sync-job-heartbeat-{str(job['id'])[:8]}",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+    try:
+        sync_started_at = int(time.time())
+        success, exit_code = run_full_sync(source, sync_mode)
+        sync_ended_at = int(time.time())
+        result = {
+            "source": source,
+            "sync_mode": sync_mode,
+            "local_state": "sync completed" if success else "sync failed",
+            "exit_code": exit_code,
+            "message": f"On-demand sync{' for ' + source if source else ''} {'completed' if success else 'failed'}.",
+        }
+        if not success:
+            source_failures = _failed_sync_sources(sync_started_at, sync_ended_at, source)
+            if source_failures:
+                result["source_failures"] = source_failures
+        try:
+            finalized = finish_job(DB_URL, job["id"], "done" if success else "failed", result)
+            if not finalized:
+                LOGGER.warning(f"[sync-daemon] Sync job {job['id']} was no longer pending when its result arrived.")
+        except Exception as e:
+            LOGGER.warning(f"[sync-daemon] Could not record sync job result: {e}")
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=2)
+    _clear_sync_trigger()
+    return True
+
+
+def run_loop():
+    global current_process, consecutive_errors, requested_source, requested_sync_mode
+    if requeue_processing:
+        try:
+            recovered = requeue_processing(DB_URL, "sync")
+            if recovered:
+                LOGGER.info(f"[sync-daemon] Recovered {recovered} interrupted sync job(s).")
+        except Exception as e:
+            LOGGER.warning(f"[sync-daemon] Could not recover sync jobs: {e}")
+    first_run = True
+    while not stop_event.is_set():
+        # Durable on-demand requests take precedence over a scheduled run and are
+        # restart-safe because they live in the shared jobs table. Drain them
+        # before any startup wait so a restart cannot strand a request.
+        ran_jobs = False
+        while run_pending_sync_jobs():
+            ran_jobs = True
+            if stop_event.is_set():
+                break
+        if stop_event.is_set():
+            break
+
+        # Dispatch schedules before a potentially long initial full sync. The
+        # periodic wait loop is not reached until that sync exits; persisting
+        # due work here lets the full-sync worker process it at safe checkpoints.
+        if dispatch_due_schedules:
+            try:
+                scheduled = dispatch_due_schedules(DB_URL)
+                if scheduled:
+                    LOGGER.info(f"[sync-daemon] Queued {scheduled} due Admin schedule(s) before sync.")
+            except Exception as e:
+                LOGGER.warning(f"[sync-daemon] Could not dispatch Admin schedules at startup: {e}")
+
+        if ran_jobs:
+            first_run = False
+        if first_run and not run_on_startup:
+            first_run = False
+            sleep_sec = calculate_next_sleep_seconds(daily_at, interval)
+            import datetime
+            target_str = (datetime.datetime.now() + datetime.timedelta(seconds=sleep_sec)).strftime("%Y-%m-%d %H:%M:%S")
+            LOGGER.info(f"[sync-daemon] Skipping initial run on startup (run_on_startup=false). Next scheduled sync at {target_str} (in {format_duration(sleep_sec)})...")
+            triggered = wait_with_trigger(sleep_sec)
+            if not triggered and stop_event.is_set():
+                break
+            if triggered:
+                # Re-check durable requests before falling back to the schedule.
+                continue
+
+        if ran_jobs:
+            success, exit_code = True, 0
+            requested_source = None
+        else:
+            success, exit_code = run_full_sync(requested_source, requested_sync_mode)
+            requested_source = None
+            requested_sync_mode = "scheduled"
+
+        first_run = False
+        if stop_event.is_set():
+            break
+
+        if success:
+            if consecutive_errors > 0:
+                LOGGER.info(f"[sync-daemon] Sync succeeded after {consecutive_errors} failed attempts.")
+            consecutive_errors = 0
+            sleep_sec = calculate_next_sleep_seconds(daily_at, interval)
+            if daily_at:
+                import datetime
+                target_str = (datetime.datetime.now() + datetime.timedelta(seconds=sleep_sec)).strftime("%Y-%m-%d %H:%M:%S")
+                LOGGER.info(f"[sync-daemon] Next scheduled sync at {target_str} (in {format_duration(sleep_sec)})...")
+            else:
+                LOGGER.info(f"[sync-daemon] Sleeping for {interval//60} minutes...")
+            wait_with_trigger(sleep_sec)
+        else:
+            consecutive_errors += 1
+            backoff = min(BASE_BACKOFF_SECONDS * (2 ** (consecutive_errors - 1)), MAX_BACKOFF_SECONDS)
+            if consecutive_errors <= 3:
+                LOGGER.warning(f"[sync-daemon] Sync failed (attempt {consecutive_errors}). Retrying with backoff in {backoff}s...")
+            else:
+                # Suppress noisy repetitive logs on persistent errors
+                LOGGER.warning(f"[sync-daemon] Consecutive sync failures ({consecutive_errors}). Suppressed repetitive logs. Retrying with backoff in {backoff}s...")
+            wait_with_trigger(backoff)
+
+    LOGGER.info("[sync-daemon] Sync runner exited.")
+
+
+if __name__ == "__main__":
+    heartbeat = threading.Thread(target=worker_heartbeat_loop, name="worker-capabilities", daemon=True)
+    heartbeat.start()
+    try:
+        run_loop()
+    finally:
+        stop_event.set()
+        publish_worker_heartbeat(running=False)
+        heartbeat.join(timeout=2.0)

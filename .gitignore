@@ -1,0 +1,54 @@
+# Environment variables and secrets
+.env
+config.yaml
+docker-compose.override.yml
+# Documentation and local audit artifacts are kept outside the public repository.
+/docs/
+plans/
+
+# Local tool directories, credentials, and IDE configurations
+.aws/
+.agents/
+.codex/
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local backups and archives
+*.bak
+*.tar.gz
+*.zip
+*.bundle
+
+# Local reports (regenerated on demand, never committed)
+*.csv
+*_report.*
+!scripts/admin_classic_usage_report.py
+!tests/test_admin_classic_usage_report.py
+dupes_report.csv
+
+# Application databases and cache
+data/
+jf-cache/
+jf-config/
+media/
+*.db
+*.db-shm
+*.db-wal
+*.session*
+*.session-journal
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.tmp
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Docker bind-mount artifacts for VERSION
+resolver/VERSION
+sync/VERSION

@@ -1,0 +1,528 @@
+"""Telegram provider: private channels read with a user account via MTProto.
+
+Phase 1: channel = studio/category. Without hashtags (phase 2, not implemented).
+
+Configuration (environment variables; secrets NEVER appear in logs,
+URLs or VideoItem):
+  TELEGRAM_API_ID        - numeric API ID from https://my.telegram.org (required)
+  TELEGRAM_API_HASH      - API hash (required, kept only in memory)
+  TELEGRAM_SESSION_PATH  - session file path (default: /data/telegram.session)
+  TELEGRAM_CHANNELS      - comma-separated channel identifiers,
+                           e.g. "-1001234567890,someusername" (required)
+  TELEGRAM_MAX_HISTORY   - number of history pages (50 messages each) to fetch
+                           per browse/category call (default: 1)
+
+Session login (session must be authenticated BEFORE using the provider):
+  1. Set TELEGRAM_API_ID / TELEGRAM_API_HASH in the environment.
+  2. Step 1 (send SMS verification code)::
+
+       python3 -c "
+       import asyncio
+       from providers.telegram import login
+       print(asyncio.run(login('+48123456789')))"
+
+     Returns "code_sent:<phone>" after sending the code.
+  3. Step 2 (confirm with SMS code, optionally 2FA password)::
+
+       python3 -c "
+       import asyncio
+       from providers.telegram import login
+       print(asyncio.run(login('+48123456789', code='12345')))"
+
+     Returns "authorized" upon successful login. The session file is written
+     to TELEGRAM_SESSION_PATH - mount it into docker as a volume to persist restarts.
+
+Proxy contract (resolver/app.py):
+  * resolve_stream(provider_video_id) returns marker ``tg://{ref}`` (NEVER
+    any direct Telegram HTTP URL - playback goes exclusively through proxy).
+  * ``async def download_range(self, ref, offset, length)`` - async generator
+    yielding bytes from ``client.iter_download`` (chunk ~1MB; length=None
+    means "until end of file").
+  * ``async def file_size(self, ref) -> Optional[int]`` - file size
+    from metadata or None when unknown.
+
+Ref format (stable, built by extract_file_ref):
+  ``{channel_id}:{message_id}:{file_unique_id}``
+"""
+
+import asyncio
+import logging
+from collections import OrderedDict
+from typing import Any, List, Optional, Tuple
+
+from .base import BaseProvider, CategoryItem, VideoItem
+from .telegram_metadata import (
+    _ALIAS_MAP_CACHE,  # noqa: F401 - compatibility export
+    _KNOWN_PERFORMERS_CACHE,  # noqa: F401 - compatibility export
+    load_known_performers, load_alias_map, load_performer_catalog,
+    match_known_performers,  # noqa: F401 - compatibility export
+)
+from .telegram_config import (
+    _entity_ref,
+    _get_api_hash,
+    _get_api_id,
+    _get_channels,
+    _get_config,
+    _get_max_history,
+    _get_min_duration,
+    _get_session_path,
+    is_channel_authorized,
+    passes_duration_filter,
+)
+from .telegram_download import (
+    LEGAL_REQUEST_SIZES,  # noqa: F401 - compatibility export
+    _close_global_stream_manager,
+    _download_block,
+    _download_sequential,
+    _get_global_stream_manager,
+    _is_parallel_stream_enabled,
+    _legal_request_size,  # noqa: F401 - compatibility export
+    _peek_global_stream_manager,
+)
+from .telegram_thumbnails import (
+    _cache_thumb_impl, download_thumb_impl as _download_thumb_impl,
+    _download_thumb_uncached_impl,
+    _fetch_and_cache_thumb_impl,
+)
+
+from .telegram_messages import (
+    _caption_of,  # noqa: F401 - compatibility export
+    _duration_of,  # noqa: F401 - compatibility export
+    _filter_caption_for_title,  # noqa: F401 - compatibility export
+    _filename_to_title,  # noqa: F401 - compatibility export
+    _nested_unique_id as _nested_unique_id,  # noqa: F401 - compatibility export
+    _size_of,
+    _text_hits as _text_hits,  # noqa: F401 - compatibility export
+    channel_to_category,
+    extract_file_ref,  # noqa: F401 - compatibility export
+    extract_hashtags,  # noqa: F401 - compatibility export
+    message_object_to_dict as _message_to_dict,
+    parse_caption_title,  # noqa: F401 - compatibility export
+    thumb_api_path,  # noqa: F401 - compatibility export
+)
+from .telegram_item_mapping import (
+    message_to_video_impl as _message_to_video_impl,
+    prepare_known_performer_map as _prepare_known_performer_map_impl,
+    prepare_legacy_catalog as _prepare_legacy_catalog_impl,
+)
+from .telegram_message_cache import (
+    _get_cached_message,
+    _message_cache_size_bytes,  # noqa: F401 - compatibility export
+)
+from .telegram_history import (
+    channel_title as _channel_title_impl,
+    fetch_history as _fetch_history_impl,
+    passes_tag_filter,
+)
+from .telegram_session import login as _login_impl, require_client as _require_client_impl
+
+logger = logging.getLogger(__name__)
+
+PROVIDER_NAME = "telegram"
+PAGE_SIZE = 50
+SEARCH_HISTORY_LIMIT = 200
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024  # ~1MB na chunk z iter_download
+THUMB_TIMEOUT_SECONDS = 8.0
+THUMB_CACHE_TTL_SECONDS = 3600.0
+THUMB_FAILURE_TTL_SECONDS = 30.0
+THUMB_CACHE_MAX_ENTRIES = 256
+THUMB_CACHE_MAX_BYTES = 32 * 1024 * 1024
+
+_client = None
+_client_lock = None
+
+
+# ---------------------------------------------------------------------------
+# Configuration (clean env reads; secrets never appear in logs)
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def _prepare_known_performer_map(known_performers, aliases):
+    return _prepare_known_performer_map_impl(known_performers, aliases)
+
+
+def _prepare_legacy_catalog(known_performers, aliases):
+    return _prepare_legacy_catalog_impl(known_performers, aliases)
+
+
+def message_to_video(msg: dict, channel_title: str,
+                     known_performers=None, aliases=None,
+                     prepared_known_map=None, prepared_catalog=None) -> Optional[VideoItem]:
+    """Mapuje message_dict z materialem video na VideoItem (None gdy brak video).
+
+    known_performers: jawny slownik imion (testy); None = zaladuj z hubowej DB
+    (load_known_performers, nigdy nie rzuca). aliases: mapa alias->kanoniczne
+    (None = load_alias_map). Brak slownika -> performers=[].
+    """
+    return _message_to_video_impl(
+        msg,
+        channel_title,
+        known_performers,
+        aliases,
+        prepared_known_map,
+        prepared_catalog,
+        load_known_performers_fn=load_known_performers,
+        load_alias_map_fn=load_alias_map,
+        load_performer_catalog_fn=load_performer_catalog,
+        prepare_legacy_catalog_fn=_prepare_legacy_catalog,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Warstwa MTProto (Telethon ladowany leniwie WEWNATRZ funkcji)
+# ---------------------------------------------------------------------------
+
+def _parse_ref(ref: str) -> Tuple[str, int, str]:
+    parts = (ref or "").rsplit(":", 2)
+    if len(parts) != 3 or not parts[0] or not parts[2]:
+        raise ValueError(f"Invalid telegram ref: {ref!r}")
+    try:
+        message_id = int(parts[1])
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid telegram ref: {ref!r}") from None
+    return parts[0], message_id, parts[2]
+
+
+async def _require_client():
+    """Singleton klienta Telethon (connect; sesja musi byc juz zalogowana)."""
+    global _client, _client_lock
+    state = {"client": _client, "lock": _client_lock}
+    try:
+        return await _require_client_impl(
+            state,
+            api_id_fn=_get_api_id,
+            api_hash_fn=_get_api_hash,
+            session_path_fn=_get_session_path,
+        )
+    finally:
+        _client, _client_lock = state["client"], state["lock"]
+
+
+async def _channel_title(client, channel_ref, entity=None) -> str:
+    return await _channel_title_impl(
+        client,
+        channel_ref,
+        entity,
+        config_fn=_get_config,
+        entity_ref_fn=_entity_ref,
+    )
+
+
+async def _fetch_history(client, entity, page: int = 1, max_pages: Optional[int] = None,
+                         offset_id: Optional[int] = None, limit: Optional[int] = None) -> list:
+    """Fetch channel history with the existing pagination and media filter."""
+    return await _fetch_history_impl(
+        client,
+        entity,
+        page=page,
+        max_pages=max_pages,
+        offset_id=offset_id,
+        limit=limit,
+        max_history_fn=_get_max_history,
+    )
+
+
+async def login(phone: str, code: Optional[str] = None,
+                password: Optional[str] = None) -> str:
+    """Logowanie sesji userbota (dwuetapowe, kod z SMS).
+
+    Krok 1: ``await login("+48123456789")`` -> wysyla kod, zwraca
+    ``"code_sent:<phone>"``. Krok 2: ``await login("+48123456789",
+    code="12345")`` (+ opcjonalne ``password`` przy 2FA) -> zwraca
+    ``"authorized"``. Gdy sesja juz zalogowana, zwraca ``"already_authorized"``.
+    """
+    return await _login_impl(
+        phone,
+        code,
+        password,
+        api_id_fn=_get_api_id,
+        api_hash_fn=_get_api_hash,
+        session_path_fn=_get_session_path,
+    )
+# ---------------------------------------------------------------------------
+# Parallel Telegram streaming configuration and helpers
+# ---------------------------------------------------------------------------
+
+class TelegramProvider(BaseProvider):
+    """Provider MTProto: prywatne kanaly jako kategorie (etap 1, bez hashtagow)."""
+
+    name = "telegram"
+
+    def __init__(self):
+        self._thumb_cache = OrderedDict()
+        self._thumb_cache_bytes = 0
+        self._thumb_tasks = {}
+        self._thumb_slots = asyncio.Semaphore(4)
+
+    def is_channel_authorized(self, channel_ref: Any) -> bool:
+        return is_channel_authorized(channel_ref)
+
+    async def check_configured_channel_access(self, channel_ref: Any) -> None:
+        """Check read access with the existing session using one message metadata item.
+
+        This deliberately performs no history iteration or media fetch. The admin
+        route validates the ID against config first, including disabled channels.
+        """
+        client = await _require_client()
+        entity = await client.get_entity(_entity_ref(channel_ref))
+        await client.get_messages(entity, limit=1)
+
+    async def get_categories(self) -> List[CategoryItem]:
+        channels = _get_channels()
+        if not channels:
+            return []
+        client = await _require_client()
+        categories: List[CategoryItem] = []
+        for channel_ref in channels:
+            title = await _channel_title(client, channel_ref)
+            categories.append(channel_to_category(channel_ref, title))
+        return categories
+
+    async def get_browse_videos(self, section: str = "latest",
+                                page: int = 1) -> List[VideoItem]:
+        channels = _get_channels()
+        if not channels:
+            raise RuntimeError(
+                "Telegram provider is not configured: set TELEGRAM_CHANNELS "
+                "env var (comma-separated channel identifiers)."
+            )
+        return await self.get_category_videos(channels[0], page=page)
+
+    async def get_category_videos(self, category_id: str, page: int = 1,
+                                  sort: str = "latest",
+                                  min_duration: Optional[int] = None,
+                                  offset_id: Optional[int] = None,
+                                  limit: Optional[int] = None) -> List[VideoItem]:
+        if not is_channel_authorized(category_id):
+            raise ValueError(f"Channel not authorized: {category_id!r}")
+        client = await _require_client()
+        entity = await client.get_entity(_entity_ref(category_id))
+        title = await _channel_title(client, category_id, entity)
+        cfg = _get_config()
+        ch_cfg = cfg.get_telegram_channel(category_id) if cfg else None
+
+        effective_min_dur = min_duration
+        if effective_min_dur is None and ch_cfg:
+            effective_min_dur = ch_cfg.min_duration_seconds
+        if effective_min_dur is None:
+            effective_min_dur = _get_min_duration()
+
+        messages = await _fetch_history(
+            client, entity, page=page, max_pages=1,
+            offset_id=offset_id, limit=limit
+        )
+        videos: List[VideoItem] = []
+        kp = load_known_performers()
+        am = load_alias_map()
+        _, prepared_catalog = _prepare_legacy_catalog(kp, am)
+        for msg in messages:
+            item = message_to_video(
+                _message_to_dict(msg, category_id), title,
+                known_performers=kp, aliases=am,
+                prepared_catalog=prepared_catalog,
+            )
+            if (item is not None and passes_duration_filter(item.duration, min_duration=effective_min_dur)
+                    and passes_tag_filter(item, ch_cfg)):
+                videos.append(item)
+        return videos
+
+    async def get_history_batch(self, category_id: str, *, offset_id: Optional[int] = None,
+                                limit: int = 100) -> dict:
+        """Return an unfiltered message cursor alongside videos passing channel filters."""
+        if not is_channel_authorized(category_id):
+            raise ValueError(f"Channel not authorized: {category_id!r}")
+        client = await _require_client()
+        entity = await client.get_entity(_entity_ref(category_id))
+        title = await _channel_title(client, category_id, entity)
+        cfg = _get_config()
+        ch_cfg = cfg.get_telegram_channel(category_id) if cfg else None
+        messages = await _fetch_history(client, entity, offset_id=offset_id, limit=limit)
+        videos = []
+        kp = load_known_performers()
+        am = load_alias_map()
+        _, prepared_catalog = _prepare_legacy_catalog(kp, am)
+        for msg in messages:
+            item = message_to_video(
+                _message_to_dict(msg, category_id), title,
+                known_performers=kp, aliases=am,
+                prepared_catalog=prepared_catalog,
+            )
+            if (item and passes_duration_filter(item.duration,
+                    min_duration=ch_cfg.min_duration_seconds if ch_cfg else _get_min_duration())
+                    and passes_tag_filter(item, ch_cfg)):
+                videos.append(item.__dict__)
+        cursor = min((int(msg.id) for msg in messages), default=None)
+        return {"videos": videos, "next_offset_id": cursor,
+                "message_count": len(messages), "has_more": len(messages) >= limit}
+
+    async def search(self, query: str, page: int = 1) -> List[VideoItem]:
+        needle = (query or "").strip().lower()
+        if not needle:
+            return []
+        channels = _get_channels()
+        if not channels:
+            raise RuntimeError(
+                "Telegram provider is not configured: set TELEGRAM_CHANNELS "
+                "env var (comma-separated channel identifiers)."
+            )
+        client = await _require_client()
+        matched: List[VideoItem] = []
+        known_performers = load_known_performers()
+        aliases = load_alias_map()
+        _, prepared_catalog = _prepare_legacy_catalog(known_performers, aliases)
+        for channel_ref in channels:
+            try:
+                entity = await client.get_entity(_entity_ref(channel_ref))
+            except Exception:
+                logger.warning("Telegram channel unreachable, skipping")
+                continue
+            title = await _channel_title(client, channel_ref, entity)
+            try:
+                messages = await client.get_messages(
+                    entity, limit=SEARCH_HISTORY_LIMIT)
+            except Exception:
+                logger.warning("Telegram history fetch failed, skipping")
+                continue
+            for msg in messages or []:
+                data = _message_to_dict(msg, channel_ref)
+                if needle not in (data.get("caption") or "").lower():
+                    continue
+                item = message_to_video(
+                    data, title, known_performers=known_performers,
+                    aliases=aliases, prepared_catalog=prepared_catalog
+                )
+                if item is not None and passes_duration_filter(item.duration):
+                    matched.append(item)
+        page = max(1, int(page or 1))
+        start = (page - 1) * PAGE_SIZE
+        return matched[start:start + PAGE_SIZE]
+
+    async def resolve_stream(self, provider_video_id: str) -> str:
+        """Zwraca marker tg:// - odtwarzanie idzie przez proxy resolvera.
+
+        NIGDY nie zwraca http URL Telegrama.
+        """
+        if not provider_video_id:
+            raise ValueError("Empty telegram video id")
+        channel_ref, _mid, _uid = _parse_ref(provider_video_id)
+        if not is_channel_authorized(channel_ref):
+            raise ValueError(f"Channel not authorized: {channel_ref!r}")
+        return f"tg://{provider_video_id}"
+
+    async def download_range(self, ref: str, offset: int, length: Optional[int]):
+        """Async generator bajtow pliku dla proxy.
+
+        Validates ref/channel/document id BEFORE cache.
+        Obtains total from document metadata.
+        Falls back to sequential for unknown size or small probes (<=128KiB).
+        Uses bounded parallel streaming when TELEGRAM_PARALLEL_STREAM_ENABLED is true.
+        """
+        channel_ref, message_id, unique_id = _parse_ref(ref)
+        if not is_channel_authorized(channel_ref):
+            raise ValueError(f"Channel not authorized: {channel_ref!r}")
+        client = await _require_client()
+        message = await _get_cached_message(client, channel_ref, int(message_id))
+        if message is None:
+            raise ValueError(f"Telegram message not found for ref {ref!r}")
+        media = getattr(message, "media", None) or getattr(message, "document", None)
+        if media is None:
+            raise ValueError(f"Telegram message has no media for ref {ref!r}")
+        doc = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
+        doc_id = getattr(doc, "id", None)
+        if doc_id is not None and str(doc_id) != str(unique_id):
+            raise ValueError(f"Telegram media id mismatch: expected {unique_id!r}, got {doc_id!r}")
+
+        # Obtain total from document metadata
+        total = getattr(doc, "size", None)
+        if total is None:
+            msg_dict = _message_to_dict(message, channel_ref)
+            total = _size_of(msg_dict)
+
+        # Small probes <= 128KiB stay sequential (no large prefetch)
+        is_small_probe = (length is not None and length <= 131072)
+        use_parallel = (
+            _is_parallel_stream_enabled()
+            and total is not None
+            and total > 0
+            and not is_small_probe
+        )
+
+        if not use_parallel:
+            async for chunk in _download_sequential(client, media, offset=offset or 0, length=length):
+                yield chunk
+            return
+
+        manager = _get_global_stream_manager()
+
+        async def _fetch(blk_offset: int, blk_length: int) -> bytes:
+            return await _download_block(client, media, blk_offset, blk_length)
+
+        cache_key = f"{ref}:{int(total)}"
+        async for chunk in manager.stream(
+            key=cache_key,
+            offset=offset or 0,
+            length=length,
+            total=int(total),
+            fetch=_fetch,
+        ):
+            yield chunk
+
+    @property
+    def stream_manager(self):
+        """Read-only property returning existing global manager without creating it."""
+        return _peek_global_stream_manager()
+
+    async def close(self):
+        """Close provider resources including shared parallel stream manager."""
+        await _close_global_stream_manager()
+
+    async def file_size(self, ref: str) -> Optional[int]:
+        """Rozmiar pliku z metadanych wiadomosci albo None, gdy nieznany."""
+        try:
+            channel_ref, message_id, unique_id = _parse_ref(ref)
+        except Exception:
+            return None
+        if not is_channel_authorized(channel_ref):
+            return None
+        client = await _require_client()
+        try:
+            message = await _get_cached_message(client, channel_ref, int(message_id))
+        except Exception:
+            return None
+        if message is None:
+            return None
+        media = getattr(message, "media", None) or getattr(message, "document", None)
+        doc = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
+        doc_id = getattr(doc, "id", None)
+        if doc_id is not None and str(doc_id) != str(unique_id):
+            return None
+        return _size_of(_message_to_dict(message, channel_ref))
+
+    async def download_thumb(self, ref: str) -> Optional[bytes]:
+        return await _download_thumb_impl(self, ref)
+
+    async def _fetch_and_cache_thumb(self, ref: str) -> Optional[bytes]:
+        return await _fetch_and_cache_thumb_impl(self, ref)
+
+    def _cache_thumb(self, ref: str, data: Optional[bytes]):
+        return _cache_thumb_impl(self, ref, data)
+
+    async def _download_thumb_uncached(self, ref: str) -> Optional[bytes]:
+        return await _download_thumb_uncached_impl(self, ref)

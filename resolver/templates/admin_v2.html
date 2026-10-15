@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Adult Hub — Admin</title>
+  <link rel="stylesheet" href="/admin/assets-v2/admin-v2.css">
+  <script defer src="/admin/assets-v2/header-status.js"></script>
+  <script defer src="/admin/assets-v2/admin-v2.js"></script>
+  <script defer src="/admin/assets-v2/organize-tabs.js"></script>
+  <script defer src="/admin/assets-v2/jobs.js"></script>
+  <script defer src="/admin/assets-v2/performers.js"></script>
+  <script defer src="/admin/assets-v2/sources.js"></script>
+  <script defer src="/admin/assets-v2/audits.js"></script>
+  <script defer src="/admin/assets-v2/quality.js"></script>
+  <script defer src="/admin/assets-v2/diagnostics.js"></script>
+  <script defer src="/admin/assets-v2/maintenance.js"></script>
+  <script defer src="/admin/assets-v2/quarantine.js"></script>
+  <script defer src="/admin/assets-v2/schedules.js"></script>
+  <script defer src="/admin/assets-v2/activity.js"></script>
+  <script defer src="/admin/assets-v2/sync-activity.js"></script>
+  <script defer src="/admin/assets-v2/linkcheck.js"></script>
+  <script defer src="/admin/assets-v2/enrichment.js"></script>
+  <script defer src="/admin/assets-v2/command-palette.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="Admin navigation">
+      <a class="brand" href="#start" aria-label="Adult Hub — Dashboard">
+        <span class="brand-mark" aria-hidden="true">A</span>
+        <span><strong>Adult Hub</strong><small>ADMIN</small></span>
+      </a>
+      <div class="nav-caption">WORKSPACE</div>
+      <nav class="primary-nav" aria-label="Sections">
+        <a href="#start" data-route="start"><span class="nav-icon" aria-hidden="true">⌂</span>Dashboard</a>
+        <a href="#library" data-route="library"><span class="nav-icon" aria-hidden="true">▤</span>Library</a>
+        <a href="#performers" data-route="performers"><span class="nav-icon" aria-hidden="true">♙</span>Performers</a>
+        <a href="#quality" data-route="quality"><span class="nav-icon" aria-hidden="true">◈</span>Catalog Health</a>
+        <a href="#sources" data-route="sources"><span class="nav-icon" aria-hidden="true">◉</span>Sources</a>
+        <a href="#jobs" data-route="jobs"><span class="nav-icon" aria-hidden="true">◷</span>Jobs &amp; Automation</a>
+        <a href="#system" data-route="system"><span class="nav-icon" aria-hidden="true">⚙</span>System</a>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="sidebar-note"><span class="live-dot" aria-hidden="true"></span><span><strong>Admin v3.1</strong><small>Primary panel</small></span></div>
+      </div>
+    </aside>
+
+    <main class="main-area" id="main-content" tabindex="-1">
+      <header class="topbar">
+        <button class="mobile-menu" id="menuButton" type="button" aria-label="Open navigation" aria-expanded="false">☰</button>
+        <div class="breadcrumbs"><span>ADMIN</span><span aria-hidden="true">/</span><strong id="crumbCurrent">Home</strong></div>
+        <button class="global-search" id="commandPaletteTrigger" type="button" aria-haspopup="dialog" aria-controls="commandPalette">
+          <span aria-hidden="true">⌕</span><span class="command-trigger-label">Search anything or run a command...</span><kbd id="commandPaletteShortcut">Ctrl K</kbd>
+        </button>
+        <div class="topbar-actions">
+          <a class="admin-access-mode" id="adminAccessMode" href="#system?tab=diagnostics" data-state="unknown" aria-live="polite" aria-label="Admin access status. Open System diagnostics.">Checking access…</a>
+          <a class="sync-freshness" id="syncFreshness" href="#sources" data-state="unknown" aria-live="polite" title="Synchronization freshness could not be verified." aria-label="Synchronization freshness. Open Sources and sync history.">Sync status unavailable</a>
+          <a class="active-task-count" id="activeTaskCount" href="#jobs?tab=tasks" data-state="unknown" aria-live="polite" aria-label="Active task count. Open Tasks.">Active tasks: —</a>
+          <a class="connection-state" id="connectionState" href="#system?tab=diagnostics" aria-label="API and connection status. Open System diagnostics." aria-live="polite" aria-atomic="true"><span class="state-dot"></span><span>Connecting…</span></a>
+          <button class="theme-toggle" id="themeToggle" type="button" aria-label="Change theme" title="Change theme"><span aria-hidden="true">◐</span></button>
+        </div>
+      </header>
+
+      <div class="content-wrap">
+        <div id="liveMessage" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+        <dialog class="command-palette" id="commandPalette" aria-labelledby="commandPaletteTitle" aria-describedby="commandPaletteHelp">
+          <div class="command-palette-panel">
+            <h2 id="commandPaletteTitle" class="sr-only">Search anything or run a command</h2>
+            <label class="sr-only" for="commandPaletteQuery">Search videos, performers, channels, pages, and actions</label>
+            <div class="command-palette-input"><span aria-hidden="true">⌕</span><input id="commandPaletteQuery" type="search" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="commandPaletteResults" autocomplete="off" placeholder="Search anything or run a command..."><button class="command-palette-close" id="commandPaletteClose" type="button" aria-label="Close Command Palette">×</button><kbd>Esc</kbd></div>
+            <p id="commandPaletteHelp" class="sr-only">Use the up and down arrows to move through results. Press Enter to select and Escape to close.</p>
+            <p id="commandPaletteStatus" class="command-palette-status" role="status" aria-live="polite"></p>
+            <div id="commandPaletteResults" class="command-palette-results" role="listbox" aria-label="Search results"></div>
+          </div>
+        </dialog>
+        <section id="view-start" class="view" data-view="start" aria-labelledby="pageTitle">
+          <div class="page-heading">
+            <div><p class="eyebrow">OVERVIEW</p><h1 id="pageTitle">Good morning</h1><p class="page-intro">Your library and service status at a glance.</p></div>
+            <button class="button button-quiet" type="button" data-action="refresh-status"><span aria-hidden="true">↻</span> Refresh</button>
+          </div>
+          <div id="statusState" class="state-banner state-loading" role="status"><span class="spinner" aria-hidden="true"></span><span>Checking system status…</span></div>
+          <div id="statusContent" hidden>
+            <div class="status-grid" id="statusCards"></div>
+            <section class="panel catalog-health-panel" aria-labelledby="catalogHealthTitle">
+              <div class="panel-heading"><div><p class="eyebrow">CATALOG HEALTH</p><h2 id="catalogHealthTitle">Library data</h2></div><span class="panel-icon" aria-hidden="true">▤</span></div>
+              <div class="status-grid" id="catalogHealthCards"></div>
+              <div id="providerBreakdown" class="operation-history-list" aria-label="Videos by provider"></div>
+            </section>
+            <div class="dashboard-grid">
+              <section class="panel attention-panel">
+                <div class="panel-heading"><div><p class="eyebrow">NEEDS ATTENTION</p><h2>What’s happening</h2></div><span class="panel-icon" aria-hidden="true">↗</span></div>
+                <p id="issueCompleteness" class="panel-footnote" hidden></p>
+                <div class="issue-filters"><label for="issueSeverity">Severity<select id="issueSeverity"><option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label><label for="issueKind">Type<select id="issueKind"><option value="">All types</option><option value="sync_failure">Sync failures</option><option value="sync_never_run">Never synchronized</option><option value="sync_backlog">Queue backlog</option><option value="job_failure">Failed tasks</option><option value="job_stalled">Tasks with no recent activity</option><option value="unavailable_video">Unavailable videos</option><option value="missing_metadata">Missing metadata</option><option value="missing_nfo">Missing NFO</option><option value="invalid_nfo">Invalid NFO</option><option value="nfo_metadata_mismatch">NFO metadata mismatch</option><option value="missing_artwork">Missing artwork</option><option value="quality_audit">Quality audit</option><option value="backup">Backup health</option><option value="system">System</option></select></label></div>
+                <p id="issueCount" class="panel-footnote" role="status" aria-atomic="true" hidden></p>
+                <div id="attentionList" class="attention-list"></div>
+                <button class="button button-quiet issues-load-more" type="button" id="issuesLoadMore" hidden>Load more issues</button>
+              </section>
+              <section class="panel service-panel">
+                <div class="panel-heading"><div><p class="eyebrow">SERVICES</p><h2>Connections</h2></div><span class="panel-icon" aria-hidden="true">⌁</span></div>
+                <div id="serviceList" class="service-list"></div>
+                <p class="panel-footnote">Data is from the latest admin status check.</p>
+              </section>
+            </div>
+            <section class="panel next-panel">
+              <div class="next-copy"><span class="next-icon" aria-hidden="true">✳</span><div><p class="eyebrow">QUICK ACCESS</p><h2>Find an item in your library</h2><p>Search the catalog and view item details without leaving the admin.</p></div></div>
+              <a class="button button-primary" href="#library">Browse library <span aria-hidden="true">→</span></a>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-library" class="view" data-view="library" aria-labelledby="libraryTitle" hidden>
+          <div class="page-heading library-heading">
+            <div><p class="eyebrow">CATALOG</p><h1 id="libraryTitle">Library</h1><p class="page-intro">Find an item and check its source and status.</p></div>
+            <div class="library-summary" id="librarySummary" aria-live="polite"><span class="summary-dot"></span><span>Waiting for catalog</span></div>
+          </div>
+          <section class="panel library-panel">
+            <form id="libraryFilters" class="filter-bar">
+              <div class="filter-search"><label for="libraryQuery">Search</label><div class="input-with-icon"><span aria-hidden="true">⌕</span><input id="libraryQuery" type="search" name="q" placeholder="Title, person, or ID"></div></div>
+              <div class="filter-field"><label for="filterChannel">Channel</label><input id="filterChannel" name="channel_id" type="text" placeholder="Channel ID"></div>
+              <div class="filter-field"><label for="filterStudio">Studio</label><input id="filterStudio" name="studio" type="text" placeholder="Any studio"></div>
+              <div class="filter-field"><label for="filterPerformer">Person</label><input id="filterPerformer" name="performer" type="text" placeholder="Any person"></div>
+              <div class="filter-field"><label for="filterTag">Tag</label><input id="filterTag" name="tag" type="text" placeholder="Any tag"></div>
+              <div class="filter-field"><label for="filterAvailability">Availability</label><select id="filterAvailability" name="availability"><option value="">All</option><option value="available">Available</option><option value="unavailable">Unavailable</option><option value="unknown">Unknown</option></select></div>
+              <div class="filter-field"><label for="filterMissing">Missing data</label><select id="filterMissing" name="missing"><option value="">Any</option><option value="title">Title</option><option value="performers">People</option><option value="studio">Studio</option><option value="plot">Description</option><option value="thumbnail">Artwork</option></select></div>
+              <div class="filter-field sort-field"><label for="filterSort">Sort by</label><select id="filterSort" name="sort"><option value="first_seen">Recently added</option><option value="last_seen">Recently updated</option><option value="title">Title A–Z</option><option value="duration">Duration</option></select></div>
+              <button class="button button-quiet clear-filters" type="button" id="clearFilters">Clear filters</button>
+            </form>
+            <div class="catalog-toolbar"><div id="catalogFeedback" class="catalog-feedback" role="status">Ready to search the catalog.</div><div class="catalog-actions"><label class="saved-view-control" for="savedViews">Saved views<select id="savedViews"><option value="">Choose a saved view</option></select></label><button class="button button-quiet saved-view-button" type="button" id="saveView">Save current view</button><button class="button button-quiet saved-view-button" type="button" id="deleteView" disabled>Delete saved view</button><button type="button" class="view-toggle" id="viewToggle" aria-pressed="false" title="Switch view"><span aria-hidden="true">▦</span><span class="view-toggle-label">Card view</span></button></div></div>
+            <div class="bulk-toolbar"><span id="bulkSelectionCount" aria-live="polite">0 selected</span><span>Choose up to 25 items across pages.</span><button class="button button-quiet" type="button" id="bulkEditMetadata" disabled>Edit metadata</button><button class="button button-quiet" type="button" id="reviewQuarantine" disabled>Review quarantine</button><button class="button button-quiet" type="button" id="checkAvailabilityBulk" disabled>Check availability</button></div>
+            <div id="libraryState" class="catalog-state" role="status"><span class="empty-icon" aria-hidden="true">⌕</span><strong>Search the catalog</strong><span>Enter part of a title, a person, or an ID.</span></div>
+            <div id="videoGrid" class="video-grid" hidden></div>
+            <div id="videoTableWrap" class="table-wrap" hidden><table class="video-table"><thead><tr><th><span class="sr-only">Select</span></th><th>Item</th><th>Studio</th><th>Source</th><th>Availability</th><th>Reason</th><th>Last detected</th><th>Added</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="videoRows"></tbody></table></div>
+            <div id="pagination" class="pagination" hidden><button class="button button-quiet" type="button" id="pagePrev">← Previous</button><span id="pageInfo">Page 1</span><button class="button button-quiet" type="button" id="pageNext">Next →</button></div>
+          </section>
+          <dialog class="source-detail video-detail" id="detailOverlay" aria-labelledby="detailTitle">
+            <article class="source-detail-panel detail-drawer" tabindex="-1"><button type="button" class="drawer-close" data-action="close-detail" aria-label="Close details">×</button><div id="detailContent"></div></article>
+          </dialog>
+          <dialog class="operation-dialog" id="metadataDialog" aria-labelledby="metadataDialogTitle"><section class="operation-dialog-panel"><button class="drawer-close" type="button" aria-label="Close metadata editor" data-close-dialog="metadataDialog">×</button><div id="metadataDialogContent"></div><div class="operation-dialog-actions" id="metadataDialogActions"></div></section></dialog>
+        </section>
+
+        <section id="view-organize" class="view" data-view="organize" aria-labelledby="organizeTitle" hidden>
+          <div class="page-heading"><div><p class="eyebrow">CATALOG HEALTH</p><h1 id="organizeTitle">Catalog Health</h1><p id="organizeIntro" class="page-intro">Review duplicate candidates and make reversible catalog decisions.</p></div></div>
+          <nav class="section-tabs catalog-health-tabs" aria-label="Catalog Health">
+            <a href="#quality?tab=issues" data-section-tab="issues">Issues &amp; Audits</a>
+            <a href="#quality?tab=enrichment" data-section-tab="enrichment">Enrichment</a>
+            <a href="#quality?tab=duplicates" data-section-tab="duplicates">Duplicates</a>
+            <a href="#quality?tab=quarantine" data-section-tab="quarantine">Quarantine</a>
+            <a href="#performers?tab=directory" class="section-tab-crosslink">Performer Directory</a>
+          </nav>
+          <nav class="section-tabs performer-section-tabs" aria-label="Performers">
+            <a href="#performers?tab=directory" data-section-tab="directory">Directory</a>
+            <a href="#performers?tab=proposals" data-section-tab="proposals">Proposals</a>
+            <a href="#performers?tab=matching" data-section-tab="matching">Name Matching</a>
+          </nav>
+          <div class="organize-tabs" id="organizeTabList" role="tablist" aria-label="Organize tools"><button type="button" class="button button-quiet is-active" id="duplicatesTab" role="tab" aria-selected="true" aria-controls="organizeDuplicatesPane" tabindex="0">Duplicates</button><button type="button" class="button button-quiet" id="peopleTab" role="tab" aria-selected="false" aria-controls="organizePeoplePane" tabindex="-1">People</button><button type="button" class="button button-quiet" id="quarantineTab" role="tab" aria-selected="false" aria-controls="organizeQuarantinePane" tabindex="-1">Quarantine</button></div>
+          <section class="panel organize-panel" id="organizeDuplicatesPane" role="tabpanel" aria-labelledby="duplicatesTab">
+            <form id="duplicateFilters" class="filter-bar">
+              <div class="filter-field"><label for="duplicateCategory">View</label><select id="duplicateCategory"><option value="">Active suggestions</option><option value="same_file">Same file candidates</option><option value="strong">Strong suggestions</option><option value="review">Needs review</option><option value="oshash_linked">Linked by OSHASH</option></select></div>
+              <div class="jobs-filter-actions"><button class="button button-quiet" type="button" id="autoMergeExact" aria-describedby="duplicateBatchHelp">Hide exact-file duplicates</button><button class="button button-quiet" type="button" id="duplicateRefresh">Refresh scan</button></div>
+            </form>
+            <p id="duplicateBatchHelp" class="detail-muted">Queues a bounded batch after a fresh server preview. Duplicate records are hidden; source files are kept.</p>
+            <div id="duplicateNotice" class="state-banner" hidden role="status"></div>
+            <div id="duplicateFeedback" class="catalog-feedback" role="status">Ready to scan duplicate candidates.</div>
+            <div id="duplicateRows" class="duplicate-candidate-list"></div>
+            <div id="duplicateState" class="catalog-state" hidden role="status"></div>
+            <div id="duplicatePagination" class="pagination" hidden><button class="button button-quiet" id="duplicatePrev" type="button">← Previous</button><span id="duplicatePageInfo">Page 1</span><button class="button button-quiet" id="duplicateNext" type="button">Next →</button></div>
+          </section>
+          <section class="panel organize-panel" id="organizePeoplePane" role="tabpanel" aria-labelledby="peopleTab" hidden>
+            <form id="peopleFilters" class="filter-bar"><div class="filter-search"><label for="peopleQuery">Search people</label><div class="input-with-icon"><span aria-hidden="true">⌕</span><input id="peopleQuery" type="search" maxlength="200" placeholder="Performer name or alias"></div></div><div class="jobs-filter-actions"><button class="button button-quiet" id="peopleRefresh" type="button">Refresh</button></div></form>
+            <div id="peopleFeedback" class="catalog-feedback" role="status">Ready to load people.</div>
+            <div id="peopleState" class="catalog-state" hidden role="status"></div>
+            <div id="peopleTableWrap" class="table-wrap" hidden><table class="video-table"><thead><tr><th>Person</th><th>Aliases</th><th>Videos</th><th>Bio</th><th>Photo</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="peopleRows"></tbody></table></div>
+            <div id="peoplePagination" class="pagination" hidden><button class="button button-quiet" type="button" id="peoplePrev">← Previous</button><span id="peoplePageInfo">Page 1</span><button class="button button-quiet" type="button" id="peopleNext">Next →</button></div>
+            <dialog id="personDetailDialog" class="operation-dialog" aria-labelledby="personDetailTitle"><section class="operation-dialog-panel"><button class="drawer-close" type="button" aria-label="Close person details" data-close-dialog="personDetailDialog">×</button><div id="personDetailContent"></div></section></dialog>
+          </section>
+          <section class="panel organize-panel" id="organizeQuarantinePane" role="tabpanel" aria-labelledby="quarantineTab" hidden>
+            <div class="panel-heading"><div><p class="eyebrow">REVERSIBLE DECISIONS</p><h2>Hidden and quarantined items</h2><p class="page-intro">Review active decisions and restore an item when needed.</p></div><div class="jobs-filter-actions"><button class="button button-quiet" id="quarantineExport" type="button">Export report</button><button class="button button-quiet" id="quarantineRefresh" type="button">Refresh</button></div></div>
+            <div id="quarantineFeedback" class="catalog-feedback" role="status">Ready to load decisions.</div>
+            <div id="quarantineState" class="catalog-state" hidden role="status"></div>
+            <div id="quarantineRows" class="quarantine-review-list"></div>
+            <div id="quarantinePagination" class="pagination" hidden><button class="button button-quiet" type="button" id="quarantinePrev">← Previous</button><span id="quarantinePageInfo">Page 1</span><button class="button button-quiet" type="button" id="quarantineNext">Next →</button></div>
+            <div class="panel-heading"><div><p class="eyebrow">ORPHAN FILES</p><h3>Quarantined library files</h3><p class="page-intro">Files remain here until restored. Paths are relative to the media library.</p></div></div>
+            <div id="orphanQuarantineFeedback" class="catalog-feedback" role="status">Loading file quarantine…</div>
+            <div id="orphanQuarantineRows" class="quarantine-review-list"></div>
+          </section>
+        </section>
+
+        <section id="view-performers" class="view" data-view="performers" aria-labelledby="performersTitle" hidden>
+          <div class="page-heading"><div><p class="eyebrow">CATALOG REVIEW</p><h1 id="performersTitle">Performer proposals</h1><p class="page-intro">The Telegram title is the source video's title. A proposal is text detected in its title or caption; check the suggested name, then match it to a performer or add a local name.</p></div><button class="button button-quiet" id="performersRefresh" type="button">Refresh</button></div>
+          <nav class="section-tabs performer-section-tabs" aria-label="Performers">
+            <a href="#performers?tab=directory" data-section-tab="directory">Directory</a>
+            <a href="#performers?tab=proposals" data-section-tab="proposals">Proposals</a>
+            <a href="#performers?tab=matching" data-section-tab="matching">Name Matching</a>
+          </nav>
+          <section id="performerProposalsPane" class="panel" aria-label="Performer proposal review">
+            <div class="catalog-toolbar"><div id="performersFeedback" class="catalog-feedback" role="status">Ready to load proposals.</div><span id="performersCount" class="catalog-feedback"></span></div>
+            <div id="performersState" class="catalog-state" hidden role="status"></div>
+            <div id="performerProposalRows" class="performer-proposal-list" aria-live="polite"></div>
+            <nav id="performerProposalPagination" class="catalog-toolbar" aria-label="Performer proposal pages" hidden></nav>
+          </section>
+          <section id="performerNameMatchingPane" class="panel operation-history-panel" aria-labelledby="fuzzyTitle">
+            <div class="panel-heading"><div><p class="eyebrow">CATALOG CLEANUP</p><h2 id="fuzzyTitle">Name variants</h2><p class="page-intro">Scan for likely spelling variants. Review suggestions and merge variant names into canonical performers.</p></div></div>
+            <div class="filter-bar">
+              <div class="filter-field"><label for="fuzzyThreshold">Similarity threshold</label><input id="fuzzyThreshold" type="number" min="0.80" max="0.99" step="0.01" value="0.88"></div>
+              <div class="filter-field"><label for="fuzzyCategory">Category</label><select id="fuzzyCategory"><option value="">All categories</option><option value="diacritics">Diacritics</option><option value="spacing_case_punct">Case / spacing</option><option value="suffix_nickname">Suffix / nickname</option><option value="similarity">Similarity / typo</option></select></div>
+              <div class="jobs-filter-actions"><button class="button button-primary" type="button" id="fuzzyScan">Scan database</button><button class="button button-quiet" type="button" id="fuzzyReviewSelected" disabled>Review selected merges (0)</button><span id="fuzzySelectionStatus" class="catalog-feedback">Select up to 10 suggestions for a batch review.</span></div>
+            </div>
+            <div id="fuzzyFeedback" class="catalog-feedback" role="status" aria-live="polite">Run a scan to review possible name variants.</div>
+            <div id="fuzzyRows" class="operation-history-list" aria-live="polite"></div>
+            <div id="fuzzyPagination" class="pagination" hidden><button class="button button-quiet" type="button" id="fuzzyPrev">← Previous</button><span id="fuzzyPageInfo">Page 1</span><button class="button button-quiet" type="button" id="fuzzyNext">Next →</button></div>
+          </section>
+          <dialog id="fuzzyMergeDialog" class="operation-dialog" aria-labelledby="fuzzyMergeTitle"><section class="operation-dialog-panel"><button class="drawer-close" type="button" id="fuzzyMergeClose" aria-label="Close merge review">×</button><div id="fuzzyMergeContent"></div><div id="fuzzyMergeActions" class="operation-dialog-actions"></div></section></dialog>
+        </section>
+
+        <section id="view-operational" class="view" data-view="operational" hidden aria-labelledby="operationalTitle">
+          <div class="page-heading"><div><p class="eyebrow" id="operationalEyebrow">OPERATIONS</p><h1 id="operationalTitle">Sources</h1><p class="page-intro" id="operationalIntro"></p></div></div>
+          <nav class="section-tabs system-section-tabs" id="systemSectionTabs" aria-label="System" hidden>
+            <a href="#system?tab=maintenance" data-system-tab="maintenance">Maintenance</a>
+            <a href="#system?tab=diagnostics" data-system-tab="diagnostics">Diagnostics</a>
+            <a href="#system?tab=backups" data-system-tab="backups">Backups</a>
+            <a href="#system?tab=activity" data-system-tab="activity">Audit Log</a>
+          </nav>
+          <section id="qualityView" class="panel operation-history-panel" hidden aria-labelledby="qualityTitle">
+            <nav class="section-tabs catalog-health-tabs" aria-label="Catalog Health">
+              <a href="#quality?tab=issues" data-section-tab="issues">Issues &amp; Audits</a>
+              <a href="#quality?tab=enrichment" data-section-tab="enrichment">Enrichment</a>
+              <a href="#quality?tab=duplicates" data-section-tab="duplicates">Duplicates</a>
+              <a href="#quality?tab=quarantine" data-section-tab="quarantine">Quarantine</a>
+              <a href="#performers?tab=directory" class="section-tab-crosslink">Performer Directory</a>
+            </nav>
+            <div id="qualityIssuesPane" data-quality-pane="issues">
+            <div class="panel-heading"><div><p class="eyebrow">CATALOG QUALITY</p><h2 id="qualityTitle">Metadata and file health</h2><p class="page-intro">Review missing catalog fields, NFO differences, missing artwork, and fingerprint coverage. PHASH is computed for only a subset of videos.</p></div><div class="diagnostics-actions"><label for="qualityAuditMode">Audit mode</label><select id="qualityAuditMode"><option value="metadata_quality">Metadata quality</option><option value="file_consistency">File consistency</option><option value="full" selected>Full audit</option></select><button class="button button-quiet" type="button" id="qualityRefresh">Refresh</button> <button class="button button-primary" type="button" id="qualityRunAudit">Run selected audit</button></div></div>
+            <div id="qualityFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading the latest complete audit…</div>
+            <div id="qualitySummary" class="quality-summary" aria-label="Quality issue counts"></div>
+            <section class="quality-history" aria-labelledby="qualityHistoryTitle">
+              <div class="quality-history-heading"><div><h3 id="qualityHistoryTitle">Quality trend</h3><p class="catalog-feedback">Compare the latest complete audits to track progress over time.</p></div></div>
+              <div id="qualityTrend" class="quality-trend" role="status" aria-live="polite"></div>
+              <div id="qualityHistory" class="quality-history-list" aria-label="Recent complete audits"></div>
+            </section>
+            <form id="qualityFilters" class="filter-bar quality-filter-bar">
+              <div class="filter-field"><label for="qualityKind">Category</label><select id="qualityKind"><option value="">All categories</option><option value="missing_metadata">Missing catalog fields</option><option value="missing_nfo">Missing NFO</option><option value="invalid_nfo">Invalid NFO</option><option value="nfo_metadata_mismatch">NFO metadata mismatch</option><option value="missing_artwork">Missing artwork</option></select></div>
+              <div class="filter-field"><label for="qualityField">Missing field</label><select id="qualityField"><option value="">All fields</option><option value="title">Title</option><option value="performers">Performers</option><option value="studio">Studio</option><option value="plot">Description</option><option value="thumbnail">Artwork</option></select></div>
+              <div class="filter-field"><label for="qualityStatus">Status</label><select id="qualityStatus"><option value="open" selected>Open</option><option value="acknowledged">Acknowledged</option><option value="resolved">Resolved</option><option value="all">All statuses</option></select></div>
+              <div class="jobs-filter-actions"><button class="button button-quiet" type="reset" id="qualityClear">Clear filters</button></div>
+            </form>
+            <div id="qualityActionFeedback" class="catalog-feedback" role="status" aria-live="polite" hidden></div>
+            <div id="qualityRows" class="operation-history-list" aria-live="polite"></div>
+            <nav id="qualityPagination" class="pagination" aria-label="Quality issue pages" hidden></nav>
+            <section id="catalogAuditHistory" class="quality-history" aria-labelledby="auditTitle">
+              <div class="panel-heading"><div><p class="eyebrow">AUDIT HISTORY</p><h2 id="auditTitle" tabindex="-1">Audit runs and file findings</h2><p class="page-intro">Review metadata and file consistency runs. Full audits consist of separate metadata and file jobs, shown with their scope and job IDs.</p></div><button class="button button-quiet" type="button" id="auditRefresh">Refresh audit history</button></div>
+              <div id="auditFeedback" class="catalog-feedback" role="status">Audit history will appear here.</div>
+              <div id="auditActionFeedback" class="catalog-feedback" role="status" aria-live="polite" hidden></div>
+              <div id="auditRows" class="operation-history-list" aria-live="polite"></div>
+              <div id="auditFindings" class="operation-history-list" aria-live="polite"></div>
+            </section>
+            <section id="linkcheckView" class="panel operation-history-panel" aria-labelledby="linkcheckTitle">
+              <div class="panel-heading"><div><p class="eyebrow">STREAM HEALTH</p><h2 id="linkcheckTitle">Link-check report</h2><p class="page-intro">The report summarizes sampled stream checks. It does not run during a regular sync.</p></div><button class="button button-quiet" type="button" id="linkcheckRefresh">Refresh report</button></div>
+              <div id="linkcheckFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading link-check report…</div>
+              <div id="linkcheckRows" class="operation-history-list" aria-live="polite"></div>
+              <details id="linkcheckSamples" class="linkcheck-samples" hidden>
+                <summary id="linkcheckSamplesSummary">Recent sample results</summary>
+                <div id="linkcheckSampleRows" class="operation-history-list" aria-live="polite"></div>
+              </details>
+              <p class="panel-footnote">Run a report from the sync container: <code>docker compose exec sync python linkcheck.py</code>. Optional: <code>docker compose exec sync python linkcheck.py --sample 5 --provider telegram</code>.</p>
+            </section>
+            </div>
+            <div id="qualityEnrichmentPane" data-quality-pane="enrichment" hidden>
+              <section class="panel operation-history-panel" aria-labelledby="enrichmentTitle">
+                <div class="panel-heading"><div><p class="eyebrow">AUTOMATED CATALOG</p><h2 id="enrichmentTitle">External metadata progress</h2><p class="page-intro">Track catalog lookups across actor and video sources. One scan processes one bounded batch per provider. The configured sync cadence is shown below; when the sync runner is active, later runs continue the queues automatically. Remaining counts are estimates because provider eligibility and retries vary. Progress refreshes every 15 seconds while this view is active. Entity names and source error details are not shown.</p></div><div class="diagnostics-actions"><button class="button button-primary" type="button" id="enrichmentScan">Run bounded scan</button><button class="button button-quiet" type="button" id="enrichmentRefresh">Refresh progress</button></div></div>
+                <div id="enrichmentFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading metadata progress…</div>
+                <p id="enrichmentFreshness" class="page-intro enrichment-freshness" role="note" data-state="unknown">Waiting for first progress refresh.</p>
+                <p id="enrichmentFreshnessAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+                <div id="enrichmentSummary" class="quality-summary" aria-label="External metadata queue totals"></div>
+                <p id="enrichmentSchedule" class="page-intro" role="note"></p>
+                <p id="enrichmentBatchLimits" class="page-intro" role="note"></p>
+                <div id="enrichmentRows" class="enrichment-source-list" aria-live="polite"></div>
+              </section>
+              <section class="metadata-proposals" aria-labelledby="metadataProposalsTitle">
+                <div class="quality-history-heading"><div><h2 id="metadataProposalsTitle">Metadata suggestions to review</h2><p class="catalog-feedback">External matches that differ from existing catalog values. Review the whole suggested set for each video.</p></div><button class="button button-quiet" type="button" id="metadataProposalsRefresh">Refresh suggestions</button></div>
+                <div id="metadataProposalsFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading metadata suggestions…</div>
+                <div id="metadataProposalsRows" class="operation-history-list" aria-live="polite"></div>
+                <nav id="metadataProposalsPagination" class="pagination" aria-label="Metadata suggestion pages" hidden></nav>
+              </section>
+            </div>
+          </section>
+          <section id="systemBackupView" class="panel operation-history-panel" hidden aria-labelledby="backupTitle">
+            <div class="panel-heading"><div><p class="eyebrow">DATABASE BACKUPS</p><h2 id="backupTitle">Backup inventory</h2><p class="page-intro">Database snapshots do not include the media library, NFO artwork, or application settings.</p></div><div><button class="button button-quiet" type="button" id="backupRefresh">Refresh backups</button> <button class="button button-primary" type="button" id="backupCreate">Create database backup</button></div></div>
+            <div id="backupFeedback" class="catalog-feedback" role="status">Loading backup inventory…</div>
+            <div id="backupRows" class="operation-history-list" aria-live="polite"></div>
+          </section>
+          <section id="systemDiagnosticsView" class="panel operation-history-panel" hidden aria-labelledby="diagnosticsTitle">
+            <div class="panel-heading"><div><p class="eyebrow">PLAYBACK DIAGNOSTICS</p><h2 id="diagnosticsTitle">Resolver playback reports</h2><p class="page-intro">A resolver probe describes the server-side path; it does not prove playback on a particular device.</p></div><div class="diagnostics-actions"><label for="diagnosticsExportDays">Export range</label><select id="diagnosticsExportDays"><option value="1">Last 24 hours</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option></select><button class="button button-quiet" type="button" id="diagnosticsExport">Download report</button><button class="button button-quiet" type="button" id="diagnosticsEnable">Enable for 24 hours</button> <button class="button button-quiet" type="button" id="diagnosticsDisable">Disable</button> <button class="button button-quiet" type="button" id="diagnosticsClear">Clear reports</button> <button class="button button-quiet" type="button" id="diagnosticsRefresh">Refresh</button></div></div>
+            <div id="diagnosticsFeedback" class="catalog-feedback" role="status">Loading diagnostic status…</div>
+            <section class="diagnostics-probe-section" aria-labelledby="serviceProbeTitle"><h3 id="serviceProbeTitle">Service and HTTP probes</h3><p class="detail-muted">Bounded checks for configured dependencies. Probe output excludes response bodies, credentials, and target URLs.</p><div id="diagnosticsProbeRows" class="operation-history-list" aria-live="polite"></div></section>
+            <div id="diagnosticsSummary" class="operation-history-list"></div>
+            <div id="diagnosticsRows" class="operation-history-list" aria-live="polite"></div>
+            <pre id="diagnosticsDetail" class="diagnostic-detail" hidden></pre>
+          </section>
+
+          <section id="systemMaintenanceView" class="panel operation-history-panel" hidden aria-labelledby="maintenanceTitle">
+            <div class="panel-heading"><div><p class="eyebrow">QUICK ACTIONS</p><h2 id="maintenanceTitle">Maintenance actions</h2><p class="page-intro">Clear resolver cache or request a Jellyfin refresh. A refresh request does not confirm that Jellyfin imported the changes.</p></div></div>
+            <div class="diagnostics-actions">
+              <a class="button button-quiet" href="#quality?tab=issues">Catalog Health audits</a>
+              <a class="button button-quiet" href="#jobs?tab=schedules">Manage schedules</a>
+              <button class="button button-primary" type="button" id="triggerFullSync">Run full sync</button>
+              <button class="button button-quiet" type="button" id="clearResolverCache">Clear resolver cache</button>
+              <button class="button button-quiet" type="button" id="refreshJellyfinLibrary">Refresh Jellyfin library</button>
+              <button class="button button-quiet" type="button" id="refreshJellyfinCollections">Update collections</button>
+            </div>
+            <div id="maintenanceFeedback" class="catalog-feedback" role="status" aria-live="polite">Choose an action to continue.</div>
+          </section>
+
+          <section id="systemActivityView" class="panel operation-history-panel" hidden aria-labelledby="activityTitle">
+            <div class="panel-heading"><div><p class="eyebrow">ADMIN HISTORY</p><h2 id="activityTitle">Audit Log</h2><p class="page-intro">Successful administrative write requests and allowlisted applied field changes. Accepted tasks may still be running. Shared access does not identify an individual operator. Request bodies and credentials are never stored.</p></div><button class="button button-quiet" type="button" id="activityRefresh">Refresh activity</button></div>
+            <form id="activityFilters" class="filter-bar">
+              <div class="filter-field"><label for="activityMethod">Method</label><select id="activityMethod"><option value="">All methods</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="PATCH">PATCH</option><option value="DELETE">DELETE</option></select></div>
+              <div class="filter-field"><label for="activityOutcome">Result</label><select id="activityOutcome"><option value="">All results</option><option value="accepted">Accepted by queue</option><option value="completed">Request completed</option></select></div>
+              <div class="filter-field"><label for="activityArea">Section</label><select id="activityArea"><option value="">All sections</option><option value="library">Library</option><option value="performers">Performers</option><option value="quality">Catalog Health</option><option value="sources">Sources</option><option value="jobs">Jobs &amp; Automation</option><option value="system">System</option></select></div>
+            </form>
+            <div id="activityFeedback" class="catalog-feedback" role="status">Loading admin activity…</div>
+            <div id="activityRows" class="operation-history-list" aria-live="polite"></div>
+            <div id="activityPagination" class="pagination" hidden><button class="button button-quiet" type="button" id="activityPrev">← Previous</button><span id="activityPageInfo">Page 1</span><button class="button button-quiet" type="button" id="activityNext">Next →</button></div>
+            <div class="panel-heading"><div><p class="eyebrow">FIELD HISTORY</p><h3>Applied changes</h3><p class="page-intro">Metadata changes are recorded when the worker commits them. Source settings, queued operation plans and schedule changes are recorded with their state update.</p></div><button class="button button-quiet" type="button" id="activityChangeRefresh">Refresh changes</button></div>
+            <form id="activityChangeFilters" class="filter-bar">
+              <div class="filter-field"><label for="activityChangeType">Change type</label><select id="activityChangeType"><option value="">All changes</option><option value="metadata_update">Metadata revision</option><option value="source_settings_update">Source settings</option><option value="admin_operation_queued">Bulk operation plan</option><option value="schedule_created">Schedule created</option><option value="schedule_enabled">Schedule updated</option><option value="performer_profile_update">Performer profile</option></select></div>
+              <div class="filter-field"><label for="activityObjectType">Object</label><select id="activityObjectType"><option value="">All objects</option><option value="video">Video</option><option value="source_configuration">Source configuration</option><option value="operation_plan">Operation plan</option><option value="schedule">Schedule</option><option value="performer">Performer</option></select></div>
+              <div class="filter-search"><label for="activityChangeQuery">Object or task ID</label><input id="activityChangeQuery" type="search" maxlength="100" autocomplete="off"></div>
+              <div class="jobs-filter-actions"><button class="button button-quiet" type="submit">Apply filters</button><button class="button button-quiet" type="reset" id="activityChangeClear">Clear</button></div>
+            </form>
+            <div id="activityChangeFeedback" class="catalog-feedback" role="status">Loading applied changes…</div>
+            <div id="activityChangeRows" class="operation-history-list" aria-live="polite"></div>
+            <div id="activityChangePagination" class="pagination" hidden><button class="button button-quiet" type="button" id="activityChangePrev">← Previous</button><span id="activityChangePageInfo">Page 1</span><button class="button button-quiet" type="button" id="activityChangeNext">Next →</button></div>
+          </section>
+
+          <div id="jobsView" hidden>
+            <div id="jobsNotice" class="state-banner jobs-notice" hidden role="status"></div>
+            <nav class="section-tabs" aria-label="Jobs &amp; Automation">
+              <a href="#jobs?tab=tasks" data-jobs-tab="tasks">Tasks</a>
+              <a href="#jobs?tab=bulk" data-jobs-tab="bulk">Bulk Operations</a>
+              <a href="#jobs?tab=schedules" data-jobs-tab="schedules">Schedules</a>
+            </nav>
+            <div data-jobs-pane="tasks">
+            <section class="panel jobs-panel">
+              <form id="jobsFilters" class="filter-bar jobs-filter-bar">
+                <div class="filter-field"><label for="jobQueueFilter">Queue</label><select id="jobQueueFilter" name="queue"><option value="all">All task queues</option><option value="jobs">Admin tasks</option><option value="phash">pHash and thumbnails</option></select></div>
+                <div class="filter-field"><label for="jobStateFilter">State</label><select id="jobStateFilter" name="state"><option value="">All states</option><option value="active">Active</option><option value="queued">Queued</option><option value="processing">Processing</option><option value="done">Done</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></div>
+                <div class="filter-field"><label for="jobActionFilter">Action</label><select id="jobActionFilter" name="action"><option value="">All actions</option><option value="phash_generation">pHash and thumbnail</option><option value="hide">Hide duplicates</option><option value="dismiss">Dismiss pair</option><option value="undo">Undo hide</option><option value="undismiss">Undo dismissal</option><option value="performer_merge">Merge performers</option><option value="performer_refresh">Refresh performer metadata</option><option value="metadata_backfill">External metadata scan</option><option value="collections_refresh">Update collections</option><option value="quarantine">Quarantine</option><option value="orphan_file_operation">Orphan file quarantine or restore</option><option value="metadata_update">Update metadata</option><option value="availability_check">Check availability</option><option value="consistency_audit">Consistency audit</option><option value="metadata_quality_audit">Metadata quality audit</option><option value="audit_repair_nfo">Repair audit files</option><option value="audit_import_refresh">Request Jellyfin reimport</option><option value="backup_create">Create backup</option><option value="backup_restore_test">Test backup restore</option><option value="sync">Sync</option></select></div>
+                <div class="jobs-filter-actions"><button class="button button-quiet" type="button" id="jobsRefresh"><span aria-hidden="true">↻</span> Refresh</button><button class="button button-quiet" type="button" id="jobsClearFilters">Clear filters</button></div>
+              </form>
+              <div class="catalog-toolbar"><div id="jobsFeedback" class="catalog-feedback" role="status">Ready to load jobs.</div></div>
+              <div id="phashWorkerStatus" class="catalog-feedback" role="status" hidden></div>
+              <div id="jobsState" class="catalog-state" role="status"></div>
+              <div id="jobsTableWrap" class="table-wrap" hidden>
+                <table class="video-table jobs-table">
+                  <thead><tr><th>Job</th><th>State</th><th>Created</th><th>Updated</th><th>Result</th><th><span class="sr-only">Actions</span></th></tr></thead>
+                  <tbody id="jobsRows"></tbody>
+                </table>
+              </div>
+              <div id="jobsPagination" class="pagination" hidden><button class="button button-quiet" type="button" id="jobsPrev">← Previous</button><span id="jobsPageInfo">Page 1</span><button class="button button-quiet" type="button" id="jobsNext">Next →</button></div>
+            </section>
+            </div>
+            <section class="panel operation-history-panel" data-jobs-pane="bulk" hidden aria-labelledby="operationHistoryTitle">
+              <div class="panel-heading"><div><p class="eyebrow">BULK OPERATIONS</p><h2 id="operationHistoryTitle">Operation history</h2><p class="page-intro">Saved previews and the independent result of each queued item.</p></div><button class="button button-quiet" type="button" id="operationHistoryRefresh">Refresh</button></div>
+              <div id="operationHistoryFeedback" class="catalog-feedback" role="status">Ready to load operation history.</div>
+              <div id="operationHistoryState" class="catalog-state" role="status" hidden></div>
+              <div id="operationHistoryTableWrap" class="table-wrap" hidden><table class="video-table operation-history-table"><thead><tr><th>Operation</th><th>Created</th><th>Items</th><th>State</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="operationHistoryRows"></tbody></table></div>
+              <div id="operationHistoryPagination" class="pagination" hidden><button class="button button-quiet" type="button" id="operationHistoryPrev">← Previous</button><span id="operationHistoryPageInfo">Page 1</span><button class="button button-quiet" type="button" id="operationHistoryNext">Next →</button></div>
+            </section>
+            <section id="systemSchedulesView" class="panel operation-history-panel" data-jobs-pane="schedules" hidden aria-labelledby="schedulesTitle">
+              <div class="panel-heading"><div><p class="eyebrow">AUTOMATION</p><h2 id="schedulesTitle">Maintenance schedules</h2><p class="page-intro">Schedule availability checks, consistency audits, or database backups. Times use Europe/Warsaw.</p></div><button class="button button-quiet" type="button" id="schedulesRefresh">Refresh schedules</button></div>
+              <form id="scheduleCreateForm" class="filter-bar">
+                <div class="filter-field"><label for="scheduleName">Name</label><input id="scheduleName" name="name" required minlength="3" maxlength="100" placeholder="Weekly backup"></div>
+                <div class="filter-field"><label for="scheduleAction">Action</label><select id="scheduleAction" name="action"><option value="availability_check">Check availability</option><option value="consistency_audit">Consistency audit</option><option value="backup_create">Create backup</option></select></div>
+                <div class="filter-field"><label for="scheduleType">Frequency</label><select id="scheduleType" name="schedule_type"><option value="daily">Daily</option><option value="interval">Every interval</option></select></div>
+                <div class="filter-field" id="scheduleDailyField"><label for="scheduleDailyAt">Local time</label><input id="scheduleDailyAt" name="daily_at" type="time" value="03:00"></div>
+                <div class="filter-field" id="scheduleIntervalField" hidden><label for="scheduleInterval">Every minutes (15–43200)</label><input id="scheduleInterval" name="interval_minutes" type="number" min="15" max="43200" value="1440"></div>
+                <div class="filter-field" id="scheduleVideosField" hidden><label for="scheduleVideoIds">Video IDs (one per line, up to 20)</label><textarea id="scheduleVideoIds" name="video_ids" rows="2"></textarea></div>
+                <div class="jobs-filter-actions"><button class="button button-primary" type="submit" id="scheduleCreate">Create schedule</button></div>
+              </form>
+              <div id="schedulesFeedback" class="catalog-feedback" role="status">Loading schedules…</div>
+              <div id="schedulesRows" class="operation-history-list" aria-live="polite"></div>
+            </section>
+          </div>
+
+          <div id="sourcesView" hidden>
+            <div id="sourcesNotice" class="state-banner sources-notice" hidden role="status"></div>
+            <section class="panel sources-panel">
+              <form id="sourcesFilters" class="filter-bar sources-filter-bar">
+                <div class="filter-search"><label for="sourcesQuery">Search</label><div class="input-with-icon"><span aria-hidden="true">⌕</span><input id="sourcesQuery" type="search" name="q" placeholder="Channel, studio, or provider" autocomplete="off"></div></div>
+                <div class="filter-field"><label for="sourcesStatusFilter">Status</label><select id="sourcesStatusFilter" name="status"><option value="">All statuses</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="succeeded">Latest run succeeded</option><option value="failed">Latest run failed</option><option value="never">Never synced</option></select></div>
+                <div class="jobs-filter-actions"><button class="button button-primary" type="button" id="sourcesAddChannel">Add Telegram channel</button><button class="button button-quiet" type="button" id="sourcesRefresh"><span aria-hidden="true">↻</span> Refresh</button><button class="button button-quiet" type="button" id="sourcesClearFilters">Clear filters</button></div>
+              </form>
+              <div class="catalog-toolbar"><div id="sourcesFeedback" class="catalog-feedback" role="status">Ready to load sources.</div><span id="sourcesRevision" class="catalog-feedback" aria-live="polite"></span></div>
+              <div id="sourcesState" class="catalog-state" role="status"></div>
+              <div id="sourcesTableWrap" class="table-wrap" hidden>
+                <table class="video-table sources-table">
+                  <thead><tr>
+                    <th aria-sort="ascending"><button class="table-sort-button" type="button" data-source-sort="channel">Channel <span class="table-sort-indicator" aria-hidden="true">↑</span></button></th>
+                    <th aria-sort="none"><button class="table-sort-button" type="button" data-source-sort="provider">Provider <span class="table-sort-indicator" aria-hidden="true">↕</span></button></th>
+                    <th aria-sort="none"><button class="table-sort-button" type="button" data-source-sort="status">Status <span class="table-sort-indicator" aria-hidden="true">↕</span></button></th>
+                    <th aria-sort="none"><button class="table-sort-button" type="button" data-source-sort="videos">Videos <span class="table-sort-indicator" aria-hidden="true">↕</span></button></th>
+                    <th aria-sort="none"><button class="table-sort-button" type="button" data-source-sort="latest">Latest result <span class="table-sort-indicator" aria-hidden="true">↕</span></button></th>
+                    <th aria-sort="none"><button class="table-sort-button" type="button" data-source-sort="last-sync">Last sync <span class="table-sort-indicator" aria-hidden="true">↕</span></button></th>
+                    <th><span class="sr-only">Actions</span></th>
+                  </tr></thead>
+                  <tbody id="sourcesRows"></tbody>
+                </table>
+              </div>
+              <nav id="sourcesPagination" class="pagination" aria-label="Source pages" hidden></nav>
+            </section>
+            <section class="panel source-run-history-panel" aria-labelledby="sourceRunHistoryTitle">
+              <div class="panel-heading"><div><p class="eyebrow">SYNCHRONIZATION</p><h2 id="sourceRunHistoryTitle">Recent sync runs</h2><p class="page-intro">Review recent outcomes, timing, source failures, and HTTP retry counts.</p></div></div>
+              <div id="sourcesHistoryFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading sync history…</div>
+              <div id="sourcesHistoryRows" class="operation-history-list" aria-live="polite"></div>
+              <details class="sync-worker-activity">
+                <summary>Worker progress summaries</summary>
+                <div class="panel-heading"><div><p class="eyebrow">SYNC WORKER</p><h3 id="syncActivityTitle" tabindex="-1">Sync activity</h3><p class="page-intro">Recent progress summaries. Detailed log text is hidden to protect source IDs, URLs, paths, and exception data.</p></div><button class="button button-quiet" type="button" id="syncActivityRefresh">Refresh activity</button></div>
+                <div id="syncActivityFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading sync activity…</div>
+                <div id="syncActivityRows" class="operation-history-list" aria-live="polite"></div>
+              </details>
+            </section>
+            <dialog class="source-detail" id="sourceDetailDialog" aria-labelledby="sourceDetailTitle">
+              <article class="source-detail-panel" tabindex="-1">
+                <button type="button" class="drawer-close" data-source-detail-close aria-label="Close channel details">×</button>
+                <div id="sourceDetailContent"></div>
+              </article>
+            </dialog>
+          </div>
+        </section>
+
+        <footer class="app-footer"><span>Adult Hub <span aria-hidden="true">·</span> Admin</span></footer>
+      </div>
+    </main>
+  </div>
+  <dialog class="operation-dialog" id="operationDialog" aria-labelledby="operationDialogTitle"><section class="operation-dialog-panel"><button class="drawer-close" type="button" aria-label="Close operation preview" data-close-dialog="operationDialog">×</button><div id="operationDialogContent"></div><div class="operation-dialog-actions" id="operationDialogActions"></div></section></dialog>
+</body>
+</html>

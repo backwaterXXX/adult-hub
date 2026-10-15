@@ -1,0 +1,48 @@
+# Example Adult Hub configuration
+# Copy this file to config.yaml and edit it for your setup:
+#   cp config.example.yaml config.yaml
+#
+# Credentials (TELEGRAM_API_ID, TELEGRAM_API_HASH, JELLYFIN_API_KEY,
+# THEPORNDB_API_TOKEN)
+# and infrastructure settings (HOST_IP, MEDIA_PATH, RESOLVER_PUBLIC_URL)
+# belong in .env.
+
+sync:
+  interval_minutes: 60              # Minutes between sync runs (used if daily_at is omitted)
+  daily_at: "03:30"                 # Optional: daily sync time in HH:MM format (local time)
+  run_on_startup: true              # Whether to run a sync immediately when the container starts
+  retention_days: 30                # Remove videos not seen for this many days
+  retry_backoff_base_seconds: 30    # Initial retry delay after an error
+  retry_backoff_max_seconds: 1800   # Maximum retry delay
+  stream_mode_default: redirect     # Default playback mode: redirect or proxy
+  strict_unplayable: true           # Remove unplayable items immediately
+  category_fetch_delay_seconds: 2.5  # Pause between upstream category requests
+  dead_stream_check_per_run: 50
+  dead_stream_max_purge_per_run: 50
+  dead_stream_strikes_to_purge: 2
+  dead_stream_recheck_days: 7
+  performer_backfill_per_run: 25
+  pbc_backfill_per_run: 50
+  tpdb_backfill_per_run: 50
+  # Scene and performer source queues: ~20 daily syncs per 10k videos / 1k actors.
+  # Portraits run separately at 25 per sync (~40 runs per 1k actors).
+  scene_backfill_per_run: 500
+  photo_backfill_per_run: 25
+  jellyfin_people_per_run: 25
+  performer_audit_per_run: 25
+  performer_audit_threshold: 5
+
+sources:
+  - provider: telegram
+    enabled: true
+    defaults:
+      stream_mode: proxy
+      max_pages: 1
+      min_duration_seconds: 420
+      history_batch_size: 100
+      tags_whitelist: []
+      tags_blacklist: []
+    channels:
+      - id: "@example_channel_public"
+        enabled: false
+        studio: "Example Studio"

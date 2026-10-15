@@ -1,0 +1,84 @@
+name: Public test suite
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  public-tests:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: adult_hub_test
+          POSTGRES_USER: adult_hub
+          POSTGRES_PASSWORD: adult_hub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U adult_hub -d adult_hub_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14.7"
+          cache: pip
+          cache-dependency-path: |
+            resolver/requirements.lock
+            sync/requirements.lock
+            requirements-dev.lock
+      - name: Install public test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.lock
+          python -m pip install --no-deps ./common
+      - name: Run Ruff lint
+        run: make lint
+      - name: Run required public suite
+        env:
+          ADULT_HUB_TEST_PROFILE: full
+          CONFIG_PATH: tests/fixtures/config_telegram_only.yaml
+          CACHE_DB_PATH: ${{ runner.temp }}/adult-hub-stream-cache.db
+          TEST_DATABASE_URL: postgresql://adult_hub:adult_hub_test@localhost:5432/adult_hub_test
+        run: |
+          python -m unittest discover -s tests -v
+          python tests/proxy_origin_contract.py
+      - name: Run Admin UI and v2 browser contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          file_list="$(mktemp)"
+          trap 'rm -f -- "$file_list"' EXIT
+          find tests -type f -name '*.cjs' -print0 | sort -z > "$file_list"
+          mapfile -d '' test_files < "$file_list"
+          if ((${#test_files[@]} == 0)); then
+            echo "No CommonJS browser contracts found" >&2
+            exit 1
+          fi
+          for test_file in "${test_files[@]}"; do
+            echo "Running ${test_file}"
+            node "${test_file}"
+          done
+      - name: Check Admin v2 JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          file_list="$(mktemp)"
+          trap 'rm -f -- "$file_list"' EXIT
+          find resolver/static/admin-v2 -type f -name '*.js' -print0 | sort -z > "$file_list"
+          mapfile -d '' script_files < "$file_list"
+          if ((${#script_files[@]} == 0)); then
+            echo "No Admin v2 JavaScript files found" >&2
+            exit 1
+          fi
+          for script_file in "${script_files[@]}"; do
+            echo "Checking ${script_file}"
+            node --check "${script_file}"
+          done
