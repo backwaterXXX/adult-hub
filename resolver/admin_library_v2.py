@@ -108,7 +108,9 @@ def build_router(admin):
             "cursor_data": cursor_data, "cursor_direction": cursor_direction,
         }
         try:
-            return await admin.asyncio.to_thread(_run_catalog_query, admin.HUB_DB_URL, query)
+            return await admin.asyncio.to_thread(
+                _run_catalog_query, admin.HUB_DB_URL, query, admin.MEDIA_DIR,
+            )
         except CatalogUnavailable:
             return admin.JSONResponse({"ok": False, "error": "Catalog database is unavailable."}, status_code=503)
 

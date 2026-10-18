@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,38 @@ _VIDEO_OPTIONAL_COLUMNS = {
 
 class CatalogUnavailable(Exception):
     """The database or required catalog table cannot serve this request."""
+
+
+def _missing_local_artwork_ids(conn, media_root: str | os.PathLike[str]) -> list[str] | None:
+    """Return videos whose registered stream has no sibling artwork file."""
+    try:
+        root = Path(media_root).resolve()
+        if not stat.S_ISDIR(root.stat().st_mode):
+            return None
+        with os.scandir(root):
+            pass
+        rows = conn.execute("SELECT video_id,file_path FROM synced_files").fetchall()
+    except (OSError, TypeError, ValueError):
+        return None
+
+    missing: set[str] = set()
+    for row in rows:
+        video_id, raw_path = row[0], row[1]
+        if (not isinstance(raw_path, str) or not raw_path or raw_path in {".", ".."}
+                or "/" in raw_path or "\\" in raw_path
+                or any(ord(char) < 32 for char in raw_path)
+                or not raw_path.lower().endswith(".strm")):
+            continue
+        try:
+            artwork_info = (root / f"{raw_path[:-5]}.jpg").lstat()
+        except FileNotFoundError:
+            missing.add(str(video_id))
+        except OSError:
+            continue
+        else:
+            if stat.S_ISLNK(artwork_info.st_mode) or not stat.S_ISREG(artwork_info.st_mode):
+                missing.add(str(video_id))
+    return sorted(missing)
 
 
 
@@ -144,7 +177,11 @@ def _reverse_sort_clause(sort: str, columns: set[str], has_overrides: bool) -> s
     )
 
 
-def _run_catalog_query(db_url: str | None, query: dict[str, Any]) -> dict[str, Any]:
+def _run_catalog_query(
+    db_url: str | None,
+    query: dict[str, Any],
+    media_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
     try:
         conn = db.connect(db_url)
     except Exception as exc:
@@ -155,6 +192,11 @@ def _run_catalog_query(db_url: str | None, query: dict[str, Any]) -> dict[str, A
         has_files = "synced_files" in tables
         has_dead = "dead_streams" in tables
         has_overrides = "video_metadata_overrides" in tables
+        missing_local_artwork = (
+            _missing_local_artwork_ids(conn, media_root)
+            if "thumbnail" in query["missing"] and has_files and media_root is not None
+            else None
+        )
         params: list[Any] = []
         conditions: list[str] = []
 
@@ -213,7 +255,13 @@ def _run_catalog_query(db_url: str | None, query: dict[str, Any]) -> dict[str, A
                 conditions.append(condition)
 
         for field in query["missing"]:
-            conditions.append(_missing_effective_clause(field, columns, has_overrides))
+            if field == "thumbnail" and missing_local_artwork is not None:
+                conditions.append(
+                    f"({_missing_effective_clause(field, columns, has_overrides)} OR v.id = ANY(%s))"
+                )
+                params.append(missing_local_artwork)
+            else:
+                conditions.append(_missing_effective_clause(field, columns, has_overrides))
 
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         join_dead = " LEFT JOIN dead_streams d ON d.video_id = v.id" if has_dead else ""
