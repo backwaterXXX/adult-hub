@@ -7,9 +7,13 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+SYNC_DIR = ROOT / "sync"
+if str(SYNC_DIR) not in sys.path:
+    sys.path.insert(0, str(SYNC_DIR))
 
-from sync import scene_scraper_backfill as backfill
-from sync.scene_scrapers import ScrapedScene
+import scene_scraper_backfill as backfill
+from scene_scrapers import ScrapedScene
+import scene_scraper_text_sources
 
 
 class _Cursor:
@@ -82,7 +86,7 @@ class TestCaptionTitleBackfill(unittest.TestCase):
 
         with patch.object(backfill._core, "record_attempt") as record_attempt, \
              patch.object(backfill._core, "_apply_matched_scene", return_value=True) as apply_scene, \
-             patch("sync.scene_scraper_text_sources.search_scene_by_exact_title", return_value=scene) as search:
+             patch.object(scene_scraper_text_sources, "search_scene_by_exact_title", return_value=scene) as search:
             checked, updated = backfill._backfill_caption_title_matches(
                 conn, Path("/tmp"), limit=5, sleep_sec=0, http_client=None,
             )

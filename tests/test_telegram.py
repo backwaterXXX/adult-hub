@@ -463,6 +463,16 @@ class TestPerformerMatching(unittest.TestCase):
         if match_known_performers is None:
             self.fail("required Telegram function missing: match_known_performers")
 
+    @staticmethod
+    def _catalog(names, aliases=None):
+        aliases = aliases or {}
+        return [
+            {"id": f"stashdb:{index}", "name": name,
+             "aliases": [alias for alias, canonical in aliases.items() if canonical == name],
+             "trusted_aliases": [alias for alias, canonical in aliases.items() if canonical == name]}
+            for index, name in enumerate(names, 1)
+        ]
+
     def test_full_name_match(self):
         out = match_known_performers("OF Andres Milan Rico Marlon 720p",
                                      ["Rico Marlon", "Andres Milan"])
@@ -566,31 +576,28 @@ class TestPerformerMatching(unittest.TestCase):
         msg = _video_message(
             caption="#ANAL #OF - Venezolano Felipe Eduardo & texasgymjock"
         )
-        item = message_to_video(
-            msg,
-            "Kanal",
-            known_performers=[
-                "Felipe", "Felipe Eduardo", "Venezolano Felipe Eduardo",
-            ],
-            aliases={"texasgymjock": "Texas Gym Jock"},
-        )
+        catalog = self._catalog(["Felipe Eduardo", "Texas Gym Jock"], {
+            "Venezolano Felipe Eduardo": "Felipe Eduardo", "texasgymjock": "Texas Gym Jock",
+        })
+        with patch.object(tg_module, "load_performer_catalog", return_value=catalog):
+            item = message_to_video(msg, "Kanal")
         self.assertEqual(list(item.performers), ["Felipe Eduardo", "Texas Gym Jock"])
 
         msg = _video_message(
             caption="#OF #ANAL Only Fans – CJ Delco And Felipe Eduardo"
         )
-        item = message_to_video(
-            msg,
-            "Kanal",
-            known_performers=["Felipe", "Felipe Eduardo", "CJ Delco"],
-        )
+        catalog = self._catalog(["Felipe Eduardo", "CJ Delco"])
+        with patch.object(tg_module, "load_performer_catalog", return_value=catalog):
+            item = message_to_video(msg, "Kanal")
         self.assertEqual(list(item.performers), ["CJ Delco", "Felipe Eduardo"])
 
     def test_user_cases_message_to_video_title_syntax(self):
         # 1. [Only Fans] Rhyheim Shabazz, Cade Maddox & Alonzo Jordon
         # Uncatalogued credits are proposed for review rather than auto-added.
         msg1 = _video_message(caption="[Only Fans] Rhyheim Shabazz, Cade Maddox & Alonzo Jordon")
-        item1 = message_to_video(msg1, "Kanal", known_performers=["Rhyheim Shabazz", "Cade Maddox"])
+        catalog = self._catalog(["Rhyheim Shabazz", "Cade Maddox", "Leon Reddz", "Adrian Hart", "Leon Fox"])
+        with patch.object(tg_module, "load_performer_catalog", return_value=catalog):
+            item1 = message_to_video(msg1, "Kanal")
         self.assertEqual(list(item1.performers), ["Rhyheim Shabazz", "Cade Maddox"])
         self.assertTrue(any(p["matched_text"] == "Alonzo Jordon" for p in item1.performer_proposals))
 
@@ -599,11 +606,8 @@ class TestPerformerMatching(unittest.TestCase):
         msg2 = _video_message(
             caption="[Just For Fans] - Rhyheim Shabazz, Krave, Trapp, Fame & Leon Reddz fuck & DP Adrian Hart"
         )
-        item2 = message_to_video(
-            msg2, "Kanal",
-            known_performers=["Rhyheim Shabazz", "Leon Reddz", "Adrian Hart"],
-            aliases={"leon": "Paddy O'Brian"}
-        )
+        with patch.object(tg_module, "load_performer_catalog", return_value=catalog):
+            item2 = message_to_video(msg2, "Kanal")
         self.assertNotIn("Paddy O'Brian", item2.performers)
         self.assertIn("Leon Reddz", item2.performers)
         self.assertIn("Adrian Hart", item2.performers)
@@ -611,11 +615,8 @@ class TestPerformerMatching(unittest.TestCase):
 
         # 3. Lance Bennett & Leon Fox
         msg3 = _video_message(caption="Lance Bennett & Leon Fox")
-        item3 = message_to_video(
-            msg3, "Kanal",
-            known_performers=["Lance", "Leon Fox"],
-            aliases={"leon": "Paddy O'Brian"}
-        )
+        with patch.object(tg_module, "load_performer_catalog", return_value=catalog):
+            item3 = message_to_video(msg3, "Kanal")
         self.assertNotIn("Paddy O'Brian", item3.performers)
         self.assertNotIn("Lance", item3.performers)
         self.assertEqual(list(item3.performers), ["Leon Fox"])
@@ -623,8 +624,8 @@ class TestPerformerMatching(unittest.TestCase):
 
     def test_auto_loaded_aliases(self):
         msg = _video_message(caption="Pierce bareback")
-        with patch.object(tg_module, "load_known_performers", return_value=["Ryan Rose"]), \
-             patch.object(tg_module, "load_alias_map", return_value={"pierce": "Ryan Rose"}):
+        catalog = self._catalog(["Ryan Rose"], {"pierce": "Ryan Rose"})
+        with patch.object(tg_module, "load_performer_catalog", return_value=catalog):
             item = message_to_video(msg, "Kanal")
         self.assertEqual(list(item.performers), ["Ryan Rose"])
 
@@ -632,8 +633,9 @@ class TestPerformerMatching(unittest.TestCase):
         if message_to_video is None:
             self.fail("required Telegram function missing: message_to_video")
         msg = _video_message(caption="Rico Marlon bareback")
-        item = message_to_video(msg, "Kanal",
-                                known_performers=["Rico Marlon", "Nobody Else"])
+        with patch.object(tg_module, "load_performer_catalog",
+                          return_value=self._catalog(["Rico Marlon"])):
+            item = message_to_video(msg, "Kanal")
         self.assertEqual(list(item.performers), ["Rico Marlon"])
 
     def test_load_known_performers_missing_db(self):

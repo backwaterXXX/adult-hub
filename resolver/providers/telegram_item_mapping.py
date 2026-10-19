@@ -98,7 +98,7 @@ def message_to_video_impl(
     performers = []
     performer_resolution = None
     try:
-        from common.performer_catalog import prepare_catalog
+        from common.performer_catalog import match_catalog, prepare_catalog
 
         # Always use the external catalogue for identity resolution. The legacy
         # name list is derived from existing video assignments and is not evidence.
@@ -119,6 +119,16 @@ def message_to_video_impl(
                 cast_source = "pornbestsgay_signature"
                 extracted["title"] = ""
                 extracted["title_source"] = ""
+        external_catalog = [
+            row for row in catalog
+            if isinstance(row, dict)
+            and str(row.get("id") or "").startswith(("stashdb:", "theporndb:", "fansdb:"))
+        ]
+        credit_text = ", ".join(cast_names) if cast_names else caption
+        exact_records, proposals = match_catalog(
+            [("caption", credit_text)], external_catalog,
+            prepared=prepared_catalog if external_catalog and prepared_catalog else None,
+        )
         if cast_names:
             try:
                 resolved_names, resolved_ids = resolve_explicit_cast(cast_names, catalog)
@@ -134,6 +144,21 @@ def message_to_video_impl(
                 "method": "telegram_field_parser",
                 "source": cast_source,
                 "raw_names": cast_names,
+                "external_ids": resolved_ids,
+                "priority": 10,
+                "title_candidate": extracted["title"],
+                "title_source": extracted["title_source"],
+                "version": 1,
+            }
+        elif exact_records:
+            performers = [str(row.get("name") or "").strip()
+                          for row in exact_records if str(row.get("name") or "").strip()]
+            resolved_ids = [str(row.get("id") or "") for row in exact_records]
+            performer_resolution = {
+                "status": "resolved" if all(resolved_ids) else "partial",
+                "method": "telegram_catalog_credit_v1",
+                "source": "caption_credit_list",
+                "raw_names": performers,
                 "external_ids": resolved_ids,
                 "priority": 10,
                 "title_candidate": extracted["title"],

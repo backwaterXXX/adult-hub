@@ -82,7 +82,7 @@ class TestVideoPersistence(PgTestCase):
         prepared = {
             "comp_id": "telegram:-100123:42:999",
             "provider": "telegram",
-            "video": {"title": "Legacy performer video", "performer_proposals": proposals},
+            "video": {"title": "Legacy performer video", "duration": 600, "performer_proposals": proposals},
             "genres": set(),
             "tags": [],
             "title": "Legacy performer video",
@@ -115,7 +115,7 @@ class TestVideoPersistence(PgTestCase):
         prepared = {
             "comp_id": "telegram:-100123:43:998",
             "provider": "telegram",
-            "video": {"title": "Promoted performer video", "performer_proposals": proposals},
+            "video": {"title": "Promoted performer video", "duration": 600, "performer_proposals": proposals},
             "genres": set(),
             "tags": [],
             "title": "Promoted performer video",
@@ -144,6 +144,7 @@ class TestVideoPersistence(PgTestCase):
             "provider": "testprov",
             "provider_video_id": "v100",
             "title": "Sample Video",
+            "duration": 600,
             "performers": ["Alice"],
             "thumbnail": "http://img/thumb.jpg",
         }
@@ -172,6 +173,7 @@ class TestVideoPersistence(PgTestCase):
             "provider": "testprov",
             "provider_video_id": "v100",
             "title": "Sample Video",
+            "duration": 600,
             "performers": ["Alice"],
             "thumbnail": "http://img/thumb.jpg",
         }
@@ -195,12 +197,12 @@ class TestVideoPersistence(PgTestCase):
         services = self._make_services()
         collected = {
             "testprov:v1": {
-                "video": {"provider": "testprov", "provider_video_id": "v1", "title": "Vid 1"},
+                "video": {"provider": "testprov", "provider_video_id": "v1", "title": "Vid 1", "duration": 600},
                 "genres": {"Action"},
                 "tags": {"tagA"},
             },
             "testprov:v2": {
-                "video": {"provider": "testprov", "provider_video_id": "v2", "title": "Vid 2"},
+                "video": {"provider": "testprov", "provider_video_id": "v2", "title": "Vid 2", "duration": 600},
                 "genres": {"Comedy"},
                 "tags": {"tagB"},
             },
@@ -228,12 +230,12 @@ class TestVideoPersistence(PgTestCase):
         services = self._make_services(persist_prepared_video=fail_on_second)
         collected = {
             "testprov:v1": {
-                "video": {"provider": "testprov", "provider_video_id": "v1", "title": "Vid 1"},
+                "video": {"provider": "testprov", "provider_video_id": "v1", "title": "Vid 1", "duration": 600},
                 "genres": {"Action"},
                 "tags": {"tagA"},
             },
             "testprov:v2": {
-                "video": {"provider": "testprov", "provider_video_id": "v2", "title": "Vid 2"},
+                "video": {"provider": "testprov", "provider_video_id": "v2", "title": "Vid 2", "duration": 600},
                 "genres": {"Comedy"},
                 "tags": {"tagB"},
             },

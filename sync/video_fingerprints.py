@@ -290,7 +290,10 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
         from PIL import Image
         from stash_phash.video import combine_images
         from common.image_utils import compute_dhash, is_black_image, is_bumper_hash
-        from sync.thumbnails import _get_cached_bumper_hashes, _valid_thumbnail_bytes
+        try:
+            from .thumbnails import _get_cached_bumper_hashes, _valid_thumbnail_bytes
+        except ImportError:
+            from thumbnails import _get_cached_bumper_hashes, _valid_thumbnail_bytes
     except ImportError as exc:
         raise RuntimeError("Pillow is required for pHash generation") from exc
     ffmpeg = shutil.which("ffmpeg")

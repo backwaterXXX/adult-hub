@@ -46,6 +46,8 @@ jobs:
           ADULT_HUB_TEST_PROFILE: full
           CONFIG_PATH: tests/fixtures/config_telegram_only.yaml
           CACHE_DB_PATH: ${{ runner.temp }}/adult-hub-stream-cache.db
+          TELEGRAM_FINGERPRINT_USAGE_PATH: ${{ runner.temp }}/telegram-fingerprint-daily-usage.json
+          SYNC_ACTIVITY_LOG_PATH: ${{ runner.temp }}/sync-activity.log
           TEST_DATABASE_URL: postgresql://adult_hub:adult_hub_test@localhost:5432/adult_hub_test
         run: |
           python -m unittest discover -s tests -v

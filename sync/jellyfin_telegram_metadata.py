@@ -26,7 +26,10 @@ def sync_jellyfin_telegram_metadata(url, api_key, media_dir, *, state_path=None,
     if not url or not api_key:
         return {'checked': 0, 'needed': 0, 'updated': 0, 'failed': 0}
     import requests
-    from sync.thumbnails import _valid_thumbnail_bytes
+    try:
+        from .thumbnails import _valid_thumbnail_bytes
+    except ImportError:
+        from thumbnails import _valid_thumbnail_bytes
     logger = logger or _core["_LOGGER"]
     session = session or requests.Session()
     workers = max(1, min(int(workers), 4))

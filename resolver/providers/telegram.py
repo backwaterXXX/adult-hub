@@ -162,14 +162,23 @@ def _prepare_legacy_catalog(known_performers, aliases):
     return _prepare_legacy_catalog_impl(known_performers, aliases)
 
 
+def _prepare_external_performer_catalog():
+    from common.performer_catalog import prepare_catalog
+
+    catalog = load_performer_catalog()
+    external = [row for row in catalog if str(row.get("id") or "").startswith(
+        ("stashdb:", "theporndb:", "fansdb:")
+    )]
+    return prepare_catalog(external)
+
+
 def message_to_video(msg: dict, channel_title: str,
                      known_performers=None, aliases=None,
                      prepared_known_map=None, prepared_catalog=None) -> Optional[VideoItem]:
     """Mapuje message_dict z materialem video na VideoItem (None gdy brak video).
 
-    known_performers: jawny slownik imion (testy); None = zaladuj z hubowej DB
-    (load_known_performers, nigdy nie rzuca). aliases: mapa alias->kanoniczne
-    (None = load_alias_map). Brak slownika -> performers=[].
+    known_performers/aliases: legacy compatibility inputs; automatic cast
+    assignment requires an exact identity from the external performer catalogue.
     """
     return _message_to_video_impl(
         msg,
@@ -347,7 +356,7 @@ class TelegramProvider(BaseProvider):
         videos: List[VideoItem] = []
         kp = load_known_performers()
         am = load_alias_map()
-        _, prepared_catalog = _prepare_legacy_catalog(kp, am)
+        prepared_catalog = _prepare_external_performer_catalog()
         for msg in messages:
             item = message_to_video(
                 _message_to_dict(msg, category_id), title,
@@ -373,7 +382,7 @@ class TelegramProvider(BaseProvider):
         videos = []
         kp = load_known_performers()
         am = load_alias_map()
-        _, prepared_catalog = _prepare_legacy_catalog(kp, am)
+        prepared_catalog = _prepare_external_performer_catalog()
         for msg in messages:
             item = message_to_video(
                 _message_to_dict(msg, category_id), title,
@@ -403,7 +412,7 @@ class TelegramProvider(BaseProvider):
         matched: List[VideoItem] = []
         known_performers = load_known_performers()
         aliases = load_alias_map()
-        _, prepared_catalog = _prepare_legacy_catalog(known_performers, aliases)
+        prepared_catalog = _prepare_external_performer_catalog()
         for channel_ref in channels:
             try:
                 entity = await client.get_entity(_entity_ref(channel_ref))

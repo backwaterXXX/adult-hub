@@ -5,7 +5,8 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sync.telegram_unavailable import _quarantine_files, _ref, _restore_files
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sync"))
+from telegram_unavailable import _quarantine_files, _ref, _restore_files
 
 
 class _FilesConn:

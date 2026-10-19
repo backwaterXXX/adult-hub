@@ -6,10 +6,13 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+SYNC_DIR = ROOT / "sync"
+if str(SYNC_DIR) not in sys.path:
+    sys.path.insert(0, str(SYNC_DIR))
 
-from sync import scene_scraper_split_parts as split_parts
-from sync import scene_scraper_backfill as backfill
-from sync.scene_scrapers import ScrapedScene
+import scene_scraper_split_parts as split_parts
+import scene_scraper_backfill as backfill
+from scene_scrapers import ScrapedScene
 
 
 class _Cursor:
@@ -116,7 +119,7 @@ class TestSplitSequenceBackfill(unittest.TestCase):
             studio="Demo Studio", source="stashdb:split_title_duration_v1",
             external_id="scene-1", url="https://stashdb.org/scenes/scene-1",
         )
-        with patch("sync.scene_scraper_split_parts.search_split_scene", return_value=scene) as search, \
+        with patch.object(split_parts, "search_split_scene", return_value=scene) as search, \
              patch.object(backfill._core, "_apply_matched_scene", return_value=True) as apply_scene, \
              patch.object(backfill._core, "record_attempt") as record_attempt:
             checked, updated = backfill._backfill_split_part_matches(
@@ -136,7 +139,7 @@ class TestSplitSequenceBackfill(unittest.TestCase):
             ("telegram:-1001:10:a", "Demo Scene s1", "Demo Scene s1.mp4", "Demo Scene s1", 600, {}, None, True),
         ]
         conn = _Conn(rows)
-        with patch("sync.scene_scraper_split_parts.search_split_scene") as search:
+        with patch.object(split_parts, "search_split_scene") as search:
             checked, updated = backfill._backfill_split_part_matches(
                 conn, Path("/tmp"), limit=10, sleep_sec=0, http_client=None,
             )

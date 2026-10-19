@@ -60,6 +60,14 @@
     },
     {
       "method": "GET",
+      "path": "/admin/api/telegram/message-check/{channel_id}/{message_id}",
+      "source": "resolver/catalog_api.py",
+      "consumer": "sync/telegram_unavailable.py",
+      "purpose": "Checks whether a specific Telegram post is still accessible during unavailable-media recovery.",
+      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
+    },
+    {
+      "method": "GET",
       "path": "/admin/api/search",
       "source": "resolver/catalog_api.py",
       "consumer": "Shared provider catalog API",

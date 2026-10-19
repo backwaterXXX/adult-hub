@@ -141,13 +141,13 @@ class TestBackfillPerformers(BaseUpkeepTest):
         conn = _make_videos_db(db_path)
         conn.execute(
             "INSERT INTO videos (id, provider, title, slug, duration, thumbnail, performers, categories, first_seen, last_seen, tags, embed_host, playable) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            ("exampleweb:1", "exampleweb", "T1", "s1", 60, "", "[]", '["G"]', 1, 200, "[]", "", None))
+            ("exampleweb:1", "exampleweb", "T1", "s1", 600, "", "[]", '["G"]', 1, 200, "[]", "", None))
         conn.execute(
             "INSERT INTO videos (id, provider, title, slug, duration, thumbnail, performers, categories, first_seen, last_seen, tags, embed_host, playable) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            ("exampleweb:2", "exampleweb", "T2", "s2", 60, "", None, '["G"]', 1, 100, "[]", "", None))
+            ("exampleweb:2", "exampleweb", "T2", "s2", 600, "", None, '["G"]', 1, 100, "[]", "", None))
         conn.execute(
             "INSERT INTO videos (id, provider, title, slug, duration, thumbnail, performers, categories, first_seen, last_seen, tags, embed_host, playable) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            ("otherweb:9", "otherweb", "T9", "s9", 60, "", "[]", '["G"]', 1, 300, "[]", "", None))
+            ("otherweb:9", "otherweb", "T9", "s9", 600, "", "[]", '["G"]', 1, 300, "[]", "", None))
         conn.commit()
         return conn
 
