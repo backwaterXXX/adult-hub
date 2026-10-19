@@ -13,16 +13,20 @@ Videos stream from Telegram when you play them, so Adult Hub does not download a
 3. Choose a video in Jellyfin to stream it directly from Telegram. You can watch on your TV, phone, or web browser.
 
 ```mermaid
-flowchart LR
-    TG[Telegram channels] -->|channel sync| S[Adult Hub sync]
-    S -->|catalog metadata| DB[(PostgreSQL)]
-    S -->|STRM, NFO, artwork| F[Local library files]
-    DB --> J[Jellyfin]
-    F --> J
-    J -->|library and playback link| P[Player]
-    P -->|playback request| R[Adult Hub resolver]
-    R -->|video stream on demand| TG
-    R <--> DB
+flowchart TB
+    subgraph PHASE1["PHASE 1: Library Indexing (Background)"]
+        direction LR
+        TG1[Telegram Channels] -->|1. Periodic crawl| SYNC[Sync Service]
+        SYNC -->|2. Writes .strm links,<br/>.nfo and thumbnails| JF1[Jellyfin Media Library]
+    end
+
+    subgraph PHASE2["PHASE 2: On-Demand Playback (Real-time)"]
+        direction LR
+        JF2[Jellyfin Media Library] -->|3. Presses Play,<br/>loads .strm URL| CLIENT[Playback Client<br/>(TV / phone / web)]
+        CLIENT -->|4. HTTP GET request<br/>(with Range)| RESOLVER[Resolver Service]
+        RESOLVER -->|6. HTTP 206 Stream<br/>(Partial Content)| CLIENT
+        TG2[Telegram Servers] <-->|5. On-demand stream<br/>(MTProto)| RESOLVER
+    end
 ```
 
 The catalog and sidecar files are stored locally; video files remain in Telegram and stream on demand.
