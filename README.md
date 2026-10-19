@@ -12,21 +12,31 @@ Videos stream from Telegram when you play them, so Adult Hub does not download a
 2. Jellyfin displays the videos with their titles, performer information, and artwork.
 3. Choose a video in Jellyfin to stream it directly from Telegram. You can watch on your TV, phone, or web browser.
 
-```mermaid
-flowchart TB
-    subgraph PHASE1["PHASE 1: Library Indexing (Background)"]
-        direction LR
-        TG1[Telegram Channels] -->|1. Periodic crawl| SYNC[Sync Service]
-        SYNC -->|2. Writes .strm links,<br/>.nfo and thumbnails| JF1[Jellyfin Media Library]
-    end
+```
+PHASE 1: Library Indexing (Background)
+──────────────────────────────────────────────────────────────────────────────────
+  ┌───────────────────┐    1. Periodic crawl     ┌──────────────┐
+  │ Telegram Channels │ ───────────────────────► │ Sync Service │
+  └───────────────────┘                          └──────┬───────┘
+                                                        │ 2. Writes: .strm (links)
+                                                        │    + .nfo + thumbnails
+                                                        ▼
+                                                 ┌────────────────────────┐
+                                                 │ Jellyfin Media Library │
+                                                 └────────────────────────┘
 
-    subgraph PHASE2["PHASE 2: On-Demand Playback (Real-time)"]
-        direction LR
-        JF2[Jellyfin Media Library] -->|3. Presses Play,<br/>loads .strm URL| CLIENT[Playback Client<br/>(TV / phone / web)]
-        CLIENT -->|4. HTTP GET request<br/>(with Range)| RESOLVER[Resolver Service]
-        RESOLVER -->|6. HTTP 206 Stream<br/>(Partial Content)| CLIENT
-        TG2[Telegram Servers] <-->|5. On-demand stream<br/>(MTProto)| RESOLVER
-    end
+PHASE 2: On-Demand Playback (Real-time)
+──────────────────────────────────────────────────────────────────────────────────
+  ┌────────────────────────┐   3. Presses Play   ┌─────────────────┐
+  │ Jellyfin Media Library │ ──────────────────► │ Playback Client │ (TV/phone/web)
+  └────────────────────────┘   (loads .strm URL) └────┬───────▲────┘
+                                                      │       │
+                                 4. HTTP GET request  │       │ 6. HTTP 206 Stream
+                                    (with Range)      │       │    (Partial Content)
+                                                      ▼       │
+  ┌────────────────────────┐ 5. On-demand stream ┌────────────┴─────┐
+  │    Telegram Servers    │ ◄─────────────────► │ Resolver Service │
+  └────────────────────────┘      (MTProto)      └──────────────────┘
 ```
 
 The catalog and sidecar files are stored locally; video files remain in Telegram and stream on demand.
