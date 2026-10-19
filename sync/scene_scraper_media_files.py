@@ -29,14 +29,20 @@ def _update_media_files(
     poster_saved = False
     try:
         nfo_path = None
+        poster_path = None
         if conn is not None:
             try:
-                from sync.media_files import resolve_media_path
+                if __package__:
+                    from .media_files import resolve_media_path
+                else:
+                    from media_files import resolve_media_path
                 file_rows = conn.execute(
                     "SELECT file_path FROM synced_files WHERE video_id=%s ORDER BY file_path", (video_id,)
                 ).fetchall()
                 for (file_path,) in file_rows:
                     stream_path = resolve_media_path(str(file_path), media_dir)
+                    if poster_path is None:
+                        poster_path = stream_path.with_suffix(".jpg")
                     candidate = stream_path.with_suffix(".nfo")
                     if candidate.is_file() and not candidate.is_symlink():
                         nfo_path = candidate
@@ -49,8 +55,14 @@ def _update_media_files(
             comp_tail = parts[-2] if len(parts) > 2 else parts[-1]
             matches = list(media_dir.glob(f"*{comp_tail}*.nfo"))
             if len(matches) != 1:
-                return
+                if poster_path is not None and matched.poster_url:
+                    poster_saved = _download_scene_poster(
+                        matched.poster_url, poster_path, video_id, http_client=http_client,
+                    )
+                return poster_saved
             nfo_path = matches[0]
+        if poster_path is None:
+            poster_path = nfo_path.with_suffix(".jpg")
         # Read and patch NFO XML
         text = nfo_path.read_text(encoding="utf-8")
         import xml.etree.ElementTree as ET
@@ -190,42 +202,52 @@ def _update_media_files(
 
         # 5. Download and refresh the linked scene poster when available.
         if matched.poster_url:
-            jpg_path = nfo_path.with_suffix(".jpg")
-            client = http_client or _core.httpx
-            if client and not jpg_path.is_symlink():
-                resp = request_with_host_limit(
-                    client, "get", matched.poster_url,
-                    headers={"User-Agent": _core.USER_AGENT}, timeout=10.0,
-                )
-                if resp.status_code == 200 and len(resp.content) > 5000:
-                    try:
-                        from io import BytesIO
-                        from PIL import Image
-                        from common.image_utils import is_black_image
-                        image_bytes = b""
-                        with Image.open(BytesIO(resp.content)) as downloaded:
-                            downloaded.load()
-                            if not is_black_image(downloaded):
-                                output = BytesIO()
-                                downloaded.convert("RGB").save(output, format="JPEG", quality=92, optimize=True)
-                                image_bytes = output.getvalue()
-                        if len(image_bytes) > 5000:
-                            tmp = jpg_path.with_suffix(".jpg.tmp")
-                            tmp.write_bytes(image_bytes)
-                            tmp.replace(jpg_path)
-                            marker = jpg_path.with_suffix(".jpg.external")
-                            marker_tmp = marker.with_suffix(marker.suffix + ".tmp")
-                            marker_tmp.write_text(hashlib.sha256(image_bytes).hexdigest(), encoding="ascii")
-                            marker_tmp.replace(marker)
-                            poster_saved = True
-                            now_ts = _core.time.time()
-                            try:
-                                _core.os.utime(jpg_path, (now_ts, now_ts))
-                            except Exception:
-                                pass
-                    except Exception as image_error:
-                        _core.logger.debug("Rejected invalid poster for %s (%s)", video_id,
-                                           type(image_error).__name__)
+            poster_saved = _download_scene_poster(
+                matched.poster_url, poster_path, video_id, http_client=http_client,
+            )
     except Exception as e:
         _core.logger.debug("Could not update media files for %s: %s", video_id, e)
     return poster_saved
+
+
+def _download_scene_poster(url: str, jpg_path: Path, video_id: str,
+                           http_client: Optional[Any] = None) -> bool:
+    """Validate and save a linked scene poster, even when the NFO is absent."""
+    client = http_client or _core.httpx
+    if not client or jpg_path.is_symlink():
+        return False
+    try:
+        resp = request_with_host_limit(
+            client, "get", url,
+            headers={"User-Agent": _core.USER_AGENT}, timeout=10.0,
+        )
+        if resp.status_code != 200 or len(resp.content) <= 5000:
+            return False
+        from io import BytesIO
+        from PIL import Image
+        from common.image_utils import is_black_image
+        with Image.open(BytesIO(resp.content)) as downloaded:
+            downloaded.load()
+            if is_black_image(downloaded):
+                return False
+            output = BytesIO()
+            downloaded.convert("RGB").save(output, format="JPEG", quality=92, optimize=True)
+        image_bytes = output.getvalue()
+        if len(image_bytes) <= 5000:
+            return False
+        tmp = jpg_path.with_suffix(".jpg.tmp")
+        tmp.write_bytes(image_bytes)
+        tmp.replace(jpg_path)
+        marker = jpg_path.with_suffix(".jpg.external")
+        marker_tmp = marker.with_suffix(marker.suffix + ".tmp")
+        marker_tmp.write_text(hashlib.sha256(image_bytes).hexdigest(), encoding="ascii")
+        marker_tmp.replace(marker)
+        try:
+            _core.os.utime(jpg_path, (_core.time.time(), _core.time.time()))
+        except Exception:
+            pass
+        return True
+    except Exception as image_error:
+        _core.logger.debug("Could not save linked poster for %s (%s)", video_id,
+                           type(image_error).__name__)
+        return False

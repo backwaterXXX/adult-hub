@@ -1601,7 +1601,12 @@
         } else {
           announce('pHash task queued.');
         }
-        await loadDetail(video.id);
+        if (res.already_computed) {
+          genPhash.textContent = 'pHash already computed';
+          await loadDetail(video.id);
+        } else {
+          genPhash.textContent = 'pHash queued';
+        }
       } catch (err) {
         alert(`Failed to generate pHash: ${err.message || err}`);
         genPhash.disabled = false;

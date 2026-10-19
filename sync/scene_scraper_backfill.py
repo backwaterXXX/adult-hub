@@ -81,9 +81,19 @@ def _store_video_fingerprint(
         )
 
 
+def _is_generated_telegram_post_title(title: Any, video_id: str) -> bool:
+    """Recognize channel labels that simply repeat the Telegram post number."""
+    parts = str(video_id or "").split(":", 3)
+    if len(parts) < 3 or parts[0] != "telegram" or not parts[2].isdigit():
+        return False
+    value = str(title or "").strip()
+    marker = f" #{parts[2]}"
+    return bool(value[: -len(marker)].strip()) and value.casefold().endswith(marker.casefold())
+
+
 def _apply_matched_scene(conn: Any, media_dir: Path, video_id: str, matched: ScrapedScene,
                         http_client: Optional[Any] = None, now: Optional[int] = None) -> bool:
-    """Fill empty catalog fields and persist differences as review proposals."""
+    """Apply trusted scene metadata and persist other differences as proposals."""
     timestamp = int(_core.time.time()) if now is None else int(now)
     cursor = conn.execute("SELECT * FROM videos WHERE id=%s FOR UPDATE", (video_id,))
     row = cursor.fetchone()
@@ -99,6 +109,19 @@ def _apply_matched_scene(conn: Any, media_dir: Path, video_id: str, matched: Scr
             overrides = _core.json.loads(override_row[0])
         except (TypeError, ValueError):
             overrides = {}
+    if (isinstance(overrides, dict) and "title" in overrides
+            and _is_generated_telegram_post_title(overrides.get("title"), video_id)):
+        # Channel labels ending in the exact Telegram post number identify the
+        # promo post, not necessarily the video. Drop that generated override
+        # so a matched catalog title can replace it while preserving any other
+        # independent operator overrides.
+        overrides = dict(overrides)
+        overrides.pop("title", None)
+        conn.execute(
+            "UPDATE video_metadata_overrides SET fields=%s::jsonb,revision=revision+1,"
+            "updated_at=CURRENT_TIMESTAMP WHERE video_id=%s",
+            (_core.json.dumps(overrides, ensure_ascii=False), video_id),
+        )
 
     def list_value(value):
         if isinstance(value, str):
@@ -128,6 +151,10 @@ def _apply_matched_scene(conn: Any, media_dir: Path, video_id: str, matched: Scr
     if not isinstance(current_resolution, dict):
         current_resolution = {}
     matched_source = str(matched.source or "unknown")
+    normalized_source = matched_source.casefold()
+    has_scene_catalog_match = any(
+        provider in normalized_source for provider in ("stashdb", "theporndb", "tpdb")
+    )
     matched_priority = 100 if any(token in matched_source.casefold() for token in ("oshash", "phash", "fingerprint")) else 70
     current_priority = int(current_resolution.get("priority") or -1)
 
@@ -146,6 +173,12 @@ def _apply_matched_scene(conn: Any, media_dir: Path, video_id: str, matched: Scr
     review_changes = {}
     for field, candidate in candidates.items():
         if not has_value(candidate):
+            continue
+        # A confirmed StashDB/ThePornDB scene match is the canonical title
+        # source. Keep an explicit operator override, but replace Telegram's
+        # supplied title and avoid creating a redundant review proposal.
+        if field == "title" and has_scene_catalog_match and field not in overrides:
+            auto_values[field] = candidate
             continue
         if field == "performers" and field in overrides:
             continue

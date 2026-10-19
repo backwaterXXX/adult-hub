@@ -36,7 +36,7 @@ _RangeHandler = _fingerprint_mp4._RangeHandler
 _relocated_moov = _fingerprint_mp4._relocated_moov
 _top_level_layout = _fingerprint_mp4._top_level_layout
 
-DEFAULT_BYTE_BUDGET = 192 * 1024 * 1024
+DEFAULT_BYTE_BUDGET = 256 * 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 1200
 PREFETCH_BYTES = 128 * 1024
 
