@@ -427,10 +427,11 @@ class TestBackfillScenes(PgTestCase):
         vid_id = "telegram:-1001:42:999"
         self.conn.execute(
             """
-            INSERT INTO videos (id, provider, title, slug, duration, performers, studio, first_seen, last_seen)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO videos (id, provider, title, slug, duration, performers, studio, first_seen, last_seen, source_text)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (vid_id, "telegram", "Summer Buddies", "999", 780, json.dumps(["Aiden Shaw"]), "Falcon Studios", 1000, 1000),
+            (vid_id, "telegram", "Summer Buddies", "999", 780, json.dumps(["Aiden Shaw"]), "Falcon Studios", 1000, 1000,
+             "Title: Summer Buddies\nCast: Aiden Shaw"),
         )
         self.conn.commit()
 
@@ -462,7 +463,7 @@ class TestBackfillScenes(PgTestCase):
             url="https://stashdb.org/scenes/stash-uuid-12345",
         )
 
-        with patch("scene_scrapers.search_scene", return_value=mock_scene), \
+        with patch("scene_scraper_text_sources.search_scene_by_exact_title", return_value=mock_scene), \
              patch("scene_scrapers.backfill_telegram_fingerprints", return_value=(0, 0)), \
              patch("scene_scrapers.backfill_missing_telegram_oshashes", return_value=(0, 0)):
             checked, updated = backfill_scenes(self.conn, self.media_dir, limit=10, sleep_sec=0)
@@ -568,7 +569,7 @@ class TestBackfillScenes(PgTestCase):
             )
         self.conn.commit()
 
-        with patch.dict(os.environ, {"TELEGRAM_FINGERPRINTS_ENABLED": "true"}), \
+        with patch.dict(os.environ, {"TELEGRAM_FINGERPRINTS_ENABLED": "true", "TELEGRAM_PHASH_ENABLED": "false"}), \
              patch("scene_scrapers.search_scene_by_oshash", return_value=None):
             self.assertEqual(backfill_telegram_fingerprints(
                 self.conn, self.media_dir, limit=10, sleep_sec=0,
@@ -625,9 +626,9 @@ class TestBackfillScenes(PgTestCase):
                                     ("2", "No listing for Bob", 2000),
                                     ("3", "No listing for Carol", 3000)):
             self.conn.execute(
-                "INSERT INTO videos (id,provider,title,studio,performers,first_seen,last_seen) "
-                "VALUES (%s,'telegram',%s,'Unknown Studio','[]',%s,%s)",
-                (f"telegram:-1001:{suffix}:unique", title, seen, seen))
+                "INSERT INTO videos (id,provider,title,studio,performers,first_seen,last_seen,source_text) "
+                "VALUES (%s,'telegram',%s,'Unknown Studio','[]',%s,%s,%s)",
+                (f"telegram:-1001:{suffix}:unique", title, seen, seen, f"Title: {title}"))
         self.conn.commit()
         titles = []
 
@@ -635,7 +636,7 @@ class TestBackfillScenes(PgTestCase):
             titles.append(kwargs["title"])
             return None
 
-        with patch("scene_scrapers.search_scene", side_effect=no_match), \
+        with patch("scene_scraper_text_sources.search_scene_by_exact_title", side_effect=no_match), \
              patch("scene_scrapers.backfill_telegram_fingerprints", return_value=(0, 0)), \
              patch("scene_scrapers.backfill_missing_telegram_oshashes", return_value=(0, 0)):
             self.assertEqual(backfill_scenes(self.conn, self.media_dir, limit=1, sleep_sec=0), (1, 0))
@@ -643,7 +644,7 @@ class TestBackfillScenes(PgTestCase):
         self.assertEqual(titles, ["No listing for Alice", "No listing for Bob"])
         states = self.conn.execute(
             "SELECT entity_key,outcome FROM external_metadata_attempts "
-            "WHERE entity_type='video' AND source='studio_scene' ORDER BY entity_key"
+            "WHERE entity_type='video' AND source='telegram_caption_title_exact_v1' ORDER BY entity_key"
         ).fetchall()
         self.assertEqual(len(states), 2)
         self.assertTrue(all(row[1] == "no_match" for row in states))

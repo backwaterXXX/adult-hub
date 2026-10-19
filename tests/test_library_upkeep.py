@@ -234,7 +234,7 @@ class TestDeadStreamSweep(BaseUpkeepTest):
             " performers, categories, first_seen, last_seen, tags, embed_host,"
             " playable, stream_checked, stream_fails)"
             " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (vid, vid.split(":")[0], "T", "s", 60, "", "[]",
+            (vid, vid.split(":")[0], "T", "s", 600, "", "[]",
              '["G"]', 1, 100, "[]", "", playable, checked, fails))
         conn.commit()
 
