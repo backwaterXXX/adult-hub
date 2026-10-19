@@ -475,12 +475,12 @@ class TestBackfillScenes(PgTestCase):
         row = self.conn.execute("SELECT plot, date_released, performers, scene_matched_at FROM videos WHERE id = %s", (vid_id,)).fetchone()
         self.assertEqual(row[0], "Sweaty gym jocks action.")
         self.assertEqual(row[1], "2006-06-01")
-        self.assertEqual(json.loads(row[2]), ["Aiden Shaw"])
+        self.assertEqual(json.loads(row[2]), ["Aiden Shaw", "Alec Campbell"])
         self.assertGreater(row[3], 0)
         proposal = self.conn.execute(
             "SELECT changes FROM metadata_review_proposals WHERE video_id=%s AND status='pending'", (vid_id,),
         ).fetchone()
-        self.assertEqual(json.loads(proposal[0])["performers"], ["Aiden Shaw", "Alec Campbell"])
+        self.assertIsNone(proposal)
 
         # Check NFO update
         updated_nfo = nfo_path.read_text(encoding="utf-8")
