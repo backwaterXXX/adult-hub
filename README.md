@@ -12,6 +12,21 @@ Videos stream from Telegram when you play them, so Adult Hub does not download a
 2. Jellyfin displays the videos with their titles, performer information, and artwork.
 3. Choose a video in Jellyfin to stream it directly from Telegram. You can watch on your TV, phone, or web browser.
 
+```mermaid
+flowchart LR
+    TG[Telegram channels] -->|channel sync| S[Adult Hub sync]
+    S -->|catalog metadata| DB[(PostgreSQL)]
+    S -->|STRM, NFO, artwork| F[Local library files]
+    DB --> J[Jellyfin]
+    F --> J
+    J -->|library and playback link| P[Player]
+    P -->|playback request| R[Adult Hub resolver]
+    R -->|video stream on demand| TG
+    R <--> DB
+```
+
+The catalog and sidecar files are stored locally; video files remain in Telegram and stream on demand.
+
 ---
 
 ## Key Features
