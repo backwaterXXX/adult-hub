@@ -468,7 +468,8 @@ class TestBackfillScenes(PgTestCase):
              patch("scene_scrapers.backfill_missing_telegram_oshashes", return_value=(0, 0)):
             checked, updated = backfill_scenes(self.conn, self.media_dir, limit=10, sleep_sec=0)
 
-        self.assertEqual((checked, updated), (1, 1))
+        # The title lookup and official performer-alias pass both inspect this row.
+        self.assertEqual((checked, updated), (2, 1))
 
         # Check DB update
         row = self.conn.execute("SELECT plot, date_released, performers, scene_matched_at FROM videos WHERE id = %s", (vid_id,)).fetchone()
@@ -632,8 +633,8 @@ class TestBackfillScenes(PgTestCase):
         self.conn.commit()
         titles = []
 
-        def no_match(**kwargs):
-            titles.append(kwargs["title"])
+        def no_match(title, **_kwargs):
+            titles.append(title)
             return None
 
         with patch("scene_scraper_text_sources.search_scene_by_exact_title", side_effect=no_match), \
