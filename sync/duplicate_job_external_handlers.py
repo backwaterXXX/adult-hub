@@ -60,6 +60,41 @@ def execute_external_operation(action, conn, job_id, payload, media_dir, service
         result["local_state"] = "metadata_scan_completed"
         return result, True
 
+    if action == "telegram_fingerprint_scan":
+        video_ids = payload.get("video_ids")
+        if (not isinstance(video_ids, list) or not 1 <= len(video_ids) <= 100
+                or any(not isinstance(video_id, str) or not video_id for video_id in video_ids)
+                or len(set(video_ids)) != len(video_ids)):
+            raise ValueError("Telegram fingerprint scan requires 1–100 unique video IDs.")
+        eligible = {
+            row[0] for row in conn.execute(
+                """SELECT id FROM videos WHERE id=ANY(%s) AND provider='telegram'
+                   AND duration>0 AND duration<10800
+                   AND NOT (left(lower(coalesce(scene_match_source,'')),7)='stashdb'
+                            AND nullif(scene_match_external_id,'') IS NOT NULL)""",
+                (video_ids,),
+            ).fetchall()
+        }
+        if eligible != set(video_ids):
+            raise ValueError("One or more videos no longer meet the Telegram fingerprint scan criteria.")
+        if services.telegram_fingerprint_scan is None:
+            raise RuntimeError("Telegram fingerprint scanning is unavailable in this worker.")
+
+        def report_scan_progress(completed, total, _job_id=job_id):
+            _core._record_job_progress(
+                conn, _job_id, "metadata_scenes", completed=completed, total=total,
+            )
+
+        checked, enriched = services.telegram_fingerprint_scan(
+            conn, media_dir, video_ids, report_scan_progress,
+        )
+        return {
+            "videos_requested": len(video_ids),
+            "videos_checked": int(checked or 0),
+            "metadata_enriched": int(enriched or 0),
+            "local_state": "telegram_fingerprint_scan_completed",
+        }, True
+
     if action == "collections_refresh":
         _core._record_job_progress(conn, job_id, "refreshing_collections")
         from common.managed_collections import refresh_managed_collections

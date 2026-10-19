@@ -12,10 +12,15 @@ import tempfile
 import threading
 import time
 from io import BytesIO
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import quote
 
 import httpx
+from common.telegram_transfer_budget import (
+    DailyTelegramTransferBudgetExceeded,
+    DailyTelegramTransferBudgetUnavailable,
+    reserve_telegram_fingerprint_bytes,
+)
 
 
 if __package__:
@@ -31,8 +36,8 @@ _RangeHandler = _fingerprint_mp4._RangeHandler
 _relocated_moov = _fingerprint_mp4._relocated_moov
 _top_level_layout = _fingerprint_mp4._top_level_layout
 
-DEFAULT_BYTE_BUDGET = 32 * 1024 * 1024
-DEFAULT_TIMEOUT_SECONDS = 180
+DEFAULT_BYTE_BUDGET = 192 * 1024 * 1024
+DEFAULT_TIMEOUT_SECONDS = 1200
 PREFETCH_BYTES = 128 * 1024
 
 
@@ -52,7 +57,8 @@ class FingerprintBudget:
 
     def __init__(self, video_id: str, *, budget: int = DEFAULT_BYTE_BUDGET,
                  resolver_url: Optional[str] = None,
-                 max_bytes_per_second: Optional[int] = None,
+                 max_bytes_per_second: Optional[int | Callable[[], int]] = None,
+                 allow_rate_above_configured: bool = False,
                  cache_dir: Optional[str] = None, cache_id: Optional[str] = None):
         base = (resolver_url or os.environ.get("RESOLVER_API_URL") or "http://resolver:8090").rstrip("/")
         self.base_url = base if base.endswith("/admin") else base + "/admin"
@@ -64,9 +70,8 @@ class FingerprintBudget:
         self.lock = threading.Lock()
         self.cache_segments: list[tuple[int, bytes]] = []
         self.http_client = httpx
-        self.max_bytes_per_second = (
-            max(1, int(max_bytes_per_second)) if max_bytes_per_second is not None else None
-        )
+        self.max_bytes_per_second = max_bytes_per_second
+        self.allow_rate_above_configured = bool(allow_rate_above_configured)
         self._next_fetch_at = 0.0
         self.cache_dir = None
         self.usage_path = None
@@ -97,8 +102,17 @@ class FingerprintBudget:
     def _reserve(self, byte_count: int) -> bool:
         """Persist the charge before network I/O so crashes cannot reset the cap."""
         with self.lock:
+            configured_rate = self.max_bytes_per_second
+            if callable(configured_rate):
+                configured_rate = configured_rate()
+            if configured_rate is not None:
+                configured_rate = max(1, int(configured_rate))
             if self.bytes_read + byte_count > self.budget:
                 return False
+            reserve_telegram_fingerprint_bytes(
+                byte_count, max_bytes_per_second=configured_rate,
+                allow_rate_above_configured=self.allow_rate_above_configured,
+            )
             self.bytes_read += byte_count
             if self.usage_path is not None:
                 self._write_usage()
@@ -223,11 +237,11 @@ class FingerprintBudget:
             length = min(length, remaining)
             if not self._reserve(length):
                 break
-            self._wait_for_rate_slot(length)
             end = fetch_start + length - 1
             with self.http_client.stream(
                 "GET", self.stream_url,
-                headers={"Range": f"bytes={fetch_start}-{end}"}, timeout=20.0,
+                headers={"Range": f"bytes={fetch_start}-{end}",
+                         "X-Adult-Hub-Transfer": "phash"}, timeout=20.0,
             ) as response:
                 if response.status_code != 206:
                     raise ValueError("Resolver did not honor a bounded byte range")
@@ -259,7 +273,8 @@ def _stash_phash(image) -> str:
 def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_BYTE_BUDGET,
                    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
                    resolver_url: Optional[str] = None,
-                   max_bytes_per_second: Optional[int] = None,
+                   max_bytes_per_second: Optional[int | Callable[[], int]] = None,
+                   allow_rate_above_configured: bool = False,
                    cache_dir: Optional[str] = None, cache_id: Optional[str] = None,
                    include_thumbnail: bool = False):
     """Generate the Stash video pHash using a strict cumulative range budget.
@@ -274,6 +289,8 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
         import shutil
         from PIL import Image
         from stash_phash.video import combine_images
+        from common.image_utils import compute_dhash, is_black_image, is_bumper_hash
+        from sync.thumbnails import _get_cached_bumper_hashes, _valid_thumbnail_bytes
     except ImportError as exc:
         raise RuntimeError("Pillow is required for pHash generation") from exc
     ffmpeg = shutil.which("ffmpeg")
@@ -285,6 +302,7 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
         budget=byte_budget,
         resolver_url=resolver_url,
         max_bytes_per_second=max_bytes_per_second,
+        allow_rate_above_configured=allow_rate_above_configured,
         cache_dir=cache_dir,
         cache_id=cache_id,
     )
@@ -300,6 +318,7 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
     deadline = time.monotonic() + max(1, int(timeout_seconds))
     frames = []
     thumbnail_bytes = None
+    thumbnail_candidates = []
     sample_times = _stash_sample_times(duration)
     try:
         video_url = f"http://127.0.0.1:{server.server_address[1]}/video.mp4"
@@ -322,7 +341,12 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
                     f"after reading {budget.bytes_read} bytes"
                 ) from exc
             if result.returncode != 0 or not result.stdout:
-                if "budget exhausted" in str(getattr(server, "transfer_error", "")).lower():
+                transfer_error = str(getattr(server, "transfer_error", "")).lower()
+                if "fingerprint transfer ledger" in transfer_error:
+                    raise DailyTelegramTransferBudgetUnavailable(transfer_error)
+                if "telegram fingerprint daily transfer" in transfer_error:
+                    raise DailyTelegramTransferBudgetExceeded(transfer_error)
+                if "budget exhausted" in transfer_error:
                     raise FingerprintBudgetExceeded(
                         f"pHash job exhausted its {budget.budget}-byte transfer budget "
                         f"after reserving {budget.bytes_read} bytes"
@@ -336,25 +360,46 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
             if image.width != 160:
                 raise RuntimeError("ffmpeg returned an unexpected pHash frame size")
             frames.append(image)
-            if include_thumbnail and index == 12:
+            if include_thumbnail:
+                try:
+                    if is_black_image(image):
+                        continue
+                    bumper_hashes = _get_cached_bumper_hashes()
+                    if bumper_hashes and is_bumper_hash(compute_dhash(image), bumper_hashes, max_distance=4):
+                        continue
+                    thumbnail_candidates.append(index)
+                except Exception:
+                    # A failed optional quality check must not fail fingerprint generation.
+                    thumbnail_candidates.append(index)
+
+        if include_thumbnail:
+            # Prefer the central frame, then nearby samples; avoid black frames and
+            # known studio bumpers before persisting a fallback poster.
+            thumbnail_candidates.sort(key=lambda index: (abs(index - 12), index))
+            bumper_hashes = _get_cached_bumper_hashes()
+            for index in thumbnail_candidates:
                 thumbnail_timeout = max(1.0, min(120.0, deadline - time.monotonic()))
                 thumb = subprocess.run(
                     [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-ss",
-                     str(timestamp), "-seekable", "1", "-i", video_url, "-frames:v", "1",
+                     str(sample_times[index]), "-seekable", "1", "-i", video_url, "-frames:v", "1",
                      "-vf", "scale='min(640,iw)':-2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=thumbnail_timeout, check=False,
                 )
                 if thumb.returncode != 0 or not thumb.stdout or len(thumb.stdout) > 2_000_000:
-                    raise RuntimeError("ffmpeg could not extract the pHash thumbnail")
+                    continue
                 with Image.open(BytesIO(thumb.stdout)) as thumbnail:
                     thumbnail = thumbnail.convert("RGB")
                     if not (320 <= thumbnail.width <= 1280) or not (1 <= thumbnail.height <= 2048):
-                        raise RuntimeError("ffmpeg returned an unsupported thumbnail size")
+                        continue
                     output = BytesIO()
                     thumbnail.save(output, format="JPEG", quality=84, optimize=True)
-                    thumbnail_bytes = output.getvalue()
-                if len(thumbnail_bytes) > 1_500_000:
-                    raise RuntimeError("pHash thumbnail exceeded its size limit")
+                    candidate_bytes = output.getvalue()
+                if len(candidate_bytes) > 1_500_000:
+                    continue
+                if _valid_thumbnail_bytes(candidate_bytes, "phash://frame", bumper_hashes,
+                                          minimum_size=(180, 320)):
+                    thumbnail_bytes = candidate_bytes
+                    break
 
         sprite = combine_images(frames)
         result = (_stash_phash(sprite), budget.bytes_read)

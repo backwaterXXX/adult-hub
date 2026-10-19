@@ -218,6 +218,7 @@ class VideoItem:
     source_text: str = ""
     source_filename: str = ""
     performer_proposals: List[Dict[str, str]] = field(default_factory=list)
+    performer_resolution: Optional[Dict[str, object]] = None
 
 @dataclass
 class CategoryItem:

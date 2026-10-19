@@ -181,7 +181,7 @@ def strip_scene_suffix(name: str) -> str:
     return curr
 
 
-def normalize_performers(names, alias_map: Optional[dict] = None) -> List[str]:
+def normalize_performers(names, alias_map: Optional[dict] = None, *, preserve_literal: bool = False) -> List[str]:
     """Deduplicate performer names, preserving first-seen order.
 
     Strips whitespace, unescapes HTML entities, strips parenthesized handles
@@ -192,6 +192,19 @@ def normalize_performers(names, alias_map: Optional[dict] = None) -> List[str]:
     alias_map is provided, drops empty entries, and prunes explicit duplicates.
     Accepts None or any iterable; always returns a new list.
     """
+    if preserve_literal:
+        seen = set()
+        literal = []
+        for raw in names or []:
+            if raw is None:
+                continue
+            name = html.unescape(str(raw)).strip()
+            key = name.casefold()
+            if name and key not in seen:
+                seen.add(key)
+                literal.append(name)
+        return literal
+
     seen_lower: Dict[str, int] = {}
     out: List[str] = []
     for raw in names or []:

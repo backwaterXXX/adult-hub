@@ -94,11 +94,11 @@ class TestMigrationsEngine(PgTestCase):
         status_part1 = get_migration_status(self.conn)
         self.assertFalse(status_part1.is_up_to_date)
         self.assertEqual(status_part1.current_version, 2)
-        self.assertEqual([m.version for m in status_part1.pending], list(range(3, 9)) + [1] + list(range(10, 42)))
+        self.assertEqual([m.version for m in status_part1.pending], list(range(3, 9)) + [1] + list(range(10, 46)))
 
         # Complete remaining migrations
         applied_part2 = apply_migrations(self.conn)
-        self.assertEqual([m.version for m in applied_part2], list(range(3, 9)) + [1] + list(range(10, 42)))
+        self.assertEqual([m.version for m in applied_part2], list(range(3, 9)) + [1] + list(range(10, 46)))
 
         status_final = get_migration_status(self.conn)
         self.assertTrue(status_final.is_up_to_date)
@@ -107,7 +107,7 @@ class TestMigrationsEngine(PgTestCase):
     def test_recreate_database_clears_old_data_and_reapplies(self):
         recreate_database(self.conn)
         with self.conn:
-            self.conn.execute("INSERT INTO videos (id, title) VALUES ('v-test-1', 'Test Video')")
+            self.conn.execute("INSERT INTO videos (id, title, duration) VALUES ('v-test-1', 'Test Video', 600)")
 
         row = self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone()
         self.assertEqual(row[0], "v-test-1")
@@ -130,7 +130,7 @@ class TestMigrationsEngine(PgTestCase):
 
         applied = apply_migrations(self.conn)
 
-        self.assertEqual([record.version for record in applied], [1] + list(range(10, 42)))
+        self.assertEqual([record.version for record in applied], [1] + list(range(10, 46)))
         row = self.conn.execute(
             "SELECT title, EXTRACT(EPOCH FROM first_seen) FROM videos WHERE id = %s",
             ("existing:v8",),
@@ -161,12 +161,16 @@ class TestMigrationsEngine(PgTestCase):
             (39, "0039_drop_fuzzy_performer_reviews"),
             (40, "0040_performer_profile_overrides"),
             (41, "0041_performer_external_links"),
+            (42, "0042_telegram_performer_resolution"),
+            (43, "0043_telegram_unavailable_quarantine"),
+            (44, "0044_minimum_video_duration"),
+            (45, "0045_external_metadata_error_detail"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):
         recreate_database(self.conn)
         self.conn.execute(
-            "INSERT INTO videos (id, title) VALUES (%s, %s)",
+            "INSERT INTO videos (id, title, duration) VALUES (%s, %s, 600)",
             ("existing:v9", "Keep interim data"),
         )
         self.conn.execute(
@@ -176,34 +180,16 @@ class TestMigrationsEngine(PgTestCase):
 
         applied = apply_migrations(self.conn)
 
-        self.assertEqual([record.version for record in applied], [1] + list(range(10, 42)))
+        # The interim baseline only needs renumbering. Later migrations are
+        # already recorded and must not be replayed over the current schema.
+        self.assertEqual([record.version for record in applied], [1])
         row = self.conn.execute(
             "SELECT title FROM videos WHERE id = %s", ("existing:v9",)
         ).fetchone()
         self.assertEqual(row[0], "Keep interim data")
         records = get_applied_migrations(self.conn)
         self.assertEqual([(record.version, record.name) for record in records], [
-            (1, "0001_baseline"), (10, "0010_admin_operation_plans"), (11, "0011_video_metadata_overrides"),
-            (12, "0012_video_availability_checks"), (13, "0013_admin_audit_items"),
-            (14, "0014_admin_schedules"), (15, "0015_admin_audit_nfo_findings"),
-            (16, "0016_admin_audit_jellyfin_state"), (17, "0017_admin_audit_artwork"),
-            (18, "0018_admin_action_events"), (19, "0019_admin_change_events"),
-            (20, "0020_admin_audit_operations_schedules"), (21, "0021_performer_catalog"),
-            (22, "0022_telegram_performer_rebuild_backup"), (23, "0023_admin_quality_center"),
-            (24, "0024_admin_orphan_quarantine"), (25, "0025_admin_quality_acknowledgements"),
-            (26, "0026_external_metadata_attempts"), (27, "0027_video_fingerprints"),
-            (28, "0028_phash_provenance"), (29, "0029_oshash_media_probe"),
-            (30, "0030_video_duplicate_decision_operation_index"),
-            (31, "0031_video_scene_match_provenance"),
-            (32, "0032_history_retention_indexes"),
-            (33, "0033_video_duplicate_rules_provenance"),
-            (34, "0034_video_phash_thumbnails"),
-            (35, "0035_fuzzy_performer_reviews"),
-            (36, "0036_metadata_review_proposals"), (37, "0037_video_phash_jobs"),
-            (38, "0038_video_phash_job_processing_time"),
-            (39, "0039_drop_fuzzy_performer_reviews"),
-            (40, "0040_performer_profile_overrides"),
-            (41, "0041_performer_external_links"),
+            (1, "0001_baseline"),
         ])
 
     def test_admin_audit_extension_preserves_existing_rows_and_accepts_new_types(self):

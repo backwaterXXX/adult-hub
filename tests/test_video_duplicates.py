@@ -617,9 +617,9 @@ class TestVideoDuplicateCandidates(PgTestCase):
 
     def test_telegram_ref_remains_identity_when_slug_conflicts(self):
         self.add_video("telegram:-1001:1:900719925474099312345", "#OnlyFans",
-                       provider="telegram", slug="wrong", duration=0)
+                       provider="telegram", slug="wrong", duration=600)
         self.add_video("telegram:-1001:2:900719925474099312345", "Men",
-                       provider="telegram", slug="900719925474099312345", duration=0)
+                       provider="telegram", slug="900719925474099312345", duration=600)
         result = find_duplicate_candidates(TEST_URL)
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["pairs"][0]["category"], "Same file")
@@ -751,7 +751,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
     def test_same_file_group_over_250_is_one_group(self):
         for i in range(260):
             self.add_video(f"telegram:-1001:{i+1}:hugeopaqueid", f"title {i}", provider="telegram",
-                           slug="hugeopaqueid", duration=0, performers=[])
+                           slug="hugeopaqueid", duration=600, performers=[])
         result = find_duplicate_candidates(TEST_URL, limit=5)
         self.assertEqual(result["total"], 1)
         self.assertEqual(len(result["pairs"][0]["members"]), 260)

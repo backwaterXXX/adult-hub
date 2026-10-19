@@ -28,7 +28,7 @@ CAPABILITIES_PATH = os.getenv("PHASH_WORKER_CAPABILITIES_PATH", "/data/cache/pha
 HEALTH_URL = "http://127.0.0.1:8090/admin/health/ready"
 POLL_SECONDS = 2
 HEARTBEAT_SECONDS = 15
-MAX_TIMEOUT_SECONDS = 900
+MAX_TIMEOUT_SECONDS = 1200
 MAX_BYTE_BUDGET = 192 * 1024 * 1024
 PHASH_RANGE_CACHE_DIR = os.getenv("PHASH_RANGE_CACHE_DIR", "/data/cache/phash-ranges")
 PHASH_RANGE_CACHE_TTL_SECONDS = 24 * 60 * 60
@@ -68,19 +68,36 @@ def _resolver_ready() -> bool:
 def _compute(job: dict) -> dict:
     script = r"""
 import base64, json, os, sys
+from common.telegram_transfer_budget import (
+    DailyTelegramTransferBudgetExceeded,
+    DailyTelegramTransferBudgetUnavailable,
+)
+from common.telegram_playback_activity import has_active_playback
 from resolver_video_fingerprints import FingerprintBudgetExceeded, telegram_phash
 payload = json.load(sys.stdin)
+
+def phash_transfer_rate():
+    # Read the shared lease before each bounded range request. If the ledger
+    # cannot be read, has_active_playback() deliberately selects the slow rate.
+    return (payload['playback_bytes_per_second'] if has_active_playback()
+            else payload['idle_bytes_per_second'])
+
 try:
     fingerprint, bytes_read, thumbnail = telegram_phash(
         payload['video_id'], payload['duration_us'] / 1000000,
         byte_budget=payload['byte_budget'], timeout_seconds=payload['timeout_seconds'],
         resolver_url='http://127.0.0.1:8090/admin',
-        max_bytes_per_second=payload['bytes_per_second'],
+        max_bytes_per_second=phash_transfer_rate,
+        allow_rate_above_configured=True,
         cache_dir=payload['cache_dir'], cache_id=payload['cache_id'], include_thumbnail=True)
     if not thumbnail:
         raise ValueError('thumbnail_missing')
     print(json.dumps({'ok': True, 'fingerprint': fingerprint, 'bytes_read': bytes_read,
                       'thumbnail': base64.b64encode(thumbnail).decode('ascii')}))
+except DailyTelegramTransferBudgetExceeded:
+    print(json.dumps({'ok': False, 'error_code': 'daily_transfer_budget_exhausted', 'retryable': False}))
+except DailyTelegramTransferBudgetUnavailable:
+    print(json.dumps({'ok': False, 'error_code': 'transfer_budget_unavailable', 'retryable': False}))
 except FingerprintBudgetExceeded:
     print(json.dumps({'ok': False, 'error_code': 'byte_budget_exhausted', 'retryable': False}))
 except TimeoutError:
@@ -98,8 +115,10 @@ except Exception:
                                   int(os.getenv("PHASH_SERVER_BYTE_BUDGET", str(MAX_BYTE_BUDGET))))),
         "timeout_seconds": max(30, min(MAX_TIMEOUT_SECONDS,
                                        int(os.getenv("PHASH_SERVER_TIMEOUT_SECONDS", "600")))),
-        "bytes_per_second": max(64 * 1024, min(4 * 1024 * 1024,
-                                               int(os.getenv("PHASH_SERVER_BYTES_PER_SECOND", str(512 * 1024))))),
+        "playback_bytes_per_second": max(64 * 1024, min(10_000_000,
+            int(os.getenv("PHASH_SERVER_BYTES_PER_SECOND", str(256 * 1024))))),
+        "idle_bytes_per_second": max(64 * 1024, min(10_000_000,
+            int(os.getenv("PHASH_SERVER_IDLE_BYTES_PER_SECOND", "10000000")))),
         "cache_dir": PHASH_RANGE_CACHE_DIR,
         "cache_id": job["id"],
     }

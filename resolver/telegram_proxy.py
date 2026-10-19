@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from fastapi import HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from common import telegram_playback_activity
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,14 @@ async def proxy_telegram_response(
             trace.set_status(502)
             await services.asyncio.to_thread(trace.finish, "error", "TelegramProviderUnavailable")
         raise HTTPException(status_code=502, detail="Telegram provider not available")
+    authorize = getattr(prov, "is_channel_authorized", None)
+    if callable(authorize):
+        channel_ref = ref.rsplit(":", 2)[0]
+        if not authorize(channel_ref):
+            if trace:
+                trace.set_status(403)
+                await services.asyncio.to_thread(trace.finish, "error", "TelegramChannelUnauthorized")
+            raise HTTPException(status_code=403, detail="Telegram channel is not authorized")
     dl = getattr(prov, "download_range", None)
     if not callable(dl):
         if trace:
@@ -130,11 +139,40 @@ async def proxy_telegram_response(
             await services.asyncio.to_thread(trace.finish, "error", type(e).__name__)
         raise HTTPException(status_code=502, detail=f"Telegram download failed: {e}")
 
+    # pHash reads use this same bounded range endpoint. Exclude only the
+    # resolver's loopback worker requests; every client playback remains
+    # visible to the cross-container rate controller.
+    client_host = getattr(getattr(request, "client", None), "host", "")
+    worker_request = (
+        request.headers.get("x-adult-hub-transfer", "").lower() == "phash"
+        and client_host in {"127.0.0.1", "::1"}
+    )
+    playback_handle = None
+    if not is_head and not worker_request:
+        try:
+            playback_handle = await services.asyncio.to_thread(
+                telegram_playback_activity.begin_playback,
+            )
+        except Exception:
+            # Playback must continue even if the optional activity ledger fails.
+            playback_handle = None
+
     async def _tg_gen():
         outcome = "completed"
         error_type = None
         iterator = stream.__aiter__()
+        heartbeat_task = None
+
+        async def heartbeat():
+            while True:
+                await services.asyncio.sleep(15)
+                await services.asyncio.to_thread(
+                    telegram_playback_activity.refresh_playback, playback_handle,
+                )
+
         try:
+            if playback_handle:
+                heartbeat_task = services.asyncio.create_task(heartbeat())
             while True:
                 if trace:
                     trace.set_phase("telegram_read")
@@ -164,6 +202,19 @@ async def proxy_telegram_response(
             error_type = type(e).__name__
             raise
         finally:
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except services.asyncio.CancelledError:
+                    pass
+            if playback_handle:
+                try:
+                    await services.asyncio.to_thread(
+                        telegram_playback_activity.end_playback, playback_handle,
+                    )
+                except Exception:
+                    pass
             if trace:
                 await services.asyncio.to_thread(trace.finish, outcome, error_type)
             close_iterator = getattr(iterator, "aclose", None)

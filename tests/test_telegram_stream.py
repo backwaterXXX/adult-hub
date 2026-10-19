@@ -723,6 +723,30 @@ async def response_body(resp):
 class TestTelegramHeadAndRange(unittest.IsolatedAsyncioTestCase):
     """Focused app.py Telegram HEAD/range tests (new file only)."""
 
+    async def test_unauthorized_channel_range_fails_before_streaming(self):
+        _require_resolver(self)
+        from fastapi import HTTPException
+        from unittest.mock import patch
+
+        class UnauthorizedProvider(FakeRefProvider):
+            def is_channel_authorized(self, channel_ref):
+                return False
+
+            async def file_size(self, ref):
+                raise AssertionError("must reject before metadata lookup")
+
+            async def download_range(self, ref, offset, length):
+                raise AssertionError("must not start a media stream")
+
+        provider = UnauthorizedProvider(b"payload")
+        with patch.object(resolver_app, "get_provider", return_value=provider):
+            with self.assertRaises(HTTPException) as raised:
+                await resolver_app._proxy_telegram_response(
+                    _fake_request("GET", "bytes=0-65535"),
+                    "tg://-1001234567890:42:999",
+                )
+        self.assertEqual(raised.exception.status_code, 403)
+
     async def test_head_matches_get_headers_without_consuming_iterator(self):
         _require_resolver(self)
         payload = bytes(i % 251 for i in range(100_000))

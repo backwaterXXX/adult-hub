@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 from typing import Any, Optional
 from urllib.parse import quote
+from common.telegram_transfer_budget import reserve_telegram_fingerprint_bytes
 
 try:
     from sync.scene_scraper_models import TelegramOshashResult
@@ -106,6 +107,7 @@ def telegram_oshash(video_id: str, *, http_client: Optional[Any] = None) -> Tele
         expected = end - start + 1
         if expected <= 0 or read + expected > budget:
             raise ValueError("Telegram fingerprint byte budget exceeded")
+        reserve_telegram_fingerprint_bytes(expected)
         response_context = client.stream(
             "GET", url, headers={"Range": f"bytes={start}-{end}"}, timeout=30.0,
         )
@@ -132,7 +134,10 @@ def telegram_oshash(video_id: str, *, http_client: Optional[Any] = None) -> Tele
     head, size = fetch_range(0, _core.TELEGRAM_HASH_BLOCK - 1)
     if size <= _core.TELEGRAM_HASH_BLOCK:
         raise ValueError("Video is too small for OSHASH")
-    tail_start = max(_core.TELEGRAM_HASH_BLOCK, size - _core.TELEGRAM_HASH_BLOCK)
+    # The first and last OSHASH blocks overlap for files smaller than 128 KiB.
+    # Keep the last block complete; clamping to the end of the head made the
+    # tail short and rejected otherwise valid files in that size range.
+    tail_start = size - _core.TELEGRAM_HASH_BLOCK
     tail, tail_size = fetch_range(tail_start, size - 1)
     if tail_size != size or len(tail) != _core.TELEGRAM_HASH_BLOCK:
         raise ValueError("Video size changed while calculating OSHASH")

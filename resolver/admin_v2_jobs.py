@@ -102,6 +102,14 @@ def _result_summary(job: dict) -> str | None:
                 summary.append(f"{failed} provider {noun} reported {verb}")
             detail = f" {', '.join(summary)}." if summary else " completed."
             return f"External metadata scan{detail} Open System to review cumulative progress."
+        if (job.get("action") == "telegram_fingerprint_scan"
+                and result.get("local_state") == "telegram_fingerprint_scan_completed"):
+            checked = result.get("videos_checked")
+            enriched = result.get("metadata_enriched")
+            if (type(checked) is int and 0 <= checked <= 100
+                    and type(enriched) is int and 0 <= enriched <= checked):
+                return f"Telegram fingerprint scan checked {checked} videos and enriched {enriched}."
+            return "Telegram fingerprint scan completed."
         if result.get("restore_test") is True:
             return "Backup restored and validated in a disposable database; that database was removed."
         if result.get("backup_created") is True:
@@ -215,7 +223,7 @@ def _safe_job(job: dict, *, now=None) -> dict:
         "stage": stage,
         "progress": safe_progress,
         "events": safe_events[-20:],
-        "local_state": local_state if isinstance(local_state, str) and local_state in {"hidden", "dismissed", "restored", "quarantined", "metadata_updated", "metadata_scan_completed", "availability_checked", "audit_completed", "metadata_quality_audit_completed", "nfo_repaired", "files_repaired"} else None,
+        "local_state": local_state if isinstance(local_state, str) and local_state in {"hidden", "dismissed", "restored", "quarantined", "metadata_updated", "metadata_scan_completed", "telegram_fingerprint_scan_completed", "availability_checked", "audit_completed", "metadata_quality_audit_completed", "nfo_repaired", "files_repaired"} else None,
         "jellyfin_refresh": refresh_state if isinstance(refresh_state, str) and refresh_state in {"pending", "updated", "failed"} else None,
         "jellyfin_import": import_state if isinstance(import_state, str) and import_state in {"not_requested", "not_confirmed", "confirmed"} else None,
         "error": (

@@ -536,12 +536,12 @@ class TestVideoDuplicateJobs(PgTestCase):
         l_id = "telegram:-1002:6:lmeta"
         sync.sync_unique_video({
             "id": k_id, "provider": "telegram", "provider_video_id": "-1001:5:kmeta",
-            "title": "Title K", "duration": 400, "performers": ["Actor A"],
+            "title": "Title K", "duration": 600, "performers": ["Actor A"],
             "studio": "Studio K",
         }, {"Anal"}, {"Tag1"}, self.media, self.conn)
         sync.sync_unique_video({
             "id": l_id, "provider": "telegram", "provider_video_id": "-1002:6:lmeta",
-            "title": "Title L", "duration": 400, "performers": ["Actor B"],
+            "title": "Title L", "duration": 600, "performers": ["Actor B"],
             "studio": "Studio L",
         }, {"Blowjob"}, {"Tag2"}, self.media, self.conn)
 

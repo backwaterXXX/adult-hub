@@ -345,6 +345,18 @@ class TestTelegramProvider(unittest.TestCase):
         with self.assertRaises(ValueError):
             asyncio.run(provider.resolve_stream("-1009999999999:42:unique"))
 
+    def test_file_size_reads_direct_document_media(self):
+        provider = TelegramProvider()
+        message = types.SimpleNamespace(
+            id=42,
+            message="",
+            media=types.SimpleNamespace(id=777, size=987654),
+        )
+        with patch.object(tg_module, "_require_client", AsyncMock(return_value=object())), \
+             patch.object(tg_module, "_get_cached_message", AsyncMock(return_value=message)):
+            size = asyncio.run(provider.file_size("-1001234567890:42:777"))
+        self.assertEqual(size, 987654)
+
     def test_get_category_videos_rejects_unauthorized_channel(self):
         provider = TelegramProvider()
         with self.assertRaises(ValueError):
@@ -415,6 +427,16 @@ class TestCyrillicTitle(unittest.TestCase):
 
     def test_multiword_cyrillic_falls_back(self):
         msg = _video_message(caption="🔥 В нашем приватном канале новинки")
+        item = message_to_video(msg, "Kanal", known_performers=[])
+        self.assertEqual(item.title, "Kanal #42")
+
+    def test_repeated_russian_channel_ad_is_not_used_as_video_title(self):
+        msg = _video_message(caption=(
+            '🔥 В нашем приватном канале "ЗАКРЫТЫЙ КИНОЗАЛ" ежедневно выходят '
+            'новинки и эксклюзивные ролики разных порно студий с удобной навигацией по хештегам.\n\n'
+            '🔐 Вступай в приватный канал : @closhollbot со скидкой.\n\n'
+            'ВСЕ ТОПОВЫЕ ПРОЕКТЫ | ВИДЕОЧАТ С ПАРНЯМИ | VPN'
+        ))
         item = message_to_video(msg, "Kanal", known_performers=[])
         self.assertEqual(item.title, "Kanal #42")
 

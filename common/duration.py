@@ -4,6 +4,20 @@ import re
 from typing import Optional
 
 
+MIN_VIDEO_DURATION_SECONDS = 420
+
+
+def passes_minimum_video_duration(value: object) -> bool:
+    """Allow only videos with a known duration of at least seven minutes."""
+    if value is None:
+        return False
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return seconds >= MIN_VIDEO_DURATION_SECONDS
+
+
 def parse_duration_seconds(value: Optional[str]) -> int:
     """Parse HH:MM:SS, MM:SS, seconds, or min/sec text into seconds."""
     if not value:

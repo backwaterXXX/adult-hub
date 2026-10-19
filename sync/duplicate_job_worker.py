@@ -111,6 +111,7 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                 action == 'backup_create'
                 or action == 'backup_restore_test'
                 or action == 'metadata_backfill'
+                or action == 'telegram_fingerprint_scan'
                 or action == 'collections_refresh'
                 or action == 'performer_merge'
             ):

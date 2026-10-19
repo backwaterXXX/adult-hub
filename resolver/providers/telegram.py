@@ -284,6 +284,22 @@ class TelegramProvider(BaseProvider):
         entity = await client.get_entity(_entity_ref(channel_ref))
         await client.get_messages(entity, limit=1)
 
+    async def check_message_metadata(self, channel_ref: str, message_id: int,
+                                    unique_id: str) -> str:
+        """Check one exact message using metadata only; never fetch media bytes."""
+        if not is_channel_authorized(channel_ref):
+            raise ValueError(f"Channel not authorized: {channel_ref!r}")
+        client = await _require_client()
+        message = await _get_cached_message(client, channel_ref, int(message_id))
+        if message is None:
+            return "missing"
+        media = getattr(message, "media", None) or getattr(message, "document", None)
+        document = getattr(media, "document", None) if media is not None else None
+        if document is None and media is not None and hasattr(media, "id"):
+            document = media
+        actual_id = getattr(document, "id", None)
+        return "available" if actual_id is not None and str(actual_id) == str(unique_id) else "mismatch"
+
     async def get_categories(self) -> List[CategoryItem]:
         channels = _get_channels()
         if not channels:
@@ -367,7 +383,8 @@ class TelegramProvider(BaseProvider):
             if (item and passes_duration_filter(item.duration,
                     min_duration=ch_cfg.min_duration_seconds if ch_cfg else _get_min_duration())
                     and passes_tag_filter(item, ch_cfg)):
-                videos.append(item.__dict__)
+                videos.append(item)
+        videos = [item.__dict__ for item in videos]
         cursor = min((int(msg.id) for msg in messages), default=None)
         return {"videos": videos, "next_offset_id": cursor,
                 "message_count": len(messages), "has_more": len(messages) >= limit}
@@ -513,6 +530,18 @@ class TelegramProvider(BaseProvider):
         doc_id = getattr(doc, "id", None)
         if doc_id is not None and str(doc_id) != str(unique_id):
             return None
+        # Some Telethon messages expose the Document directly as ``media``
+        # instead of wrapping it in ``media.document``. download_range handles
+        # that shape too; read its size directly so the HTTP proxy can answer
+        # Range requests with a truthful 206 response.
+        size = getattr(doc, "size", None)
+        if size is not None:
+            try:
+                size = int(size)
+            except (TypeError, ValueError):
+                size = None
+            if size is not None and size >= 0:
+                return size
         return _size_of(_message_to_dict(message, channel_ref))
 
     async def download_thumb(self, ref: str) -> Optional[bytes]:

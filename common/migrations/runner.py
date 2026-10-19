@@ -41,6 +41,10 @@ from common.migrations.m0038_video_phash_job_processing_time import migration as
 from common.migrations.m0039_drop_fuzzy_performer_reviews import migration as drop_fuzzy_performer_reviews
 from common.migrations.m0040_performer_profile_overrides import migration as performer_profile_overrides
 from common.migrations.m0041_performer_external_links import migration as performer_external_links
+from common.migrations.m0042_telegram_performer_resolution import migration as telegram_performer_resolution
+from common.migrations.m0043_telegram_unavailable_quarantine import migration as telegram_unavailable_quarantine
+from common.migrations.m0044_minimum_video_duration import migration as minimum_video_duration
+from common.migrations.m0045_external_metadata_error_detail import migration as external_metadata_error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +88,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     drop_fuzzy_performer_reviews,
     performer_profile_overrides,
     performer_external_links,
+    telegram_performer_resolution,
+    telegram_unavailable_quarantine,
+    minimum_video_duration,
+    external_metadata_error_detail,
 )
 
 
@@ -133,6 +141,7 @@ APPLICATION_TABLES: tuple[str, ...] = (
     "admin_operation_plans",
     "video_metadata_overrides",
     "video_availability_checks",
+    "telegram_unavailable_quarantine",
     "admin_audit_items",
     "admin_schedules",
     "admin_action_events",
@@ -219,7 +228,7 @@ def _migration_plan(
     plan.extend(
         migration for migration in MIGRATIONS
         if migration is not baseline
-        and (not baseline_is_applied or migration.version not in applied_versions)
+        and migration.version not in applied_versions
     )
     if target_version is not None:
         plan = [m for m in plan if m.version <= target_version]

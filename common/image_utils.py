@@ -1,13 +1,16 @@
 """Image validation, perceptual hashing, and frame extraction utilities."""
 
 import io
+import json
 import logging
 import os
 import shutil
 import subprocess
 import tempfile
+import time
+from collections import defaultdict
 from pathlib import Path
-from typing import Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from PIL import Image, ImageStat
 
@@ -125,9 +128,183 @@ def compute_dhash(
 def hamming_distance(h1: str, h2: str) -> int:
     """Calculate the bitwise Hamming distance between two hex hashes."""
     try:
-        return bin(int(h1, 16) ^ int(h2, 16)).count("1")
+        return (int(h1, 16) ^ int(h2, 16)).bit_count()
     except (ValueError, TypeError):
         return 64
+
+
+def find_bumper_clusters(
+    file_hashes: Dict[Union[str, Path], str],
+    max_distance: int = 4,
+    min_count: int = 5,
+) -> List[Dict[str, Union[str, Set[str], List[Path], int]]]:
+    """Cluster image file hashes using bitwise Hamming distance on dHash.
+
+    Groups files where hamming_distance(h1, h2) <= max_distance.
+    Clusters with total count >= min_count are returned, sorted by count descending.
+    Each cluster dictionary contains:
+      - 'representative_hash': the most frequent 16-hex dHash in the cluster
+      - 'hashes': set of all hex hashes present in the cluster
+      - 'files': list of Path objects in the cluster
+      - 'count': total number of files in the cluster
+    """
+    if not file_hashes:
+        return []
+
+    hash_to_files: Dict[str, List[Path]] = defaultdict(list)
+    for p, h in file_hashes.items():
+        if h:
+            h_clean = str(h).strip().lower()
+            if len(h_clean) == 16:
+                hash_to_files[h_clean].append(Path(p))
+
+    if not hash_to_files:
+        return []
+
+    unique_hexes = list(hash_to_files.keys())
+    valid_hexes: List[str] = []
+    unique_ints: List[int] = []
+    for h in unique_hexes:
+        try:
+            val = int(h, 16)
+            unique_ints.append(val)
+            valid_hexes.append(h)
+        except ValueError:
+            continue
+
+    n = len(unique_ints)
+    parent = list(range(n))
+
+    def _find(i: int) -> int:
+        root = i
+        while parent[root] != root:
+            root = parent[root]
+        curr = i
+        while curr != root:
+            nxt = parent[curr]
+            parent[curr] = root
+            curr = nxt
+        return root
+
+    def _union(i: int, j: int) -> None:
+        ri, rj = _find(i), _find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    if max_distance > 0:
+        for i in range(n):
+            hi = unique_ints[i]
+            for j in range(i + 1, n):
+                if (hi ^ unique_ints[j]).bit_count() <= max_distance:
+                    _union(i, j)
+
+    groups: Dict[int, List[int]] = defaultdict(list)
+    for idx in range(n):
+        root = _find(idx)
+        groups[root].append(idx)
+
+    clusters: List[Dict[str, Union[str, Set[str], List[Path], int]]] = []
+    for idxs in groups.values():
+        cluster_files: List[Path] = []
+        cluster_hashes: Set[str] = set()
+        hash_counts: Dict[str, int] = {}
+        for idx in idxs:
+            h_str = valid_hexes[idx]
+            files = hash_to_files[h_str]
+            cluster_files.extend(files)
+            cluster_hashes.add(h_str)
+            hash_counts[h_str] = len(files)
+
+        if len(cluster_files) >= min_count:
+            rep_hash = max(hash_counts.items(), key=lambda kv: kv[1])[0]
+            clusters.append({
+                "representative_hash": rep_hash,
+                "hashes": cluster_hashes,
+                "files": cluster_files,
+                "count": len(cluster_files),
+            })
+
+    clusters.sort(key=lambda c: int(c["count"]), reverse=True)
+    return clusters
+
+
+def is_bumper_hash(
+    dhash_hex_or_int: Union[str, int],
+    bumper_hashes: Union[Set[int], List[int], Set[str], List[str]],
+    max_distance: int = 4,
+) -> bool:
+    """Return True if dhash matches any known bumper hash within max_distance bits."""
+    if not dhash_hex_or_int or not bumper_hashes:
+        return False
+
+    try:
+        if isinstance(dhash_hex_or_int, int):
+            target_val = dhash_hex_or_int
+        else:
+            target_val = int(str(dhash_hex_or_int).strip(), 16)
+    except (ValueError, TypeError):
+        return False
+
+    for b in bumper_hashes:
+        try:
+            b_val = b if isinstance(b, int) else int(str(b).strip(), 16)
+            if (target_val ^ b_val).bit_count() <= max_distance:
+                return True
+        except (ValueError, TypeError):
+            continue
+
+    return False
+
+
+def load_bumper_hashes(cache_path: Union[str, Path]) -> Set[int]:
+    """Load bumper dHashes from a JSON cache file as a set of 64-bit integers."""
+    path = Path(cache_path)
+    if not path.is_file():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        raw_list = data.get("dhashes", []) if isinstance(data, dict) else data
+        result: Set[int] = set()
+        for item in raw_list:
+            if isinstance(item, int):
+                result.add(item)
+            elif isinstance(item, str):
+                try:
+                    result.add(int(item.strip(), 16))
+                except ValueError:
+                    pass
+        return result
+    except Exception as exc:
+        logger.warning("Failed to load bumper hashes from %s: %s", path, exc)
+        return set()
+
+
+def save_bumper_hashes(
+    cache_path: Union[str, Path],
+    hashes: Union[Set[Union[str, int]], List[Union[str, int]]],
+    metadata: Optional[dict] = None,
+) -> None:
+    """Atomically save bumper dHashes to a JSON cache file."""
+    path = Path(cache_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    hex_list = sorted({
+        f"{h:016x}" if isinstance(h, int) else str(h).strip().lower()
+        for h in hashes
+        if h
+    })
+
+    payload = {
+        "updated_at": time.time(),
+        "count": len(hex_list),
+        "dhashes": hex_list,
+    }
+    if metadata:
+        payload.update(metadata)
+
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(path)
 
 
 def extract_video_frame(

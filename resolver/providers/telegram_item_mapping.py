@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .base import VideoItem, normalize_performers
+from common.telegram_metadata import extract_telegram_metadata, resolve_explicit_cast
+from .base import VideoItem
 from .telegram_messages import (
     _caption_of,
     _duration_of,
@@ -83,48 +84,82 @@ def message_to_video_impl(
     hashtags = extract_hashtags(caption)
     categories = ([channel_title] + ["#" + hashtag for hashtag in hashtags])[:16]
     filtered_caption = _filter_caption_for_title(caption)
+    extracted = extract_telegram_metadata(caption, channel_title)
+    # Typed metadata extraction also treats any plausible first line as a
+    # title. Do not let that bypass the promo-text filter: channel ads often
+    # repeat across many posts and are not the title of the attached video.
+    if not filtered_caption and extracted.get("title_source") == "first_line":
+        extracted["title"] = ""
+        extracted["title_source"] = ""
     filename = msg.get("filename") or ""
     filename_title = _filename_to_title(filename)
     fallback = filename_title or f"{channel_title} #{message_id}"
-    title = parse_caption_title(filtered_caption, fallback)
-    load_from_db = known_performers is None
-    if load_from_db:
-        try:
-            known_performers = load_known_performers_fn()
-        except Exception:
-            known_performers = []
-    if aliases is None:
-        if load_from_db:
-            try:
-                aliases = load_alias_map_fn()
-            except Exception:
-                aliases = {}
-        else:
-            aliases = {}
     proposals = []
+    performers = []
+    performer_resolution = None
     try:
-        from common.performer_catalog import match_catalog, prepare_catalog
+        from common.performer_catalog import prepare_catalog
 
-        if load_from_db:
+        # Always use the external catalogue for identity resolution. The legacy
+        # name list is derived from existing video assignments and is not evidence.
+        try:
             catalog = load_performer_catalog_fn()
-            if not catalog:
-                catalog, prepared_catalog = prepare_legacy_catalog_fn(known_performers, aliases)
-            elif prepared_catalog is None:
-                prepared_catalog = prepare_catalog(catalog)
-        elif prepared_catalog is None:
-            catalog, prepared_catalog = prepare_legacy_catalog_fn(known_performers, aliases)
+        except Exception:
+            catalog = []
+        if catalog and prepared_catalog is None:
+            prepared_catalog = prepare_catalog(catalog)
+        cast_names = extracted["performer_names"]
+        cast_source = extracted["performer_source"]
+        if not cast_names and extracted["signature_name_candidates"]:
+            signature_names, signature_ids = resolve_explicit_cast(
+                extracted["signature_name_candidates"], catalog,
+            )
+            if signature_ids and all(signature_ids):
+                cast_names = extracted["signature_name_candidates"]
+                cast_source = "pornbestsgay_signature"
+                extracted["title"] = ""
+                extracted["title_source"] = ""
+        if cast_names:
+            try:
+                resolved_names, resolved_ids = resolve_explicit_cast(cast_names, catalog)
+            except Exception:
+                resolved_names, resolved_ids = list(cast_names), [""] * len(cast_names)
+            # Do not run legacy normalization here: it strips demonyms and
+            # scene-like suffixes, which can be real parts of a performer name.
+            performers = list(dict.fromkeys(
+                str(name).strip() for name in resolved_names if str(name).strip()
+            ))
+            performer_resolution = {
+                "status": "resolved" if all(resolved_ids) else "partial",
+                "method": "telegram_field_parser",
+                "source": cast_source,
+                "raw_names": cast_names,
+                "external_ids": resolved_ids,
+                "priority": 10,
+                "title_candidate": extracted["title"],
+                "title_source": extracted["title_source"],
+                "version": 1,
+            }
         else:
-            catalog = ()
-        records, proposals = match_catalog(
-            [("caption", caption), ("filename", filename_title), ("title", title)],
-            catalog,
-            prepared=prepared_catalog,
-        )
-        performers = normalize_performers(
-            [record["name"] for record in records], alias_map=aliases or {}
-        )
+            # A fresh post with no cast signal invalidates old, unproven cast
+            # assignments. Higher priority scene matches survive this update.
+            performer_resolution = {
+                "status": "unresolved",
+                "method": "telegram_field_parser",
+                "source": "no_cast_field",
+                "raw_names": [],
+                "external_ids": [],
+                "priority": 10,
+                "title_candidate": extracted["title"],
+                "title_source": extracted["title_source"],
+                "version": 1,
+            }
     except Exception:
-        performers, proposals = [], []
+        performers, proposals, performer_resolution = [], [], None
+    title = extracted["title"] or (
+        fallback if performer_resolution and performer_resolution.get("source") != "no_cast_field"
+        else parse_caption_title(filtered_caption, fallback)
+    )
     return VideoItem(
         id=f"telegram:{unique_id}",
         provider="telegram",
@@ -140,4 +175,5 @@ def message_to_video_impl(
         source_text=caption or "",
         source_filename=filename,
         performer_proposals=proposals,
+        performer_resolution=performer_resolution,
     )

@@ -55,7 +55,9 @@ class TestResolverHttpApi(unittest.TestCase):
                 # Some sandbox runtimes do not wake the selector on worker-thread
                 # completion. A bounded timer also keeps HTTP failures from hanging CI.
                 request = asyncio.create_task(client.request(method, url, **kwargs))
-                deadline = asyncio.get_running_loop().time() + 5
+                # Source access checks may legitimately wait up to 15 seconds
+                # in the route; leave room for that bounded API timeout.
+                deadline = asyncio.get_running_loop().time() + 20
                 while not request.done():
                     if asyncio.get_running_loop().time() >= deadline:
                         request.cancel()
@@ -315,6 +317,7 @@ class TestResolverHttpApi(unittest.TestCase):
         ("POST", "/admin/api/v2/performers/proposals/{proposal_id}"),
         ("PUT", "/admin/api/v2/organize/people/{name}/profile"),
         ("POST", "/admin/api/v2/library/videos/{video_id}/generate-artwork"),
+        ("POST", "/admin/api/v2/library/videos/{video_id}/generate-phash"),
     )
     CLIENT_INTEGRATION_MUTATIONS = {
         ("POST", "/admin/api/v2/video-phash/frames"),
@@ -811,7 +814,7 @@ class TestResolverHttpApi(unittest.TestCase):
                     sync.sync_unique_video({
                         "id": video_id, "provider": "telegram",
                         "provider_video_id": video_id.split(":", 1)[1],
-                        "title": title, "slug": "exactplanfid", "duration": 300,
+                        "title": title, "slug": "exactplanfid", "duration": 600,
                         "performers": performers, "studio": studio,
                     }, set(), set(), media, conn)
                     (media / f"{sync.stable_media_basename(video_id)}.jpg").write_bytes(b"thumbnail")
@@ -862,8 +865,8 @@ class TestResolverHttpApi(unittest.TestCase):
             with db.connect(TEST_URL) as conn:
                 conn.execute(
                     "INSERT INTO videos (id,provider,title,slug,duration,performers,studio,categories,tags) "
-                    "VALUES (%s,'telegram','Keeper','stalemergefid',300,'[\"Actor 1\",\"Actor 2\"]','Studio','[]','[]'),"
-                    "(%s,'telegram','Loser','stalemergefid',300,'[\"Actor 1\"]','','[]','[]')", (keeper, loser)
+                    "VALUES (%s,'telegram','Keeper','stalemergefid',600,'[\"Actor 1\",\"Actor 2\"]','Studio','[]','[]'),"
+                    "(%s,'telegram','Loser','stalemergefid',600,'[\"Actor 1\"]','','[]','[]')", (keeper, loser)
                 )
                 conn.execute(
                     "INSERT INTO synced_files (video_id,file_path,created_at) VALUES "

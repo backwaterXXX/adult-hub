@@ -99,6 +99,23 @@ async def get_telegram_history(channel_id: str, offset_id: Optional[int] = None,
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@router.get("/api/telegram/message-check/{channel_id}/{message_id}")
+async def check_telegram_message(channel_id: str, message_id: int, unique_id: str):
+    """Metadata-only exact post check for the bounded sync quarantine worker."""
+    try:
+        prov = get_provider("telegram")
+        auth_check = getattr(prov, "is_channel_authorized", None)
+        if callable(auth_check) and not auth_check(channel_id):
+            raise HTTPException(status_code=403, detail="Channel not authorized")
+        status = await prov.check_message_metadata(channel_id, message_id, unique_id)
+        return {"status": status}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("Telegram exact message check failed for %s/%s: %s", channel_id, message_id, e)
+        raise HTTPException(status_code=502, detail="Telegram message check was inconclusive")
+
+
 @router.get("/api/search")
 async def search_videos(q: str, page: int = 1, provider: str = "telegram"):
     sanitized_q = q.strip()

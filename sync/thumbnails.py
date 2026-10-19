@@ -6,7 +6,7 @@ import tempfile
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
 
 # How long to skip re-downloading a thumbnail after a permanent failure (404).
@@ -63,8 +63,43 @@ def thumbnail_urls(raw_url: str, *,
     return url, url
 
 
-def _valid_thumbnail_bytes(data: bytes, url: str) -> bool:
-    """Validate that image payload looks like a real preview and is not blank/black."""
+_BUMPER_HASHES_CACHE: Optional[Set[int]] = None
+_BUMPER_HASHES_MTIME: float = 0.0
+
+
+def _get_cached_bumper_hashes() -> Set[int]:
+    global _BUMPER_HASHES_CACHE, _BUMPER_HASHES_MTIME
+    cache_path_env = os.getenv("BUMPER_CACHE_FILE")
+    cache_file = Path(cache_path_env) if cache_path_env else None
+    if not cache_file or not cache_file.is_file():
+        # Check default paths: data/cache/bumper_dhashes.json
+        candidate = Path("data/cache/bumper_dhashes.json")
+        if candidate.is_file():
+            cache_file = candidate
+        else:
+            repo_cache = Path(__file__).resolve().parent.parent / "data" / "cache" / "bumper_dhashes.json"
+            if repo_cache.is_file():
+                cache_file = repo_cache
+    if not cache_file or not cache_file.is_file():
+        return set()
+
+    try:
+        mtime = cache_file.stat().st_mtime
+        if _BUMPER_HASHES_CACHE is None or mtime > _BUMPER_HASHES_MTIME:
+            try:
+                from common.image_utils import load_bumper_hashes
+            except ImportError:
+                from sync.image_utils import load_bumper_hashes  # type: ignore
+            _BUMPER_HASHES_CACHE = load_bumper_hashes(cache_file)
+            _BUMPER_HASHES_MTIME = mtime
+        return _BUMPER_HASHES_CACHE or set()
+    except Exception:
+        return _BUMPER_HASHES_CACHE or set()
+
+
+def _valid_thumbnail_bytes(data: bytes, url: str, bumper_hashes: Optional[Set[int]] = None,
+                           minimum_size: Optional[Tuple[int, int]] = None) -> bool:
+    """Validate that image payload looks like a real preview and is not blank/black or a known bumper."""
     if not isinstance(data, (bytes, bytearray)):
         return False
     is_tg = urlparse(url).path == "/admin/api/thumb"
@@ -73,13 +108,32 @@ def _valid_thumbnail_bytes(data: bytes, url: str) -> bool:
         if not (is_tg and len(data) >= 100
                 and data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")):
             return False
+    if minimum_size is not None:
+        try:
+            from io import BytesIO
+            from PIL import Image
+            with Image.open(BytesIO(data)) as image:
+                minimum_short, minimum_long = minimum_size
+                if min(image.size) < minimum_short or max(image.size) < minimum_long:
+                    return False
+        except Exception:
+            return False
     try:
         try:
-            from common.image_utils import is_black_image
+            from common.image_utils import compute_dhash, is_black_image, is_bumper_hash
         except ImportError:
-            from sync.image_utils import is_black_image  # fallback
+            from sync.image_utils import compute_dhash, is_black_image, is_bumper_hash  # fallback
         if is_black_image(data):
             return False
+
+        known_bumpers = bumper_hashes if bumper_hashes is not None else _get_cached_bumper_hashes()
+        if known_bumpers:
+            try:
+                dh = compute_dhash(data)
+                if is_bumper_hash(dh, known_bumpers, max_distance=4):
+                    return False
+            except Exception:
+                pass
     except Exception:
         pass
     return True

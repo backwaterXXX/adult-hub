@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Set
 from urllib.parse import quote
 
+from common.duration import MIN_VIDEO_DURATION_SECONDS, passes_minimum_video_duration
+
 
 def safe_error_detail(error: BaseException, limit: int = 600) -> str:
     """Return a useful, bounded error summary without leaking credentials."""
@@ -110,7 +112,10 @@ def sync_telegram_channel_pipeline(
         raise ValueError("Unsupported Telegram sync mode.")
     monotonic = getattr(services.time, "monotonic", _time.monotonic)
     studio = getattr(channel_cfg, "studio", None) or channel_id
-    min_dur = getattr(channel_cfg, "min_duration_seconds", 420)
+    min_dur = max(
+        MIN_VIDEO_DURATION_SECONDS,
+        int(getattr(channel_cfg, "min_duration_seconds", MIN_VIDEO_DURATION_SECONDS) or 0),
+    )
     max_pages = getattr(channel_cfg, "max_pages", 1)
     batch_size = getattr(channel_cfg, "history_batch_size", 100)
     whitelist = telegram_tag_set(getattr(channel_cfg, "tags_whitelist", []))
@@ -187,7 +192,8 @@ def sync_telegram_channel_pipeline(
         failed = False
         try:
             for video in videos:
-                if telegram_passes_tags(telegram_video_tags(video), whitelist, blacklist):
+                if (passes_minimum_video_duration(video.get("duration"))
+                        and telegram_passes_tags(telegram_video_tags(video), whitelist, blacklist)):
                     collect_single_telegram_video(
                         video, channel_id, studio, collected, services=services
                     )

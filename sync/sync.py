@@ -52,6 +52,7 @@ from telegram_pipeline import (
     telegram_tag_set as _telegram_tag_set,
     telegram_video_tags as _telegram_video_tags,
 )
+from telegram_unavailable import reconcile_telegram_channel as _reconcile_telegram_channel_impl
 from media_files import (
     MediaFileServices,
     resolve_media_path as _resolve_media_path_impl,
@@ -617,7 +618,10 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
         video, genres, tags, dest_path,
         get_provider_info_fn=get_provider_info,
         clean_display_title_fn=clean_display_title,
-        normalize_performers_fn=normalize_performers,
+        normalize_performers_fn=(
+            lambda names: normalize_performers(names, preserve_literal=True)
+            if video.get("performer_resolution") else normalize_performers(names)
+        ),
         map_categories_fn=map_categories,
     )
 
@@ -659,7 +663,10 @@ def _video_persistence_services(conn: Optional[db.Connection] = None) -> VideoPe
             video, genres, tags, dest_path,
             get_provider_info_fn=get_provider_info,
             clean_display_title_fn=clean_display_title,
-            normalize_performers_fn=norm_fn,
+            normalize_performers_fn=(
+                lambda names: normalize_performers(names, preserve_literal=True)
+                if video.get("performer_resolution") else norm_fn(names)
+            ),
             map_categories_fn=map_categories,
         )
 
@@ -962,6 +969,15 @@ def _run_external_metadata_backfill(conn: db.Connection, media_dir: Path, report
     )
 
 
+def _run_telegram_fingerprint_scan(conn: db.Connection, media_dir: Path, video_ids, report_progress):
+    """Run a durable targeted Telegram fingerprint job without scanning channels."""
+    from scene_scrapers import backfill_telegram_fingerprints
+    return backfill_telegram_fingerprints(
+        conn, media_dir, limit=len(video_ids), sleep_sec=0.5, video_ids=video_ids,
+        progress_callback=report_progress,
+    )
+
+
 def _duplicate_job_services() -> DuplicateJobServices:
     """Build current dependencies so the sync facade stays patchable."""
     return DuplicateJobServices(
@@ -987,6 +1003,7 @@ def _duplicate_job_services() -> DuplicateJobServices:
         thumbnail_urls=thumbnail_urls,
         download_image_if_missing=download_image_if_missing,
         external_metadata_backfill=_run_external_metadata_backfill,
+        telegram_fingerprint_scan=_run_telegram_fingerprint_scan,
     )
 
 
@@ -1100,6 +1117,10 @@ def sync_telegram_channel_pipeline(
     )
 
 
+def reconcile_telegram_channel(*args, **kwargs):
+    return _reconcile_telegram_channel_impl(*args, **kwargs)
+
+
 def _video_id_snapshot(conn: db.Connection) -> Dict[str, Set[str]]:
     grouped: Dict[str, Set[str]] = {}
     for video_id, provider in conn.execute("SELECT id, provider FROM videos"):
@@ -1124,25 +1145,27 @@ def _write_sync_history(report: dict) -> None:
         logger.warning("Could not save sync history: %s", e)
 
 
-def run_sync(source_filter: Optional[str] = None, sync_mode: str = "scheduled"):
+def run_sync(source_filter: Optional[str] = None, sync_mode: str = "scheduled",
+             *, skip_telegram_channels: bool = False):
     """Serialize sync runs so duplicate jobs and catalog writes have one owner."""
     lock_path = DATA_DIR / ".adult-hub-sync.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
-            return _run_sync_locked(source_filter, sync_mode)
+            return _run_sync_locked(source_filter, sync_mode, skip_telegram_channels)
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "scheduled"):
+def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "scheduled",
+                     skip_telegram_channels: bool = False):
     """Run one sync pass (compatibility facade)."""
     try:
         from .sync_orchestration import _run_sync_locked as implementation
     except ImportError:
         from sync_orchestration import _run_sync_locked as implementation
-    return implementation(source_filter, sync_mode)
+    return implementation(source_filter, sync_mode, skip_telegram_channels)
 
 
 if __name__ == "__main__":
@@ -1150,9 +1173,14 @@ if __name__ == "__main__":
     parser.add_argument("--source", help="Sync one configured provider or Telegram channel")
     parser.add_argument("--sync-mode", choices=("scheduled", "new", "backfill"), default="scheduled",
                         help="Run the normal combined pass, latest materials only, or one history batch")
+    parser.add_argument("--skip-telegram-channels", action="store_true",
+                        help="Run the full maintenance/enrichment pass without fetching Telegram channel history")
     parser.add_argument("--jobs-only", action="store_true", help="Process queued duplicate decisions / performer merges and exit immediately")
     args = parser.parse_args()
     if args.jobs_only:
         run_jobs_only()
         raise SystemExit(0)
-    raise SystemExit(0 if run_sync(args.source, args.sync_mode) else 1)
+    raise SystemExit(0 if run_sync(
+        args.source, args.sync_mode,
+        skip_telegram_channels=args.skip_telegram_channels,
+    ) else 1)

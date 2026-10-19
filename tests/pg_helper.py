@@ -85,4 +85,9 @@ class PgTestCase(unittest.TestCase):
     def setUp(self):
         reset_db(self.db_url)
         self.conn = db.connect(self.db_url)
+        # Most DB tests focus on unrelated catalog behavior. Give those
+        # fixtures a valid, known duration when they omit the field; tests
+        # covering missing/short durations should pass those values explicitly.
+        with self.conn:
+            self.conn.execute("ALTER TABLE videos ALTER COLUMN duration SET DEFAULT 600")
         self.addCleanup(self.conn.close)

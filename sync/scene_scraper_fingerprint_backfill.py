@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
+from common.telegram_transfer_budget import (
+    DailyTelegramTransferBudgetExceeded,
+    DailyTelegramTransferBudgetUnavailable,
+)
 
 if __package__:
     from . import scene_scrapers as _core
@@ -62,6 +66,17 @@ def backfill_missing_telegram_oshashes(
             if _core.record_attempt:
                 _core.record_attempt(conn, "video", str(video_id), "telegram_oshash", "found")
             computed += 1
+        except (DailyTelegramTransferBudgetExceeded, DailyTelegramTransferBudgetUnavailable) as exc:
+            if _core.record_attempt:
+                try:
+                    _core.record_attempt(conn, "video", str(video_id), "telegram_oshash", "error", error=exc)
+                except Exception:
+                    _core.logger.debug("Could not save daily Telegram transfer cap state for %s", video_id)
+            _core.logger.info(
+                "Telegram fingerprint pass paused because the shared transfer budget is exhausted or unavailable (%s)",
+                video_id,
+            )
+            break
         except Exception as exc:
             if _core.record_attempt:
                 try:
@@ -89,15 +104,17 @@ def backfill_telegram_fingerprints(
     http_client: Optional[Any] = None,
     video_ids: Optional[List[str]] = None,
     channel_id: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> Tuple[int, int]:
-    """Enrich Telegram uploads through exact file hashes, in small batches.
+    """Enrich Telegram uploads through OSHASH, then duration-gated pHash.
 
     Numeric filenames and promotional captions have no useful text-search
-    signal. OSHASH identifies byte-identical files and the provider response is
-    accepted only as an exact hash match. The digest is cached in the database,
-    so later retries query catalogues without rereading the Telegram file.
-    Scheduled callers process every Telegram channel in bounded batches.
-    ``channel_id`` is only a narrowing option for explicit/manual runs.
+    signal. OSHASH lookups require an exact hash and a duration match. When no
+    catalogue match is found, pHash can match visually similar scenes within
+    the configured Hamming-distance and duration limits. Fingerprints are
+    cached in the database, so retries can query catalogues without rereading
+    the Telegram file. Scheduled callers process every Telegram channel in
+    bounded batches; ``channel_id`` only narrows explicit runs.
     """
     if not conn or not media_dir:
         return 0, 0
@@ -130,6 +147,8 @@ def backfill_telegram_fingerprints(
 
     checked = 0
     updated = 0
+    if progress_callback:
+        progress_callback(0, len(rows))
     for idx, (video_id, old_title, duration, old_studio) in enumerate(rows):
         if idx and sleep_sec > 0:
             _core.time.sleep(sleep_sec)
@@ -150,11 +169,14 @@ def backfill_telegram_fingerprints(
             # OSHASH is a useful lookup/candidate signal, not cryptographic proof
             # of identical media. Keep duplicate decisions in the operator's
             # preview/execute flow instead of hiding files during metadata sync.
-            matched = _core.search_scene_by_oshash(fingerprint, http_client=http_client)
+            matched = _core.search_scene_by_oshash(
+                fingerprint, http_client=http_client, duration=int(duration or 0),
+                duration_tolerance=2,
+            )
             method = "oshash"
             total_bytes = bytes_read
             if (matched is None and _core._fingerprint_feature_enabled(
-                    "TELEGRAM_PHASH_ENABLED", "LUKAYAN_PHASH_ENABLED")):
+                    "TELEGRAM_PHASH_ENABLED", "LUKAYAN_PHASH_ENABLED", default=True)):
                 from video_fingerprints import DEFAULT_TIMEOUT_SECONDS, telegram_phash
                 configured_budget = int(_core.os.environ.get(
                     "TELEGRAM_PHASH_BYTE_BUDGET",
@@ -163,6 +185,9 @@ def backfill_telegram_fingerprints(
                 configured_timeout = int(_core.os.environ.get(
                     "TELEGRAM_PHASH_TIMEOUT_SECONDS",
                     _core.os.environ.get("LUKAYAN_PHASH_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS)),
+                ))
+                configured_rate = int(_core.os.environ.get(
+                    "TELEGRAM_FINGERPRINT_MAX_BYTES_PER_SECOND", str(256 * 1024),
                 ))
                 phash = _core._cached_video_fingerprint(conn, video_id, "PHASH")
                 if phash:
@@ -173,7 +198,7 @@ def backfill_telegram_fingerprints(
                     remaining_time = max(1, configured_timeout - int(_core.time.monotonic() - started))
                     phash, phash_bytes = telegram_phash(
                         video_id, int(duration or 0), byte_budget=remaining_budget,
-                        timeout_seconds=remaining_time,
+                        timeout_seconds=remaining_time, max_bytes_per_second=configured_rate,
                     )
                     _core._store_video_fingerprint(conn, video_id, "PHASH", phash)
                 total_bytes += phash_bytes
@@ -194,6 +219,19 @@ def backfill_telegram_fingerprints(
                 _core.logger.info("%s fingerprints found no catalogue entry for %s (%d bytes read)", channel_label, video_id, total_bytes)
             if _core.record_attempt:
                 _core.record_attempt(conn, "video", video_id, attempt_source, outcome)
+        except (DailyTelegramTransferBudgetExceeded, DailyTelegramTransferBudgetUnavailable) as exc:
+            if _core.record_attempt:
+                try:
+                    _core.record_attempt(conn, "video", video_id, attempt_source, "error", error=exc)
+                except Exception:
+                    _core.logger.debug("Could not save daily Telegram transfer cap state for %s", video_id)
+            _core.logger.info(
+                "Telegram fingerprint pass paused because the shared transfer budget is exhausted or unavailable (%s)",
+                video_id,
+            )
+            if progress_callback:
+                progress_callback(checked, len(rows))
+            break
         except Exception as exc:
             if _core.record_attempt:
                 try:
@@ -201,4 +239,6 @@ def backfill_telegram_fingerprints(
                 except Exception:
                     _core.logger.debug("Could not save OSHASH retry state for %s", video_id)
             _core.logger.warning("%s OSHASH enrichment failed for %s (%s)", channel_label, video_id, type(exc).__name__)
+        if progress_callback:
+            progress_callback(checked, len(rows))
     return checked, updated

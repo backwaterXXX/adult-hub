@@ -22,7 +22,7 @@ _JOB_STAGES = {
     "creating_backup", "testing_backup_restore", "repairing_nfo", "writing_nfo", "scanning_metadata",
     "metadata_pbc", "metadata_photos", "metadata_tpdb", "metadata_stashdb", "metadata_scenes",
 }
-_LONG_RUNNING_WORKER_ACTIONS = frozenset({"metadata_backfill"})
+_LONG_RUNNING_WORKER_ACTIONS = frozenset({"metadata_backfill", "telegram_fingerprint_scan"})
 
 _AUDIT_INVENTORY_MAX_ENTRIES = 100000
 _AUDIT_INVENTORY_MAX_DEPTH = 12
@@ -375,6 +375,7 @@ class DuplicateJobServices:
     thumbnail_urls: Callable | None = None
     download_image_if_missing: Callable | None = None
     external_metadata_backfill: Callable | None = None
+    telegram_fingerprint_scan: Callable | None = None
 
 
 def _performer_refresh(conn: db.Connection, job_id: str, payload: dict,

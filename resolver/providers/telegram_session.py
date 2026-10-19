@@ -29,6 +29,9 @@ async def require_client(session_state: dict, *, api_id_fn, api_hash_fn, session
             if not os.path.isfile(session_path):
                 raise RuntimeError("Telegram session file is missing. Log in first.")
             session_state["client"] = TelegramClient(session_path, api_id, api_hash)
+        # Telethon can lose its transport while the resolver process remains
+        # alive. Keep the singleton, but reconnect it before making requests.
+        if not session_state["client"].is_connected():
             await session_state["client"].connect()
     try:
         authorized = await session_state["client"].is_user_authorized()

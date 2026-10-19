@@ -1,6 +1,8 @@
 """Telegram environment and channel configuration helpers."""
 import logging
 import os
+
+from common.duration import MIN_VIDEO_DURATION_SECONDS
 from typing import Any, List, Optional
 
 logger = logging.getLogger("providers.telegram")
@@ -105,7 +107,7 @@ def _get_min_duration() -> int:
         value = int((os.getenv("TELEGRAM_MIN_DURATION_SECONDS") or "420").strip())
     except ValueError:
         return 420
-    return max(0, value)
+    return max(MIN_VIDEO_DURATION_SECONDS, value)
 
 
 def passes_duration_filter(duration: int, min_duration: Optional[int] = None) -> bool:
@@ -122,7 +124,10 @@ def passes_duration_filter(duration: int, min_duration: Optional[int] = None) ->
         return True
     if seconds <= 0:
         return True
-    threshold = min_duration if min_duration is not None else _get_min_duration()
+    threshold = max(
+        MIN_VIDEO_DURATION_SECONDS,
+        min_duration if min_duration is not None else _get_min_duration(),
+    )
     return seconds >= threshold
 
 

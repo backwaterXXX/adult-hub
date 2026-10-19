@@ -593,7 +593,7 @@ class TestPerformerSyncPassthrough(PgTestCase):
             "slug": "s",
             "url": "",
             "thumbnail": "",
-            "duration": 0,
+            "duration": 600,
             "performers": ["Tom & Jerry"],
         }
         sync_module.sync_unique_video(video, set(), set(), self.media, self.conn)
@@ -609,7 +609,7 @@ class TestPerformerSyncPassthrough(PgTestCase):
             "slug": "s",
             "url": "",
             "thumbnail": "",
-            "duration": 0,
+            "duration": 600,
             "performers": ["First Guy"],
         }
         sync_module.sync_unique_video(video, set(), set(), self.media, self.conn)

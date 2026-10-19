@@ -709,5 +709,116 @@ class TestCatalogMetadataOverrides(PgTestCase):
         self.assertEqual(first["page"]["total"], 3)
 
 
+class TestLibraryGeneratePhash(PgTestCase):
+    def setUp(self):
+        super().setUp()
+        self.admin = admin_stub()
+        self.admin.HUB_DB_URL = self.db_url
+        self.router = admin_library_v2.build_router(self.admin)
+        self.endpoint = next(
+            r.endpoint for r in self.router.routes
+            if getattr(r, "path", None) == "/api/v2/library/videos/{video_id:path}/generate-phash"
+        )
+
+    def _post_request(self, body=None):
+        raw = json.dumps(body or {}).encode("utf-8")
+
+        async def receive():
+            return {"type": "http.request", "body": raw, "more_body": False}
+
+        return Request({
+            "type": "http", "http_version": "1.1", "method": "POST",
+            "scheme": "http", "path": "/admin/api/v2/library/videos/test/generate-phash",
+            "raw_path": b"/admin/api/v2/library/videos/test/generate-phash",
+            "headers": [(b"content-type", b"application/json")],
+            "client": ("127.0.0.1", 1), "server": ("test", 80), "root_path": "",
+        }, receive)
+
+    def test_enqueues_phash_job_for_valid_telegram_video(self):
+        video_id = "telegram:-100123:42:101"
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, 'telegram', 'Test Movie', 600)",
+                (video_id,),
+            )
+        req = self._post_request()
+        res = asyncio.run(self.endpoint(req, video_id))
+        self.assertTrue(res.get("ok"))
+        self.assertEqual(res.get("state"), "queued")
+        self.assertFalse(res.get("already_computed"))
+        job_id = res.get("job_id")
+        self.assertTrue(job_id.startswith("p-"))
+
+        row = self.conn.execute("SELECT video_id, duration_us, state FROM video_phash_jobs WHERE id=%s", (job_id,)).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], video_id)
+        self.assertEqual(row[1], 600_000_000)
+        self.assertEqual(row[2], "queued")
+
+    def test_force_regeneration_clears_fingerprint_and_requeues(self):
+        video_id = "telegram:-100123:42:102"
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, 'telegram', 'Test Movie', 600)",
+                (video_id,),
+            )
+        from admin_v2_phash import PHASH_ALGORITHM_VERSION, _SERVER_PROFILE
+        from common import phash_jobs
+        first = phash_jobs.enqueue(
+            self.db_url, video_id=video_id, duration_us=600_000_000,
+            algorithm_version=PHASH_ALGORITHM_VERSION, decoder_profile=_SERVER_PROFILE,
+            user_id="admin",
+        )
+        self.assertEqual(first["outcome"], "queued")
+
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO video_fingerprints (video_id, algorithm, fingerprint) VALUES (%s, 'PHASH', '0123456789abcdef')",
+                (video_id,),
+            )
+            self.conn.execute(
+                "INSERT INTO video_phash_provenance (video_id, fingerprint, generator_version, decoder_profile, submitted_by_user_id) "
+                "VALUES (%s, '0123456789abcdef', %s, %s, 'admin')",
+                (video_id, f"{PHASH_ALGORITHM_VERSION}:{_SERVER_PROFILE}", _SERVER_PROFILE),
+            )
+            self.conn.execute(
+                "INSERT INTO video_phash_thumbnails (video_id, image_bytes) VALUES (%s, %s)",
+                (video_id, b"fake-jpg"),
+            )
+            self.conn.execute("UPDATE video_phash_jobs SET state='done' WHERE id=%s", (first["job"]["id"],))
+
+        res_no_force = asyncio.run(self.endpoint(self._post_request(), video_id))
+        self.assertTrue(res_no_force.get("ok"))
+        self.assertTrue(res_no_force.get("already_computed"))
+
+        res_force = asyncio.run(self.endpoint(self._post_request({"force": True}), video_id))
+        self.assertTrue(res_force.get("ok"))
+        self.assertFalse(res_force.get("already_computed"))
+        self.assertEqual(res_force.get("state"), "queued")
+
+        fp = self.conn.execute("SELECT fingerprint FROM video_fingerprints WHERE video_id=%s AND algorithm='PHASH'", (video_id,)).fetchone()
+        self.assertIsNone(fp)
+
+    def test_fails_when_video_not_found(self):
+        req = self._post_request()
+        res = asyncio.run(self.endpoint(req, "telegram:-100123:42:999"))
+        self.assertEqual(res.status_code, 404)
+
+    def test_fails_when_duration_is_missing(self):
+        video_id = "telegram:-100123:42:103"
+        with self.conn:
+            # Model a legacy row created before migration 0044 installed its
+            # insert guard. New inserts with no duration are now rejected.
+            self.conn.execute("ALTER TABLE videos DISABLE TRIGGER videos_minimum_duration_insert")
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, 'telegram', 'No Duration', NULL)",
+                (video_id,),
+            )
+            self.conn.execute("ALTER TABLE videos ENABLE TRIGGER videos_minimum_duration_insert")
+        req = self._post_request()
+        res = asyncio.run(self.endpoint(req, video_id))
+        self.assertEqual(res.status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -134,7 +134,7 @@ class TestNfoDbPerformers(PgTestCase):
             self.conn.commit()
             sync_module.sync_unique_video(
                 {"provider": "exampleweb", "provider_video_id": "abc",
-                 "title": "T", "slug": "s", "performers": []},
+                 "title": "T", "slug": "s", "duration": 600, "performers": []},
                 set(), set(), media, self.conn)
             self.conn.commit()
             nfo = next(media.glob("*.nfo")).read_text(encoding="utf-8")
@@ -169,7 +169,7 @@ class TestNfoDbPerformers(PgTestCase):
             self.conn.commit()
             sync_module.sync_unique_video(
                 {"provider": "exampleweb", "provider_video_id": "abc",
-                 "title": "T", "slug": "s", "performers": ["New Name"]},
+                 "title": "T", "slug": "s", "duration": 600, "performers": ["New Name"]},
                 set(), set(), media, self.conn)
             self.conn.commit()
             nfo = next(media.glob("*.nfo")).read_text(encoding="utf-8")
@@ -191,7 +191,7 @@ class TestBackfillNegativeCache(PgTestCase):
             "INSERT INTO videos (id, provider, title, slug, duration, performers,"
             " categories, tags, first_seen, last_seen)"
             " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            ("exampleweb:1", "exampleweb", "T", "s", 60, "", "[]", "[]", 1, 100))
+            ("exampleweb:1", "exampleweb", "T", "s", 600, "", "[]", "[]", 1, 100))
         self.conn.commit()
         return self.conn
 
@@ -343,7 +343,7 @@ class TestPerformerAudit(PgTestCase):
                 conn.execute(
                     "INSERT INTO videos (id, provider, title, slug, duration, performers, categories, tags) "
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                    (f"exampleweb:{suffix}", "exampleweb", "T", suffix, 60,
+                    (f"exampleweb:{suffix}", "exampleweb", "T", suffix, 600,
                      json.dumps(["A B", "C D"]), "[]", "[]"))
             conn.commit()
             visited = []

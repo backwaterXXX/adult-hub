@@ -12,7 +12,7 @@ COPY VERSION /opt/adult-hub/VERSION
 
 # Scheduled database backups use pg_dump/pg_restore. Match the PostgreSQL 17
 # test database rather than Debian Bookworm's older client.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg git \
     && install -d /usr/share/keyrings \
     && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
        | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg \

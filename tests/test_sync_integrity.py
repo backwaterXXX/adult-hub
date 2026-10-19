@@ -37,7 +37,7 @@ class SyncIntegrityTests(PgTestCase):
             "provider": provider,
             "provider_video_id": video_id,
             "title": title,
-            "duration": 0,
+            "duration": 600,
             "performers": [],
         }
 

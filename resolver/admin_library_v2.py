@@ -183,6 +183,95 @@ def build_router(admin):
         artwork_url = f"/admin/api/v2/library/videos/{quote(video_id, safe='')}/artwork?t={int(time.time())}"
         return {"ok": True, "artwork_url": artwork_url}
 
+    @router.post("/api/v2/library/videos/{video_id:path}/generate-phash")
+    async def admin_v2_library_video_generate_phash(request: Request, video_id: str):
+        if getattr(admin, "_write_denied", None):
+            denied = admin._write_denied(request)
+            if denied:
+                return denied
+        elif admin._admin_blocked(request):
+            return admin.JSONResponse({"ok": False, "error": "Admin is only available locally"}, status_code=403)
+        if not video_id or len(video_id) > 1000:
+            return admin.JSONResponse({"ok": False, "error": "Invalid video ID."}, status_code=400)
+
+        force = False
+        duration_us = None
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                force = bool(body.get("force", False))
+                if isinstance(body.get("duration_us"), int) and body["duration_us"] > 0:
+                    duration_us = body["duration_us"]
+                elif isinstance(body.get("duration_seconds"), (int, float)) and body["duration_seconds"] > 0:
+                    duration_us = int(body["duration_seconds"] * 1_000_000)
+        except Exception:
+            pass
+
+        def _enqueue_phash():
+            conn = db.connect(admin.HUB_DB_URL)
+            try:
+                conn.row_factory = db.Record
+                row = conn.execute(
+                    "SELECT id, provider, duration FROM videos WHERE id=%s", (video_id,)
+                ).fetchone()
+                if not row or row["provider"] != "telegram":
+                    return {"status": 404, "error": "Video not found or not a Telegram video."}
+
+                dur_us = duration_us
+                if dur_us is None:
+                    sec = row["duration"]
+                    if sec is not None and sec > 0:
+                        dur_us = int(sec * 1_000_000)
+                if not dur_us or not (1 <= dur_us <= 86_400_000_000):
+                    return {"status": 400, "error": "Video duration is required to calculate pHash."}
+
+                from admin_v2_phash import PHASH_ALGORITHM_VERSION, _SERVER_PROFILE
+                from common import phash_jobs
+
+                if force:
+                    conn.execute("DELETE FROM video_fingerprints WHERE video_id=%s AND algorithm='PHASH'", (video_id,))
+                    conn.execute("DELETE FROM video_phash_provenance WHERE video_id=%s", (video_id,))
+                    conn.execute("DELETE FROM video_phash_thumbnails WHERE video_id=%s", (video_id,))
+                    conn.execute("DELETE FROM video_phash_jobs WHERE video_id=%s", (video_id,))
+                    conn.commit()
+
+                res = phash_jobs.enqueue(
+                    admin.HUB_DB_URL,
+                    video_id=video_id,
+                    duration_us=dur_us,
+                    algorithm_version=PHASH_ALGORITHM_VERSION,
+                    decoder_profile=_SERVER_PROFILE,
+                    user_id="admin",
+                )
+                if res["outcome"] == "not_found":
+                    return {"status": 404, "error": "Video not found."}
+                if res["outcome"] == "terminal":
+                    phash_jobs.retry_job(admin.HUB_DB_URL, res["job"]["id"])
+                    return {
+                        "ok": True,
+                        "job_id": res["job"]["id"],
+                        "state": "queued",
+                        "already_computed": False,
+                    }
+                job = res.get("job") or {}
+                return {
+                    "ok": True,
+                    "job_id": job.get("id"),
+                    "state": job.get("state"),
+                    "already_computed": res["outcome"] == "complete",
+                    "thumbnail_ready": res["outcome"] == "complete",
+                }
+            finally:
+                conn.close()
+
+        try:
+            result = await admin.asyncio.to_thread(_enqueue_phash)
+        except Exception as exc:
+            return admin.JSONResponse({"ok": False, "error": f"Database operation failed: {exc}"}, status_code=500)
+
+        if "error" in result:
+            return admin.JSONResponse({"ok": False, "error": result["error"]}, status_code=result.get("status", 400))
+        return result
 
     @router.get("/api/v2/library/videos/{video_id:path}")
     async def admin_v2_library_video(request: Request, video_id: str):

@@ -153,7 +153,7 @@ class TestUnsupportedEmbedHiding(PgTestCase):
             media = root / "media"
             media.mkdir()
             v = {"provider": "exampleweb", "provider_video_id": "999",
-                 "title": "T", "duration": 0, "performers": []}
+                 "title": "T", "duration": 600, "performers": []}
             sync_module.sync_unique_video(v, set(), set(), media, self.conn)
             self.assertEqual(len(list(media.glob("*.strm"))), 1)
             n = sync_module.purge_videos(self.conn, media, ["exampleweb:999"], "test",
@@ -170,7 +170,7 @@ class TestUnsupportedEmbedHiding(PgTestCase):
             media = root / "media"
             media.mkdir()
             v = {"provider": "exampleweb", "provider_video_id": "1000",
-                 "title": "T", "duration": 0, "performers": [],
+                 "title": "T", "duration": 600, "performers": [],
                  "embed_host": "embed.example.com"}
             sync_module.sync_unique_video(v, set(), set(), media, self.conn)
             row = self.conn.execute(

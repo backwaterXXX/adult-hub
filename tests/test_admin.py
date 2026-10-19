@@ -197,8 +197,8 @@ class TestManagedCollections(unittest.IsolatedAsyncioTestCase):
         with conn:
             for index in range(3):
                 conn.execute(
-                    "INSERT INTO videos (id, title, studio, performers, tags, first_seen) "
-                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    "INSERT INTO videos (id, title, studio, performers, tags, first_seen, duration) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, 600)",
                     (f"telegram:{index}", f"Title {index}", "Studio", '["Performer"]', '["Theme"]', 100 + index))
                 conn.execute("INSERT INTO synced_files (video_id, file_path) VALUES (%s, %s)",
                              (f"telegram:{index}", f"file-{index}.strm"))
@@ -214,7 +214,7 @@ class TestManagedCollections(unittest.IsolatedAsyncioTestCase):
         conn = db.connect(TEST_URL)
         with conn:
             conn.executemany(
-                "INSERT INTO videos (id, title, first_seen) VALUES (%s, %s, %s)",
+                "INSERT INTO videos (id, title, first_seen, duration) VALUES (%s, %s, %s, 600)",
                 [("telegram:shared", "Shared", 300), ("telegram:unique-a", "Unique A", 200),
                  ("telegram:unique-b", "Unique B", 100)],
             )
@@ -253,7 +253,7 @@ class TestManagedCollections(unittest.IsolatedAsyncioTestCase):
         conn = db.connect(TEST_URL)
         with conn:
             conn.execute(
-                "INSERT INTO videos (id, title, studio, first_seen) VALUES (%s, %s, %s, %s)",
+                "INSERT INTO videos (id, title, studio, first_seen, duration) VALUES (%s, %s, %s, %s, 600)",
                 ("telegram:one", "One", "Renamed Studio", 300),
             )
             conn.execute(

@@ -1,6 +1,7 @@
 """Top-level scheduled sync orchestration."""
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Optional, Set
 from common.http_rate_limit import snapshot_host_rate_limit_stats
 
@@ -10,7 +11,8 @@ else:
     import sync as _core
 
 
-def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "scheduled"):
+def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "scheduled",
+                     skip_telegram_channels: bool = False):
     snapshot_host_rate_limit_stats(reset=True)
     _core._ACTIVE_SYNC_METRICS = {
         "stages": {},
@@ -79,7 +81,9 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         not source_filter or source_filter == "telegram"
         or bool(_core.CONFIG and _core.CONFIG.get_telegram_channel(telegram_channel_filter))
     )
-    if _core.SYNC_TELEGRAM and telegram_filter_enabled:
+    if _core.SYNC_TELEGRAM and telegram_filter_enabled and skip_telegram_channels:
+        _core.logger.info("Skipping Telegram channel scans by request; continuing full maintenance pass.")
+    if _core.SYNC_TELEGRAM and telegram_filter_enabled and not skip_telegram_channels:
         tg_src = _core.CONFIG.get_source("telegram") if _core.CONFIG else None
         if tg_src:
             enabled_channels = [ch for ch in tg_src.channels if ch.enabled]
@@ -91,6 +95,21 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                 try:
                     _core.sync_telegram_channel_pipeline(ch.id, ch, conn, _core.MEDIA_DIR, collected, sync_mode=sync_mode)
                     providers_succeeded.add(f"telegram:{ch.id}")
+                    if sync_mode == "scheduled":
+                        try:
+                            current_ids = {video_id for video_id in collected
+                                           if video_id.startswith(f"telegram:{ch.id}:")}
+                            outcome = _core.reconcile_telegram_channel(
+                                conn, ch.id, _core.MEDIA_DIR,
+                                _core.DATA_DIR / "telegram-unavailable-quarantine",
+                                _core.RESOLVER_API_URL, _core.fetch_json_with_retry,
+                                _core.logger, current_video_ids=current_ids,
+                                limit=int(os.getenv("TELEGRAM_AVAILABILITY_CHECKS_PER_RUN", "20")),
+                                now=int(_core.time.time()),
+                            )
+                            _core.logger.info("Telegram %s availability: %s", ch.id, outcome)
+                        except Exception as e:
+                            _core.logger.warning("Telegram availability reconciliation failed for %s: %s", ch.id, e)
                 except Exception as e:
                     detail = _core._safe_error_detail(e)
                     _core.logger.error("Telegram sync failed for %s: %s", ch.id, detail)
@@ -147,6 +166,20 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
     except Exception as e:
         _core.logger.warning(f"Stream rewrite pass failed: {e}")
 
+    # Scene identification for Telegram is the first metadata-enrichment step:
+    # fingerprints must run before performer-profile lookups and PBC requests.
+    try:
+        from scene_scrapers import backfill_scenes  # type: ignore
+        run_timed_stage(
+            "metadata_scenes",
+            lambda: backfill_scenes(conn, _core.MEDIA_DIR, limit=_core.SCENE_BACKFILL_PER_RUN),
+        )
+    except ImportError:
+        pass
+    except Exception as e:
+        _core.logger.warning(f"Scene fingerprint backfill pass failed: {e}")
+    _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR, collected)
+
     # 8c. Backfill missing performers (title extraction first, then single-video lookups).
     try:
         run_timed_stage(
@@ -193,18 +226,6 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         pass
     except Exception as e:
         _core.logger.warning(f"StashDB backfill pass failed: {e}")
-    try:
-        from scene_scrapers import backfill_scenes  # type: ignore
-        run_timed_stage(
-            "metadata_scenes",
-            lambda: backfill_scenes(conn, _core.MEDIA_DIR, limit=_core.SCENE_BACKFILL_PER_RUN),
-        )
-    except ImportError:
-        pass
-    except Exception as e:
-        _core.logger.warning(f"Scene backfill pass failed: {e}")
-    _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR, collected)
-
     # 8e. Performer audit: stored casts with >= threshold names re-checked
     # against video pages (cards accumulate foreign anchors).
     try:
@@ -265,6 +286,9 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                 )
             else:
                 expected_sources.add(source.provider)
+    if skip_telegram_channels:
+        expected_sources = {name for name in expected_sources
+                            if name != "telegram" and not name.startswith("telegram:")}
     if source_filter:
         if source_filter == "telegram":
             expected_sources = {name for name in expected_sources if name == "telegram" or name.startswith("telegram:")}
@@ -314,6 +338,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         "duration_seconds": max(0, ended_at - started_at),
         "managed_config_revision": int(getattr(_core.CONFIG, "managed_revision", 0)),
         "sync_mode": sync_mode, "success": not failed_sources, "source_filter": source_filter,
+        "skip_telegram_channels": skip_telegram_channels,
         "sources": source_rows, "stages": stage_summary,
         "jellyfin_refresh_poll": _core._ACTIVE_SYNC_METRICS.get("jellyfin_refresh_poll", {}),
         "http": {**http_summary, "hosts": http_hosts, "rate_limit": rate_limit_summary},

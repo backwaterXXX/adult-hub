@@ -379,6 +379,43 @@ class TestNfoPlotAndPremiered(unittest.TestCase):
             self.assertIn("<studio>Falcon Studios</studio>", xml_text)
 
 
+class TestOshashAlgorithm(unittest.TestCase):
+    def test_keeps_full_tail_block_when_blocks_overlap(self):
+        class Response:
+            status_code = 206
+
+            def __init__(self, start, end, total):
+                self.headers = {"content-range": f"bytes {start}-{end}/{total}"}
+                self.data = bytes([1]) * (end - start + 1)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def iter_bytes(self):
+                yield self.data
+
+        class Client:
+            def __init__(self):
+                self.ranges = []
+
+            def stream(self, method, url, *, headers, timeout):
+                start, end = map(int, headers["Range"].removeprefix("bytes=").split("-"))
+                self.ranges.append((start, end))
+                return Response(start, end, 86_193)
+
+        client = Client()
+        fingerprint, bytes_read = _telegram_oshash(
+            "telegram:-1001234567890:42:999", http_client=client,
+        )
+        self.assertEqual(client.ranges, [(0, 65535), (20_657, 86_192)])
+        self.assertEqual(bytes_read, 131_072)
+        expected = (86_193 + int.from_bytes(bytes([1]) * 8, "little") * 16_384) & 0xFFFFFFFFFFFFFFFF
+        self.assertEqual(fingerprint, f"{expected:016x}")
+
+
 class TestBackfillScenes(PgTestCase):
     def setUp(self):
         super().setUp()

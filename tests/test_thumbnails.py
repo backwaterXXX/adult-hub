@@ -64,6 +64,22 @@ class TestThumbnails(unittest.TestCase):
         self.assertFalse(_valid_thumbnail_bytes(buf.getvalue(), "/admin/api/thumb?provider=telegram"))
         self.assertFalse(_valid_thumbnail_bytes(buf.getvalue(), "https://example.com/thumb.jpg"))
 
+        # Bumper JPEG is rejected when matching bumper_hashes
+        from common.image_utils import compute_dhash
+        sample_img = Image.new("RGB", (100, 100), color=(100, 150, 200))
+        for x in range(50):
+            for y in range(100):
+                sample_img.putpixel((x, y), (20, 40, 80))
+        sample_buf = io.BytesIO()
+        sample_img.save(sample_buf, format="JPEG")
+        sample_bytes = sample_buf.getvalue()
+        sample_dhash = compute_dhash(sample_bytes)
+
+        # Without bumper list, valid colorful image is accepted
+        self.assertTrue(_valid_thumbnail_bytes(sample_bytes, "https://example.com/thumb.jpg", bumper_hashes=set()))
+        # With matching bumper list, it is rejected
+        self.assertFalse(_valid_thumbnail_bytes(sample_bytes, "https://example.com/thumb.jpg", bumper_hashes={int(sample_dhash, 16)}))
+
     def test_download_image_success(self):
         image_bytes = b"x" * 2000
         services = ThumbnailServices(

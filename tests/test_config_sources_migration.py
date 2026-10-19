@@ -154,13 +154,13 @@ class TestConfigSourcesMigration(PgTestCase):
                 VALUES (%s, 600, 0, NULL, %s)
             """, (chan_id, now))
 
-        # Channel relaxed to 300s
-        chan_cfg = TelegramChannelConfig(id=chan_id, studio="Test Studio", min_duration_seconds=300, max_pages=1, history_batch_size=2)
+        # Channel relaxed to the new global minimum of 420s.
+        chan_cfg = TelegramChannelConfig(id=chan_id, studio="Test Studio", min_duration_seconds=420, max_pages=1, history_batch_size=2)
 
         # Mock backfill batch returning 2 items (lowest message_id is 50)
         mock_batch = [
-            {"provider_video_id": f"{chan_id}:60:u60", "title": "Vid 60", "duration": 350, "categories": ["Test"]},
-            {"provider_video_id": f"{chan_id}:50:u50", "title": "Vid 50", "duration": 400, "categories": ["Test"]},
+            {"provider_video_id": f"{chan_id}:60:u60", "title": "Vid 60", "duration": 450, "categories": ["Test"]},
+            {"provider_video_id": f"{chan_id}:50:u50", "title": "Vid 50", "duration": 500, "categories": ["Test"]},
         ]
 
         def fake_fetch(url, **kwargs):
@@ -174,7 +174,7 @@ class TestConfigSourcesMigration(PgTestCase):
 
         # Backfill cursor should be saved as 50, and backfill_in_progress should be 1
         state = self.conn.execute("SELECT last_min_duration, backfill_in_progress, backfill_cursor FROM telegram_channel_state WHERE channel_id = %s", (chan_id,)).fetchone()
-        self.assertEqual(state[0], 300)
+        self.assertEqual(state[0], 420)
         self.assertEqual(state[1], 1)
         self.assertEqual(state[2], 50)
 

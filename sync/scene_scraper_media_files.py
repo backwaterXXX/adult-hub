@@ -1,6 +1,7 @@
 """Persist matched scene metadata to NFO sidecars and artwork files."""
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, List, Optional
 from common.http_rate_limit import request_with_host_limit
@@ -23,8 +24,9 @@ def _update_media_files(
     performers: List[str],
     http_client: Optional[Any] = None,
     conn: Optional[Any] = None,
-) -> None:
-    """Update NFO sidecar and download HD poster if available."""
+) -> bool:
+    """Update the NFO and report whether a valid external poster was saved."""
+    poster_saved = False
     try:
         nfo_path = None
         if conn is not None:
@@ -155,17 +157,20 @@ def _update_media_files(
                     ET.SubElement(root, "tag").text = tag
                     known_tags.add(tag)
 
-        # Update scene match external id (uniqueid type="stashdb") and website
-        if (matched.source == "stashdb" or str(matched.source).startswith("stashdb:")) and matched.external_id:
-            stash_uid = None
+        # Keep the provider identity in the NFO so Jellyfin artwork sync can
+        # recognize externally matched scenes for both supported providers.
+        source_lower = str(matched.source or "").casefold()
+        if matched.external_id and ("stashdb" in source_lower or "theporndb" in source_lower):
+            provider_name = "stashdb" if "stashdb" in source_lower else "theporndb"
+            provider_uid = None
             for uid in root.findall("uniqueid"):
-                if uid.get("type") == "stashdb":
-                    stash_uid = uid
+                if uid.get("type") == provider_name:
+                    provider_uid = uid
                     break
-            if stash_uid is not None:
-                stash_uid.text = matched.external_id
+            if provider_uid is not None:
+                provider_uid.text = matched.external_id
             else:
-                ET.SubElement(root, "uniqueid", type="stashdb", default="false").text = matched.external_id
+                ET.SubElement(root, "uniqueid", type=provider_name, default="false").text = matched.external_id
 
         if matched.url:
             web_elem = root.find("website")
@@ -183,33 +188,44 @@ def _update_media_files(
         clean_lines = [line for line in pretty.decode("utf-8").splitlines() if line.strip()]
         nfo_path.write_text("\n".join(clean_lines) + "\n", encoding="utf-8")
 
-        # 5. Download HD Poster if available and valid
+        # 5. Download and refresh the linked scene poster when available.
         if matched.poster_url:
             jpg_path = nfo_path.with_suffix(".jpg")
             client = http_client or _core.httpx
-            should_download = False
-            if not jpg_path.exists() and not jpg_path.is_symlink():
-                should_download = True
-            elif jpg_path.is_file() and not jpg_path.is_symlink():
-                try:
-                    from common.image_utils import is_black_image
-                    if is_black_image(jpg_path) or jpg_path.stat().st_size < 15_000:
-                        should_download = True
-                except Exception:
-                    pass
-            if client and should_download:
+            if client and not jpg_path.is_symlink():
                 resp = request_with_host_limit(
                     client, "get", matched.poster_url,
                     headers={"User-Agent": _core.USER_AGENT}, timeout=10.0,
                 )
                 if resp.status_code == 200 and len(resp.content) > 5000:
-                    tmp = jpg_path.with_suffix(".jpg.tmp")
-                    tmp.write_bytes(resp.content)
-                    tmp.replace(jpg_path)
-                    now_ts = _core.time.time()
                     try:
-                        _core.os.utime(jpg_path, (now_ts, now_ts))
-                    except Exception:
-                        pass
+                        from io import BytesIO
+                        from PIL import Image
+                        from common.image_utils import is_black_image
+                        image_bytes = b""
+                        with Image.open(BytesIO(resp.content)) as downloaded:
+                            downloaded.load()
+                            if not is_black_image(downloaded):
+                                output = BytesIO()
+                                downloaded.convert("RGB").save(output, format="JPEG", quality=92, optimize=True)
+                                image_bytes = output.getvalue()
+                        if len(image_bytes) > 5000:
+                            tmp = jpg_path.with_suffix(".jpg.tmp")
+                            tmp.write_bytes(image_bytes)
+                            tmp.replace(jpg_path)
+                            marker = jpg_path.with_suffix(".jpg.external")
+                            marker_tmp = marker.with_suffix(marker.suffix + ".tmp")
+                            marker_tmp.write_text(hashlib.sha256(image_bytes).hexdigest(), encoding="ascii")
+                            marker_tmp.replace(marker)
+                            poster_saved = True
+                            now_ts = _core.time.time()
+                            try:
+                                _core.os.utime(jpg_path, (now_ts, now_ts))
+                            except Exception:
+                                pass
+                    except Exception as image_error:
+                        _core.logger.debug("Rejected invalid poster for %s (%s)", video_id,
+                                           type(image_error).__name__)
     except Exception as e:
         _core.logger.debug("Could not update media files for %s: %s", video_id, e)
+    return poster_saved

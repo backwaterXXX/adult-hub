@@ -273,8 +273,8 @@ class TestAdminOperations(PgTestCase):
         with self.conn:
             self.conn.execute(
                 "INSERT INTO videos (id,provider,title,slug,duration,performers,studio,categories,tags) "
-                "VALUES (%s,'telegram','Keeper','slug-a',300,'[\"Actor 1\",\"Actor 2\"]','Studio','[]','[]'),"
-                "(%s,'telegram','Loser','slug-b',300,'[\"Actor 1\"]','','[]','[]')", (keeper, loser)
+                "VALUES (%s,'telegram','Keeper','slug-a',600,'[\"Actor 1\",\"Actor 2\"]','Studio','[]','[]'),"
+                "(%s,'telegram','Loser','slug-b',600,'[\"Actor 1\"]','','[]','[]')", (keeper, loser)
             )
             self.conn.execute("INSERT INTO synced_files (video_id,file_path,created_at) VALUES (%s,'Keeper.strm',12345)",
                               (keeper,))

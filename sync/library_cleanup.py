@@ -48,7 +48,11 @@ def cleanup_orphaned_records(media_dir: Path, conn: db.Connection,
     """Remove DB entries whose stream file is absent, if their source succeeded."""
     if not _media_root_is_safe_for_cleanup(media_dir, conn, services.logger):
         return
-    cur = conn.execute("SELECT file_path, video_id FROM synced_files")
+    cur = conn.execute("""SELECT sf.file_path, sf.video_id FROM synced_files sf
+        WHERE NOT EXISTS (
+            SELECT 1 FROM telegram_unavailable_quarantine q
+            WHERE q.video_id=sf.video_id AND q.status='quarantined'
+        )""")
     missing = []
     for file_path_str, video_id in cur.fetchall():
         try:
@@ -85,7 +89,11 @@ def cleanup_retention(conn: db.Connection, media_dir: Path, retention_days: int,
     now = int(services.time.time())
     cutoff = now - (retention_days * 86400)
 
-    cur = conn.execute("SELECT id, provider, title FROM videos WHERE last_seen < %s", (cutoff,))
+    cur = conn.execute("""SELECT v.id, v.provider, v.title FROM videos v
+        WHERE v.last_seen < %s AND NOT EXISTS (
+            SELECT 1 FROM telegram_unavailable_quarantine q
+            WHERE q.video_id=v.id AND q.status='quarantined'
+        )""", (cutoff,))
     candidates = cur.fetchall()
     expired = []
     for vid_id, provider, title in candidates:

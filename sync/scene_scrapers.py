@@ -7,6 +7,7 @@ a separate Stash instance.
 from __future__ import annotations
 
 import json
+import inspect
 import logging
 import os
 import re
@@ -48,7 +49,7 @@ DEFAULT_TIMEOUT = 12.0
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 GAMMA_IMAGE_CDN = "https://images03-fame.gammacdn.com"
 TELEGRAM_RANGE_BUDGET = 8 * 1024 * 1024
-TELEGRAM_PHASH_BYTE_BUDGET = 32 * 1024 * 1024
+TELEGRAM_PHASH_BYTE_BUDGET = 192 * 1024 * 1024
 TELEGRAM_HASH_BLOCK = 64 * 1024
 
 
@@ -332,17 +333,21 @@ def _fingerprint_source_module():
 
 def _search_tpdb_scene_by_oshash(
     fingerprint: str, *, http_client: Optional[Any] = None,
+    duration: Optional[int] = None, duration_tolerance: int = 2,
 ) -> Optional[ScrapedScene]:
     return _fingerprint_source_module().search_tpdb_scene_by_oshash(
-        fingerprint, http_client=http_client
+        fingerprint, http_client=http_client, duration=duration,
+        duration_tolerance=duration_tolerance,
     )
 
 
 def _search_stashdb_scene_by_oshash(
     fingerprint: str, *, http_client: Optional[Any] = None,
+    duration: Optional[int] = None, duration_tolerance: int = 2,
 ) -> Optional[ScrapedScene]:
     return _fingerprint_source_module().search_stashdb_scene_by_oshash(
-        fingerprint, http_client=http_client
+        fingerprint, http_client=http_client, duration=duration,
+        duration_tolerance=duration_tolerance,
     )
 
 
@@ -356,12 +361,33 @@ def _search_stashdb_scene_by_fingerprint(
         duration=duration, duration_tolerance=duration_tolerance,
     )
 
-def search_scene_by_oshash(fingerprint: str, *, http_client: Optional[Any] = None) -> Optional[ScrapedScene]:
-    """Try exact OSHASH lookups; avoid falling back to numeric-title search."""
+def search_scene_by_oshash(
+    fingerprint: str, *, http_client: Optional[Any] = None,
+    duration: Optional[int] = None, duration_tolerance: int = 2,
+) -> Optional[ScrapedScene]:
+    """Try exact, duration-compatible OSHASH lookups in catalog priority order."""
     if not re.fullmatch(r"[0-9a-fA-F]{16}", str(fingerprint or "")):
         return None
-    return (_search_tpdb_scene_by_oshash(fingerprint.lower(), http_client=http_client)
-            or _search_stashdb_scene_by_oshash(fingerprint.lower(), http_client=http_client))
+    errors = []
+    lookups = (
+        ("StashDB", _search_stashdb_scene_by_oshash),
+        ("ThePornDB", _search_tpdb_scene_by_oshash),
+    )
+    for source_name, lookup in lookups:
+        try:
+            scene = lookup(
+                fingerprint.lower(), http_client=http_client, duration=duration,
+                duration_tolerance=duration_tolerance,
+            )
+        except Exception as exc:
+            errors.append(exc)
+            logger.warning("%s OSHASH lookup failed (%s)", source_name, type(exc).__name__)
+            continue
+        if scene is not None:
+            return scene
+    if errors:
+        raise errors[0]
+    return None
 
 
 def search_scene_by_phash(
@@ -441,12 +467,21 @@ def _fingerprint_feature_enabled(name: str, legacy_name: str, *, default: bool=F
     return implementation(name, legacy_name, default=default)
 
 
-def backfill_telegram_fingerprints(conn: Any, media_dir: Path, limit: int=20, sleep_sec: float=0.5, http_client: Optional[Any]=None, video_ids: Optional[List[str]]=None, channel_id: Optional[str]=None) -> Tuple[int, int]:
+def backfill_telegram_fingerprints(conn: Any, media_dir: Path, limit: int=20, sleep_sec: float=0.5, http_client: Optional[Any]=None, video_ids: Optional[List[str]]=None, channel_id: Optional[str]=None, progress_callback: Optional[Any]=None) -> Tuple[int, int]:
     try:
         from .scene_scraper_backfill import backfill_telegram_fingerprints as implementation
     except ImportError:
         from scene_scraper_backfill import backfill_telegram_fingerprints as implementation
-    return implementation(conn, media_dir, limit, sleep_sec, http_client, video_ids, channel_id)
+    kwargs = {
+        "limit": limit,
+        "sleep_sec": sleep_sec,
+        "http_client": http_client,
+        "video_ids": video_ids,
+        "channel_id": channel_id,
+    }
+    if "progress_callback" in inspect.signature(implementation).parameters:
+        kwargs["progress_callback"] = progress_callback
+    return implementation(conn, media_dir, **kwargs)
 
 
 def _update_media_files(media_dir: Path, video_id: str, matched: ScrapedScene, performers: List[str], http_client: Optional[Any]=None, conn: Optional[Any]=None) -> None:

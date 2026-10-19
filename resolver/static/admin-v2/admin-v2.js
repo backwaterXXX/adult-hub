@@ -1584,6 +1584,31 @@
       }
     });
 
+    const genPhash = create('button', 'button button-quiet', video.phash ? 'Regenerate pHash' : 'Generate pHash');
+    genPhash.id = 'detailGeneratePhash';
+    genPhash.type = 'button';
+    genPhash.addEventListener('click', async () => {
+      genPhash.disabled = true;
+      const prevText = genPhash.textContent;
+      genPhash.textContent = 'Queueing pHash…';
+      try {
+        const payload = video.phash ? { force: true } : {};
+        const res = await postJson(`${V2_API}/library/videos/${encodeURIComponent(video.id)}/generate-phash`, payload);
+        if (res.already_computed) {
+          announce('pHash is already computed.');
+        } else if (res.job_id) {
+          announce(`pHash task ${res.job_id} queued.`);
+        } else {
+          announce('pHash task queued.');
+        }
+        await loadDetail(video.id);
+      } catch (err) {
+        alert(`Failed to generate pHash: ${err.message || err}`);
+        genPhash.disabled = false;
+        genPhash.textContent = prevText;
+      }
+    });
+
     const fileAudit = create('button', 'button button-quiet', 'Open file consistency audits');
     fileAudit.type = 'button';
     fileAudit.addEventListener('click', () => {
@@ -1591,7 +1616,7 @@
       requestAnimationFrame(() => $('#auditTitle')?.focus({ preventScroll: true }));
     });
     const filesActions = create('div', 'detail-actions');
-    filesActions.append(genArtwork, fileAudit);
+    filesActions.append(genArtwork, genPhash, fileAudit);
     files.append(filesActions);
     host.append(files);
 

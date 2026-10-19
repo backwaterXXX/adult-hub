@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from common import db
+from common.duration import passes_minimum_video_duration
 from common.performer_catalog import normalize_name
 import time
 from dataclasses import dataclass
@@ -61,6 +62,11 @@ def _merge_video_fields(existing: Dict[str, Any], new: Dict[str, Any]) -> None:
             proposal_keys.add(key)
     if old_proposals:
         existing["performer_proposals"] = old_proposals
+    new_resolution = new.get("performer_resolution") or {}
+    old_resolution = existing.get("performer_resolution") or {}
+    if new_resolution and int(new_resolution.get("priority") or 0) >= int(old_resolution.get("priority") or -1):
+        existing["performer_resolution"] = new_resolution
+        existing["performers"] = new.get("performers") or []
 
 
 def persist_prepared_video(
@@ -69,6 +75,8 @@ def persist_prepared_video(
     time_fn: Callable[[], float] = time.time,
 ) -> None:
     """Persist one media-prepared video inside the caller's DB transaction."""
+    if not passes_minimum_video_duration((prepared.get("video") or {}).get("duration")):
+        raise ValueError("Videos shorter than 420 seconds cannot be saved to the catalog")
     comp_id = prepared["comp_id"]
     provider = prepared["provider"]
     video = prepared["video"]
@@ -83,13 +91,29 @@ def persist_prepared_video(
     tags_json = json.dumps(sorted(list(set(clean_tags))))
 
     conn.execute("""
-        INSERT INTO videos (id, provider, title, slug, duration, thumbnail, performers, categories, tags, embed_host, playable, studio, first_seen, last_seen, source_text, source_filename)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO videos (id, provider, title, slug, duration, thumbnail, performers, categories, tags, embed_host, playable, studio, first_seen, last_seen, source_text, source_filename, performer_resolution)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
         ON CONFLICT(id) DO UPDATE SET
             title=excluded.title, duration=excluded.duration,
             thumbnail=excluded.thumbnail,
-            performers=CASE WHEN excluded.performers IS NULL OR excluded.performers = '[]'::jsonb
+            performers=CASE WHEN excluded.performer_resolution IS NOT NULL
+                    AND NOT EXISTS (
+                        SELECT 1 FROM video_metadata_overrides o
+                        WHERE o.video_id=videos.id AND o.fields ? 'performers'
+                    )
+                    AND COALESCE((excluded.performer_resolution->>'priority')::integer,0)
+                        >= COALESCE((videos.performer_resolution->>'priority')::integer,-1)
+                THEN excluded.performers
+                WHEN excluded.performers IS NULL OR excluded.performers = '[]'::jsonb
                 THEN videos.performers ELSE excluded.performers END,
+            performer_resolution=CASE WHEN EXISTS (
+                    SELECT 1 FROM video_metadata_overrides o
+                    WHERE o.video_id=videos.id AND o.fields ? 'performers'
+                ) THEN videos.performer_resolution
+                WHEN excluded.performer_resolution IS NOT NULL
+                     AND COALESCE((excluded.performer_resolution->>'priority')::integer,0)
+                         >= COALESCE((videos.performer_resolution->>'priority')::integer,-1)
+                THEN excluded.performer_resolution ELSE videos.performer_resolution END,
             categories=excluded.categories, tags=excluded.tags,
             embed_host=COALESCE(NULLIF(excluded.embed_host, ''), videos.embed_host),
             playable=COALESCE(excluded.playable, videos.playable),
@@ -104,7 +128,9 @@ def persist_prepared_video(
           video.get("embed_host", ""), video.get("playable"),
           prepared["studio"] or None, now, now,
           video.get("source_text") or video.get("description") or "",
-          video.get("source_filename") or ""))
+          video.get("source_filename") or "",
+          json.dumps(video.get("performer_resolution"), ensure_ascii=False)
+          if video.get("performer_resolution") is not None else None))
     for proposal in video.get("performer_proposals") or []:
         candidate = str(proposal.get("candidate") or "").strip()
         normalized = normalize_name(candidate)
@@ -165,7 +191,11 @@ def sync_unique_video(
     now = int(services.time_fn())
     try:
         _row = conn.execute(
-            "SELECT first_seen, studio, performers, plot, date_released FROM videos WHERE id = %s", (comp_id,)).fetchone()
+            """SELECT v.first_seen, v.studio, v.performers, v.plot, v.date_released,
+                      v.performer_resolution,
+                      EXISTS(SELECT 1 FROM video_metadata_overrides o
+                             WHERE o.video_id=v.id AND o.fields ? 'performers')
+               FROM videos v WHERE v.id = %s""", (comp_id,)).fetchone()
     except Exception:
         try:
             _row = conn.execute(
@@ -184,7 +214,37 @@ def sync_unique_video(
     # Obsada: swiezy listing wygrywa, ale pusty NIE kasuje tego, co juz mamy
     # w DB (backfill/matcher) — inaczej NFO traciloby obsade do kolejnego backfillu.
     _fresh_perfs = services.normalize_performers(video.get("performers", []))
-    if not _fresh_perfs and _row and len(_row) > 2 and _row[2]:
+    effective_resolution = video.get("performer_resolution")
+    if video.get("performer_resolution"):
+        _fresh_perfs = list(dict.fromkeys(
+            str(value).strip() for value in video.get("performers", []) if str(value).strip()
+        ))
+    if _row and len(_row) > 6 and _row[5]:
+        db_resolution = _row[5]
+        if isinstance(db_resolution, str):
+            try:
+                db_resolution = json.loads(db_resolution)
+            except (TypeError, ValueError):
+                db_resolution = {}
+        incoming_priority = int((effective_resolution or {}).get("priority") or -1)
+        stored_priority = int(db_resolution.get("priority") or -1) if isinstance(db_resolution, dict) else -1
+        if stored_priority > incoming_priority:
+            effective_resolution = db_resolution
+            if _row[2]:
+                try:
+                    _db_perfs = json.loads(_row[2]) if isinstance(_row[2], str) else _row[2]
+                    _fresh_perfs = list(dict.fromkeys(
+                        str(value).strip() for value in _db_perfs if str(value).strip()
+                    ))
+                except Exception:
+                    pass
+    if _row and len(_row) > 6 and _row[6] and _row[2]:
+        try:
+            _db_perfs = json.loads(_row[2]) if isinstance(_row[2], str) else _row[2]
+            _fresh_perfs = services.normalize_performers(_db_perfs)
+        except Exception:
+            pass
+    elif not video.get("performer_resolution") and not _fresh_perfs and _row and len(_row) > 2 and _row[2]:
         try:
             _db_perfs = json.loads(_row[2]) if isinstance(_row[2], str) else []
             _fresh_perfs = services.normalize_performers(_db_perfs)
@@ -203,7 +263,8 @@ def sync_unique_video(
     video = {**video, "_video_id": comp_id, "performers": _perfs, "thumbnail": public_thumb_url,
              "performer_thumbs": services.load_performer_thumbs(conn, _perfs),
              "performer_links": perf_links,
-             "studio": studio_val, "dateadded": services.format_dateadded(first_seen)}
+             "studio": studio_val, "dateadded": services.format_dateadded(first_seen),
+             "performer_resolution": effective_resolution}
 
     # Detect production studios and add as tags and production_studios
     prod_names = []
@@ -289,6 +350,17 @@ def flush_collected(
 ) -> int:
     """Flush collected videos to DB and media_dir, merging previously known genres and tags from DB.
     Clears the dictionary after writing to free memory and prevent re-writing."""
+    if not collected:
+        return 0
+    short_ids = [
+        video_id for video_id, item in collected.items()
+        if not passes_minimum_video_duration((item.get("video") or {}).get("duration"))
+    ]
+    for video_id in short_ids:
+        collected.pop(video_id, None)
+    if short_ids:
+        services.logger.info("Skipped %d video(s) shorter than 420 seconds%s",
+                             len(short_ids), f" ({source_name})" if source_name else "")
     if not collected:
         return 0
     try:

@@ -485,7 +485,7 @@ class TestTelegramMetadata(PgTestCase):
         self.conn.execute(
             'INSERT INTO videos (id, provider, title, slug, duration, performers)'
             ' VALUES (%s, %s, %s, %s, %s, %s)',
-            ('exampleweb:123', 'exampleweb', 'Original title', 's', 120, '[]'),
+            ('exampleweb:123', 'exampleweb', 'Original title', 's', 600, '[]'),
         )
         self.conn.execute(
             'INSERT INTO synced_files (file_path, video_id) VALUES (%s, %s)',
