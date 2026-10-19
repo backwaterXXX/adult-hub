@@ -12,7 +12,6 @@ import json
 import os
 import re
 import sys
-import time
 import unicodedata
 from collections import OrderedDict
 from pathlib import Path

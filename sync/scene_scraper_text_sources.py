@@ -219,7 +219,6 @@ def search_stashdb_scene_by_exact_title(
                  if isinstance(appearance, dict) and isinstance(appearance.get("performer"), dict)]
         tags = item.get("tags") if isinstance(item.get("tags"), list) else []
         images = item.get("images") if isinstance(item.get("images"), list) else []
-        urls = item.get("urls") if isinstance(item.get("urls"), list) else []
         candidates.append(_core.ScrapedScene(
             title=candidate_title,
             plot=str(item.get("details") or "").strip(),
