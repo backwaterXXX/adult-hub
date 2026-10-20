@@ -45,7 +45,7 @@ python-test:
 
 coverage:
 	$(TEST_ENV) $(COVERAGE) run -m unittest discover -s tests
-	$(COVERAGE) report -m --fail-under=70
+	$(COVERAGE) report -m --fail-under=72
 
 ui-contracts:
 	@set -euo pipefail; \
