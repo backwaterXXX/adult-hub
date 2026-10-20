@@ -8,7 +8,10 @@ RUFF ?= $(shell command -v ruff 2>/dev/null || (test -x .venv/bin/ruff && echo .
 
 # Shared environment for the database-backed Python suite: the isolated test
 # profile plus a fixture config, so no production credentials are consulted.
-TEST_ENV = ADULT_HUB_REQUIRE_TEST_DATABASE=1 ADULT_HUB_TEST_PROFILE=full CONFIG_PATH=tests/fixtures/config_telegram_only.yaml
+# The Telegram transfer-budget ledger also needs a writable path; /data only
+# exists on the deployment host and one process per run keeps the daily
+# counters from leaking between concurrent suites.
+TEST_ENV = ADULT_HUB_REQUIRE_TEST_DATABASE=1 ADULT_HUB_TEST_PROFILE=full CONFIG_PATH=tests/fixtures/config_telegram_only.yaml TELEGRAM_FINGERPRINT_USAGE_PATH=/tmp/adulthub-test-fingerprint-usage-$$.json
 
 .PHONY: help install-dev lock test python-test coverage ui-contracts js-check proxy-origin lint dev dev-down dev-logs
 
@@ -42,7 +45,7 @@ python-test:
 
 coverage:
 	$(TEST_ENV) $(COVERAGE) run -m unittest discover -s tests
-	$(COVERAGE) report -m --fail-under=65
+	$(COVERAGE) report -m --fail-under=70
 
 ui-contracts:
 	@set -euo pipefail; \
