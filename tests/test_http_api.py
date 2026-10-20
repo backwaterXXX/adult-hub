@@ -328,6 +328,7 @@ class TestResolverHttpApi(unittest.TestCase):
         ("POST", "/admin/api/v2/performers/proposals/{proposal_id}"),
         ("PUT", "/admin/api/v2/organize/people/{name}/profile"),
         ("POST", "/admin/api/v2/library/videos/{video_id}/generate-artwork"),
+        ("POST", "/admin/api/v2/library/videos/{video_id}/download-artwork"),
         ("POST", "/admin/api/v2/library/videos/{video_id}/generate-phash"),
     )
     CLIENT_INTEGRATION_MUTATIONS = {

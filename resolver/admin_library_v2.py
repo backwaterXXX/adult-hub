@@ -47,6 +47,89 @@ from admin_catalog_queries import (
 )
 
 
+def _download_catalog_artwork(db_url: str | None, video_id: str, media_root: str):
+    """Find a confident StashDB/ThePornDB scene match and save its poster."""
+    video = _get_video(db_url, video_id, media_root)
+    if video is None:
+        return {"ok": False, "status": 404, "error": "Video not found in library."}
+    dest_path = _get_target_artwork_path(db_url, video_id, media_root)
+    if dest_path is None:
+        return {"ok": False, "status": 404, "error": "Target media file not found in library."}
+
+    try:
+        from sync.scene_scraper_text_sources import fetch_stashdb_scene_by_id, fetch_tpdb_scene_by_id
+        from sync.scene_scraper_fingerprint_sources import (
+            search_stashdb_scene_by_oshash,
+            search_tpdb_scene_by_oshash,
+        )
+        from sync.scene_scraper_media_files import _download_scene_poster
+        from sync.scene_scraper_text_sources import search_scene_by_exact_title
+    except ImportError:
+        from scene_scraper_text_sources import fetch_stashdb_scene_by_id, fetch_tpdb_scene_by_id
+        from scene_scraper_fingerprint_sources import search_stashdb_scene_by_oshash, search_tpdb_scene_by_oshash
+        from scene_scraper_media_files import _download_scene_poster
+        from scene_scraper_text_sources import search_scene_by_exact_title
+
+    matches = []
+
+    def save_first_match(start: int = 0):
+        for provider, scene in matches[start:]:
+            if _download_scene_poster(scene.poster_url, dest_path, video_id):
+                return provider
+        return None
+
+    external_id = str(video.get("scene_match_external_id") or "").strip()
+    source = str(video.get("scene_match_source") or "").casefold()
+    if external_id:
+        linked_lookups = []
+        if "stashdb" in source:
+            linked_lookups.append(("StashDB", fetch_stashdb_scene_by_id))
+        elif "theporndb" in source or "tpdb" in source:
+            linked_lookups.append(("ThePornDB", fetch_tpdb_scene_by_id))
+        else:
+            linked_lookups.extend((("StashDB", fetch_stashdb_scene_by_id), ("ThePornDB", fetch_tpdb_scene_by_id)))
+        for provider, lookup in linked_lookups:
+            try:
+                scene = lookup(external_id)
+                if scene and scene.poster_url:
+                    matches.append((provider, scene))
+            except Exception:
+                continue
+    saved_provider = save_first_match()
+    if saved_provider:
+        return {"ok": True, "provider": saved_provider}
+
+    duration = video.get("duration_seconds")
+    oshash = str(video.get("oshash") or "").strip()
+    if oshash:
+        for provider, lookup in (("StashDB", search_stashdb_scene_by_oshash), ("ThePornDB", search_tpdb_scene_by_oshash)):
+            try:
+                scene = lookup(oshash, duration=duration)
+                if scene and scene.poster_url:
+                    matches.append((provider, scene))
+                    saved_provider = save_first_match(len(matches) - 1)
+                    if saved_provider:
+                        return {"ok": True, "provider": saved_provider}
+            except Exception:
+                continue
+
+    if video.get("title") and duration:
+        try:
+            scene = search_scene_by_exact_title(str(video["title"]), duration=int(duration))
+            if scene and scene.poster_url:
+                provider = "StashDB" if "stashdb" in str(scene.source).casefold() else "ThePornDB"
+                matches.append((provider, scene))
+                saved_provider = save_first_match(len(matches) - 1)
+                if saved_provider:
+                    return {"ok": True, "provider": saved_provider}
+        except Exception:
+            pass
+
+    if not matches:
+        return {"ok": False, "status": 404, "error": "No matching artwork found on StashDB or ThePornDB."}
+    return {"ok": False, "status": 502, "error": "Matching artwork was found, but could not be downloaded."}
+
+
 def build_router(admin):
     router = APIRouter(route_class=V2ErrorRoute)
 
@@ -179,6 +262,30 @@ def build_router(admin):
         import time
         artwork_url = f"/admin/api/v2/library/videos/{quote(video_id, safe='')}/artwork?t={int(time.time())}"
         return {"ok": True, "artwork_url": artwork_url}
+
+    @router.post("/api/v2/library/videos/{video_id:path}/download-artwork")
+    async def admin_v2_library_video_download_artwork(request: Request, video_id: str):
+        denied = admin._write_denied(request)
+        if denied:
+            return denied
+        if not video_id or len(video_id) > 1000:
+            return admin.JSONResponse({"ok": False, "error": "Invalid video ID."}, status_code=400)
+        try:
+            result = await admin.asyncio.to_thread(
+                _download_catalog_artwork, admin.HUB_DB_URL, video_id, admin.MEDIA_DIR,
+            )
+        except CatalogUnavailable:
+            return admin.JSONResponse({"ok": False, "error": "Catalog database is unavailable."}, status_code=503)
+        except Exception:
+            return admin.JSONResponse({"ok": False, "error": "Artwork lookup failed."}, status_code=502)
+        if not result["ok"]:
+            return admin.JSONResponse(
+                {"ok": False, "error": result["error"]}, status_code=result["status"],
+            )
+        from urllib.parse import quote
+        import time
+        artwork_url = f"/admin/api/v2/library/videos/{quote(video_id, safe='')}/artwork?t={int(time.time())}"
+        return {"ok": True, "provider": result["provider"], "artwork_url": artwork_url}
 
     @router.post("/api/v2/library/videos/{video_id:path}/generate-phash")
     async def admin_v2_library_video_generate_phash(request: Request, video_id: str):

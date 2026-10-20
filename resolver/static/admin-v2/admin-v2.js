@@ -1622,6 +1622,24 @@
       }
     });
 
+    const downloadArtwork = create('button', 'button button-quiet', 'Download artwork');
+    downloadArtwork.id = 'detailDownloadArtwork';
+    downloadArtwork.type = 'button';
+    downloadArtwork.addEventListener('click', async () => {
+      downloadArtwork.disabled = true;
+      const prevText = downloadArtwork.textContent;
+      downloadArtwork.textContent = 'Searching StashDB / ThePornDB…';
+      try {
+        const result = await postJson(`${V2_API}/library/videos/${encodeURIComponent(video.id)}/download-artwork`, {});
+        announce(`Artwork downloaded from ${result.provider}.`);
+        await loadDetail(video.id);
+      } catch (err) {
+        alert(`Failed to download artwork: ${err.message || err}`);
+        downloadArtwork.disabled = false;
+        downloadArtwork.textContent = prevText;
+      }
+    });
+
     const genPhash = create('button', 'button button-quiet', video.phash ? 'Regenerate pHash' : 'Generate pHash');
     genPhash.id = 'detailGeneratePhash';
     genPhash.type = 'button';
@@ -1659,7 +1677,7 @@
       requestAnimationFrame(() => $('#auditTitle')?.focus({ preventScroll: true }));
     });
     const filesActions = create('div', 'detail-actions');
-    filesActions.append(genArtwork, genPhash, fileAudit);
+    filesActions.append(genArtwork, downloadArtwork, genPhash, fileAudit);
     files.append(filesActions);
     host.append(files);
 
