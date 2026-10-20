@@ -124,8 +124,6 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                 channel_name = channel.strip()
                 if not channel_name:
                     continue
-                if source_filter and source_filter != "telegram" and telegram_channel_filter != channel_name:
-                    continue
                 class _SimpleCh:
                     studio = channel_name
                     min_duration_seconds = 420
@@ -277,8 +275,6 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
     after_ids = _core._video_id_snapshot(conn)
     source_rows = []
     for source in sorted(expected_sources | providers_succeeded):
-        if source == "telegram" and any(item.startswith("telegram:") for item in expected_sources):
-            continue
         provider = "telegram" if source.startswith("telegram:") else source
         before = before_ids.get(provider, set())
         after = after_ids.get(provider, set())
