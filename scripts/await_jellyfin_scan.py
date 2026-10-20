@@ -8,7 +8,6 @@ key rather than its localized name.
 """
 
 import argparse
-import json
 import os
 import subprocess
 import sys
