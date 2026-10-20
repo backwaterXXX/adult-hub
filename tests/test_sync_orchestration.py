@@ -436,18 +436,42 @@ class TestMaintenanceAheadOfTheScans(SyncPassHarness):
         self.assertTrue(self.core.logger.has(
             "Could not process queued duplicate decisions: ledger busy", "warning"))
 
-    def test_a_duplicate_checkpoint_failure_after_the_flush_aborts_the_pass(self):
+    def test_a_duplicate_checkpoint_failure_after_the_flush_does_not_abort_the_pass(self):
         def abort(*_args, **_kwargs):
             if self.sink("flush_collected").called:
-                raise RuntimeError("this checkpoint is not guarded")
+                raise RuntimeError("ledger unreadable")
 
         self.sink("safe_process_duplicate_jobs_checkpoint").side_effect = abort
 
-        with self.assertRaises(RuntimeError):
-            self.sync()
+        self.assertTrue(self.sync())
 
-        self.assertTrue(self.sink("flush_collected").called)
-        self.assertEqual(self.core.history_reports, [])
+        report = self.history()
+        self.assertTrue(report["success"])
+        self.assertTrue(self.core.logger.has(
+            "Could not process queued duplicate decisions: ledger unreadable", "warning"))
+        self.assertTrue(self.sink("sync_jellyfin_titles").called, "the closing stages still run")
+
+    def test_a_checkpoint_that_fails_every_time_still_finishes_the_pass(self):
+        self.explode("safe_process_duplicate_jobs_checkpoint", OSError("ledger busy"))
+
+        self.assertTrue(self.sync())
+
+        self.assertEqual(self.sink("safe_process_duplicate_jobs_checkpoint").call_count, 7)
+        self.assertEqual(
+            self.core.logger.text("warning").count(
+                "Could not process queued duplicate decisions: ledger busy"), 7)
+        for name in ("rewrite_all_stream_files", "backfill_performers_from_titles",
+                     "cleanup_orphaned_records", "cleanup_retention", "sync_jellyfin_titles"):
+            self.assertTrue(self.sink(name).called, name)
+
+    def test_only_the_checkpoint_before_the_scans_has_no_in_memory_records(self):
+        self.sync()
+
+        checkpoint = self.sink("safe_process_duplicate_jobs_checkpoint")
+        self.assertEqual(checkpoint.args(), (CONN, MEDIA_DIR, None))
+        collected = self.sink("flush_collected").args()[0]
+        for args in checkpoint.every_args()[1:]:
+            self.assertIs(args[2], collected)
 
     def test_the_remaining_videos_are_flushed_once_after_the_scans(self):
         self.sync()

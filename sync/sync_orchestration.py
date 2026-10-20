@@ -31,6 +31,13 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         finally:
             _core._observe_sync_stage(name, _core.time.monotonic() - started, failed)
 
+    def run_duplicate_jobs_checkpoint(conn, collected=None):
+        """Upkeep only: a failed checkpoint must not cost the pass its later stages or history entry."""
+        try:
+            _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR, collected)
+        except Exception as e:
+            _core.logger.warning("Could not process queued duplicate decisions: %s", e)
+
     started_at = int(_core.time.time())
     _core.logger.info("Starting Adult-Hub sync (deduplicated)...")
     _core.logger.info(f"Media Dir: {_core.MEDIA_DIR}")
@@ -58,10 +65,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
     _core.migrate_redundant_performers(conn, _core.MEDIA_DIR)
     _core.cleanup_legacy_folders(_core.MEDIA_DIR)
     _core.cleanup_old_transcodes()
-    try:
-        _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR)
-    except Exception as e:
-        _core.logger.warning("Could not process queued duplicate decisions: %s", e)
+    run_duplicate_jobs_checkpoint(conn)
 
     # Dictionary: composite_id -> {"video": dict, "genres": set(), "tags": set()}
     collected: Dict[str, Dict[str, Any]] = {}
@@ -117,7 +121,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                     source_error_details[f"telegram:{ch.id}"] = detail
                 finally:
                     source_durations[f"telegram:{ch.id}"] = round(_core.time.monotonic() - source_started, 3)
-                _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR, collected)
+                run_duplicate_jobs_checkpoint(conn, collected)
         else:
             _core.logger.info(f"Syncing Telegram ({len(_core.TELEGRAM_CHANNELS)} channel(s), {_core.TELEGRAM_MAX_PAGES} page(s))...")
             for channel in _core.TELEGRAM_CHANNELS:
@@ -141,7 +145,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                     source_error_details[f"telegram:{channel_name}"] = detail
                 finally:
                     source_durations[f"telegram:{channel_name}"] = round(_core.time.monotonic() - source_started, 3)
-                _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR, collected)
+                run_duplicate_jobs_checkpoint(conn, collected)
 
     # 2. Drop catalog entries the availability worker has denylisted.
     if _core.HIDE_DEAD_STREAMS:
@@ -152,7 +156,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
 
     # 8. Flush any remaining videos (if any)
     _core.flush_collected(collected, conn, _core.MEDIA_DIR, "remaining")
-    _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR, collected)
+    run_duplicate_jobs_checkpoint(conn, collected)
 
     # 8b. Rewrite stale .strm files to the currently configured per-provider
     # mode (e.g. redirect -> proxy flips apply without waiting for re-sync).
@@ -174,7 +178,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         pass
     except Exception as e:
         _core.logger.warning(f"Scene fingerprint backfill pass failed: {e}")
-    _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR, collected)
+    run_duplicate_jobs_checkpoint(conn, collected)
 
     # 8c. Backfill missing performers from studio title naming conventions.
     try:
@@ -184,7 +188,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         )
     except Exception as e:
         _core.logger.warning(f"Title performer backfill pass failed: {e}")
-    _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR, collected)
+    run_duplicate_jobs_checkpoint(conn, collected)
 
     # 8d. Performer enrichment: PBC aliases+bios (rate-limited).
     try:
@@ -233,7 +237,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
             )
     except Exception as e:
         _core.logger.warning(f"Telegram metadata reconciliation failed: {e}")
-    _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR, collected)
+    run_duplicate_jobs_checkpoint(conn, collected)
 
     # 10. Trigger Jellyfin Refresh
     _core.trigger_jellyfin_refresh()
