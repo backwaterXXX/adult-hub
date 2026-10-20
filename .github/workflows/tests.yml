@@ -34,6 +34,10 @@ jobs:
             resolver/requirements.lock
             sync/requirements.lock
             requirements-dev.lock
+      - name: Install ffmpeg
+        # Both production images install it; the pHash generation path refuses
+        # to run without it, so the suite needs it to exercise that branch.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Install public test dependencies
         run: |
           python -m pip install --upgrade pip
