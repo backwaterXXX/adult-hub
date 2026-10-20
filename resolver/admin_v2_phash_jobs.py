@@ -9,15 +9,6 @@ from fastapi import APIRouter, Query, Request
 from admin_v2_errors import V2ErrorRoute
 
 
-def _write_denied(admin, request: Request):
-    if not admin.admin_security.write_authorized(
-        request, blocked=admin._admin_blocked(request), public=admin.ADMIN_PUBLIC,
-        token=admin._write_token(),
-    ):
-        return admin.JSONResponse({"error": "This panel is read-only or the request origin is invalid."}, status_code=403)
-    return None
-
-
 def build_router(admin):
     router = APIRouter(route_class=V2ErrorRoute)
 
@@ -45,7 +36,7 @@ def build_router(admin):
 
     @router.post("/api/v2/phash-jobs/{job_id}/retry")
     async def retry_phash_job(request: Request, job_id: str):
-        denied = _write_denied(admin, request)
+        denied = admin._write_denied(request)
         if denied is not None:
             return denied
         try:
@@ -59,7 +50,7 @@ def build_router(admin):
 
     @router.post("/api/v2/phash-jobs/{job_id}/cancel")
     async def cancel_phash_job(request: Request, job_id: str):
-        denied = _write_denied(admin, request)
+        denied = admin._write_denied(request)
         if denied is not None:
             return denied
         try:

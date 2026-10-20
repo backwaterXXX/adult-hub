@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Request
+from admin_v2_errors import V2ErrorRoute
 
 
 def _sync_stale_after_seconds(config_path):
@@ -93,7 +94,7 @@ async def _jellyfin_probe():
 
 
 def build_router(admin):
-    router = APIRouter()
+    router = APIRouter(route_class=V2ErrorRoute)
 
     @router.get("/api/v2/capabilities")
     async def admin_v2_capabilities(request: Request):

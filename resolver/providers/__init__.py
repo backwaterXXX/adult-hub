@@ -15,31 +15,6 @@ from .telegram import TelegramProvider
 _NAME_RE = re.compile(r"^[a-z0-9]+$")
 
 _PROVIDERS: Dict[str, BaseProvider] = {}
-_PROVIDER_ALIASES: Dict[str, str] = {}
-
-
-def register_provider_alias(alias: str, canonical_name: str) -> None:
-    """Register an alias resolving to a canonical provider name."""
-    if not isinstance(alias, str) or not _NAME_RE.fullmatch(alias):
-        raise ValueError("Provider alias must contain lowercase letters and digits only.")
-    if not isinstance(canonical_name, str) or not _NAME_RE.fullmatch(canonical_name):
-        raise ValueError("Canonical provider name must contain lowercase letters and digits only.")
-    if alias == canonical_name:
-        return
-    if alias in _PROVIDERS:
-        raise ValueError(f"Provider alias '{alias}' conflicts with a registered provider.")
-    current = _PROVIDER_ALIASES.get(alias)
-    if current is not None and current != canonical_name:
-        raise ValueError(f"Provider alias '{alias}' is already registered.")
-    _PROVIDER_ALIASES[alias] = canonical_name
-
-
-def _canonical_provider_name(name: str) -> str:
-    seen = set()
-    while name in _PROVIDER_ALIASES and name not in seen:
-        seen.add(name)
-        name = _PROVIDER_ALIASES[name]
-    return name
 
 
 def register(provider: BaseProvider) -> BaseProvider:
@@ -58,7 +33,7 @@ def register(provider: BaseProvider) -> BaseProvider:
     name = getattr(provider, "name", "")
     if not isinstance(name, str) or not name:
         raise ValueError("Provider 'name' must be a non-empty string.")
-    if not _NAME_RE.match(name):
+    if not _NAME_RE.fullmatch(name):
         raise ValueError(
             f"Invalid provider name {name!r}: use lowercase letters/digits "
             f"only, no spaces (regex ^[a-z0-9]+$)."
@@ -99,7 +74,7 @@ def missing_config_providers(config) -> List[str]:
     sources = getattr(config, "sources", {}) or {}
     missing: List[str] = []
     for raw_name, src in sources.items():
-        name = _canonical_provider_name(str(raw_name))
+        name = str(raw_name)
         try:
             enabled = bool(src.enabled)
         except AttributeError:

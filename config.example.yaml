@@ -16,18 +16,11 @@ sync:
   retry_backoff_max_seconds: 1800   # Maximum retry delay
   stream_mode_default: redirect     # Default playback mode: redirect or proxy
   category_fetch_delay_seconds: 2.5  # Pause between upstream category requests
-  dead_stream_check_per_run: 50
-  dead_stream_max_purge_per_run: 50
-  dead_stream_strikes_to_purge: 2
-  dead_stream_recheck_days: 7
-  performer_backfill_per_run: 25
   pbc_backfill_per_run: 50
   tpdb_backfill_per_run: 50
   # Scene and performer source queues: ~20 daily syncs per 10k videos / 1k actors.
   scene_backfill_per_run: 500
   jellyfin_people_per_run: 25
-  performer_audit_per_run: 25
-  performer_audit_threshold: 5
 
 sources:
   - provider: telegram

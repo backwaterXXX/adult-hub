@@ -145,12 +145,10 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                     source_durations[f"telegram:{channel_name}"] = round(_core.time.monotonic() - source_started, 3)
                 _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR, collected)
 
-    # 2. Hide videos whose CDN stream is dead although the embed is alive
-    # (full-chain probe through the resolver; denylisted corpses dropped).
-    # Guarded: only succeeded providers lose historical rows/files.
+    # 2. Drop catalog entries the availability worker has denylisted.
     if _core.HIDE_DEAD_STREAMS:
         try:
-            _core.hide_dead_streams(collected, conn, _core.MEDIA_DIR, providers_succeeded)
+            _core.hide_dead_streams(collected, conn)
         except Exception as e:
             _core.logger.warning(f"Dead-stream filtering failed (keeping all): {e}")
 
@@ -180,7 +178,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         _core.logger.warning(f"Scene fingerprint backfill pass failed: {e}")
     _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR, collected)
 
-    # 8c. Backfill missing performers (title extraction first, then single-video lookups).
+    # 8c. Backfill missing performers from studio title naming conventions.
     try:
         run_timed_stage(
             "performer_title_backfill",
@@ -188,10 +186,6 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         )
     except Exception as e:
         _core.logger.warning(f"Title performer backfill pass failed: {e}")
-    try:
-        run_timed_stage("performer_backfill", lambda: _core.backfill_performers(conn, _core.MEDIA_DIR))
-    except Exception as e:
-        _core.logger.warning(f"Performer backfill pass failed: {e}")
     _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR, collected)
 
     # 8d. Performer enrichment: PBC aliases+bios (rate-limited).
@@ -216,15 +210,6 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         pass
     except Exception as e:
         _core.logger.warning(f"StashDB backfill pass failed: {e}")
-    # 8e. Performer audit: stored casts with >= threshold names re-checked
-    # against video pages (cards accumulate foreign anchors).
-    try:
-        run_timed_stage(
-            "performer_audit",
-            lambda: _core.audit_suspicious_performers(conn, _core.MEDIA_DIR),
-        )
-    except Exception as e:
-        _core.logger.warning(f"Performer audit pass failed: {e}")
 
     # 9. Clean up expired videos via retention policy + orphaned records.
     # Both use the success signal: absent, disabled and failed sources keep

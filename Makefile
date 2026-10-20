@@ -3,9 +3,14 @@ SHELL := /bin/bash
 
 PYTHON ?= python3
 NODE ?= node
+COVERAGE ?= $(shell command -v coverage 2>/dev/null || (test -x .venv/bin/coverage && echo .venv/bin/coverage) || printf '%s' "$(PYTHON) -m coverage")
 RUFF ?= $(shell command -v ruff 2>/dev/null || (test -x .venv/bin/ruff && echo .venv/bin/ruff) || printf '%s' "$(HOME)/develop/bin/ruff")
 
-.PHONY: help install-dev lock test python-test ui-contracts js-check proxy-origin lint dev dev-down dev-logs
+# Shared environment for the database-backed Python suite: the isolated test
+# profile plus a fixture config, so no production credentials are consulted.
+TEST_ENV = ADULT_HUB_REQUIRE_TEST_DATABASE=1 ADULT_HUB_TEST_PROFILE=full CONFIG_PATH=tests/fixtures/config_telegram_only.yaml
+
+.PHONY: help install-dev lock test python-test coverage ui-contracts js-check proxy-origin lint dev dev-down dev-logs
 
 help:
 	@printf '%s\n' \
@@ -13,6 +18,7 @@ help:
 	  'lock           Refresh the uv-compiled resolver and sync dependency locks' \
 	  'test           Run Python, browser-contract, JavaScript syntax, and proxy-origin checks' \
 	  'python-test    Run the full Python suite and require TEST_DATABASE_URL' \
+	  'coverage       Run the same suite while reporting test coverage' \
 	  'ui-contracts   Run every tests/**/*.cjs contract' \
 	  'js-check       Check syntax for every Admin v2 JavaScript file' \
 	  'proxy-origin   Run the proxy-origin contract' \
@@ -32,7 +38,11 @@ lock:
 test: python-test ui-contracts js-check proxy-origin
 
 python-test:
-	ADULT_HUB_REQUIRE_TEST_DATABASE=1 ADULT_HUB_TEST_PROFILE=full CONFIG_PATH=tests/fixtures/config_telegram_only.yaml $(PYTHON) -m unittest discover -s tests -v
+	$(TEST_ENV) $(PYTHON) -m unittest discover -s tests -v
+
+coverage:
+	$(TEST_ENV) $(COVERAGE) run -m unittest discover -s tests
+	$(COVERAGE) report -m --fail-under=65
 
 ui-contracts:
 	@set -euo pipefail; \

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).parent))
-from pg_helper import TEST_URL  # noqa: E402  (loads TEST_DATABASE_URL from ../.env)
+from pg_helper import TEST_URL
 
 # PostgreSQL-only: resolver cache/diagnostics read DATABASE_URL (no SQLite
 # files). init_test_db creates the stream_cache table.

@@ -133,10 +133,10 @@ def _availability_check(conn, job_id: str, payload: dict, services) -> dict:
         with conn:
             conn.execute('INSERT INTO video_availability_checks (job_id,video_id,status,checked_at,evidence) VALUES (%s,%s,%s,to_timestamp(%s),%s) ON CONFLICT(job_id,video_id) DO UPDATE SET status=EXCLUDED.status,checked_at=EXCLUDED.checked_at,evidence=EXCLUDED.evidence', (job_id, video_id, status, now, evidence))
             if status == 'available':
-                conn.execute('UPDATE videos SET playable=1,stream_checked=%s,stream_fails=0 WHERE id=%s', (now, video_id))
+                conn.execute('UPDATE videos SET playable=1 WHERE id=%s', (video_id,))
                 conn.execute('DELETE FROM dead_streams WHERE video_id=%s', (video_id,))
             elif status == 'unavailable':
-                conn.execute('UPDATE videos SET playable=0,stream_checked=%s WHERE id=%s', (now, video_id))
+                conn.execute('UPDATE videos SET playable=0 WHERE id=%s', (video_id,))
                 conn.execute('INSERT INTO dead_streams (video_id,reason,detected_at) VALUES (%s,%s,%s) ON CONFLICT(video_id) DO UPDATE SET reason=EXCLUDED.reason,detected_at=EXCLUDED.detected_at', (video_id, 'availability check confirmed unavailable', now))
         completed[status] += 1
         _core._record_job_progress(conn, job_id, 'checking_availability', completed=index, total=len(video_ids))

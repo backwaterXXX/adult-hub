@@ -94,11 +94,11 @@ class TestMigrationsEngine(PgTestCase):
         status_part1 = get_migration_status(self.conn)
         self.assertFalse(status_part1.is_up_to_date)
         self.assertEqual(status_part1.current_version, 2)
-        self.assertEqual([m.version for m in status_part1.pending], list(range(3, 9)) + [1] + list(range(10, 46)))
+        self.assertEqual([m.version for m in status_part1.pending], list(range(3, 9)) + [1] + list(range(10, 47)))
 
         # Complete remaining migrations
         applied_part2 = apply_migrations(self.conn)
-        self.assertEqual([m.version for m in applied_part2], list(range(3, 9)) + [1] + list(range(10, 46)))
+        self.assertEqual([m.version for m in applied_part2], list(range(3, 9)) + [1] + list(range(10, 47)))
 
         status_final = get_migration_status(self.conn)
         self.assertTrue(status_final.is_up_to_date)
@@ -130,7 +130,7 @@ class TestMigrationsEngine(PgTestCase):
 
         applied = apply_migrations(self.conn)
 
-        self.assertEqual([record.version for record in applied], [1] + list(range(10, 46)))
+        self.assertEqual([record.version for record in applied], [1] + list(range(10, 47)))
         row = self.conn.execute(
             "SELECT title, EXTRACT(EPOCH FROM first_seen) FROM videos WHERE id = %s",
             ("existing:v8",),
@@ -165,6 +165,7 @@ class TestMigrationsEngine(PgTestCase):
             (43, "0043_telegram_unavailable_quarantine"),
             (44, "0044_minimum_video_duration"),
             (45, "0045_external_metadata_error_detail"),
+            (46, "0046_drop_stream_probe_columns"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):

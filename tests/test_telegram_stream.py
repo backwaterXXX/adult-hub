@@ -29,7 +29,7 @@ from pathlib import Path
 # files). Point it at the test database BEFORE importing the resolver app
 # (its cache/diagnostics singletons resolve the URL at import).
 sys.path.insert(0, str(Path(__file__).parent))
-from pg_helper import TEST_URL  # noqa: E402  (loads TEST_DATABASE_URL from ../.env)
+from pg_helper import TEST_URL
 
 if TEST_URL:
     os.environ["DATABASE_URL"] = TEST_URL
@@ -343,7 +343,7 @@ class TestParallelStreamBehavior(unittest.IsolatedAsyncioTestCase):
         total = 256 * 1024
         _, fetch, _, _ = make_source(
             total, delay_per_block=lambda o, ln: 0.2)
-        before = {t for t in asyncio.all_tasks()}
+        before = set(asyncio.all_tasks())
         readers = [asyncio.create_task(collect(
             mgr.stream(f"k{i}", 0, None, total, fetch))) for i in range(3)]
         await asyncio.sleep(0.05)

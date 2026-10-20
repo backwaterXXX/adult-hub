@@ -93,7 +93,7 @@ def restore_test_target_available(restore_admin_db_url: str | None,
 
 
 _EPOCH_TIME_COLUMNS = frozenset({
-    "stream_checked", "performers_checked_at", "performers_audited_at",
+    "performers_checked_at", "performers_audited_at",
     "scene_matched_at", "first_seen", "last_seen", "detected_at",
     "created_at", "updated_at", "backfill_completed_at", "pbc_updated_at",
     "expire_at", "last_accessed", "ended_at", "last_run_at",

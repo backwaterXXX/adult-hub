@@ -11,7 +11,13 @@ else:
 def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _core.Path, services: _core.DuplicateJobServices, *, include_long_running: bool=False) -> int:
     """Run queued duplicate decisions in the sync process, with file quarantine and undo snapshots."""
     worker_actions = tuple((action for action in _core.WORKER_ACTIONS if include_long_running or action not in _core._LONG_RUNNING_WORKER_ACTIONS))
-    conn.execute("UPDATE video_duplicate_jobs SET state='queued', updated_at=%s WHERE state='processing' AND action = ANY(%s)", (int(_core.time.time()), list(worker_actions)))
+    now = int(_core.time.time())
+    # Jobs left 'processing' belong to a crashed run of this same worker: every
+    # caller holds .adult-hub-sync.lock exclusively, so no live worker can own
+    # them and they are requeued immediately.
+    recovered = conn.execute("UPDATE video_duplicate_jobs SET state='queued', updated_at=%s WHERE state='processing' AND action = ANY(%s)", (now, list(worker_actions))).rowcount
+    if recovered:
+        services.logger.info('Requeued %s duplicate job(s) left processing by a dead worker', recovered)
     conn.commit()
     completed = 0
     while True:
@@ -29,8 +35,17 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
             conn.rollback()
             services.logger.exception('Could not claim duplicate decision job')
             break
-        payload = _core.json.loads(payload_raw)
-        if action == 'performer_merge' and isinstance(payload, dict) and payload.get('expected_revision'):
+        try:
+            payload = _core.json.loads(payload_raw)
+        except (TypeError, ValueError):
+            payload = None
+        if not isinstance(payload, dict):
+            failure = _core.json.dumps({'error': 'Corrupt job payload; marked failed without execution.'}, ensure_ascii=False)
+            with conn:
+                conn.execute("UPDATE video_duplicate_jobs SET state='failed', result=%s, updated_at=%s WHERE id=%s AND state='processing'", (failure, int(_core.time.time()), job_id))
+            services.logger.warning('Duplicate operation %s has a corrupt payload; marked failed', job_id)
+            continue
+        if action == 'performer_merge' and payload.get('expected_revision'):
             prior = conn.execute('SELECT result FROM video_duplicate_jobs WHERE id=%s', (job_id,)).fetchone()
             try:
                 prior_result = _core.json.loads(prior[0] or '{}') if prior else {}
@@ -560,7 +575,7 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                 failure_result = {}
             failure_result['error'] = str(exc)[:300]
             with conn:
-                conn.execute("UPDATE video_duplicate_jobs SET state='failed', result=%s, updated_at=%s WHERE id=%s", (_core.json.dumps(failure_result, ensure_ascii=False), int(_core.time.time()), job_id))
+                conn.execute("UPDATE video_duplicate_jobs SET state='failed', result=%s, updated_at=%s WHERE id=%s AND state='processing'", (_core.json.dumps(failure_result, ensure_ascii=False), int(_core.time.time()), job_id))
             services.logger.warning('Duplicate operation %s failed: %s', job_id, exc)
         finally:
             heartbeat_stop.set()

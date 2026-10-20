@@ -89,9 +89,9 @@ from .telegram_messages import (
     _duration_of,  # noqa: F401 - compatibility export
     _filter_caption_for_title,  # noqa: F401 - compatibility export
     _filename_to_title,  # noqa: F401 - compatibility export
-    _nested_unique_id as _nested_unique_id,  # noqa: F401 - compatibility export
+    _nested_unique_id as _nested_unique_id,
     _size_of,
-    _text_hits as _text_hits,  # noqa: F401 - compatibility export
+    _text_hits as _text_hits,
     channel_to_category,
     extract_file_ref,  # noqa: F401 - compatibility export
     extract_hashtags,  # noqa: F401 - compatibility export

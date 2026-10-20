@@ -11,9 +11,6 @@ from provider_registry import (
     stream_mode_for_provider,
     get_provider_info,
     known_provider_names,
-    dead_stream_providers,
-    performer_backfill_providers,
-    performer_audit_providers,
     _telegram_channel_of_video,
     is_cleanup_allowed,
 )
@@ -48,11 +45,6 @@ class TestProviderRegistry(unittest.TestCase):
         fallback = get_provider_info("historical")
         self.assertEqual(fallback["name"], "Historical")
         self.assertEqual(fallback["domain"], "historical")
-
-    def test_upkeep_provider_lists_are_empty_telegram_only(self):
-        self.assertEqual(dead_stream_providers(), ())
-        self.assertEqual(performer_backfill_providers(), ())
-        self.assertEqual(performer_audit_providers(), ())
 
     def test_telegram_channel_parsing(self):
         self.assertEqual(_telegram_channel_of_video("telegram:-100123456:789"), "-100123456")

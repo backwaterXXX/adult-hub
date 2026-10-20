@@ -748,17 +748,11 @@ class TestVideoDuplicateJobs(PgTestCase):
         video_id = "telegram:-1001:3:rate-limited"
         self._add_video(video_id)
         with self.conn:
-            self.conn.execute(
-                "UPDATE videos SET playable=0,stream_fails=3,stream_checked=to_timestamp(123) WHERE id=%s",
-                (video_id,),
-            )
+            self.conn.execute("UPDATE videos SET playable=0 WHERE id=%s", (video_id,))
             self.conn.execute(
                 "INSERT INTO dead_streams(video_id,reason,detected_at) VALUES (%s,'confirmed earlier',122)",
                 (video_id,),
             )
-        checked_before = self.conn.execute(
-            "SELECT stream_checked FROM videos WHERE id=%s", (video_id,),
-        ).fetchone()[0]
         job_id = enqueue_job(self.db_path, "availability_check", {"video_ids": [video_id]})
         with patch.object(sync, "probe_stream_via_resolver_outcome", return_value="transient_error"):
             self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
@@ -770,8 +764,8 @@ class TestVideoDuplicateJobs(PgTestCase):
         self.assertEqual(check[0], "transient_error")
         self.assertIn("transient network", check[1])
         self.assertEqual(self.conn.execute(
-            "SELECT playable,stream_fails,stream_checked FROM videos WHERE id=%s", (video_id,),
-        ).fetchone(), (0, 3, checked_before))
+            "SELECT playable FROM videos WHERE id=%s", (video_id,),
+        ).fetchone()[0], 0)
         self.assertEqual(self.conn.execute(
             "SELECT reason FROM dead_streams WHERE video_id=%s", (video_id,),
         ).fetchone(), ("confirmed earlier",))

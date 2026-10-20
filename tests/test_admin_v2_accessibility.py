@@ -339,8 +339,8 @@ class TestAdminV2TemplateAccessibility(unittest.TestCase):
             "Every aria-labelledby reference must resolve to a static or generated ID.",
         )
 
-        tab_to_panel = {tab_id: panel_id for tab_id, panel_id in audit.tabs}
-        panel_to_tab = {panel_id: tab_id for panel_id, tab_id in audit.panels}
+        tab_to_panel = dict(audit.tabs)
+        panel_to_tab = dict(audit.panels)
         self.assertTrue(audit.tabs, "The template audit should inspect tabs.")
         self.assertEqual(len(tab_to_panel), len(audit.tabs), "Every tab needs a unique ID.")
         self.assertEqual(len(panel_to_tab), len(audit.panels), "Every tab panel needs a unique ID.")

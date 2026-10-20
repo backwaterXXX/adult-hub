@@ -22,7 +22,7 @@ if TEST_URL:
 from test_support import optional_import_failed
 
 try:
-    from providers import telegram as tg_module  # noqa: F401
+    from providers import telegram as tg_module
     from providers.telegram import (
         channel_to_category,
         extract_file_ref,

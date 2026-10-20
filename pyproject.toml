@@ -3,9 +3,11 @@ target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
-# Start with correctness-focused rules. Expand after reviewing the existing
-# repository baseline so lint adoption does not turn into a mass reformat.
-select = ["E4", "E7", "E9", "F", "B023"]
+# Correctness rules plus the whitespace/comprehension families that the
+# repository now satisfies. Import sorting (I001) stays off: entry points and
+# tests must mutate sys.path before importing project modules, so reordering
+# their imports would break them.
+select = ["E4", "E7", "E9", "F", "B023", "W", "C4", "PIE790", "RUF100"]
 
 [tool.ruff.lint.per-file-ignores]
 # These entry points deliberately add repository directories to sys.path
@@ -16,3 +18,18 @@ select = ["E4", "E7", "E9", "F", "B023"]
 "tests/*.py" = ["E402"]
 # sync.py remains a compatibility facade for scripts that import its helpers.
 "sync/sync.py" = ["F401"]
+
+[tool.coverage.run]
+source = ["common", "resolver", "sync"]
+omit = ["tests/*", "scripts/*"]
+
+[tool.coverage.report]
+skip_empty = true
+# Facade modules import through a try/except so they run both as a package and
+# as top-level scripts; the fallback branch is unreachable under the test run.
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "except ImportError:",
+    # The CLI entry guard runs the same main() the suites already cover.
+    "if __name__ == .__main__.:",
+]

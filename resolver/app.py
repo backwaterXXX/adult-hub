@@ -247,7 +247,7 @@ async def _validate_proxy_url_async(url: str):
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
 
 
-async def _safe_proxy_stream(client, url: str, *, headers: dict, timeout: Optional[float], method: str = "GET"):
+async def _safe_proxy_stream(client, url: str, *, headers: dict, timeout: "float | httpx.Timeout | None", method: str = "GET"):
     """Open a streaming request, checking every redirect before following it."""
     current = url
     for _ in range(6):
@@ -630,7 +630,7 @@ async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[s
         headers["Range"] = client_range
     try:
         ctx, sresp = await _safe_proxy_stream(
-            client, url, headers=headers, timeout=None,
+            client, url, headers=headers, timeout=httpx.Timeout(None, connect=10.0, pool=5.0),
             method="HEAD" if (request.method or "GET").upper() == "HEAD" else "GET",
         )
     except httpx.HTTPError as e:

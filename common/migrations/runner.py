@@ -45,6 +45,7 @@ from common.migrations.m0042_telegram_performer_resolution import migration as t
 from common.migrations.m0043_telegram_unavailable_quarantine import migration as telegram_unavailable_quarantine
 from common.migrations.m0044_minimum_video_duration import migration as minimum_video_duration
 from common.migrations.m0045_external_metadata_error_detail import migration as external_metadata_error_detail
+from common.migrations.m0046_drop_stream_probe_columns import migration as drop_stream_probe_columns
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     telegram_unavailable_quarantine,
     minimum_video_duration,
     external_metadata_error_detail,
+    drop_stream_probe_columns,
 )
 
 

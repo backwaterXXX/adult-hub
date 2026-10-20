@@ -496,22 +496,17 @@ class ParallelTelegramStreamManager:
     # Clear extension points for metrics
     def on_cache_hit(self, key: str, block_index: int) -> None:
         """Extension point for cache hits."""
-        pass
 
     def on_cache_miss(self, key: str, block_index: int) -> None:
         """Extension point for cache misses."""
-        pass
 
     def on_block_fetched(
         self, key: str, block_index: int, size: int, duration: float
     ) -> None:
         """Extension point when a block is fetched from upstream."""
-        pass
 
     def on_prefetch_scheduled(self, key: str, block_index: int) -> None:
         """Extension point when prefetch is scheduled for a block."""
-        pass
 
     def on_eviction(self, key: str, block_index: int, size: int) -> None:
         """Extension point when a block is evicted from cache."""
-        pass

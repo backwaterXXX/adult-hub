@@ -109,32 +109,40 @@ def cleanup_retention(conn: db.Connection, media_dir: Path, retention_days: int,
     services.logger.info(
         f"Retention policy: purging {len(expired)} videos older than {retention_days} days..."
     )
-    with conn:
-        for vid_id, title in expired:
-            f_cur = conn.execute(
-                "SELECT file_path FROM synced_files WHERE video_id = %s", (vid_id,)
-            )
-            for (file_path,) in f_cur.fetchall():
-                try:
-                    path = services.resolve_media_path(file_path, media_dir)
-                except ValueError as exc:
-                    services.logger.warning("Skipping unsafe media record: %s", exc)
-                    continue
-                for ext in (".strm", ".nfo", ".jpg", ".thumb_fail"):
-                    file_to_delete = path.with_suffix(ext)
-                    if file_to_delete.exists():
-                        try:
-                            file_to_delete.unlink()
-                            services.logger.info(f"Retention: deleted {file_to_delete.name}")
-                        except Exception as exc:
-                            services.logger.warning(
-                                f"Retention: error deleting {file_to_delete}: {exc}"
-                            )
+    # Per-item transactions: a DB error must not roll back deletions that
+    # already committed, leaving catalog rows pointing at deleted files.
+    for vid_id, title in expired:
+        f_cur = conn.execute(
+            "SELECT file_path FROM synced_files WHERE video_id = %s", (vid_id,)
+        )
+        for (file_path,) in f_cur.fetchall():
+            try:
+                path = services.resolve_media_path(file_path, media_dir)
+            except ValueError as exc:
+                services.logger.warning("Skipping unsafe media record: %s", exc)
+                continue
+            for ext in (".strm", ".nfo", ".jpg", ".thumb_fail"):
+                file_to_delete = path.with_suffix(ext)
+                if file_to_delete.exists():
+                    try:
+                        file_to_delete.unlink()
+                        services.logger.info(f"Retention: deleted {file_to_delete.name}")
+                    except Exception as exc:
+                        services.logger.warning(
+                            f"Retention: error deleting {file_to_delete}: {exc}"
+                        )
 
-            conn.execute("DELETE FROM video_categories WHERE video_id = %s", (vid_id,))
-            conn.execute("DELETE FROM synced_files WHERE video_id = %s", (vid_id,))
-            conn.execute("DELETE FROM videos WHERE id = %s", (vid_id,))
-            services.logger.info(f"Retention: purged video {vid_id} ('{title}')")
+        try:
+            with conn:
+                conn.execute("DELETE FROM video_categories WHERE video_id = %s", (vid_id,))
+                conn.execute("DELETE FROM synced_files WHERE video_id = %s", (vid_id,))
+                conn.execute("DELETE FROM videos WHERE id = %s", (vid_id,))
+        except Exception as exc:
+            services.logger.warning(
+                f"Retention: keeping catalog rows for {vid_id} after a DB error: {exc}"
+            )
+            continue
+        services.logger.info(f"Retention: purged video {vid_id} ('{title}')")
 
 
 def purge_videos(conn: db.Connection, media_dir: Path, comp_ids: List[str], reason: str,
@@ -144,32 +152,34 @@ def purge_videos(conn: db.Connection, media_dir: Path, comp_ids: List[str], reas
     if not comp_ids:
         return 0
     purged = 0
-    with conn:
-        for video_id in comp_ids:
-            if services.video_is_disabled(video_id):
-                continue
-            if not force and not services.is_cleanup_allowed(
-                    video_id, providers_succeeded=providers_succeeded):
-                continue
-            try:
-                rows = conn.execute(
-                    "SELECT file_path FROM synced_files WHERE video_id = %s", (video_id,)
-                ).fetchall()
-                for (file_path,) in rows:
+    # Per-item transactions so one failed video cannot roll back the DB rows of
+    # videos whose files were already deleted earlier in this loop.
+    for video_id in comp_ids:
+        if services.video_is_disabled(video_id):
+            continue
+        if not force and not services.is_cleanup_allowed(
+                video_id, providers_succeeded=providers_succeeded):
+            continue
+        try:
+            rows = conn.execute(
+                "SELECT file_path FROM synced_files WHERE video_id = %s", (video_id,)
+            ).fetchall()
+            for (file_path,) in rows:
+                try:
+                    path = services.resolve_media_path(file_path, media_dir)
+                except ValueError:
+                    continue
+                for ext in (".strm", ".nfo", ".jpg", ".thumb_fail"):
                     try:
-                        path = services.resolve_media_path(file_path, media_dir)
-                    except ValueError:
-                        continue
-                    for ext in (".strm", ".nfo", ".jpg", ".thumb_fail"):
-                        try:
-                            path.with_suffix(ext).unlink(missing_ok=True)
-                        except Exception:
-                            pass
+                        path.with_suffix(ext).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            with conn:
                 conn.execute("DELETE FROM video_categories WHERE video_id = %s", (video_id,))
                 conn.execute("DELETE FROM synced_files WHERE video_id = %s", (video_id,))
                 conn.execute("DELETE FROM videos WHERE id = %s", (video_id,))
-                purged += 1
-            except Exception as exc:
-                services.logger.warning(f"Purge failed for {video_id}: {exc}")
+            purged += 1
+        except Exception as exc:
+            services.logger.warning(f"Purge failed for {video_id}: {exc}")
     services.logger.info(f"Purged {purged} videos ({reason})")
     return purged

@@ -354,14 +354,10 @@ def main() -> int:
                     first_seen,
                 ) = row
 
-                try:
-                    tag_set = set(json.loads(tags_raw)) if tags_raw else set()
-                except Exception:
-                    tag_set = set()
-                try:
-                    genres = set(json.loads(cats_raw)) if cats_raw else set()
-                except Exception:
-                    genres = set()
+                # The schema keeps both columns NOT NULL jsonb arrays of strings
+                # (videos_tags_array_ck, videos_categories_array_ck), so no guard needed.
+                tag_set = set(json.loads(tags_raw))
+                genres = set(json.loads(cats_raw))
 
                 video_dict = {
                     "id": vid_id,

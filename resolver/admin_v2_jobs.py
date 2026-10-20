@@ -9,7 +9,7 @@ from admin_v2_errors import V2ErrorRoute
 from common.admin_job_health import is_processing_stale
 from common.job_queue import ALL_ACTIONS
 from admin_v2_duplicate_routes import (
-    MAX_DUPLICATE_ACTION_BYTES as MAX_DUPLICATE_ACTION_BYTES,  # noqa: F401 - compatibility export
+    MAX_DUPLICATE_ACTION_BYTES as MAX_DUPLICATE_ACTION_BYTES,
     register_duplicate_routes,
 )
 

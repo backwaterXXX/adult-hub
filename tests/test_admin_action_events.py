@@ -84,13 +84,13 @@ class TestAdminActionEvents(PgTestCase):
                 "INSERT INTO video_duplicate_jobs (id,action,state,payload,created_at,updated_at) "
                 "VALUES ('job-metadata-1','metadata_update','done','{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
             )
-        args = dict(
-            job_id="job-metadata-1", video_id="telegram:10:item",
-            before={"title": "Source title", "plot": None},
-            after={"title": "Manual title", "plot": ""},
-            before_overrides={}, after_overrides={"title": "Manual title", "plot": ""},
-            fields=["title", "plot", "ignored_secret"],
-        )
+        args = {
+            "job_id": "job-metadata-1", "video_id": "telegram:10:item",
+            "before": {"title": "Source title", "plot": None},
+            "after": {"title": "Manual title", "plot": ""},
+            "before_overrides": {}, "after_overrides": {"title": "Manual title", "plot": ""},
+            "fields": ["title", "plot", "ignored_secret"],
+        }
         with self.conn:
             self.assertTrue(record_metadata_change(self.conn, **args))
         with self.conn:

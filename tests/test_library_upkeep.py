@@ -1,4 +1,3 @@
-import json
 import sys
 import tempfile
 import unittest
@@ -135,262 +134,26 @@ class TestRewriteAllStreamFiles(BaseUpkeepTest):
         writer.assert_called_once_with(stream, "exampleweb:abc")
 
 
-class TestBackfillPerformers(BaseUpkeepTest):
-    def _seed(self, media: Path):
-        db_path = media / "t.db"
-        conn = _make_videos_db(db_path)
-        conn.execute(
-            "INSERT INTO videos (id, provider, title, slug, duration, thumbnail, performers, categories, first_seen, last_seen, tags, embed_host, playable) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            ("exampleweb:1", "exampleweb", "T1", "s1", 600, "", "[]", '["G"]', 1, 200, "[]", "", None))
-        conn.execute(
-            "INSERT INTO videos (id, provider, title, slug, duration, thumbnail, performers, categories, first_seen, last_seen, tags, embed_host, playable) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            ("exampleweb:2", "exampleweb", "T2", "s2", 600, "", None, '["G"]', 1, 100, "[]", "", None))
-        conn.execute(
-            "INSERT INTO videos (id, provider, title, slug, duration, thumbnail, performers, categories, first_seen, last_seen, tags, embed_host, playable) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            ("otherweb:9", "otherweb", "T9", "s9", 600, "", "[]", '["G"]', 1, 300, "[]", "", None))
-        conn.commit()
-        return conn
-
-    def test_backfill_updates_db_and_nfo(self):
-        orig_fetch = sync_module.fetch_json_with_retry
-        orig_sleep = sync_module.time.sleep
-        orig_limit = sync_module.PERFORMER_BACKFILL_PER_RUN
-        calls = []
-        try:
-            sync_module.PERFORMER_BACKFILL_PER_RUN = 10
-            sync_module.time.sleep = lambda *a: None
-            sync_module.fetch_json_with_retry = lambda url, **kw: (
-                calls.append(url) or {"performers": [" Jane Doe ", "Jane Doe", ""]})
-            with tempfile.TemporaryDirectory() as d:
-                media = Path(d)
-                conn = self._seed(media)
-                checked, updated = sync_module.backfill_performers(
-                    conn, media, providers=("exampleweb",))
-                # Explicit providers prove the generic mechanism.
-                self.assertEqual(checked, 2)
-                self.assertEqual(updated, 2)
-                self.assertTrue(all("provider=exampleweb" in u for u in calls))
-                row = conn.execute(
-                    "SELECT performers FROM videos WHERE id='exampleweb:1'").fetchone()
-                self.assertEqual(json.loads(row[0]), ["Jane Doe"])
-                nfo = media / f"{sync_module.stable_media_basename('exampleweb:1')}.nfo"
-                self.assertTrue(nfo.exists())
-                self.assertIn("<actor>", nfo.read_text(encoding="utf-8"))
-                self.assertIn("Jane Doe", nfo.read_text(encoding="utf-8"))
-                conn.close()
-        finally:
-            sync_module.fetch_json_with_retry = orig_fetch
-            sync_module.time.sleep = orig_sleep
-            sync_module.PERFORMER_BACKFILL_PER_RUN = orig_limit
-
-    def test_backfill_respects_cap(self):
-        orig_fetch = sync_module.fetch_json_with_retry
-        orig_sleep = sync_module.time.sleep
-        orig_limit = sync_module.PERFORMER_BACKFILL_PER_RUN
-        try:
-            sync_module.PERFORMER_BACKFILL_PER_RUN = 1
-            sync_module.time.sleep = lambda *a: None
-            sync_module.fetch_json_with_retry = lambda url, **kw: {"performers": ["A B"]}
-            with tempfile.TemporaryDirectory() as d:
-                media = Path(d)
-                conn = self._seed(media)
-                checked, updated = sync_module.backfill_performers(
-                    conn, media, providers=("exampleweb",))
-                self.assertEqual(checked, 1)
-                self.assertEqual(updated, 1)
-                conn.close()
-        finally:
-            sync_module.fetch_json_with_retry = orig_fetch
-            sync_module.time.sleep = orig_sleep
-            sync_module.PERFORMER_BACKFILL_PER_RUN = orig_limit
-
-
-class TestDeadStreamSweep(BaseUpkeepTest):
-
-    def setUp(self):
-        super().setUp()
-        # Purge assertions need the retention guard to allow the
-        # neutral "exampleweb" (registered + enabled + succeeded).
-        from common.config_loader import AppConfig, SourceConfig, SyncConfig
-        self._orig_config = sync_module.CONFIG
-        self._orig_info = dict(sync_module._PROVIDER_INFO)
-        sync_module.CONFIG = AppConfig(
-            sync=SyncConfig(retention_days=30),
-            sources={"exampleweb": SourceConfig(
-                provider="exampleweb", enabled=True,
-                address="https://exampleweb.example.com")})
-        sync_module._PROVIDER_INFO["exampleweb"] = {
-            "name": "Exampleweb", "domain": "exampleweb.example.com",
-            "base_url": "https://exampleweb.example.com"}
-        self.addCleanup(setattr, sync_module, "CONFIG", self._orig_config)
-        self.addCleanup(_restore_provider_info, self._orig_info)
-
+class TestDeadStreamDenylist(BaseUpkeepTest):
     def _db(self, path=None):
         return _make_videos_db(path)
 
-    def _row(self, conn, vid, playable=1, fails=None, checked=None):
-        conn.execute(
-            "INSERT INTO videos (id, provider, title, slug, duration, thumbnail,"
-            " performers, categories, first_seen, last_seen, tags, embed_host,"
-            " playable, stream_checked, stream_fails)"
-            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (vid, vid.split(":")[0], "T", "s", 600, "", "[]",
-             '["G"]', 1, 100, "[]", "", playable, checked, fails))
-        conn.commit()
-
-    def test_first_strike_keeps(self):
-        # Reliability-first: DEAD_STREAM_STRIKES_TO_PURGE=1 (default) => pierwszy
-        # potwierdzony strzal od razu purgluje (1 strike = purge).
-        orig_probe, orig_sleep = sync_module.probe_stream_via_resolver, sync_module.time.sleep
-        orig_strikes = sync_module.DEAD_STREAM_STRIKES_TO_PURGE
-        try:
-            sync_module.probe_stream_via_resolver = lambda cid: False
-            sync_module.time.sleep = lambda *a: None
-            sync_module.DEAD_STREAM_STRIKES_TO_PURGE = 1
-            with tempfile.TemporaryDirectory() as d:
-                media = Path(d)
-                stem = "exampleweb [x-0123456789ab]"
-                for ext in (".strm", ".nfo", ".jpg"):
-                    (media / f"{stem}{ext}").write_text("x")
-                conn = self._db(Path(d) / "t.db")
-                self._row(conn, "exampleweb:1")
-                conn.execute("INSERT INTO synced_files VALUES (%s, %s, %s, %s)",
-                             (f"{stem}.strm", "exampleweb:1", "g", 1))
-                conn.commit()
-                purged = sync_module.hide_dead_streams({}, conn, media, {"exampleweb"}, providers=("exampleweb",))
-                self.assertEqual(purged, 1)
-                self.assertEqual(conn.execute("SELECT count(*) FROM videos").fetchone()[0], 0)
-                self.assertEqual(conn.execute("SELECT count(*) FROM dead_streams").fetchone()[0], 1)
-                conn.close()
-            # Tryb lenient (2 strzaly) nadal dziala gdy skonfigurowany.
-            sync_module.DEAD_STREAM_STRIKES_TO_PURGE = 2
-            with tempfile.TemporaryDirectory() as d:
-                conn = self._db(Path(d) / "t.db")
-                self._row(conn, "exampleweb:2")
-                purged = sync_module.hide_dead_streams({}, conn, Path(d), {"exampleweb"}, providers=("exampleweb",))
-                self.assertEqual(purged, 0)
-                r = conn.execute(
-                    "SELECT playable, stream_fails, stream_checked FROM videos"
-                    " WHERE id='exampleweb:2'").fetchone()
-                self.assertEqual(r[0], 1)
-                self.assertEqual(r[1], 1)
-                self.assertIsNotNone(r[2])
-                conn.close()
-        finally:
-            sync_module.probe_stream_via_resolver = orig_probe
-            sync_module.time.sleep = orig_sleep
-            sync_module.DEAD_STREAM_STRIKES_TO_PURGE = orig_strikes
-
-    def test_second_strike_purges_and_denylists(self):
-        orig_probe, orig_sleep = sync_module.probe_stream_via_resolver, sync_module.time.sleep
-        try:
-            sync_module.probe_stream_via_resolver = lambda cid: False
-            sync_module.time.sleep = lambda *a: None
-            with tempfile.TemporaryDirectory() as d:
-                media = Path(d)
-                stem = "exampleweb [x-0123456789ab]"
-                for ext in (".strm", ".nfo", ".jpg"):
-                    (media / f"{stem}{ext}").write_text("x")
-                conn = self._db(media / "t.db")
-                self._row(conn, "exampleweb:1", playable=1, fails=1, checked=1)
-                conn.execute("INSERT INTO synced_files VALUES (%s, %s, %s, %s)",
-                             (f"{stem}.strm", "exampleweb:1", "g", 1))
-                conn.commit()
-                purged = sync_module.hide_dead_streams({}, conn, media, {"exampleweb"}, providers=("exampleweb",))
-                self.assertEqual(purged, 1)
-                self.assertEqual(conn.execute("SELECT count(*) FROM videos").fetchone()[0], 0)
-                self.assertEqual(list(media.glob("exampleweb*")), [])
-                self.assertEqual(
-                    conn.execute("SELECT reason FROM dead_streams WHERE video_id='exampleweb:1'").fetchone()[0],
-                    "dead CDN stream (probe)")
-                conn.close()
-        finally:
-            sync_module.probe_stream_via_resolver = orig_probe
-            sync_module.time.sleep = orig_sleep
-
-    def test_alive_resets_strikes(self):
-        orig_probe, orig_sleep = sync_module.probe_stream_via_resolver, sync_module.time.sleep
-        try:
-            sync_module.probe_stream_via_resolver = lambda cid: True
-            sync_module.time.sleep = lambda *a: None
-            with tempfile.TemporaryDirectory() as d:
-                conn = self._db(Path(d) / "t.db")
-                self._row(conn, "exampleweb:1", playable=1, fails=1, checked=1)
-                purged = sync_module.hide_dead_streams({}, conn, Path(d), providers=("exampleweb",))
-                self.assertEqual(purged, 0)
-                r = conn.execute(
-                    "SELECT stream_fails, stream_checked FROM videos WHERE id='exampleweb:1'").fetchone()
-                self.assertEqual(r[0], 0)
-                self.assertIsNotNone(r[1])
-                conn.close()
-        finally:
-            sync_module.probe_stream_via_resolver = orig_probe
-            sync_module.time.sleep = orig_sleep
-
-    def test_unknown_changes_nothing(self):
-        orig_probe, orig_sleep = sync_module.probe_stream_via_resolver, sync_module.time.sleep
-        try:
-            sync_module.probe_stream_via_resolver = lambda cid: None
-            sync_module.time.sleep = lambda *a: None
-            with tempfile.TemporaryDirectory() as d:
-                conn = self._db(Path(d) / "t.db")
-                self._row(conn, "exampleweb:1")
-                purged = sync_module.hide_dead_streams({}, conn, Path(d), providers=("exampleweb",))
-                self.assertEqual(purged, 0)
-                r = conn.execute(
-                    "SELECT stream_fails, stream_checked FROM videos WHERE id='exampleweb:1'").fetchone()
-                self.assertIsNone(r[0])
-                self.assertIsNone(r[1])
-                conn.close()
-        finally:
-            sync_module.probe_stream_via_resolver = orig_probe
-            sync_module.time.sleep = orig_sleep
-
-    def test_purge_cap(self):
-        orig_probe, orig_sleep = sync_module.probe_stream_via_resolver, sync_module.time.sleep
-        orig_cap = sync_module.DEAD_STREAM_MAX_PURGE_PER_RUN
-        try:
-            sync_module.probe_stream_via_resolver = lambda cid: False
-            sync_module.time.sleep = lambda *a: None
-            sync_module.DEAD_STREAM_MAX_PURGE_PER_RUN = 2
-            with tempfile.TemporaryDirectory() as d:
-                conn = self._db(Path(d) / "t.db")
-                for i in range(3):
-                    self._row(conn, f"exampleweb:{i}", playable=1, fails=1, checked=1)
-                purged = sync_module.hide_dead_streams({}, conn, Path(d), {"exampleweb"}, providers=("exampleweb",))
-                self.assertEqual(purged, 2)
-                self.assertEqual(conn.execute("SELECT count(*) FROM videos").fetchone()[0], 1)
-                self.assertEqual(conn.execute("SELECT count(*) FROM dead_streams").fetchone()[0], 2)
-                conn.close()
-        finally:
-            sync_module.probe_stream_via_resolver = orig_probe
-            sync_module.time.sleep = orig_sleep
-            sync_module.DEAD_STREAM_MAX_PURGE_PER_RUN = orig_cap
-
     def test_denylist_prefilter_and_prune(self):
-        orig_probe, orig_sleep = sync_module.probe_stream_via_resolver, sync_module.time.sleep
-        try:
-            calls = []
-            sync_module.probe_stream_via_resolver = lambda cid: calls.append(cid) or True
-            sync_module.time.sleep = lambda *a: None
-            with tempfile.TemporaryDirectory() as d:
-                conn = self._db(Path(d) / "t.db")
-                conn.execute("INSERT INTO dead_streams VALUES (%s, %s, %s)",
-                             ("exampleweb:9", "x", 1))
-                conn.execute("INSERT INTO dead_streams VALUES (%s, %s, %s)",
-                             ("exampleweb:gone", "x", 1))
-                conn.commit()
-                collected = {"exampleweb:9": {"video": {}}, "exampleweb:10": {"video": {}}}
-                sync_module.hide_dead_streams(collected, conn, Path(d), providers=("exampleweb",))
-                self.assertNotIn("exampleweb:9", collected)
-                self.assertIn("exampleweb:10", collected)
-                self.assertNotIn("exampleweb:9", calls)  # no probe spent on corpse
-                left = {r[0] for r in conn.execute("SELECT video_id FROM dead_streams").fetchall()}
-                self.assertNotIn("exampleweb:gone", left)  # delisted -> pruned
-                conn.close()
-        finally:
-            sync_module.probe_stream_via_resolver = orig_probe
-            sync_module.time.sleep = orig_sleep
+        with tempfile.TemporaryDirectory() as d:
+            conn = self._db(Path(d) / "t.db")
+            conn.execute("INSERT INTO dead_streams VALUES (%s, %s, %s)",
+                         ("exampleweb:9", "x", 1))
+            conn.execute("INSERT INTO dead_streams VALUES (%s, %s, %s)",
+                         ("exampleweb:gone", "x", 1))
+            conn.commit()
+            collected = {"exampleweb:9": {"video": {}}, "exampleweb:10": {"video": {}}}
+            sync_module.hide_dead_streams(collected, conn)
+            self.assertNotIn("exampleweb:9", collected)
+            self.assertIn("exampleweb:10", collected)
+            left = {r[0] for r in conn.execute("SELECT video_id FROM dead_streams").fetchall()}
+            self.assertIn("exampleweb:9", left)   # still listed upstream -> stays denied
+            self.assertNotIn("exampleweb:gone", left)  # delisted -> pruned
+            conn.close()
 
 
 def _restore_provider_info(orig_info):

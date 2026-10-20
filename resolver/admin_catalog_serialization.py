@@ -211,7 +211,7 @@ def _local_file_status(file_names: list[Any], media_root: str | os.PathLike[str]
                 state = "unknown"
             role_states[role].append(state)
     return {role: _combine_file_states(states) for role, states in role_states.items()}
- 
+
 def _resolve_local_artwork_path(file_names: list[Any], media_root: str | os.PathLike[str]) -> Path | None:
     """Return the absolute Path to the local artwork file if present, else None."""
     try:

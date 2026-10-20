@@ -89,7 +89,7 @@ def wait_health(base_url, deadline_s=120.0):
                                         timeout=10) as r:
                 if r.status == 200:
                     return True, time.monotonic() - t0
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             last = repr(e)[:120]
         time.sleep(2.0)
     return False, last
@@ -104,7 +104,7 @@ def diag_api(method, path, timeout=15.0):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode())
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return {"_error": type(e).__name__}
 
 
@@ -120,7 +120,7 @@ def recreate_resolver(mode, workdir=".", deadline_s=180.0):
     try:
         subprocess.run(cmd, cwd=workdir, env=merged, timeout=170,
                        capture_output=True, text=True, check=False)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return False, {"error": repr(e)[:200]}
     ok, info = wait_health(BASE_URL, deadline_s=deadline_s)
     return ok, {"health_wait_s": info, "applied": sorted(env.keys())}
@@ -164,13 +164,13 @@ def measure_stream(video_id, total, avg_rate, window):
                 try:
                     state["content_range"] = resp.getheader("Content-Range")
                     state["content_length"] = resp.getheader("Content-Length")
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
             # Real socket timeout (conn.sock_timeout is a no-op attribute).
             try:
                 if conn.sock is not None:
                     conn.sock.settimeout(READ_TIMEOUT)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             prev = time.monotonic()
             while True:
@@ -191,7 +191,7 @@ def measure_stream(video_id, total, avg_rate, window):
                     continue
                 try:
                     chunk = resp.read(CHUNK)
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     with lock:
                         if state["error"] is None:
                             state["error"] = "read:%s" % type(e).__name__
@@ -214,7 +214,7 @@ def measure_stream(video_id, total, avg_rate, window):
                     if gap > state["max_gap_s"]:
                         state["max_gap_s"] = gap
                 prev = now
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             with lock:
                 if state["error"] is None:
                     state["error"] = "%s:%s" % (type(e).__name__, str(e)[:120])
@@ -224,12 +224,12 @@ def measure_stream(video_id, total, avg_rate, window):
             try:
                 if resp is not None:
                     resp.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             try:
                 if conn is not None:
                     conn.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
     th = threading.Thread(target=producer, daemon=True)
@@ -293,12 +293,12 @@ def measure_stream(video_id, total, avg_rate, window):
     try:
         if holder.get("resp") is not None:
             holder["resp"].close()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     try:
         if holder.get("conn") is not None:
             holder["conn"].close()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     th.join(timeout=20.0)
     producer_alive = th.is_alive()
@@ -367,13 +367,13 @@ def measure_seek(video_id, offset, length=SEEK_LEN, timeout=60.0):
             cl = resp.getheader("Content-Length")
             if cl is not None:
                 expected_len = int(cl)
-        except Exception:  # noqa: BLE001
+        except Exception:
             expected_len = length
         # Real socket timeout for bounded first-byte/completion timing.
         try:
             if conn.sock is not None:
                 conn.sock.settimeout(timeout)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         while True:
             if time.monotonic() - t0 > timeout:
@@ -394,13 +394,13 @@ def measure_seek(video_id, offset, length=SEEK_LEN, timeout=60.0):
                 err = "http_status:%s" % status
             elif got != expected_len:
                 err = "short_body:%d!=%d" % (got, expected_len)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         err = "%s:%s" % (type(e).__name__, str(e)[:120])
     finally:
         try:
             if conn is not None:
                 conn.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     total_t = time.monotonic() - t0
     return {"offset": offset, "length": length, "http_status": status,

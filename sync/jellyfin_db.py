@@ -192,9 +192,11 @@ def sync_jellyfin_telegram_metadata(url, api_key, media_dir, *, state_path=None,
                                    poll_timeout=120, logger=None, session=None,
                                    workers=1, adopt_matching=False):
     """Serialize writers sharing the same persistent reconciliation state."""
-    options = dict(state_path=state_path, limit=limit, item_ids=item_ids,
-                   audit_only=audit_only, poll_timeout=poll_timeout, logger=logger,
-                   session=session, workers=workers, adopt_matching=adopt_matching)
+    options = {
+        "state_path": state_path, "limit": limit, "item_ids": item_ids,
+        "audit_only": audit_only, "poll_timeout": poll_timeout, "logger": logger,
+        "session": session, "workers": workers, "adopt_matching": adopt_matching,
+    }
     if audit_only or not url or not api_key:
         return _sync_jellyfin_telegram_metadata(url, api_key, media_dir, **options)
     import fcntl

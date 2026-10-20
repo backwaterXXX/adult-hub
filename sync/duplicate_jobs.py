@@ -269,7 +269,7 @@ def _finish_job(conn, job_id: str, result: dict) -> None:
     finished["progress"] = {"stage": "completed", "updated_at": now}
     with conn:
         conn.execute(
-            "UPDATE video_duplicate_jobs SET state='done', result=%s, updated_at=%s WHERE id=%s",
+            "UPDATE video_duplicate_jobs SET state='done', result=%s, updated_at=%s WHERE id=%s AND state='processing'",
             (json.dumps(finished, ensure_ascii=False), now, job_id),
         )
 
@@ -413,7 +413,7 @@ def _performer_refresh(conn: db.Connection, job_id: str, payload: dict,
 
 
 if __package__:
-    from .duplicate_job_worker import process_video_duplicate_jobs_locked  # noqa: F401
+    from .duplicate_job_worker import process_video_duplicate_jobs_locked
 else:
     from duplicate_job_worker import process_video_duplicate_jobs_locked  # noqa: F401
 

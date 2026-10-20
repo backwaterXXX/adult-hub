@@ -160,7 +160,7 @@ def known_performer_names(conn: db.Connection) -> List[str]:
             except Exception:
                 continue
         elif isinstance(raw, str):
-            names = [p for p in raw.split(",")]
+            names = raw.split(",")
         elif isinstance(raw, list):
             names = [str(v) for v in raw]
         else:

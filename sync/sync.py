@@ -1,11 +1,11 @@
 import os
 import re
 import argparse
-import hashlib  # noqa: F401
+import hashlib
 import time
 import json
 from common import db
-from common.performers import is_performer_segment  # noqa: F401
+from common.performers import is_performer_segment
 import fcntl
 import logging
 from pathlib import Path
@@ -39,8 +39,6 @@ from nfo import (
 )
 from performer_enrichment import (
     PerformerEnrichmentServices,
-    audit_suspicious_performers as _audit_suspicious_performers_impl,
-    backfill_performers as _backfill_performers_impl,
     backfill_performers_from_titles as _backfill_performers_from_titles_impl,
 )
 from telegram_pipeline import (
@@ -82,9 +80,7 @@ from dead_streams import (
     RESOLVER_DEAD_MARKERS,
     deadlisted_ids,
     denylist_ids,
-    extract_embed_host,
     hide_dead_streams as _hide_dead_streams_impl,
-    is_unsupported_embed_host,
     probe_playlist_url as _probe_playlist_url_impl,
     probe_stream_via_resolver as _probe_stream_via_resolver_impl,
     probe_stream_via_resolver_outcome as _probe_stream_via_resolver_outcome_impl,
@@ -101,13 +97,9 @@ from provider_registry import (
     STREAM_MODE_DEFAULT,
     _STREAM_MODE_PER_PROVIDER,
     _PROVIDER_INFO,
-    PROVIDER_INFO,
     stream_mode_for_provider as _stream_mode_for_provider_impl,
     get_provider_info as _get_provider_info_impl,
     known_provider_names as _known_provider_names_impl,
-    dead_stream_providers as _dead_stream_providers_impl,
-    performer_backfill_providers as _performer_backfill_providers_impl,
-    performer_audit_providers as _performer_audit_providers_impl,
     normalize_cleanup_provider as _normalize_cleanup_provider_impl,
     _telegram_channel_of_video as _telegram_channel_of_video_impl,
     _normalized_success_set as _normalized_success_set_impl,
@@ -203,11 +195,6 @@ except Exception as e:
 
 if CONFIG:
     RETENTION_DAYS = CONFIG.sync.retention_days
-    DEAD_STREAM_CHECK_PER_RUN = CONFIG.sync.dead_stream_check_per_run
-    DEAD_STREAM_MAX_PURGE_PER_RUN = CONFIG.sync.dead_stream_max_purge_per_run
-    DEAD_STREAM_STRIKES_TO_PURGE = CONFIG.sync.dead_stream_strikes_to_purge
-    DEAD_STREAM_RECHECK_DAYS = CONFIG.sync.dead_stream_recheck_days
-    PERFORMER_BACKFILL_PER_RUN = CONFIG.sync.performer_backfill_per_run
 
     # Telegram plus generic upkeep knobs only.
     _tg = CONFIG.get_source("telegram")
@@ -217,11 +204,6 @@ if CONFIG:
 
 else:
     RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "30"))
-    DEAD_STREAM_CHECK_PER_RUN = int(os.getenv("DEAD_STREAM_CHECK_PER_RUN", "25"))
-    DEAD_STREAM_MAX_PURGE_PER_RUN = int(os.getenv("DEAD_STREAM_MAX_PURGE_PER_RUN", "10"))
-    DEAD_STREAM_STRIKES_TO_PURGE = int(os.getenv("DEAD_STREAM_STRIKES_TO_PURGE", "1"))
-    DEAD_STREAM_RECHECK_DAYS = int(os.getenv("DEAD_STREAM_RECHECK_DAYS", "7"))
-    PERFORMER_BACKFILL_PER_RUN = int(os.getenv("PERFORMER_BACKFILL_PER_RUN", "25"))
 
     SYNC_TELEGRAM = os.getenv("SYNC_TELEGRAM", "false").lower() in ["true", "1", "yes"]
     TELEGRAM_CHANNELS = [c.strip() for c in os.getenv("TELEGRAM_CHANNELS", "").split(",") if c.strip()]
@@ -231,28 +213,17 @@ JELLYFIN_URL = os.getenv("JELLYFIN_URL", "")
 JELLYFIN_API_KEY = os.getenv("JELLYFIN_API_KEY", "")
 
 HIDE_DEAD_STREAMS = os.getenv("HIDE_DEAD_STREAMS", "true").lower() in ["true", "1", "yes"]
-DEAD_STREAM_SLEEP_SECONDS = 1.0
 DEAD_STREAM_RESOLVER_TIMEOUT = 120.0
-# YAML is the source of truth for settings shared with config.example.yaml.
-if CONFIG:
-    DEAD_STREAM_STRIKES_TO_PURGE = CONFIG.sync.dead_stream_strikes_to_purge
-    DEAD_STREAM_MAX_PURGE_PER_RUN = CONFIG.sync.dead_stream_max_purge_per_run
 # Denylist entries older than this (and no longer listed) expire.
 DEAD_STREAM_DENYLIST_DAYS = 90
 
 # Hide videos whose embeds need a real browser (mirrors the resolver list;
 # fetched live from /admin/api/unsupported-embeds when reachable).
 
-# Rate-limited performer backfill: single-video lookups for providers
-# whose listing cards carry no performers, newest first (idle when empty).
-PERFORMER_BACKFILL_PER_RUN = CONFIG.sync.performer_backfill_per_run if CONFIG else int(os.getenv("PERFORMER_BACKFILL_PER_RUN", "25"))
 PBC_BACKFILL_PER_RUN = CONFIG.sync.pbc_backfill_per_run if CONFIG else int(os.getenv("PBC_BACKFILL_PER_RUN", "50"))
 TPDB_BACKFILL_PER_RUN = getattr(CONFIG.sync, "tpdb_backfill_per_run", 50) if CONFIG else int(os.getenv("TPDB_BACKFILL_PER_RUN", "50"))
 SCENE_BACKFILL_PER_RUN = getattr(CONFIG.sync, "scene_backfill_per_run", 500) if CONFIG else int(os.getenv("SCENE_BACKFILL_PER_RUN", "500"))
 JELLYFIN_PEOPLE_PER_RUN = CONFIG.sync.jellyfin_people_per_run if CONFIG else int(os.getenv("JELLYFIN_PEOPLE_PER_RUN", "25"))
-PERFORMER_AUDIT_PER_RUN = CONFIG.sync.performer_audit_per_run if CONFIG else int(os.getenv("PERFORMER_AUDIT_PER_RUN", "25"))
-PERFORMER_AUDIT_THRESHOLD = CONFIG.sync.performer_audit_threshold if CONFIG else int(os.getenv("PERFORMER_AUDIT_THRESHOLD", "5"))
-PERFORMER_BACKFILL_SLEEP_SECONDS = 1.0
 
 def stream_mode_for_provider(video_id: str) -> str:
     return _stream_mode_for_provider_impl(video_id, config=CONFIG)
@@ -270,18 +241,6 @@ def get_provider_info(provider_key: str) -> Dict[str, str]:
 
 def known_provider_names() -> Set[str]:
     return _known_provider_names_impl()
-
-
-def dead_stream_providers() -> Tuple[str, ...]:
-    return _dead_stream_providers_impl()
-
-
-def performer_backfill_providers() -> Tuple[str, ...]:
-    return _performer_backfill_providers_impl()
-
-
-def performer_audit_providers() -> Tuple[str, ...]:
-    return _performer_audit_providers_impl()
 
 
 def normalize_cleanup_provider(name: str) -> str:
@@ -787,21 +746,12 @@ def _confirm_metadata_import_jobs(confirmed_files, db_url):
 def _dead_stream_services() -> DeadStreamServices:
     return DeadStreamServices(
         stream_mode_for_provider=stream_mode_for_provider,
-        dead_stream_providers=dead_stream_providers,
-        is_cleanup_allowed=is_cleanup_allowed,
-        purge_videos=purge_videos,
-        probe_stream_via_resolver=probe_stream_via_resolver,
         resolver_api_url=RESOLVER_API_URL,
         logger=logger,
         default_headers=DEFAULT_HEADERS,
         time=time,
         resolver_timeout=DEAD_STREAM_RESOLVER_TIMEOUT,
-        sleep_seconds=DEAD_STREAM_SLEEP_SECONDS,
         denylist_days=DEAD_STREAM_DENYLIST_DAYS,
-        recheck_days=DEAD_STREAM_RECHECK_DAYS,
-        check_per_run=DEAD_STREAM_CHECK_PER_RUN,
-        strikes_to_purge=DEAD_STREAM_STRIKES_TO_PURGE,
-        max_purge_per_run=DEAD_STREAM_MAX_PURGE_PER_RUN,
     )
 
 
@@ -822,16 +772,8 @@ def probe_stream_via_resolver_outcome(comp_id: str) -> str:
     return _probe_stream_via_resolver_outcome_impl(comp_id, services=_dead_stream_services())
 
 
-def hide_dead_streams(collected: Dict[str, Dict[str, Any]], conn: db.Connection,
-                      media_dir: Path,
-                      providers_succeeded: Optional[Set[str]] = None,
-                      providers: Optional[Iterable[str]] = None) -> int:
-    return _hide_dead_streams_impl(
-        collected, conn, media_dir,
-        providers_succeeded=providers_succeeded,
-        providers=providers,
-        services=_dead_stream_services(),
-    )
+def hide_dead_streams(collected: Dict[str, Dict[str, Any]], conn: db.Connection) -> None:
+    return _hide_dead_streams_impl(collected, conn, services=_dead_stream_services())
 
 
 
@@ -1014,53 +956,20 @@ def _process_video_duplicate_jobs_locked(
     )
 
 
-# Providers whose video page is the authoritative cast source (LD+JSON).
-# The provider list is owned by the private extension.
-
-
-def _performer_enrichment_services(conn: Optional[db.Connection] = None):
-    alias_map = _load_sync_alias_map(conn)
-    norm_fn = (lambda names: normalize_performers(names, alias_map=alias_map)) if alias_map else normalize_performers
-
+def _performer_enrichment_services():
     return PerformerEnrichmentServices(
-        fetch_json_with_retry=fetch_json_with_retry,
         parse_title_performers=parse_title_performers,
-        normalize_performers=norm_fn,
-        performer_backfill_providers=performer_backfill_providers,
-        performer_audit_providers=performer_audit_providers,
         load_performer_thumbs=load_performer_thumbs,
         format_dateadded=format_dateadded,
         stable_media_basename=stable_media_basename,
         create_nfo_file=create_nfo_file,
-        resolver_api_url=RESOLVER_API_URL,
-        backfill_per_run=PERFORMER_BACKFILL_PER_RUN,
-        backfill_sleep_seconds=PERFORMER_BACKFILL_SLEEP_SECONDS,
-        audit_threshold=PERFORMER_AUDIT_THRESHOLD,
-        audit_per_run=PERFORMER_AUDIT_PER_RUN,
         logger=logger,
-        time=time,
-    )
-
-
-def backfill_performers(conn: db.Connection, media_dir: Path,
-                        providers: Optional[Iterable[str]] = None) -> Tuple[int, int]:
-    return _backfill_performers_impl(
-        conn, media_dir, providers=providers, services=_performer_enrichment_services(conn)
     )
 
 
 def backfill_performers_from_titles(conn: db.Connection, media_dir: Path) -> int:
     return _backfill_performers_from_titles_impl(
-        conn, media_dir, services=_performer_enrichment_services(conn)
-    )
-
-
-def audit_suspicious_performers(conn: db.Connection, media_dir: Path,
-                                threshold: int = 0, limit: int = 0,
-                                providers: Optional[Iterable[str]] = None) -> Tuple[int, int]:
-    return _audit_suspicious_performers_impl(
-        conn, media_dir, threshold=threshold, limit=limit, providers=providers,
-        services=_performer_enrichment_services(conn),
+        conn, media_dir, services=_performer_enrichment_services()
     )
 
 

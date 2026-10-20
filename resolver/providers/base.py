@@ -143,32 +143,26 @@ class BaseProvider(ABC):
     @abstractmethod
     def name(self) -> str:
         """Unique provider identifier."""
-        pass
 
     @abstractmethod
     async def get_categories(self) -> List[CategoryItem]:
         """Fetch list of available categories."""
-        pass
 
     @abstractmethod
     async def get_browse_videos(self, section: str = "trending", page: int = 1) -> List[VideoItem]:
         """Fetch videos from browse sections (trending, popular, latest)."""
-        pass
 
     @abstractmethod
     async def get_category_videos(self, category_id: str, page: int = 1, sort: str = "latest") -> List[VideoItem]:
         """Fetch videos belonging to a category."""
-        pass
 
     @abstractmethod
     async def search(self, query: str, page: int = 1) -> List[VideoItem]:
         """Search videos by query."""
-        pass
 
     @abstractmethod
     async def resolve_stream(self, provider_video_id: str) -> str:
         """Resolve playback stream URL (e.g. HLS m3u8 URL)."""
-        pass
 
     def video_page_url(self, provider_video_id: str, slug: str = "") -> Optional[str]:
         """Canonical video page URL for single-video enrichment, or None.

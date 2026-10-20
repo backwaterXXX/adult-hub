@@ -41,7 +41,7 @@ jobs:
           python -m pip install --no-deps ./common
       - name: Run Ruff lint
         run: make lint
-      - name: Run required public suite
+      - name: Run required public suite with coverage
         env:
           ADULT_HUB_TEST_PROFILE: full
           CONFIG_PATH: tests/fixtures/config_telegram_only.yaml
@@ -50,37 +50,9 @@ jobs:
           SYNC_ACTIVITY_LOG_PATH: ${{ runner.temp }}/sync-activity.log
           TEST_DATABASE_URL: postgresql://adult_hub:adult_hub_test@localhost:5432/adult_hub_test
         run: |
-          python -m unittest discover -s tests -v
-          python tests/proxy_origin_contract.py
+          make coverage
+          make proxy-origin
       - name: Run Admin UI and v2 browser contracts
-        shell: bash
-        run: |
-          set -euo pipefail
-          file_list="$(mktemp)"
-          trap 'rm -f -- "$file_list"' EXIT
-          find tests -type f -name '*.cjs' -print0 | sort -z > "$file_list"
-          mapfile -d '' test_files < "$file_list"
-          if ((${#test_files[@]} == 0)); then
-            echo "No CommonJS browser contracts found" >&2
-            exit 1
-          fi
-          for test_file in "${test_files[@]}"; do
-            echo "Running ${test_file}"
-            node "${test_file}"
-          done
+        run: make ui-contracts
       - name: Check Admin v2 JavaScript syntax
-        shell: bash
-        run: |
-          set -euo pipefail
-          file_list="$(mktemp)"
-          trap 'rm -f -- "$file_list"' EXIT
-          find resolver/static/admin-v2 -type f -name '*.js' -print0 | sort -z > "$file_list"
-          mapfile -d '' script_files < "$file_list"
-          if ((${#script_files[@]} == 0)); then
-            echo "No Admin v2 JavaScript files found" >&2
-            exit 1
-          fi
-          for script_file in "${script_files[@]}"; do
-            echo "Checking ${script_file}"
-            node --check "${script_file}"
-          done
+        run: make js-check

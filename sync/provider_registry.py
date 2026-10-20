@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Dict, Optional, Set
 
 
 STREAM_MODE_DEFAULT = os.getenv("STREAM_MODE_DEFAULT", "redirect")
@@ -33,16 +33,6 @@ _PROVIDER_INFO: Dict[str, Dict[str, str]] = {
     }
 }
 
-# Static public table (telegram only).
-PROVIDER_INFO: Dict[str, Dict[str, str]] = {
-    "telegram": {
-        "name": "Telegram",
-        "domain": "t.me",
-        "base_url": "https://t.me"
-    }
-}
-
-
 def get_provider_info(provider_key: str) -> Dict[str, str]:
     """Metadata for NFO/studio files; historical names survive via fallback."""
     key = (provider_key or "").strip().lower()
@@ -54,18 +44,6 @@ def get_provider_info(provider_key: str) -> Dict[str, str]:
 def known_provider_names() -> Set[str]:
     """Providers the core recognises (Telegram-only)."""
     return set(_PROVIDER_INFO)
-
-
-def dead_stream_providers() -> Tuple[str, ...]:
-    return ()
-
-
-def performer_backfill_providers() -> Tuple[str, ...]:
-    return ()
-
-
-def performer_audit_providers() -> Tuple[str, ...]:
-    return ()
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +85,7 @@ def is_cleanup_allowed(video_id: str, provider: Optional[str] = None,
     """Single gate allowing destructive upkeep on historical rows/files/URLs.
 
     Allowed only when the provider/channel is SIMULTANEOUSLY:
-      (a) registered (known in PROVIDER_INFO / known_provider_names()),
+      (a) registered (known in known_provider_names()),
       (b) enabled in the effective configuration (present in config.sources
           and enabled; telegram additionally requires the channel to be
           present and per-channel enabled),

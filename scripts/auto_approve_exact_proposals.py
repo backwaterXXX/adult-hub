@@ -73,8 +73,8 @@ def run(db_url: str | None = None, apply: bool = False) -> None:
             cat_by_norm[normalize_name(name)].append((cid, name))
 
     cursor.execute("""
-        SELECT id, video_id, candidate 
-        FROM telegram_performer_proposals 
+        SELECT id, video_id, candidate
+        FROM telegram_performer_proposals
         WHERE status = 'pending'
         ORDER BY id ASC
     """)
@@ -143,8 +143,8 @@ def run(db_url: str | None = None, apply: bool = False) -> None:
 
             for pid, cand, cid, cname in items:
                 conn.execute("""
-                    UPDATE telegram_performer_proposals 
-                    SET status = 'approved', performer_id = %s 
+                    UPDATE telegram_performer_proposals
+                    SET status = 'approved', performer_id = %s
                     WHERE id = %s
                 """, (cid, pid))
                 approved_count += 1

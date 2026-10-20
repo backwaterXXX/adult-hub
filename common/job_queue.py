@@ -38,7 +38,7 @@ def connect_queue(db_url: str | None = None) -> Connection:
 
 
 # Backwards-compatible alias (older code called ``connect(db_path)``).
-connect = connect_queue  # noqa: E305
+connect = connect_queue
 
 
 def _open(db_url: str | None) -> Connection | None:
@@ -328,7 +328,15 @@ def heartbeat_job(db_url: str | None, job_id: str, *, now: int | None = None) ->
 
 
 def requeue_processing(db_url: str | None, action: str) -> int:
-    """Recover jobs interrupted by a worker restart. Safe only for the owner."""
+    """Recover jobs interrupted by a worker restart. Safe only for the owner.
+
+    The caller must hold the exclusive worker lock for ``action`` (the sync
+    runner owns ``sync``), because a concurrently live instance keeps its
+    in-flight job heartbeated and this blanket flip would double-run it.
+    The duplicate decision worker follows the same rule: all of its callers hold
+    ``.adult-hub-sync.lock`` exclusively, so any 'processing' row it finds there
+    is an orphan of a crashed run.
+    """
     conn = _open(db_url)
     if conn is None:
         return 0

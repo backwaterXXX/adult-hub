@@ -17,7 +17,7 @@ from common.image_utils import (  # noqa: E402
     find_bumper_clusters,
     is_black_image,
     save_bumper_hashes,
-)  # noqa: E402
+)
 from common import db  # noqa: E402
 
 

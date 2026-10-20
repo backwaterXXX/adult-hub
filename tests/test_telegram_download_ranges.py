@@ -53,7 +53,6 @@ def pattern_bytes(offset: int, length: int) -> bytes:
 
 class LimitInvalidError(Exception):
     """Simulates telethon.errors.rpcerrorlist.LimitInvalidError."""
-    pass
 
 
 class FakeDownloadIterator:

@@ -150,9 +150,7 @@ def release_fetch(metadata_payload, quality_summary=QUALITY_SUMMARY, quality_ite
 
 def ready_quality_summary(*, checked=13565, catalog_total=13565, inventory="partial"):
     payload = json.loads(QUALITY_SUMMARY[2])
-    counts = {kind: 0 for kind in (
-        "missing_metadata", "missing_nfo", "invalid_nfo", "nfo_metadata_mismatch", "missing_artwork",
-    )}
+    counts = dict.fromkeys(("missing_metadata", "missing_nfo", "invalid_nfo", "nfo_metadata_mismatch", "missing_artwork"), 0)
     counts["missing_metadata"] = 1
     audit = {"id": "audit-1", "created_at": "2026-10-10T10:00:00Z",
              "checked": checked, "total": catalog_total,
@@ -917,7 +915,7 @@ class AdminV2ReleaseSmokeTests(unittest.TestCase):
         payload = ready_quality_summary()
         payload["history"].append({"id": "partial-audit", "checked": 10, "total": 11,
                                    "library_inventory_status": "complete", "open_total": 0,
-                                   "counts": {kind: 0 for kind in payload["counts"]}})
+                                   "counts": dict.fromkeys(payload["counts"], 0)})
         results = run_smoke("https://admin.example", fetcher=release_fetch(
             json.loads(METADATA_STATUS[2]), quality_summary=(200, "application/json", json.dumps(payload).encode())))
         check = next(result for result in results if result.name == "quality_summary")

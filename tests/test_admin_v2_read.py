@@ -310,7 +310,7 @@ class TestCatalogReadContract(unittest.TestCase):
                 if "SELECT file_path FROM synced_files" in query:
                     return Result(many=[{"file_path": "stable.strm"}])
                 if "WHERE v.id" in query:
-                    row = {name: None for name in admin_library_v2._VIDEO_OPTIONAL_COLUMNS}
+                    row = dict.fromkeys(admin_library_v2._VIDEO_OPTIONAL_COLUMNS)
                     row.update({"id": "telegram:-1007:42", "provider": "telegram", "title": "Safe",
                                 "duration": 120, "performers": [], "categories": [], "tags": [],
                                 "playable": 1, "first_seen": 1, "last_seen": 2, "file_count": 1,

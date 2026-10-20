@@ -190,19 +190,17 @@ def _capabilities() -> dict:
     return result
 
 
-def _duplicate_write_blocked(request: Request) -> bool:
-    """Compatibility name for the shared mutation policy."""
-    return not admin_security.write_authorized(
-        request, blocked=_admin_blocked(request), public=ADMIN_PUBLIC, token=_write_token())
-
-
 def _write_denied(request: Request):
-    if _duplicate_write_blocked(request):
-        message = "This panel is read-only." if _capabilities()["read_only"] else "Matching Origin required."
-        if not _capabilities()["read_only"] and _write_token():
-            message = "Authorization and matching Origin required."
-        return JSONResponse({"error": message, **_capabilities()}, status_code=403)
     capabilities = _capabilities()
+    if not admin_security.write_authorized(
+            request, blocked=_admin_blocked(request), public=ADMIN_PUBLIC, token=_write_token()):
+        if capabilities["read_only"]:
+            message = "This panel is read-only."
+        elif _write_token():
+            message = "Authorization and matching Origin required."
+        else:
+            message = "Matching Origin required."
+        return JSONResponse({"error": message, **capabilities}, status_code=403)
     if capabilities.get("read_only_reason") in {"worker_unavailable", "worker_incompatible"}:
         reason = capabilities["read_only_reason"]
         return JSONResponse({"ok": False, "code": reason,

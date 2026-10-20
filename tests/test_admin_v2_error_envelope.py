@@ -9,7 +9,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "resolver"))
-import app as resolver_app  # noqa: E402
+import app as resolver_app
 
 
 class TestAdminV2ErrorEnvelope(unittest.TestCase):

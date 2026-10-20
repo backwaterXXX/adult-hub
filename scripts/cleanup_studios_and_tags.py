@@ -285,7 +285,10 @@ def run_cleanup():
                 for t in tags:
                     if t.startswith("Studio: "):
                         prod_studios.append(t.split("Studio: ", 1)[1].strip())
-                prod_studios = sorted(list(set(s for s in prod_studios if s and not is_unwanted_tag(s, channel) and s not in KNOWN_CHANNELS)))
+                prod_studios = sorted({
+                    s for s in prod_studios
+                    if s and not is_unwanted_tag(s, channel) and s not in KNOWN_CHANNELS
+                })
 
                 # Clean tags
                 clean_tags = set()
@@ -297,7 +300,7 @@ def run_cleanup():
                 for ps in prod_studios:
                     clean_tags.add(f"Studio: {ps}")
 
-                new_tags_json = json.dumps(sorted(list(clean_tags)))
+                new_tags_json = json.dumps(sorted(clean_tags))
                 new_studio = prod_studios[0] if prod_studios else None
 
                 if new_tags_json != tags_raw or new_studio != old_studio:

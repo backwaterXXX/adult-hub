@@ -128,7 +128,7 @@ class TestResolver(PgTestCase):
                 self.download_args = None
 
             async def file_size(self, ref):
-                raise OSError("size unavailable")
+                return None
 
             async def download_range(self, ref, offset, length):
                 self.download_args = (ref, offset, length)
@@ -145,6 +145,35 @@ class TestResolver(PgTestCase):
         with patch.object(resolver_app, "get_provider", return_value=provider):
             asyncio.run(resolver_app._proxy_telegram_response(Request(), "tg://file-ref"))
         self.assertEqual(provider.download_args, ("file-ref", 0, None))
+
+    def test_telegram_size_lookup_failure_returns_503(self):
+        from fastapi import HTTPException
+
+        class Provider:
+            def __init__(self):
+                self.download_args = None
+
+            async def file_size(self, ref):
+                raise OSError("size unavailable")
+
+            async def download_range(self, ref, offset, length):
+                self.download_args = (ref, offset, length)
+
+                async def chunks():
+                    yield b"complete"
+                return chunks()
+
+        class Request:
+            method = "GET"
+            headers = {"range": "bytes=100-199"}
+
+        provider = Provider()
+        with patch.object(resolver_app, "get_provider", return_value=provider):
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(resolver_app._proxy_telegram_response(Request(), "tg://file-ref"))
+        # Silently streaming the whole file would re-download it on every seek.
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertIsNone(provider.download_args)
 
     def test_get_stream_candidate_ids_failover(self):
         with self.conn:

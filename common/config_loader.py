@@ -19,7 +19,6 @@ VALID_STREAM_MODES = {"redirect", "proxy"}
 
 class ConfigError(ValueError):
     """Raised when configuration file is missing, invalid, or violates schema."""
-    pass
 
 
 @dataclass
@@ -75,17 +74,10 @@ class SyncConfig:
     retry_backoff_max_seconds: int = 1800
     stream_mode_default: str = "redirect"
     category_fetch_delay_seconds: float = 2.5
-    dead_stream_check_per_run: int = 50
-    dead_stream_max_purge_per_run: int = 50
-    dead_stream_strikes_to_purge: int = 1
-    dead_stream_recheck_days: int = 7
-    performer_backfill_per_run: int = 25
     pbc_backfill_per_run: int = 50
     tpdb_backfill_per_run: int = 50
     scene_backfill_per_run: int = 500
     jellyfin_people_per_run: int = 50
-    performer_audit_per_run: int = 25
-    performer_audit_threshold: int = 5
 
 
 @dataclass
@@ -168,17 +160,10 @@ ALLOWED_SYNC_KEYS = {
     "retry_backoff_max_seconds",
     "stream_mode_default",
     "category_fetch_delay_seconds",
-    "dead_stream_check_per_run",
-    "dead_stream_max_purge_per_run",
-    "dead_stream_strikes_to_purge",
-    "dead_stream_recheck_days",
-    "performer_backfill_per_run",
     "pbc_backfill_per_run",
     "tpdb_backfill_per_run",
     "scene_backfill_per_run",
     "jellyfin_people_per_run",
-    "performer_audit_per_run",
-    "performer_audit_threshold",
 }
 
 

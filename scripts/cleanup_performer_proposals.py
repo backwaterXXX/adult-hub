@@ -58,8 +58,8 @@ def run_cleanup(db_url: str | None = None, apply: bool = False) -> None:
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT id, video_id, candidate, normalized, matched_text 
-        FROM telegram_performer_proposals 
+        SELECT id, video_id, candidate, normalized, matched_text
+        FROM telegram_performer_proposals
         WHERE status = 'pending'
         ORDER BY id ASC
     """)
@@ -127,22 +127,22 @@ def run_cleanup(db_url: str | None = None, apply: bool = False) -> None:
     with conn:
         for pid, cleaned, new_norm, _ in to_update:
             conn.execute("""
-                UPDATE telegram_performer_proposals 
-                SET candidate = %s, normalized = %s 
+                UPDATE telegram_performer_proposals
+                SET candidate = %s, normalized = %s
                 WHERE id = %s
             """, (cleaned, new_norm, pid))
 
         for pid, _, reason in to_reject:
             conn.execute("""
-                UPDATE telegram_performer_proposals 
-                SET status = 'rejected' 
+                UPDATE telegram_performer_proposals
+                SET status = 'rejected'
                 WHERE id = %s
             """, (pid,))
 
         for pid, _, _, _, _ in to_delete_conflict:
             conn.execute("""
-                UPDATE telegram_performer_proposals 
-                SET status = 'rejected' 
+                UPDATE telegram_performer_proposals
+                SET status = 'rejected'
                 WHERE id = %s
             """, (pid,))
 

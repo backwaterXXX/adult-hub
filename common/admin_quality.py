@@ -191,7 +191,7 @@ def read_quality_summary(db_url: str | None) -> dict:
             job_id for audit in complete for job_id in audit[3]
         ))
         counts_by_audit = {
-            audit[0]: {kind: 0 for kind in QUALITY_KINDS}
+            audit[0]: dict.fromkeys(QUALITY_KINDS, 0)
             for audit in complete
         }
         primary_by_job = {
@@ -210,7 +210,7 @@ def read_quality_summary(db_url: str | None) -> dict:
             primary_id = primary_by_job.get(str(counted_audit_id))
             if primary_id is not None:
                 counts_by_audit[primary_id][str(kind)] += int(count)
-        missing_fields = {field: 0 for field in QUALITY_FIELDS}
+        missing_fields = dict.fromkeys(QUALITY_FIELDS, 0)
         for field, count in conn.execute(
             "SELECT f.field,count(*) FROM admin_audit_items i "
             "LEFT JOIN admin_quality_acknowledgements a ON i.job_id=ANY(%s) AND a.state='active' AND a.video_id=i.video_id "

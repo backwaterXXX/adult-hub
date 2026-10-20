@@ -7,14 +7,14 @@ This module intentionally performs no migrations or writes during reads.
 
 from __future__ import annotations
 
-import os  # noqa: F401
+import os
 import re
 
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, RedirectResponse
-from common import db  # noqa: F401
+from common import db
 from admin_v2_errors import V2ErrorRoute
-from admin_catalog_serialization import _channel_id, _local_file_status, _safe_thumbnail, _serialize_video  # noqa: F401
+from admin_catalog_serialization import _channel_id, _local_file_status, _safe_thumbnail, _serialize_video
 from admin_catalog_pagination import (
     SORTS as _SORTS,
     decode_catalog_cursor as _decode_catalog_cursor,
@@ -142,12 +142,9 @@ def build_router(admin):
 
     @router.post("/api/v2/library/videos/{video_id:path}/generate-artwork")
     async def admin_v2_library_video_generate_artwork(request: Request, video_id: str):
-        if getattr(admin, "_write_denied", None):
-            denied = admin._write_denied(request)
-            if denied:
-                return denied
-        elif admin._admin_blocked(request):
-            return admin.JSONResponse({"ok": False, "error": "Admin is only available locally"}, status_code=403)
+        denied = admin._write_denied(request)
+        if denied:
+            return denied
         if not video_id or len(video_id) > 1000:
             return admin.JSONResponse({"ok": False, "error": "Invalid video ID."}, status_code=400)
         offset_seconds = 60
@@ -185,12 +182,9 @@ def build_router(admin):
 
     @router.post("/api/v2/library/videos/{video_id:path}/generate-phash")
     async def admin_v2_library_video_generate_phash(request: Request, video_id: str):
-        if getattr(admin, "_write_denied", None):
-            denied = admin._write_denied(request)
-            if denied:
-                return denied
-        elif admin._admin_blocked(request):
-            return admin.JSONResponse({"ok": False, "error": "Admin is only available locally"}, status_code=403)
+        denied = admin._write_denied(request)
+        if denied:
+            return denied
         if not video_id or len(video_id) > 1000:
             return admin.JSONResponse({"ok": False, "error": "Invalid video ID."}, status_code=400)
 

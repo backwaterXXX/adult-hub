@@ -193,6 +193,20 @@ The preview endpoint bounds Telegram work to 8 seconds and returns HTTP 504 on t
 - Concurrency caveat: concurrent fetch tasks do NOT guarantee independent MTProto connections; Telegram may still serialize or throttle upstream.
 - Enablement gate: run real-movie A/B baselines at 1/2/4 concurrency (stalls, seek latency, upstream errors) before enabling anywhere near production.
 
+#### Intentional deviations in the reference deployment
+
+The private `.env` of the deployment this repository serves deliberately differs from the Compose defaults above. It is recorded here so a future audit does not mistake it for drift; the values themselves are not changed by that decision.
+
+| Variable | Deployed | Default | Why |
+| --- | --- | --- | --- |
+| `TELEGRAM_PARALLEL_STREAM_ENABLED` | `true` | `false` | The experimental parallel path is measured on this install; the A/B baselines it was gated on are collected here. |
+| `TELEGRAM_DOWNLOAD_WORKERS` / `TELEGRAM_DOWNLOAD_GLOBAL_WORKERS` | 4 / 8 | 3 / 6 | One extra per-stream and process-wide worker after the first measurements. |
+| `TELEGRAM_READ_AHEAD_BYTES` / `TELEGRAM_STREAM_CACHE_BYTES` | 64 MiB / 256 MiB | 32 MiB / 128 MiB | Doubled to cover 1080p seeks on the available host memory. |
+| `TELEGRAM_STREAM_CACHE_TTL_SECONDS` | 180 | 120 | Matches the larger cache so reused blocks survive a second seek. |
+| `ADMIN_PUBLIC` | `true` | `false` | The Admin v2 UI is reachable through the reverse proxy; writes still require the `ADMIN_WRITE_TOKEN` and the same-origin checks. |
+| `RESOLVER_TRUSTED_PROXY_IPS` | `127.0.0.1,::1,172.29.0.1` | `127.0.0.1,::1` | Adds the Docker network address of the local reverse proxy so client IPs survive `X-Forwarded-For`. |
+| `APP_VERSION` | `0.3.0` | `dev` | Tags images with the release they were built from instead of `dev`. |
+
 ---
 
 ## Sources

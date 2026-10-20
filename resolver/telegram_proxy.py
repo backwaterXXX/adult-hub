@@ -1,12 +1,15 @@
 """HTTP range proxy for Telegram-backed media streams."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
 from fastapi import HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from common import telegram_playback_activity
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,7 @@ async def proxy_telegram_response(
         raise HTTPException(status_code=502, detail="Telegram provider has no download_range")
     rng_raw = request.headers.get("range")
     total: Optional[int] = None
+    fs_error: Optional[Exception] = None
     fs = getattr(prov, "file_size", None)
     if callable(fs):
         try:
@@ -72,11 +76,21 @@ async def proxy_telegram_response(
                 res = await res
             if res is not None:
                 total = int(res)
-        except Exception:
+        except Exception as exc:
+            fs_error = exc
             total = None
         finally:
             if trace:
                 trace.mark_file_size()
+    if fs_error is not None:
+        # A silent downgrade would turn every client seek into a whole-file
+        # transfer without telling anyone; fail loudly instead.
+        _LOGGER.warning(
+            "Telegram file_size lookup failed for %s: %s", ref, fs_error)
+        if trace:
+            trace.set_status(503)
+            await services.asyncio.to_thread(trace.finish, "error", "TelegramFileSizeLookupFailed")
+        raise HTTPException(status_code=503, detail="Telegram file size lookup failed") from fs_error
     rng = services.parse_range_request(rng_raw, total)
     offset = rng[0] if rng else 0
     length = rng[1] if rng else None

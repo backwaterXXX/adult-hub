@@ -196,7 +196,7 @@ def migrate_categories(conn: db.Connection, media_dir: Path, *,
                     else:
                         raw_list = [c.strip() for c in cats_val.split(",") if c.strip()]
                 mapped = svc.map_categories(raw_list, title=v_title)
-                new_val = json.dumps(sorted(list(mapped)))
+                new_val = json.dumps(sorted(mapped))
                 if new_val != cats_val:
                     conn.execute("UPDATE videos SET categories = %s WHERE id = %s", (new_val, vid_id))
                     updated_videos += 1

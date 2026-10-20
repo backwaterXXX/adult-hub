@@ -131,21 +131,6 @@ class TestUnsupportedEmbedHiding(PgTestCase):
         sync_module._PROVIDER_INFO.clear()
         sync_module._PROVIDER_INFO.update(self._orig_info)
 
-    def test_extract_embed_host(self):
-        html_iframe = '<div><iframe src="https://player.example.org/e/abc123" allowfullscreen></iframe></div>'
-        self.assertEqual(sync_module.extract_embed_host(html_iframe), "player.example.org")
-        html_prop = '<div itemprop="embedUrl" content="https://embed.example.net/e/xyz"></div>'
-        self.assertEqual(sync_module.extract_embed_host(html_prop), "embed.example.net")
-        self.assertEqual(sync_module.extract_embed_host("<div>no player</div>"), "")
-        self.assertEqual(sync_module.extract_embed_host(""), "")
-
-    def test_is_unsupported_embed_host(self):
-        deny = ("player.example.org", "dood", "embed.example.net")
-        self.assertTrue(sync_module.is_unsupported_embed_host("player.example.org", deny))
-        self.assertTrue(sync_module.is_unsupported_embed_host("embed.example.net", deny))
-        self.assertFalse(sync_module.is_unsupported_embed_host("embed.example.com", deny))
-        self.assertFalse(sync_module.is_unsupported_embed_host("", deny))
-
     def test_purge_videos_removes_files_and_rows(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
