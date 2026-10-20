@@ -95,6 +95,20 @@ def execute_external_operation(action, conn, job_id, payload, media_dir, service
             "local_state": "telegram_fingerprint_scan_completed",
         }, True
 
+    if action == "artwork_download":
+        video_id = payload.get("video_id")
+        if not isinstance(video_id, str) or not video_id or len(video_id) > 1000:
+            raise ValueError("Artwork download requires one valid video ID.")
+        _core._record_job_progress(conn, job_id, "downloading_artwork")
+        try:
+            from .scene_artwork_download import download_artwork_for_video
+        except ImportError:
+            from scene_artwork_download import download_artwork_for_video
+        result = download_artwork_for_video(conn, media_dir, video_id)
+        if result.get("downloaded") is True:
+            result["local_state"] = "artwork_downloaded"
+        return result, True
+
     if action == "collections_refresh":
         _core._record_job_progress(conn, job_id, "refreshing_collections")
         from common.managed_collections import refresh_managed_collections

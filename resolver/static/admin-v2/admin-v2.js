@@ -1628,11 +1628,11 @@
     downloadArtwork.addEventListener('click', async () => {
       downloadArtwork.disabled = true;
       const prevText = downloadArtwork.textContent;
-      downloadArtwork.textContent = 'Searching StashDB / ThePornDB…';
+      downloadArtwork.textContent = 'Queueing artwork download…';
       try {
         const result = await postJson(`${V2_API}/library/videos/${encodeURIComponent(video.id)}/download-artwork`, {});
-        announce(`Artwork downloaded from ${result.provider}.`);
-        await loadDetail(video.id);
+        downloadArtwork.textContent = 'Artwork download queued';
+        announce(`Artwork download task ${result.job_id} queued. Open Tasks to check when it finishes.`);
       } catch (err) {
         alert(`Failed to download artwork: ${err.message || err}`);
         downloadArtwork.disabled = false;
