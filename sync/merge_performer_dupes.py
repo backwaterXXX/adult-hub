@@ -46,18 +46,15 @@ def find_performer_mappings(conn: db.Connection) -> Dict[str, Tuple[str, str]]:
     unique_performers = set()
 
     # 1. videos
+    # videos_performers_array_ck keeps the column a JSON array of strings, the
+    # <> '[]' filter excludes the NULL case, and the db facade yields jsonb as text.
     rows = conn.execute(
         "SELECT performers FROM videos WHERE performers <> '[]'::jsonb"
     ).fetchall()
     for (raw_json,) in rows:
-        try:
-            arr = json.loads(raw_json)
-            if isinstance(arr, list):
-                for p in arr:
-                    if p and isinstance(p, str) and ("(" in p or ")" in p):
-                        unique_performers.add(p.strip())
-        except Exception:
-            pass
+        for p in json.loads(raw_json):
+            if "(" in p or ")" in p:
+                unique_performers.add(p.strip())
 
     # 2. performer_photos, performer_bios, jellyfin_person_sync
     tables = db.table_names(conn)
@@ -66,8 +63,7 @@ def find_performer_mappings(conn: db.Connection) -> Dict[str, Tuple[str, str]]:
             for (n,) in conn.execute(
                 f"SELECT name FROM {tbl} WHERE name LIKE '%(%)%'"
             ).fetchall():
-                if n and isinstance(n, str):
-                    unique_performers.add(n.strip())
+                unique_performers.add(n.strip())
 
     mapping = {}
     for p in sorted(unique_performers):
@@ -90,12 +86,7 @@ def plan_video_updates(
 
     updates = []
     for vid_id, raw_json in rows:
-        try:
-            arr = json.loads(raw_json)
-        except Exception:
-            continue
-        if not isinstance(arr, list):
-            continue
+        arr = json.loads(raw_json)
 
         changed = False
         new_list = []

@@ -36,23 +36,20 @@ class _Rows:
 
 
 class CatalogDouble:
-    """Feed the two catalog scans rows the jsonb array check constraints forbid.
+    """Stand in for a deployment whose schema is missing a performer name table.
 
-    ``videos.performers`` can only hold an array of strings, so non-list and
-    unparsable payloads are reachable only through a connection double.
+    The migrated test database always has every table, so a partial schema is
+    reachable only through a connection double.
     """
 
-    def __init__(self, performer_rows=(), id_performer_rows=(), names=None, tables=None):
+    def __init__(self, performer_rows=(), names=None, tables=None):
         self.performer_rows = performer_rows
-        self.id_performer_rows = id_performer_rows
         self.names = names if names is not None else {}
         self.tables = tables if tables is not None else {"videos"}
 
     def execute(self, sql, params=None):
         if "SELECT performers FROM videos" in sql:
             return _Rows(self.performer_rows)
-        if "SELECT id, performers FROM videos" in sql:
-            return _Rows(self.id_performer_rows)
         if "pg_tables" in sql:
             return _Rows([(name,) for name in sorted(self.tables)])
         for table, rows in self.names.items():
@@ -207,25 +204,6 @@ class TestPerformerMappings(MergeHarness):
         self.assertEqual(merger.find_performer_mappings(conn),
                          {RAW: (BASE, NICK), "Ignored Person (Nick)": ("Ignored Person", "Nick")})
 
-    def test_non_text_and_unparsable_performer_rows_are_skipped(self):
-        conn = CatalogDouble(performer_rows=[
-            (json.dumps("just a string"),),
-            (json.dumps(5),),
-            ("not json at all",),
-            (json.dumps([None, 7, {"a": 1}, RAW]),),
-        ], tables={"videos"})
-
-        self.assertEqual(merger.find_performer_mappings(conn), {RAW: (BASE, NICK)})
-
-    def test_skips_name_rows_that_are_empty_or_missing(self):
-        conn = CatalogDouble(
-            names={"performer_photos": ["   ", None, "", "Real Person (Nick)"]},
-            tables={"videos", "performer_photos"},
-        )
-
-        self.assertEqual(merger.find_performer_mappings(conn),
-                         {"Real Person (Nick)": ("Real Person", "Nick")})
-
 
 class TestPlanVideoUpdates(MergeHarness):
     def test_replaces_bracketed_names_with_the_canonical_one(self):
@@ -256,17 +234,6 @@ class TestPlanVideoUpdates(MergeHarness):
         updates = merger.plan_video_updates(self.conn, {RAW: (BASE, NICK)})
 
         self.assertEqual([vid for vid, _, _ in updates], ["telegram:12"])
-
-    def test_unparsable_and_non_list_rows_are_skipped(self):
-        conn = CatalogDouble(id_performer_rows=[
-            ("telegram:14", "not json"),
-            ("telegram:15", json.dumps({"performer": "Ann (A)"})),
-            ("telegram:16", json.dumps(["Ann (A)"])),
-        ])
-
-        updates = merger.plan_video_updates(conn, {"Ann (A)": ("Ann", "A")})
-
-        self.assertEqual(updates, [("telegram:16", ["Ann (A)"], ["Ann"])])
 
 
 class TestBackupAndJellyfinRefresh(MergeHarness):
