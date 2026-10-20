@@ -116,7 +116,7 @@ except Exception:
         "timeout_seconds": max(30, min(MAX_TIMEOUT_SECONDS,
                                        int(os.getenv("PHASH_SERVER_TIMEOUT_SECONDS", "600")))),
         "playback_bytes_per_second": max(64 * 1024, min(10_000_000,
-            int(os.getenv("PHASH_SERVER_BYTES_PER_SECOND", str(256 * 1024))))),
+            int(os.getenv("PHASH_SERVER_BYTES_PER_SECOND", str(2 * 1024 * 1024))))),
         "idle_bytes_per_second": max(64 * 1024, min(10_000_000,
             int(os.getenv("PHASH_SERVER_IDLE_BYTES_PER_SECOND", "10000000")))),
         "cache_dir": PHASH_RANGE_CACHE_DIR,

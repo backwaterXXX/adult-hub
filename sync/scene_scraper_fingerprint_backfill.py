@@ -187,7 +187,7 @@ def backfill_telegram_fingerprints(
                     _core.os.environ.get("LUKAYAN_PHASH_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS)),
                 ))
                 configured_rate = int(_core.os.environ.get(
-                    "TELEGRAM_FINGERPRINT_MAX_BYTES_PER_SECOND", str(256 * 1024),
+                    "TELEGRAM_FINGERPRINT_MAX_BYTES_PER_SECOND", str(2 * 1024 * 1024),
                 ))
                 phash = _core._cached_video_fingerprint(conn, video_id, "PHASH")
                 if phash:

@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 DEFAULT_DAILY_BYTE_BUDGET = 10_000_000_000
-DEFAULT_MAX_BYTES_PER_SECOND = 256 * 1024
+DEFAULT_MAX_BYTES_PER_SECOND = 2 * 1024 * 1024
 DEFAULT_LEDGER_PATH = "/data/cache/telegram-fingerprint-daily-usage.json"
 
 
