@@ -1,6 +1,7 @@
 """The scheduled sync pass: which sync.* calls sync_orchestration makes, in what order, and what it reports."""
 
 import contextlib
+import importlib.util
 import os
 import sys
 import types
@@ -940,6 +941,53 @@ class TestHistorySourceRows(SyncPassHarness):
         self.assertFalse(self.sync(skip_telegram_channels=True))
 
         self.assertEqual([row["source"] for row in self.history()["sources"]], ["pctv"])
+
+
+class TestTheCoreFacadeImport(unittest.TestCase):
+    """Both deployment layouts must reach the same sync facade.
+
+    The module is imported either as ``sync.sync_orchestration`` inside the
+    image or as a top-level file next to ``sync.py`` when the sync directory is
+    the working tree; its body picks the matching import for that layout.
+    """
+
+    SOURCE = Path(sync_orchestration.__file__)
+
+    def load(self, name):
+        spec = importlib.util.spec_from_file_location(name, self.SOURCE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_the_package_layout_reaches_the_facade_as_a_sibling_module(self):
+        facade = types.ModuleType("sync.sync")
+        package = types.ModuleType("sync")
+        package.sync = facade
+
+        with patch.dict(sys.modules, {"sync": package}):
+            module = self.load("sync.sync_orchestration")
+
+        self.assertIs(module._core, facade)
+
+    def test_the_script_layout_reaches_the_facade_as_a_top_level_module(self):
+        facade = types.ModuleType("sync")
+
+        with patch.dict(sys.modules, {"sync": facade}):
+            module = self.load("sync_orchestration_in_a_script_layout")
+
+        self.assertIs(module._core, facade)
+
+    def test_the_package_layout_never_loads_the_real_sync_module(self):
+        facade = types.ModuleType("sync.sync")
+        package = types.ModuleType("sync")
+        package.sync = facade
+
+        with patch.dict(sys.modules, {"sync": package}):
+            module = self.load("sync.sync_orchestration")
+
+            self.assertIs(module._core, facade)
+            self.assertNotIn("sync.sync", sys.modules)
+        self.assertNotIn("sync.sync_orchestration", sys.modules)
 
 
 if __name__ == "__main__":
