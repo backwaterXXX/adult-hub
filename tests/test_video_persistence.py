@@ -17,6 +17,7 @@ from video_persistence import (
     persist_prepared_video,
     sync_unique_video,
     flush_collected,
+    write_media_files,
 )
 from common.performer_catalog import load_catalog, match_catalog
 
@@ -161,11 +162,17 @@ class TestVideoPersistence(PgTestCase):
         self.assertIsNotNone(prepared)
         self.assertEqual(prepared["comp_id"], "testprov:v100")
         self.assertEqual(prepared["title"], "Sample Video")
+        # Preparing only computes metadata; sidecars stay unwritten until the
+        # catalog row is durable, so a rolled-back batch leaves no stray files.
+        services.create_nfo_file.assert_not_called()
+        services.download_image.assert_not_called()
+        services.write_stream_file.assert_not_called()
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM videos").fetchone()[0], 0)
+
+        write_media_files(services, prepared)
         services.create_nfo_file.assert_called_once()
         services.download_image.assert_called_once()
         services.write_stream_file.assert_called_once()
-        # Verify not yet in DB
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM videos").fetchone()[0], 0)
 
     def test_sync_unique_video_commit(self):
         services = self._make_services()
@@ -252,6 +259,126 @@ class TestVideoPersistence(PgTestCase):
         # run before the next SELECT on this connection.
         self.assertFalse(self.conn.in_transaction)
         self.assertEqual(self.conn.execute("SELECT count(*) FROM videos").fetchone()[0], 0)
+
+    def _insert_matched_scene(self, video_id, catalog_title, override=None):
+        self.conn.execute(
+            """INSERT INTO videos (id,provider,title,duration,performers,studio,first_seen,last_seen,
+                                   scene_match_source,scene_match_external_id,scene_match_url)
+               VALUES (%s,'telegram',%s,600,'[]','Example Studio',1000,1000,
+                       'stashdb:phash','stash-uuid-1','https://stashdb.org/scenes/stash-uuid-1')""",
+            (video_id, catalog_title),
+        )
+        if override is not None:
+            self.conn.execute(
+                "INSERT INTO video_metadata_overrides (video_id,fields) VALUES (%s,%s::jsonb)",
+                (video_id, json.dumps({"title": override})),
+            )
+        self.conn.commit()
+
+    def _persist_telegram_listing(self, video_id, provider_title):
+        services = self._make_services()
+        sync_unique_video(
+            video={
+                "provider": "telegram",
+                "provider_video_id": video_id.split(":", 1)[1],
+                "title": provider_title,
+                "duration": 600,
+                "performers": ["Alice"],
+            },
+            genres=set(),
+            tags=set(),
+            target_dir=self.media_dir,
+            conn=self.conn,
+            commit=True,
+            _prepare_only=False,
+            services=services,
+        )
+        return services
+
+    def test_catalog_scene_match_keeps_catalog_title_in_db_and_nfo(self):
+        video_id = "telegram:-1001:42:999"
+        self._insert_matched_scene(video_id, "Rinse and Rim")
+
+        services = self._persist_telegram_listing(video_id, "Lukayan SHOW #42")
+
+        row = self.conn.execute("SELECT title FROM videos WHERE id=%s", (video_id,)).fetchone()
+        self.assertEqual(row[0], "Rinse and Rim")
+        nfo_video = services.create_nfo_file.call_args[0][0]
+        self.assertEqual(nfo_video["title"], "Rinse and Rim")
+        # The provider caption stays available as provenance.
+        self.assertEqual(nfo_video["original_title"], "Lukayan SHOW #42")
+        # The catalog identity must survive the NFO rewrite.
+        self.assertEqual(nfo_video["scene_match_source"], "stashdb:phash")
+        self.assertEqual(nfo_video["scene_match_external_id"], "stash-uuid-1")
+
+    def test_operator_title_override_wins_over_catalog_title(self):
+        video_id = "telegram:-1001:43:998"
+        self._insert_matched_scene(video_id, "Rinse and Rim", override="Operator Title")
+
+        services = self._persist_telegram_listing(video_id, "Lukayan SHOW #43")
+
+        # An operator override must never be replaced by the catalog title.
+        row = self.conn.execute("SELECT title FROM videos WHERE id=%s", (video_id,)).fetchone()
+        self.assertEqual(row[0], "Lukayan SHOW #43")
+        nfo_video = services.create_nfo_file.call_args[0][0]
+        self.assertEqual(nfo_video["title"], "Lukayan SHOW #43")
+        # The catalog identity still belongs in the NFO.
+        self.assertEqual(nfo_video["scene_match_external_id"], "stash-uuid-1")
+
+    def test_listing_without_catalog_match_keeps_provider_title(self):
+        video_id = "telegram:-1001:44:997"
+        self.conn.execute(
+            """INSERT INTO videos (id,provider,title,duration,performers,studio,first_seen,last_seen)
+               VALUES (%s,'telegram','Rinse and Rim',600,'[]','Example Studio',1000,1000)""",
+            (video_id,),
+        )
+        self.conn.commit()
+
+        services = self._persist_telegram_listing(video_id, "Lukayan SHOW #44")
+
+        row = self.conn.execute("SELECT title FROM videos WHERE id=%s", (video_id,)).fetchone()
+        self.assertEqual(row[0], "Lukayan SHOW #44")
+        nfo_video = services.create_nfo_file.call_args[0][0]
+        self.assertEqual(nfo_video["title"], "Lukayan SHOW #44")
+        self.assertNotIn("original_title", nfo_video)
+
+    def test_catalog_title_reaches_the_written_nfo(self):
+        try:
+            import sync as sync_module
+        except ImportError:
+            self.skipTest("sync module not available")
+        video_id = "telegram:-1001:45:996"
+        self._insert_matched_scene(video_id, "Rinse and Rim")
+
+        def real_create_nfo(video, genres, tags, path):
+            sync_module.create_nfo_file(video, genres, tags, path, conn=self.conn)
+
+        services = self._make_services(create_nfo_file=real_create_nfo)
+        sync_unique_video(
+            video={
+                "provider": "telegram",
+                "provider_video_id": video_id.split(":", 1)[1],
+                "title": "Lukayan SHOW #45",
+                "duration": 600,
+                "performers": ["Alice"],
+            },
+            genres=set(),
+            tags=set(),
+            target_dir=self.media_dir,
+            conn=self.conn,
+            commit=True,
+            _prepare_only=False,
+            services=services,
+        )
+
+        nfo_path = self.media_dir / "telegram_-1001_45_996.nfo"
+        self.assertTrue(nfo_path.is_file())
+        xml = nfo_path.read_text(encoding="utf-8")
+        # Jellyfin imports this sidecar for the locked Telegram entry.
+        self.assertIn("<title>Rinse and Rim</title>", xml)
+        self.assertIn("<originaltitle>Lukayan SHOW #45</originaltitle>", xml)
+        self.assertIn('<uniqueid type="stashdb" default="false">stash-uuid-1</uniqueid>', xml)
+        self.assertIn("<lockdata>true</lockdata>", xml)
 
 
 if __name__ == "__main__":

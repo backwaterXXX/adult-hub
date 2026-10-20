@@ -90,7 +90,6 @@ def load_performer_thumbs(conn: db.Connection, names) -> Dict[str, str]:
                 found.add(key.lower())
     except db.OperationalError as exc:
         logger.debug("Could not load optional performer thumbnails (%s).", type(exc).__name__)
-        pass
     return out
 
 
@@ -117,10 +116,8 @@ def load_performer_links(conn: db.Connection, names) -> Dict[str, Dict[str, str]
                 out[key] = links
     except db.OperationalError as exc:
         logger.debug("Could not load optional performer links (%s).", type(exc).__name__)
-        pass
     except Exception as exc:
         logger.debug("Could not load optional performer links (%s).", type(exc).__name__)
-        pass
     return out
 
 
@@ -148,8 +145,10 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
     title_elem = ET.SubElement(root, "title")
     title_elem.text = display_title
 
+    # Gdy tytul zostal przejety przez dopasowanie katalogowe, <title> nosi
+    # nazwe ze StashDB/ThePornDB, a podpis dostawcy zostaje w <originaltitle>.
     orig_title_elem = ET.SubElement(root, "originaltitle")
-    orig_title_elem.text = raw_title
+    orig_title_elem.text = str(video.get("original_title") or raw_title)
 
     tagline_elem = ET.SubElement(root, "tagline")
     if channel_name:
@@ -178,7 +177,6 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
         prod_studios.update(detected_prod)
     except Exception as exc:
         logger.debug("Production-studio detection skipped (%s).", type(exc).__name__)
-        pass
 
     if prod_studios:
         for ps in sorted(prod_studios):
@@ -340,9 +338,16 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
 
     scene_src = str(video.get("scene_match_source") or "").strip().lower()
     scene_ext_id = str(video.get("scene_match_external_id") or video.get("stashdb_id") or "").strip()
-    if (scene_src == "stashdb" or scene_src.startswith("stashdb:")) and scene_ext_id:
-        stash_uid_elem = ET.SubElement(root, "uniqueid", type="stashdb", default="false")
-        stash_uid_elem.text = scene_ext_id
+    if scene_ext_id:
+        if scene_src == "stashdb" or scene_src.startswith("stashdb:"):
+            catalog_uid_type = "stashdb"
+        elif "theporndb" in scene_src or scene_src.startswith("tpdb"):
+            catalog_uid_type = "theporndb"
+        else:
+            catalog_uid_type = ""
+        if catalog_uid_type:
+            catalog_uid_elem = ET.SubElement(root, "uniqueid", type=catalog_uid_type, default="false")
+            catalog_uid_elem.text = scene_ext_id
 
     xml_str = ET.tostring(root, encoding="utf-8")
     parsed = minidom.parseString(xml_str)

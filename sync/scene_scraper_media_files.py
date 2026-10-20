@@ -80,11 +80,19 @@ def _update_media_files(
             except Exception:
                 overrides = {}
 
-        # Exact hash identity can safely supply a better title. Keep the
-        # operator's value wherever an explicit metadata override exists.
+        # Exact hash identity can safely supply a better title. A confirmed
+        # StashDB/ThePornDB scene match is the canonical title source, so it
+        # also replaces the provider caption here: the NFO is what Jellyfin
+        # imports for locked Telegram entries. Keep the operator's value
+        # wherever an explicit metadata override exists.
         if matched.title and "title" not in overrides:
             title_elem = root.find("title")
-            if title_elem is not None and not str(title_elem.text or "").strip():
+            catalog_match = any(
+                provider in str(matched.source or "").casefold()
+                for provider in ("stashdb", "theporndb", "tpdb")
+            )
+            if title_elem is not None and (
+                    not str(title_elem.text or "").strip() or catalog_match):
                 title_elem.text = matched.title
 
         # 1. Update <plot>

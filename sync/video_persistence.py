@@ -88,7 +88,7 @@ def persist_prepared_video(
         st = str(t).strip()
         if st and st.lower() not in ("telegram", "t.me") and not st.startswith("-100"):
             clean_tags.append(st)
-    tags_json = json.dumps(sorted(list(set(clean_tags))))
+    tags_json = json.dumps(sorted(set(clean_tags)))
 
     conn.execute("""
         INSERT INTO videos (id, provider, title, slug, duration, thumbnail, performers, categories, tags, embed_host, playable, studio, first_seen, last_seen, source_text, source_filename, performer_resolution)
@@ -124,7 +124,7 @@ def persist_prepared_video(
     """, (comp_id, provider, prepared["title"], video.get("slug", ""),
           video.get("duration", 0), video.get("thumbnail"),
           json.dumps(video.get("performers", [])),
-          json.dumps(sorted(list(mapped_genres))), tags_json,
+          json.dumps(sorted(mapped_genres)), tags_json,
           video.get("embed_host", ""), video.get("playable"),
           prepared["studio"] or None, now, now,
           video.get("source_text") or video.get("description") or "",
@@ -194,7 +194,11 @@ def sync_unique_video(
             """SELECT v.first_seen, v.studio, v.performers, v.plot, v.date_released,
                       v.performer_resolution,
                       EXISTS(SELECT 1 FROM video_metadata_overrides o
-                             WHERE o.video_id=v.id AND o.fields ? 'performers')
+                             WHERE o.video_id=v.id AND o.fields ? 'performers'),
+                      v.title, v.scene_match_source, v.scene_match_external_id,
+                      v.scene_match_url,
+                      EXISTS(SELECT 1 FROM video_metadata_overrides o
+                             WHERE o.video_id=v.id AND o.fields ? 'title')
                FROM videos v WHERE v.id = %s""", (comp_id,)).fetchone()
     except Exception:
         try:
@@ -210,6 +214,33 @@ def sync_unique_video(
         video["plot"] = _row[3]
     if _row and len(_row) > 4 and _row[4] and not video.get("date_released"):
         video["date_released"] = _row[4]
+
+    # Tytul: potwierdzone dopasowanie sceny StashDB/ThePornDB jest kanonicznym
+    # zrodlem tytulu (jak w _apply_matched_scene). Swiezy listing z Telegrama
+    # nie moze go cofnac do podpisu kanalu — inaczej NFO (a w nim nazwa
+    # widoczna w Jellyfin) traci tytul katalogowy przy kazdym przebiegu.
+    # Jawne nadpisanie operatora ma pierwszenstwo.
+    provider_title = title
+    catalog_title = ""
+    if _row and len(_row) > 7 and _row[7]:
+        catalog_title = str(_row[7]).strip()
+    scene_source = str(_row[8] or "").casefold() if _row and len(_row) > 8 else ""
+    has_catalog_match = any(
+        provider in scene_source for provider in ("stashdb", "theporndb", "tpdb")
+    )
+    title_overridden = bool(_row and len(_row) > 11 and _row[11])
+    if has_catalog_match and _row and len(_row) > 9 and _row[9]:
+        # Przenies proweniencje dopasowania do NFO, aby przebieg zapisu nie
+        # usuwal identyfikatora katalogowego z pliku.
+        video["scene_match_source"] = _row[8]
+        video["scene_match_external_id"] = _row[9]
+        if len(_row) > 10 and _row[10]:
+            video["scene_match_url"] = _row[10]
+    if has_catalog_match and catalog_title and not title_overridden:
+        title = catalog_title
+        # Zachowaj podpis dostawcy w <originaltitle> jako proweniencje.
+        video["original_title"] = provider_title
+        video["title"] = catalog_title
 
     # Obsada: swiezy listing wygrywa, ale pusty NIE kasuje tego, co juz mamy
     # w DB (backfill/matcher) — inaczej NFO traciloby obsade do kolejnego backfillu.
@@ -305,20 +336,11 @@ def sync_unique_video(
             clean_tags.add(st)
     tags = clean_tags
 
-    # Publish metadata before a new stream becomes visible to library monitoring.
-    services.create_nfo_file(video, mapped_genres, tags, nfo_file)
-
-    # Download thumbnail (.jpg) if not exists (atomic, with negative cache)
-    if download_thumb_url and not jpg_file.exists():
-        services.download_image(download_thumb_url, jpg_file)
-
-    # Keep resolver URLs current when HOST_IP or RESOLVER_PUBLIC_URL changes.
-    services.write_stream_file(strm_file, comp_id)
-
     prepared = {
         "comp_id": comp_id, "provider": provider, "title": title,
         "video": video, "genres": mapped_genres, "tags": tags,
         "strm_file": strm_file, "studio": db_studio,
+        "nfo_file": nfo_file, "jpg_file": jpg_file, "thumb_url": download_thumb_url,
     }
 
     if _prepare_only:
@@ -336,7 +358,19 @@ def sync_unique_video(
             except Exception:
                 pass
         raise
+    # The catalog row is durable; publish sidecars (NFO first so the library
+    # scanner sees metadata before a new stream file becomes visible).
+    write_media_files(services, prepared)
     return None
+
+
+def write_media_files(services: VideoPersistenceServices, prepared: Dict[str, Any]) -> None:
+    """Publish NFO, thumbnail, and STRM sidecars for an already-persisted video."""
+    services.create_nfo_file(prepared["video"], prepared["genres"], prepared["tags"], prepared["nfo_file"])
+    thumb_url = prepared.get("thumb_url")
+    if thumb_url and not prepared["jpg_file"].exists():
+        services.download_image(thumb_url, prepared["jpg_file"])
+    services.write_stream_file(prepared["strm_file"], prepared["comp_id"])
 
 
 def flush_collected(
@@ -417,6 +451,7 @@ def flush_collected(
             services.logger.error(f"Failed to write video {comp_id}: {e}")
 
     written = 0
+    committed_items: List[Dict[str, Any]] = []
     try:
         # Finish any caller-owned setup writes before opening the media batch.
         if conn.in_transaction:
@@ -426,6 +461,7 @@ def flush_collected(
             services.persist_prepared_video(conn, prepared)
             written += 1
         conn.commit()
+        committed_items = prepared_items
     except Exception as e:
         try:
             conn.rollback()
@@ -434,6 +470,15 @@ def flush_collected(
         errors.append(f"database batch: {type(e).__name__}: {e}")
         services.logger.warning(f"Database batch failed: {e}")
         written = 0
+
+    # Publish sidecars only after the catalog batch is durable, so a rolled-back
+    # batch cannot leave unmanaged .strm/.nfo files in the library.
+    for prepared in committed_items:
+        try:
+            write_media_files(services, prepared)
+        except Exception as e:
+            errors.append(f"{prepared['comp_id']} file write: {type(e).__name__}: {e}")
+            services.logger.error("Failed to publish files for %s: %s", prepared["comp_id"], e)
 
     if errors:
         services.logger.warning("Saved %d/%d videos%s; there were %d write/commit errors.", written, count, label, len(errors))

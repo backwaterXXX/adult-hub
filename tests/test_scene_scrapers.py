@@ -225,6 +225,41 @@ class TestBackfillScenes(PgTestCase):
             "SELECT count(*) FROM video_duplicate_jobs WHERE action='hide'",
         ).fetchone()[0], 0)
 
+    def test_catalog_scene_match_replaces_provider_title_in_nfo(self):
+        vid_id = "telegram:-1001234567890:42:999"
+        self.conn.execute(
+            """INSERT INTO videos (id,provider,title,duration,performers,studio,first_seen,last_seen)
+               VALUES (%s,'telegram','Provider Caption #42',600,'[]','Example Studio',1000,1000)""",
+            (vid_id,),
+        )
+        self.conn.commit()
+        nfo_path = self.media_dir / "Example 42.nfo"
+        nfo_path.write_text(
+            "<movie><title>Provider Caption #42</title><plot></plot></movie>", encoding="utf-8",
+        )
+        scene = ScrapedScene(
+            title="Catalog Scene Title", plot="Scene description", date="2020-01-02",
+            performers=["Performer One"], tags=["Drama"], studio="Known Studio",
+            poster_url="", external_id="stash-uuid-1",
+            url="https://stashdb.org/scenes/stash-uuid-1", source="stashdb:phash",
+        )
+        with patch.dict(os.environ, {"TELEGRAM_FINGERPRINTS_ENABLED": "true"}), \
+             patch("scene_scrapers._telegram_oshash", return_value=("0123456789abcdef", 131072)), \
+             patch("scene_scrapers._search_stashdb_scene_by_fingerprint", return_value=scene):
+            self.assertEqual(backfill_telegram_fingerprints(
+                self.conn, self.media_dir, limit=1, sleep_sec=0, video_ids=[vid_id],
+            ), (1, 1))
+        row = self.conn.execute(
+            "SELECT title,scene_match_source,scene_match_external_id FROM videos WHERE id=%s", (vid_id,)
+        ).fetchone()
+        self.assertEqual(row[0], "Catalog Scene Title")
+        self.assertEqual(row[1], "stashdb:phash")
+        self.assertEqual(row[2], "stash-uuid-1")
+        # Jellyfin imports the locked NFO, so the catalog title must be there.
+        updated_nfo = nfo_path.read_text(encoding="utf-8")
+        self.assertIn("<title>Catalog Scene Title</title>", updated_nfo)
+        self.assertNotIn("<title>Provider Caption #42</title>", updated_nfo)
+
     def test_telegram_fingerprint_backfill_covers_all_channels(self):
         video_ids = [
             "telegram:-1001234567890:420:999",
