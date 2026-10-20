@@ -56,7 +56,8 @@ def title_overlap(a: str, b: str) -> float:
 
 def load_groups(csv_path: Path, title_overlap_min: float):
     """Returns list of clusters to merge (union-find over pairs)."""
-    rows = list(csv.DictReader(open(csv_path, encoding="utf-8")))
+    with open(csv_path, encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
     by_group = defaultdict(list)
     for r in rows:
         gid = r.get("group", r.get("grupa"))
