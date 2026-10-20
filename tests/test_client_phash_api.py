@@ -71,15 +71,6 @@ class _FakeConnection:
 
 
 class ClientPhashIntakeTests(unittest.TestCase):
-    def test_server_generation_timeout_defaults_to_ten_minutes_and_is_bounded(self):
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("PHASH_SERVER_TIMEOUT_SECONDS", None)
-            self.assertEqual(phash_api._server_timeout_seconds(), 600)
-        with patch.dict(os.environ, {"PHASH_SERVER_TIMEOUT_SECONDS": "1200"}):
-            self.assertEqual(phash_api._server_timeout_seconds(), 900)
-        with patch.dict(os.environ, {"PHASH_SERVER_TIMEOUT_SECONDS": "10"}):
-            self.assertEqual(phash_api._server_timeout_seconds(), 30)
-
     def test_decodes_all_25_timestamped_png_frames(self):
         images = phash_api._decode_frames(_frame_payload(), 600_000_000)
         self.assertEqual(len(images), 25)

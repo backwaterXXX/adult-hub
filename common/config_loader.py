@@ -10,7 +10,6 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
-import urllib.parse
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -75,9 +74,6 @@ class SyncConfig:
     retry_backoff_base_seconds: int = 30
     retry_backoff_max_seconds: int = 1800
     stream_mode_default: str = "redirect"
-    strict_unplayable: bool = True
-    categories_to_sync: str = "all"
-    max_pages_per_category: int = 1
     category_fetch_delay_seconds: float = 2.5
     dead_stream_check_per_run: int = 50
     dead_stream_max_purge_per_run: int = 50
@@ -87,7 +83,6 @@ class SyncConfig:
     pbc_backfill_per_run: int = 50
     tpdb_backfill_per_run: int = 50
     scene_backfill_per_run: int = 500
-    photo_backfill_per_run: int = 25
     jellyfin_people_per_run: int = 50
     performer_audit_per_run: int = 25
     performer_audit_threshold: int = 5
@@ -98,43 +93,14 @@ class AppConfig:
     sync: SyncConfig = field(default_factory=SyncConfig)
     sources: Dict[str, SourceConfig] = field(default_factory=dict)
     managed_revision: int = 0
-    _provider_aliases: Dict[str, str] = field(default_factory=dict, repr=False)
 
     def canonical_provider_name(self, provider_name: str) -> str:
-        name = provider_name
-        seen = set()
-        while name in self._provider_aliases and name not in seen:
-            seen.add(name)
-            name = self._provider_aliases[name]
-        return name
-
-    def register_provider_alias(self, alias: str, canonical_name: str) -> None:
-        """Register an extension-owned alias without embedding it in the core."""
-        alias = str(alias).strip().lower()
-        canonical_name = str(canonical_name).strip().lower()
-        if not alias or not canonical_name:
-            raise ValueError("Provider alias and canonical name must be non-empty.")
-        if alias == canonical_name:
-            return
-        existing = self.sources.get(alias)
-        target = self.sources.get(canonical_name)
-        if existing is not None and target is not None and existing is not target:
-            raise ConfigError(
-                f"Multiple source entries resolve to provider '{canonical_name}'."
-            )
-        if existing is not None:
-            self.sources.pop(alias)
-            existing.provider = canonical_name
-            self.sources[canonical_name] = existing
-        self._provider_aliases[alias] = canonical_name
+        """Return the canonical provider name (provider aliases are not supported)."""
+        return provider_name
 
     def get_source(self, provider_name: str) -> Optional[SourceConfig]:
         p = self.canonical_provider_name(provider_name)
         return self.sources.get(p)
-
-    def is_provider_enabled(self, provider_name: str) -> bool:
-        src = self.get_source(provider_name)
-        return src.enabled if src else False
 
     def get_enabled_sources(self) -> List[SourceConfig]:
         return [s for s in self.sources.values() if s.enabled]
@@ -173,7 +139,6 @@ class AppConfig:
 
 
 ALLOWED_TOP_KEYS = {"sync", "sources"}
-ALLOWED_WWW_KEYS = {"provider", "address", "enabled", "stream_mode", "sections", "max_pages"}
 ALLOWED_TELEGRAM_KEYS = {"provider", "enabled", "defaults", "channels"}
 ALLOWED_TELEGRAM_DEFAULTS = {
     "stream_mode",
@@ -202,9 +167,6 @@ ALLOWED_SYNC_KEYS = {
     "retry_backoff_base_seconds",
     "retry_backoff_max_seconds",
     "stream_mode_default",
-    "strict_unplayable",
-    "categories_to_sync",
-    "max_pages_per_category",
     "category_fetch_delay_seconds",
     "dead_stream_check_per_run",
     "dead_stream_max_purge_per_run",
@@ -214,25 +176,10 @@ ALLOWED_SYNC_KEYS = {
     "pbc_backfill_per_run",
     "tpdb_backfill_per_run",
     "scene_backfill_per_run",
-    "photo_backfill_per_run",
     "jellyfin_people_per_run",
     "performer_audit_per_run",
     "performer_audit_threshold",
 }
-
-
-def _validate_address(provider: str, address: Any) -> str:
-    if not isinstance(address, str) or not address.strip():
-        raise ConfigError(f"Source '{provider}' requires a non-empty string 'address'.")
-    addr = address.strip()
-    parsed = urllib.parse.urlparse(addr)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ConfigError(f"Source '{provider}' address '{addr}' is invalid: must start with http:// or https:// and contain a valid domain.")
-    if parsed.path and parsed.path != "/":
-        addr = addr.rstrip("/")
-    else:
-        addr = f"{parsed.scheme}://{parsed.netloc}"
-    return addr
 
 
 def _validate_stream_mode(mode: Any, context: str) -> str:
@@ -283,7 +230,7 @@ def parse_and_validate_config(data: Any) -> AppConfig:
 
     sync_cfg = SyncConfig()
     for k, v in sync_raw.items():
-        if k in ("strict_unplayable", "run_on_startup"):
+        if k == "run_on_startup":
             setattr(sync_cfg, k, _validate_bool(v, k, "sync"))
         elif k == "daily_at":
             if v is None or (isinstance(v, str) and not v.strip()):
@@ -308,11 +255,8 @@ def parse_and_validate_config(data: Any) -> AppConfig:
             if not math.isfinite(delay) or delay < 0:
                 raise ConfigError(f"Field '{k}' in sync must be a finite non-negative number")
             setattr(sync_cfg, k, delay)
-        elif k in ("categories_to_sync", "stream_mode_default"):
-            if k == "stream_mode_default":
-                setattr(sync_cfg, k, _validate_stream_mode(v, "sync"))
-            else:
-                setattr(sync_cfg, k, str(v).strip())
+        elif k == "stream_mode_default":
+            setattr(sync_cfg, k, _validate_stream_mode(v, "sync"))
         elif k in ("retention_days",):
             setattr(sync_cfg, k, _validate_positive_int(v, k, "sync", minimum=0))
         else:
@@ -430,30 +374,10 @@ def parse_and_validate_config(data: Any) -> AppConfig:
             )
 
         else:
-            # Non-telegram source: validate common fields; any other key
-            # is rejected (typo protection, Telegram-only).
-            unknown_fields = set(raw_src.keys()) - ALLOWED_WWW_KEYS
-            if unknown_fields:
-                raise ConfigError(
-                    f"Unknown field(s) in source '{provider}': {sorted(unknown_fields)}. "
-                    f"Allowed common fields: {sorted(ALLOWED_WWW_KEYS)}."
-                )
-
-            address = _validate_address(provider, raw_src.get("address"))
-            enabled = _validate_bool(raw_src.get("enabled", True), "enabled", f"source '{provider}'")
-            stream_mode = _validate_stream_mode(raw_src.get("stream_mode", sync_cfg.stream_mode_default), f"source '{provider}'")
-            max_pages = _validate_positive_int(raw_src.get("max_pages", 1), "max_pages", f"source '{provider}'")
-
-            sections_raw = raw_src.get("sections")
-            sections = _validate_string_list(sections_raw, "sections", f"source '{provider}'") if sections_raw is not None else []
-
-            sources_map[provider] = SourceConfig(
-                provider=provider,
-                enabled=enabled,
-                address=address,
-                stream_mode=stream_mode,
-                sections=sections,
-                max_pages=max_pages,
+            # Adult Hub is Telegram-only: every other provider is unsupported.
+            raise ConfigError(
+                f"Unsupported source provider '{provider}'. Adult Hub is Telegram-only; "
+                "remove this source entry or configure the 'telegram' provider."
             )
 
     return AppConfig(sync=sync_cfg, sources=sources_map)

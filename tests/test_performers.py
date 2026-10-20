@@ -16,9 +16,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:
     from providers.base import (
-        normalize_performers,
-        parse_performer_links,
-        parse_ldjson_actor_names,
         parse_title_performers,
         is_valid_performer_name,
         clean_display_title,
@@ -26,7 +23,12 @@ try:
         register_slug_token_hook,
         get_slug_token_hook,
     )
-    from common.performers import is_safe_alias, strip_nationality_prefix, strip_scene_suffix
+    from common.performers import (
+        normalize_performers,
+        is_safe_alias,
+        strip_nationality_prefix,
+        strip_scene_suffix,
+    )
     PROVIDERS_AVAILABLE = True
 except ImportError as exc:
     from test_support import optional_import_failed
@@ -40,15 +42,6 @@ except ImportError as exc:
     from test_support import optional_import_failed
     optional_import_failed(exc)
     SYNC_AVAILABLE = False
-
-
-EXAMPLE_VIDEO_PAGE = """
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"VideoObject","name":"Some video",
-"actor":[{"@type":"Person","name":"Example Performer","url":"https://example.com/performer/example-performer"},
-{"@type":"Person","name":"Second Performer","url":"https://example.com/performer/second-performer"}],
-"publisher":{"@type":"Organization","name":"Example"}}}</script>
-<div data-video-performers class="grid"><a href="https://example.com/performer/example-performer"><span class="truncate">Example Performer</span></a></div>
-"""
 
 
 class TestPerformerHelpers(unittest.TestCase):
@@ -66,14 +59,6 @@ class TestPerformerHelpers(unittest.TestCase):
 
     def test_normalize_unescapes_entities(self):
         self.assertEqual(normalize_performers(["Tom &amp; Jerry"]), ["Tom & Jerry"])
-
-    def test_parse_performer_links(self):
-        html = ('<a href="/performer/fallandarkofc">FallandarkOFC</a>'
-                '<a href="https://example.com/performer/ace-carter" rel="tag">Ace Carter</a>'
-                '<a href="/162504/category/solo">Solo</a>')
-        self.assertEqual(parse_performer_links(html), ["FallandarkOFC", "Ace Carter"])
-        self.assertEqual(parse_performer_links(""), [])
-        self.assertEqual(parse_performer_links(None), [])
 
     def test_normalize_strips_parenthesized_handles(self):
         self.assertEqual(
@@ -161,13 +146,6 @@ class TestPerformerHelpers(unittest.TestCase):
             normalize_performers(["Korean Twunk", "Mexican Republic", "Portugues twink FHD", "Asian Gay Sex"]),
             [],
         )
-
-    def test_parse_ldjson_actor_names(self):
-        self.assertEqual(
-            parse_ldjson_actor_names(EXAMPLE_VIDEO_PAGE),
-            ["Example Performer", "Second Performer"],
-        )
-        self.assertEqual(parse_ldjson_actor_names("<html>no actors</html>"), [])
 
     def test_parse_title_performers_multi_name_asset(self):
         title = "Alex Ink, Alexandro Cabrera & Pietro – A Hot Surprise When He Gets Home"

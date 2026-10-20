@@ -164,7 +164,7 @@ def run_smoke(base_url: str, token: str | None = None, timeout: float = 10.0,
         limits = value.get("batch_limits")
         required_limits = (
             "videos_per_run", "pbc_actors_per_run", "theporndb_actors_per_run",
-            "stashdb_actors_per_run", "portraits_per_run",
+            "stashdb_actors_per_run",
         )
         if (not isinstance(limits, dict)
                 or any(type(limits.get(key)) is not int or limits[key] < 0

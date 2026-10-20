@@ -53,7 +53,6 @@ services:
       - MAX_CACHE_ENTRIES=${MAX_CACHE_ENTRIES:-2000}
       - DATABASE_URL=${DATABASE_URL:-}
       - BACKUP_DIR=/data/backups
-      - BACKUP_KEEP_DAYS=${BACKUP_KEEP_DAYS:-7}
       - BACKUP_RESTORE_DATABASE_URL=${BACKUP_RESTORE_DATABASE_URL:-}
       - ENABLE_ADMIN=${ENABLE_ADMIN:-true}
       - ADMIN_PUBLIC=${ADMIN_PUBLIC:-false}
@@ -137,10 +136,12 @@ services:
       - MEDIA_DIR=/media/adult
       - DATABASE_URL=${DATABASE_URL:-}
       - BACKUP_RESTORE_DATABASE_URL=${BACKUP_RESTORE_DATABASE_URL:-}
+      - BACKUP_DIR=/data/backups
+      - BACKUP_KEEP_DAYS=${BACKUP_KEEP_DAYS:-7}
+      - BACKUP_DAILY_AT=${BACKUP_DAILY_AT:-04:30}
       - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
       - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
       - TELEGRAM_SESSION_PATH=${TELEGRAM_SESSION_PATH:-/data/telegram.session}
-      - HIDE_UNSUPPORTED_EMBEDS=${HIDE_UNSUPPORTED_EMBEDS:-true}
       - HIDE_DEAD_STREAMS=${HIDE_DEAD_STREAMS:-true}
       - JELLYFIN_URL=${JELLYFIN_URL:-}
       - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
@@ -150,14 +151,14 @@ services:
       - STASH_API_KEY=${STASH_API_KEY:-}
       - STASHDB_API_URL=${STASHDB_API_URL:-https://stashdb.org/graphql}
       - TELEGRAM_OSHASH_BACKFILL_PER_RUN=${TELEGRAM_OSHASH_BACKFILL_PER_RUN:-200}
-      - TELEGRAM_FINGERPRINTS_ENABLED=${TELEGRAM_FINGERPRINTS_ENABLED:-${LUKAYAN_FINGERPRINTS_ENABLED:-true}}
-      - TELEGRAM_PHASH_ENABLED=${TELEGRAM_PHASH_ENABLED:-${LUKAYAN_PHASH_ENABLED:-true}}
+      - TELEGRAM_FINGERPRINTS_ENABLED=${TELEGRAM_FINGERPRINTS_ENABLED:-true}
+      - TELEGRAM_PHASH_ENABLED=${TELEGRAM_PHASH_ENABLED:-true}
       - TELEGRAM_AVAILABILITY_CHECKS_PER_RUN=${TELEGRAM_AVAILABILITY_CHECKS_PER_RUN:-20}
       - TELEGRAM_FINGERPRINT_DAILY_BYTE_BUDGET=${TELEGRAM_FINGERPRINT_DAILY_BYTE_BUDGET:-10000000000}
       - TELEGRAM_FINGERPRINT_MAX_BYTES_PER_SECOND=${TELEGRAM_FINGERPRINT_MAX_BYTES_PER_SECOND:-262144}
       - TELEGRAM_FINGERPRINT_USAGE_PATH=${TELEGRAM_FINGERPRINT_USAGE_PATH:-/data/cache/telegram-fingerprint-daily-usage.json}
-      - TELEGRAM_PHASH_BYTE_BUDGET=${TELEGRAM_PHASH_BYTE_BUDGET:-${LUKAYAN_PHASH_BYTE_BUDGET:-268435456}}
-      - TELEGRAM_PHASH_TIMEOUT_SECONDS=${TELEGRAM_PHASH_TIMEOUT_SECONDS:-${LUKAYAN_PHASH_TIMEOUT_SECONDS:-1200}}
+      - TELEGRAM_PHASH_BYTE_BUDGET=${TELEGRAM_PHASH_BYTE_BUDGET:-268435456}
+      - TELEGRAM_PHASH_TIMEOUT_SECONDS=${TELEGRAM_PHASH_TIMEOUT_SECONDS:-1200}
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ./config.yaml:/config/config.yaml:ro
@@ -165,6 +166,28 @@ services:
       - ./data:/data
       # cleanup_old_transcodes() uses /transcodes.
       - ./jf-cache/transcodes:/transcodes
+
+  # Daily PostgreSQL backup and monthly history cleanup. The scheduler waits
+  # for BACKUP_DAILY_AT (local time) and prunes archives older than
+  # BACKUP_KEEP_DAYS; `docker compose exec -T sync python backup_scheduler.py
+  # --once` still runs a single backup on demand.
+  backup:
+    image: ${SYNC_IMAGE:-adult-hub-sync:${APP_VERSION:-dev}}
+    container_name: adult-backup
+    restart: unless-stopped
+    command: ["python", "backup_scheduler.py"]
+    environment:
+      - TZ=${TZ:-Europe/Warsaw}
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DATABASE_URL=${DATABASE_URL:-}
+      - DATA_DIR=${DATA_DIR:-/data}
+      - BACKUP_DIR=/data/backups
+      - BACKUP_KEEP_DAYS=${BACKUP_KEEP_DAYS:-7}
+      - BACKUP_DAILY_AT=${BACKUP_DAILY_AT:-04:30}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./data:/data
 
 networks:
   selfhost:

@@ -24,33 +24,19 @@
     detailItem: null, urlTimer: null, urlEditActive: false
   };
 
-  function create(tag, className, text) {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text !== undefined && text !== null) node.textContent = String(text);
-    return node;
-  }
-  function setText(target, value) { if (target) target.textContent = value; }
-  function safeId(value) { return value === null || value === undefined || value === '' ? '' : String(value); }
+  // Shared helpers live in admin-v2.js and are published through window.AdminV2.
+  const helpers = () => window.AdminV2 || {};
+  const create = (...args) => helpers().create(...args);
+  const setText = (target, value) => helpers().setText(target, value);
+  const safeId = value => helpers().safeId(value);
   function itemKey(item) { return `${safeId(item && item.provider)}::${safeId(item && item.id)}`; }
-  function announce(message) { setText($('#liveMessage'), message); }
+  const announce = message => helpers().announce(message);
+  const scrub = value => helpers().scrub(value);
+  const titleCase = value => helpers().titleCase(value);
   function isSourcesRoute() {
     const [route, query = ''] = location.hash.replace(/^#/, '').split('?', 2);
     const tab = new URLSearchParams(query).get('tab') || '';
     return route === 'sources' || (route === 'system' && ['sync', 'sync-activity', 'sync_activity', 'history'].includes(tab));
-  }
-
-  // Never surface raw errors, secrets, URLs, or filesystem paths in the panel.
-  function scrub(value) {
-    let text = value === null || value === undefined ? '' : String(value);
-    text = text.replace(/\b[a-zA-Z][a-zA-Z0-9+.\-]*:\/\/[^\s"'<>)]+/g, '[link hidden]');
-    text = text.replace(/\b[A-Za-z]:\\[^\s"'<>]*/g, '[path hidden]');
-    text = text.replace(/(^|[\s("'=:])\/(?:[\w.\-]+\/)+[\w.\-]*/g, (match, prefix) => `${prefix}[path hidden]`);
-    text = text.replace(/\b(pass(?:word|wd)?|secret|token|api[_-]?key|credentials?|authorization)\b\s*[:=]\s*\S+/gi, '$1: [hidden]');
-    return text.trim();
-  }
-  function titleCase(value) {
-    return safeId(value).replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
   }
   function displayTime(value) {
     if (value === null || value === undefined || value === '') return '—';
@@ -397,11 +383,7 @@
     tbody.append(row);
   }
 
-  function detailField(label, value) {
-    const wrapper = create('div', 'detail-field');
-    wrapper.append(create('dt', '', label), create('dd', '', value));
-    return wrapper;
-  }
+  const detailField = (label, value) => helpers().detailField(label, value);
   function isCount(value) {
     return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
   }
@@ -1309,12 +1291,6 @@
     }
   }
 
-  let syncTimer = null;
-  function scheduleSync() {
-    clearTimeout(syncTimer);
-    syncTimer = setTimeout(sync, 0);
-  }
-
   function setupEvents() {
     const form = $('#sourcesFilters');
     form.addEventListener('submit', event => event.preventDefault());
@@ -1400,7 +1376,7 @@
       dialog.addEventListener('cancel', event => { event.preventDefault(); closeSourceDetail(); });
       dialog.addEventListener('click', event => { if (event.target === dialog) closeSourceDetail(); });
     }
-    document.addEventListener('adminv2:navigate', scheduleSync);
+    document.addEventListener('adminv2:navigate', () => helpers().scheduleSync(sync));
   }
 
   setupEvents();

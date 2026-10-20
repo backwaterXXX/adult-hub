@@ -109,21 +109,6 @@ def _json_list(value: Any) -> list:
     return parsed if isinstance(parsed, list) else []
 
 
-def split_camel_or_delimiter(name: str) -> str:
-    """Splits joined words camelCase, digits, or 'x' connector (e.g. JordanxBrandt -> Jordan Brandt)."""
-    if not name:
-        return ""
-    # JordanxBrandt -> Jordan Brandt
-    res = re.sub(r"([a-z])x([A-Z])", r"\1 \2", name)
-    # BostonJock -> Boston Jock
-    res = re.sub(r"([a-z])([A-Z])", r"\1 \2", res)
-    # Ryan.Evans42 -> Ryan Evans 42
-    res = re.sub(r"([a-zA-Z])(\d+)", r"\1 \2", res)
-    # Delimitery kropka/podkreslenie/myslnik -> spacja
-    res = re.sub(r"[\._\-]+", " ", res)
-    return " ".join(res.split())
-
-
 def extract_suffix_stem(name: str) -> Tuple[Optional[str], Optional[str]]:
     """Wykrywa i oddziela przyrostek szumu (np. VIP, XXX, doklejone cyfry).
 

@@ -26,27 +26,17 @@
     'scanning_metadata', 'metadata_pbc', 'metadata_photos', 'metadata_tpdb', 'metadata_stashdb', 'metadata_scenes'
   ]);
 
-  function create(tag, className, text) {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text !== undefined && text !== null) node.textContent = String(text);
-    return node;
-  }
-  function setText(target, value) { if (target) target.textContent = value; }
-  function safeId(value) { return value === null || value === undefined || value === '' ? '' : String(value); }
-  function announce(message) { setText($('#liveMessage'), message); }
+  // Shared helpers live in admin-v2.js and are published through window.AdminV2.
+  const helpers = () => window.AdminV2 || {};
+  const create = (...args) => helpers().create(...args);
+  const setText = (target, value) => helpers().setText(target, value);
+  const safeId = value => helpers().safeId(value);
+  const announce = message => helpers().announce(message);
+  const scrub = value => helpers().scrub(value);
+  const titleCase = value => helpers().titleCase(value);
+  const formatDuration = (ms, state) => helpers().formatDuration(ms, state);
+  const detailField = (label, value) => helpers().detailField(label, value);
 
-  function scrub(value) {
-    let text = value === null || value === undefined ? '' : String(value);
-    text = text.replace(/\b[a-zA-Z][a-zA-Z0-9+.\-]*:\/\/[^\s"'<>)]+/g, '[link hidden]');
-    text = text.replace(/\b[A-Za-z]:\\[^\s"'<>]*/g, '[path hidden]');
-    text = text.replace(/(^|[\s("'=:])\/(?:[\w.\-]+\/)+[\w.\-]*/g, (match, prefix) => `${prefix}[path hidden]`);
-    text = text.replace(/\b(pass(?:word|wd)?|secret|token|api[_-]?key|credentials?|authorization)\b\s*[:=]\s*\S+/gi, '$1: [hidden]');
-    return text.trim();
-  }
-  function titleCase(value) {
-    return safeId(value).replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
-  }
   function actionLabel(value, auditMode) {
     const key = safeId(value).toLowerCase();
     if (key === 'consistency_audit' && auditMode === 'file_consistency') return 'File consistency audit';
@@ -109,14 +99,6 @@
     const date = new Date(numeric);
     if (Number.isNaN(date.getTime())) return scrub(value);
     return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
-  }
-  function formatDuration(ms, state) {
-    const total = Math.max(0, Math.floor(Number(ms) / 1000));
-    if (!total) return state === 'processing' ? '0s' : '—';
-    const hours = Math.floor(total / 3600), minutes = Math.floor((total % 3600) / 60), seconds = total % 60;
-    if (hours) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
-    if (minutes) return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
-    return `${seconds}s`;
   }
   function processingActivityWarning(job) {
     if (safeId(job.state).toLowerCase() !== 'processing' || job.activity_stale !== true) return '';
@@ -192,7 +174,7 @@
   }
   function restoreFiltersFromHistory() {
     if (!isJobsRoute() || !state.entered) {
-      scheduleSync();
+      helpers().scheduleSync(sync);
       return;
     }
     readFiltersFromUrl();
@@ -294,12 +276,6 @@
     $('#jobsTableWrap').hidden = true;
     $('#jobsPagination').hidden = true;
   }
-  function detailField(label, value) {
-    const wrapper = create('div', 'detail-field');
-    wrapper.append(create('dt', '', label), create('dd', '', value));
-    return wrapper;
-  }
-
   let detailCounter = 0;
   function appendJobRow(tbody, job) {
     const id = safeId(job.id);
@@ -952,12 +928,6 @@
     }
   }
 
-  let syncTimer = null;
-  function scheduleSync() {
-    clearTimeout(syncTimer);
-    syncTimer = setTimeout(sync, 0);
-  }
-
   function setupEvents() {
     const form = $('#jobsFilters');
     form.addEventListener('change', () => {
@@ -1006,12 +976,12 @@
       if (details) toggleOperationDetails(details);
     });
 
-    document.addEventListener('adminv2:navigate', scheduleSync);
+    document.addEventListener('adminv2:navigate', () => helpers().scheduleSync(sync));
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && state.entered && state.activeTab === 'tasks') loadJobs({ background: true });
       else scheduleJobsPoll();
     });
-    addEventListener('hashchange', scheduleSync);
+    addEventListener('hashchange', () => helpers().scheduleSync(sync));
     addEventListener('popstate', restoreFiltersFromHistory);
   }
 

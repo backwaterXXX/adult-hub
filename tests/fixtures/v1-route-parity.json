@@ -12,14 +12,6 @@
     },
     {
       "method": "GET",
-      "path": "/admin/api/performer-photo",
-      "source": "resolver/app.py",
-      "consumer": "sync/photos.py",
-      "purpose": "Provider photo lookup used by the sync worker; not a classic Admin UI action and must remain available while photo backfill is supported.",
-      "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
-    },
-    {
-      "method": "GET",
       "path": "/admin/api/performer-bio",
       "source": "resolver/app.py",
       "consumer": "External API callers; no in-repository consumer found",

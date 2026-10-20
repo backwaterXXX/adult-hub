@@ -185,7 +185,3 @@ async def _close_global_stream_manager():
     if _global_stream_manager is not None:
         await _global_stream_manager.close()
         _global_stream_manager = None
-
-
-def _peek_global_stream_manager():
-    return _global_stream_manager

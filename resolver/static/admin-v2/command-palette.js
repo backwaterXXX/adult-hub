@@ -390,5 +390,6 @@
   });
   $('#commandPaletteShortcut').textContent = /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '') ? '⌘ K' : 'Ctrl K';
 
+  // Test handle: the palette internals (pages/actions/score) have no other consumer, so the contract test drives them through this export.
   window.AdminV2CommandPalette = Object.freeze({ open: openPalette, close: closePalette, pages, actions, score });
 })();

@@ -45,7 +45,6 @@ from performer_enrichment import (
 )
 from telegram_pipeline import (
     TelegramSyncServices,
-    collect_single_telegram_video as _collect_single_telegram_video_impl,
     safe_error_detail as _safe_error_detail,
     sync_telegram_channel_pipeline as _sync_telegram_channel_pipeline_impl,
     telegram_passes_tags as _telegram_passes_tags,
@@ -250,7 +249,6 @@ PERFORMER_BACKFILL_PER_RUN = CONFIG.sync.performer_backfill_per_run if CONFIG el
 PBC_BACKFILL_PER_RUN = CONFIG.sync.pbc_backfill_per_run if CONFIG else int(os.getenv("PBC_BACKFILL_PER_RUN", "50"))
 TPDB_BACKFILL_PER_RUN = getattr(CONFIG.sync, "tpdb_backfill_per_run", 50) if CONFIG else int(os.getenv("TPDB_BACKFILL_PER_RUN", "50"))
 SCENE_BACKFILL_PER_RUN = getattr(CONFIG.sync, "scene_backfill_per_run", 500) if CONFIG else int(os.getenv("SCENE_BACKFILL_PER_RUN", "500"))
-PHOTO_BACKFILL_PER_RUN = CONFIG.sync.photo_backfill_per_run if CONFIG else int(os.getenv("PHOTO_BACKFILL_PER_RUN", "25"))
 JELLYFIN_PEOPLE_PER_RUN = CONFIG.sync.jellyfin_people_per_run if CONFIG else int(os.getenv("JELLYFIN_PEOPLE_PER_RUN", "25"))
 PERFORMER_AUDIT_PER_RUN = CONFIG.sync.performer_audit_per_run if CONFIG else int(os.getenv("PERFORMER_AUDIT_PER_RUN", "25"))
 PERFORMER_AUDIT_THRESHOLD = CONFIG.sync.performer_audit_threshold if CONFIG else int(os.getenv("PERFORMER_AUDIT_THRESHOLD", "5"))
@@ -960,9 +958,7 @@ def _run_external_metadata_backfill(conn: db.Connection, media_dir: Path, report
         conn,
         media_dir,
         report_progress,
-        resolver_api_url=RESOLVER_API_URL,
         pbc_limit=PBC_BACKFILL_PER_RUN,
-        photos_limit=PHOTO_BACKFILL_PER_RUN,
         tpdb_limit=TPDB_BACKFILL_PER_RUN,
         scenes_limit=SCENE_BACKFILL_PER_RUN,
         logger=logger,
@@ -1082,15 +1078,6 @@ def _telegram_sync_services() -> TelegramSyncServices:
         time=time,
         observe_stage=_observe_sync_stage,
         category_fetch_delay_seconds=(CONFIG.sync.category_fetch_delay_seconds if CONFIG else 2.5),
-    )
-
-
-def _collect_single_telegram_video(
-    vid: Dict[str, Any], channel_id: str, studio_name: str,
-    collected: Dict[str, Dict[str, Any]],
-) -> str:
-    return _collect_single_telegram_video_impl(
-        vid, channel_id, studio_name, collected, services=_telegram_sync_services()
     )
 
 

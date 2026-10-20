@@ -115,15 +115,6 @@ def normalize_name(value: str) -> str:
     return "".join(char for char in text if char.isalnum())
 
 
-def boundary_pattern(alias: str) -> re.Pattern[str]:
-    """Match alias words across spaces or punctuation, without partial words."""
-    words = [part for part in re.split(r"[^\w]+", alias.strip(), flags=re.UNICODE) if part]
-    if not words:
-        return re.compile(r"(?!)")
-    body = r"[^\w]+".join(re.escape(word) for word in words)
-    return re.compile(r"(?<!\w)" + body + r"(?!\w)", re.IGNORECASE | re.UNICODE)
-
-
 def _normalized_with_spans(text: str) -> tuple[str, list[tuple[int, int]]]:
     output, spans = [], []
     for index, char in enumerate(text):

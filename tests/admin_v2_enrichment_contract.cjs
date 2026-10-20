@@ -1,6 +1,7 @@
 const fs = require('fs');
 const vm = require('vm');
 const assert = require('assert');
+const { createAdminV2Helpers } = require('./helpers/admin_v2_shared_helpers.cjs');
 
 const template = fs.readFileSync('resolver/templates/admin_v2.html', 'utf8');
 assert.match(template, /One scan processes one bounded batch per provider/,
@@ -11,7 +12,7 @@ assert.match(template, /Remaining counts are estimates because provider eligibil
   'the Enrichment tab must label remaining-work counts as estimates');
 assert.match(template, /href="#quality\?tab=enrichment"[^>]*data-section-tab="enrichment"/,
   'Enrichment must be a bookmarkable Catalog Health tab');
-assert.match(template, /id="qualityEnrichmentPane"[^>]*data-quality-pane="enrichment"/,
+assert.match(template, /id="qualityEnrichmentPane"/,
   'enrichment progress and proposals must share the Catalog Health Enrichment pane');
 assert.match(template, /id="enrichmentFreshnessAnnouncement"[^>]*role="status"[^>]*aria-live="polite"/,
   'freshness changes must be announced without making every 15-second timestamp update live');
@@ -46,13 +47,13 @@ let requested;
 let getCalls = 0;
 let checkedVideos = 50;
 let batchLimits = { videos_per_run: 500, pbc_actors_per_run: 50,
-  theporndb_actors_per_run: 40, stashdb_actors_per_run: 35, portraits_per_run: 25 };
+  theporndb_actors_per_run: 40, stashdb_actors_per_run: 35 };
 let syncSchedule = { mode: 'interval', daily_at: null, interval_minutes: 60, run_on_startup: false };
 const calls = [];
 let responseJobId = 'metadata-job-1';
 let responseJobState = 'queued';
 let failNextGet = false;
-const window = { confirm: () => true, AdminV2: { postJson: async (url, body) => {
+const window = { confirm: () => true, AdminV2: { ...createAdminV2Helpers(document), postJson: async (url, body) => {
   calls.push({ url, body });
   return { ok: true, job_id: responseJobId, state: responseJobState };
 }, getJson: async url => {
@@ -100,7 +101,7 @@ vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/enrichment.js', 'ut
   assert.strictEqual(elements.get('#enrichmentFreshness').dataset.state, 'fresh');
   assert.match(elements.get('#enrichmentFeedback').textContent, /70 source records tracked/);
   assert.match(elements.get('#enrichmentBatchLimits').textContent,
-    /500 videos · PBC 50 actors · ThePornDB 40 actors · StashDB 35 actors · 25 portraits/);
+    /500 videos · PBC 50 actors · ThePornDB 40 actors · StashDB 35 actors\./);
   assert.strictEqual(elements.get('#enrichmentSchedule').textContent,
     'Configured sync cadence: Every 60 minutes. Startup sync is disabled.');
   syncSchedule = { mode: 'daily', daily_at: '03:30', interval_minutes: null, run_on_startup: true };

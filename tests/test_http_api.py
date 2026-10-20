@@ -24,10 +24,22 @@ sys.path.insert(0, str(ROOT))
 import admin as admin_module
 import app as resolver_app
 from common import db
-from video_duplicates import get_job
+from common.job_queue import read_job
 
 
 BAD_URL = "postgresql://127.0.0.1:1/missing"
+
+
+def get_job(db_url, job_id):
+    """Read one durable job for assertions (payload and result decoded)."""
+    row = read_job(db_url, job_id)
+    if row is None:
+        return None
+    payload = row.get("payload")
+    result = row.get("result")
+    row["payload"] = json.loads(payload) if isinstance(payload, str) else (payload or {})
+    row["result"] = json.loads(result) if isinstance(result, str) else result
+    return row
 
 
 class TestResolverHttpApi(unittest.TestCase):
@@ -119,7 +131,6 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertIn('id="systemBackupView"', response.text)
         self.assertIn('id="systemDiagnosticsView"', response.text)
         self.assertIn('id="systemMaintenanceView"', response.text)
-        self.assertIn('id="linkcheckView"', response.text)
         self.assertNotIn('id="systemSyncActivityView"', response.text)
         self.assertIn('data-system-tab="maintenance"', response.text)
         self.assertIn('id="systemActivityView"', response.text)
@@ -1429,7 +1440,6 @@ class TestResolverHttpApi(unittest.TestCase):
             "pbc_actors_per_run": 50,
             "theporndb_actors_per_run": 50,
             "stashdb_actors_per_run": 50,
-            "portraits_per_run": 25,
         })
         self.assertEqual(response.json()["sync_schedule"], {
             "mode": "interval", "daily_at": None, "interval_minutes": 60,
@@ -1776,8 +1786,7 @@ class TestResolverHttpApi(unittest.TestCase):
             config.write_text(
                 "sync:\n  interval_minutes: 60\n"
                 "sources:\n  - provider: telegram\n    channels:\n"
-                "      - id: '-100111'\n        studio: 'Base'\n"
-                "  - provider: exampleweb\n    address: 'https://private.invalid/feed?token=do-not-return'\n",
+                "      - id: '-100111'\n        studio: 'Base'\n",
                 encoding="utf-8",
             )
             overlay = root / "managed.json"

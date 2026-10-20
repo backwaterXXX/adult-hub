@@ -75,7 +75,7 @@
             <div id="commandPaletteResults" class="command-palette-results" role="listbox" aria-label="Search results"></div>
           </div>
         </dialog>
-        <section id="view-start" class="view" data-view="start" aria-labelledby="pageTitle">
+        <section class="view" data-view="start" aria-labelledby="pageTitle">
           <div class="page-heading">
             <div><p class="eyebrow">OVERVIEW</p><h1 id="pageTitle">Good morning</h1><p class="page-intro">Your library and service status at a glance.</p></div>
             <button class="button button-quiet" type="button" data-action="refresh-status"><span aria-hidden="true">↻</span> Refresh</button>
@@ -110,7 +110,7 @@
           </div>
         </section>
 
-        <section id="view-library" class="view" data-view="library" aria-labelledby="libraryTitle" hidden>
+        <section class="view" data-view="library" aria-labelledby="libraryTitle" hidden>
           <div class="page-heading library-heading">
             <div><p class="eyebrow">CATALOG</p><h1 id="libraryTitle">Library</h1><p class="page-intro">Find an item and check its source and status.</p></div>
             <div class="library-summary" id="librarySummary" aria-live="polite"><span class="summary-dot"></span><span>Waiting for catalog</span></div>
@@ -134,13 +134,13 @@
             <div id="videoTableWrap" class="table-wrap" hidden><table class="video-table"><thead><tr><th><span class="sr-only">Select</span></th><th>Item</th><th>Studio</th><th>Source</th><th>Availability</th><th>Reason</th><th>Last detected</th><th>Added</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="videoRows"></tbody></table></div>
             <div id="pagination" class="pagination" hidden><button class="button button-quiet" type="button" id="pagePrev">← Previous</button><span id="pageInfo">Page 1</span><button class="button button-quiet" type="button" id="pageNext">Next →</button></div>
           </section>
-          <dialog class="source-detail video-detail" id="detailOverlay" aria-labelledby="detailTitle">
+          <dialog class="source-detail" id="detailOverlay" aria-labelledby="detailTitle">
             <article class="source-detail-panel detail-drawer" tabindex="-1"><button type="button" class="drawer-close" data-action="close-detail" aria-label="Close details">×</button><div id="detailContent"></div></article>
           </dialog>
           <dialog class="operation-dialog" id="metadataDialog" aria-labelledby="metadataDialogTitle"><section class="operation-dialog-panel"><button class="drawer-close" type="button" aria-label="Close metadata editor" data-close-dialog="metadataDialog">×</button><div id="metadataDialogContent"></div><div class="operation-dialog-actions" id="metadataDialogActions"></div></section></dialog>
         </section>
 
-        <section id="view-organize" class="view" data-view="organize" aria-labelledby="organizeTitle" hidden>
+        <section class="view" data-view="organize" aria-labelledby="organizeTitle" hidden>
           <div class="page-heading"><div><p class="eyebrow">CATALOG HEALTH</p><h1 id="organizeTitle">Catalog Health</h1><p id="organizeIntro" class="page-intro">Review duplicate candidates and make reversible catalog decisions.</p></div></div>
           <nav class="section-tabs catalog-health-tabs" aria-label="Catalog Health">
             <a href="#quality?tab=issues" data-section-tab="issues">Issues &amp; Audits</a>
@@ -187,7 +187,7 @@
           </section>
         </section>
 
-        <section id="view-performers" class="view" data-view="performers" aria-labelledby="performersTitle" hidden>
+        <section class="view" data-view="performers" aria-labelledby="performersTitle" hidden>
           <div class="page-heading"><div><p class="eyebrow">CATALOG REVIEW</p><h1 id="performersTitle">Performer proposals</h1><p class="page-intro">The Telegram title is the source video's title. A proposal is text detected in its title or caption; check the suggested name, then match it to a performer or add a local name.</p></div><button class="button button-quiet" id="performersRefresh" type="button">Refresh</button></div>
           <nav class="section-tabs performer-section-tabs" aria-label="Performers">
             <a href="#performers?tab=directory" data-section-tab="directory">Directory</a>
@@ -214,9 +214,9 @@
           <dialog id="fuzzyMergeDialog" class="operation-dialog" aria-labelledby="fuzzyMergeTitle"><section class="operation-dialog-panel"><button class="drawer-close" type="button" id="fuzzyMergeClose" aria-label="Close merge review">×</button><div id="fuzzyMergeContent"></div><div id="fuzzyMergeActions" class="operation-dialog-actions"></div></section></dialog>
         </section>
 
-        <section id="view-operational" class="view" data-view="operational" hidden aria-labelledby="operationalTitle">
+        <section class="view" data-view="operational" hidden aria-labelledby="operationalTitle">
           <div class="page-heading"><div><p class="eyebrow" id="operationalEyebrow">OPERATIONS</p><h1 id="operationalTitle">Sources</h1><p class="page-intro" id="operationalIntro"></p></div></div>
-          <nav class="section-tabs system-section-tabs" id="systemSectionTabs" aria-label="System" hidden>
+          <nav class="section-tabs" id="systemSectionTabs" aria-label="System" hidden>
             <a href="#system?tab=maintenance" data-system-tab="maintenance">Maintenance</a>
             <a href="#system?tab=diagnostics" data-system-tab="diagnostics">Diagnostics</a>
             <a href="#system?tab=backups" data-system-tab="backups">Backups</a>
@@ -230,13 +230,13 @@
               <a href="#quality?tab=quarantine" data-section-tab="quarantine">Quarantine</a>
               <a href="#performers?tab=directory" class="section-tab-crosslink">Performer Directory</a>
             </nav>
-            <div id="qualityIssuesPane" data-quality-pane="issues">
+            <div id="qualityIssuesPane">
             <div class="panel-heading"><div><p class="eyebrow">CATALOG QUALITY</p><h2 id="qualityTitle">Metadata and file health</h2><p class="page-intro">Review missing catalog fields, NFO differences, missing artwork, and fingerprint coverage. PHASH is computed for only a subset of videos.</p></div><div class="diagnostics-actions"><label for="qualityAuditMode">Audit mode</label><select id="qualityAuditMode"><option value="metadata_quality">Metadata quality</option><option value="file_consistency">File consistency</option><option value="full" selected>Full audit</option></select><button class="button button-quiet" type="button" id="qualityRefresh">Refresh</button> <button class="button button-primary" type="button" id="qualityRunAudit">Run selected audit</button></div></div>
             <div id="qualityFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading the latest complete audit…</div>
             <div id="qualitySummary" class="quality-summary" aria-label="Quality issue counts"></div>
             <section class="quality-history" aria-labelledby="qualityHistoryTitle">
               <div class="quality-history-heading"><div><h3 id="qualityHistoryTitle">Quality trend</h3><p class="catalog-feedback">Compare the latest complete audits to track progress over time.</p></div></div>
-              <div id="qualityTrend" class="quality-trend" role="status" aria-live="polite"></div>
+              <div id="qualityTrend" role="status" aria-live="polite"></div>
               <div id="qualityHistory" class="quality-history-list" aria-label="Recent complete audits"></div>
             </section>
             <form id="qualityFilters" class="filter-bar quality-filter-bar">
@@ -255,7 +255,7 @@
               <div id="auditRows" class="operation-history-list" aria-live="polite"></div>
               <div id="auditFindings" class="operation-history-list" aria-live="polite"></div>
             </section>
-            <section id="linkcheckView" class="panel operation-history-panel" aria-labelledby="linkcheckTitle">
+            <section class="panel operation-history-panel" aria-labelledby="linkcheckTitle">
               <div class="panel-heading"><div><p class="eyebrow">STREAM HEALTH</p><h2 id="linkcheckTitle">Link-check report</h2><p class="page-intro">The report summarizes sampled stream checks. It does not run during a regular sync.</p></div><button class="button button-quiet" type="button" id="linkcheckRefresh">Refresh report</button></div>
               <div id="linkcheckFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading link-check report…</div>
               <div id="linkcheckRows" class="operation-history-list" aria-live="polite"></div>
@@ -266,7 +266,7 @@
               <p class="panel-footnote">Run a report from the sync container: <code>docker compose exec sync python linkcheck.py</code>. Optional: <code>docker compose exec sync python linkcheck.py --sample 5 --provider telegram</code>.</p>
             </section>
             </div>
-            <div id="qualityEnrichmentPane" data-quality-pane="enrichment" hidden>
+            <div id="qualityEnrichmentPane" hidden>
               <section class="panel operation-history-panel" aria-labelledby="enrichmentTitle">
                 <div class="panel-heading"><div><p class="eyebrow">AUTOMATED CATALOG</p><h2 id="enrichmentTitle">External metadata progress</h2><p class="page-intro">Track catalog lookups across actor and video sources. One scan processes one bounded batch per provider. The configured sync cadence is shown below; when the sync runner is active, later runs continue the queues automatically. Remaining counts are estimates because provider eligibility and retries vary. Progress refreshes every 15 seconds while this view is active. Entity names and source error details are not shown.</p></div><div class="diagnostics-actions"><button class="button button-primary" type="button" id="enrichmentScan">Run bounded scan</button><button class="button button-quiet" type="button" id="enrichmentRefresh">Refresh progress</button></div></div>
                 <div id="enrichmentFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading metadata progress…</div>
@@ -414,7 +414,7 @@
               <div class="panel-heading"><div><p class="eyebrow">SYNCHRONIZATION</p><h2 id="sourceRunHistoryTitle">Recent sync runs</h2><p class="page-intro">Review recent outcomes, timing, source failures, and HTTP retry counts.</p></div></div>
               <div id="sourcesHistoryFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading sync history…</div>
               <div id="sourcesHistoryRows" class="operation-history-list" aria-live="polite"></div>
-              <details class="sync-worker-activity">
+              <details>
                 <summary>Worker progress summaries</summary>
                 <div class="panel-heading"><div><p class="eyebrow">SYNC WORKER</p><h3 id="syncActivityTitle" tabindex="-1">Sync activity</h3><p class="page-intro">Recent progress summaries. Detailed log text is hidden to protect source IDs, URLs, paths, and exception data.</p></div><button class="button button-quiet" type="button" id="syncActivityRefresh">Refresh activity</button></div>
                 <div id="syncActivityFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading sync activity…</div>

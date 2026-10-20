@@ -12,6 +12,9 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+# Build artefacts (stale copies of the shared package must not enter an image)
+build/
+**/build/
 .env
 # Local / secret config (mounted at runtime, never baked into image)
 config.yaml

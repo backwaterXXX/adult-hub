@@ -237,19 +237,6 @@ class TestVideoFingerprints(unittest.TestCase):
             )
             self.assertEqual(fresh_job.bytes_read, 0)
 
-    def test_gateway_throttles_optional_fingerprint_downloads(self):
-        budget = FingerprintBudget(
-            "telegram:-1001234567890:42:999",
-            max_bytes_per_second=PREFETCH_BYTES,
-        )
-        budget._next_fetch_at = 101.0
-        with mock.patch("video_fingerprints.time.monotonic", side_effect=[100.0, 100.1]), \
-                mock.patch("video_fingerprints.time.sleep") as sleep:
-            budget._wait_for_rate_slot(PREFETCH_BYTES)
-        sleep.assert_called_once_with(mock.ANY)
-        self.assertAlmostEqual(sleep.call_args.args[0], 0.9)
-        self.assertEqual(budget._next_fetch_at, 102.0)
-
 
 if __name__ == "__main__":
     unittest.main()

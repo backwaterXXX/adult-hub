@@ -72,7 +72,6 @@ class FingerprintBudget:
         self.http_client = httpx
         self.max_bytes_per_second = max_bytes_per_second
         self.allow_rate_above_configured = bool(allow_rate_above_configured)
-        self._next_fetch_at = 0.0
         self.cache_dir = None
         self.usage_path = None
         if cache_dir and cache_id:
@@ -163,17 +162,6 @@ class FingerprintBudget:
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
-
-    def _wait_for_rate_slot(self, byte_count: int) -> None:
-        if self.max_bytes_per_second is None:
-            return
-        with self.lock:
-            now = time.monotonic()
-            starts_at = max(now, self._next_fetch_at)
-            self._next_fetch_at = starts_at + byte_count / self.max_bytes_per_second
-        delay = starts_at - time.monotonic()
-        if delay > 0:
-            time.sleep(delay)
 
     def load_size(self) -> int:
         with self.http_client.stream("HEAD", self.stream_url, timeout=15.0) as response:

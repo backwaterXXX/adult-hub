@@ -16,7 +16,6 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 import admin_data
 import admin_security
-from common.app_version import __version__ as APP_VERSION
 from fastapi.responses import HTMLResponse, JSONResponse
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -244,7 +243,7 @@ async def admin_v2_page(request: Request):
     except OSError:
         return HTMLResponse("<h1>Admin v2 is unavailable.</h1>", status_code=503)
     return HTMLResponse(
-        source.replace("{{APP_VERSION}}", APP_VERSION),
+        source,
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
 

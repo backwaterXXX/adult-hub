@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
 from fuzzy_performers import (
     strip_accents,
     normalize_clean_key,
-    split_camel_or_delimiter,
     extract_suffix_stem,
     score_canonical,
     find_fuzzy_performer_candidates,
@@ -42,12 +41,6 @@ class TestFuzzyPerformersNormalization(unittest.TestCase):
         self.assertEqual(normalize_clean_key("BostonJock"), "bostonjock")
         self.assertEqual(normalize_clean_key("adam tyme"), "adamtyme")
         self.assertEqual(normalize_clean_key("Adam Tyme"), "adamtyme")
-
-    def test_split_camel_or_delimiter(self):
-        self.assertEqual(split_camel_or_delimiter("JordanxBrandt"), "Jordan Brandt")
-        self.assertEqual(split_camel_or_delimiter("BostonJock"), "Boston Jock")
-        self.assertEqual(split_camel_or_delimiter("Ryan.Evans42"), "Ryan Evans 42")
-        self.assertEqual(split_camel_or_delimiter("gangbang_guys"), "gangbang guys")
 
     def test_extract_suffix_stem(self):
         stem, sfx = extract_suffix_stem("Dillon Diaz VIP")

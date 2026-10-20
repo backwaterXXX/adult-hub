@@ -47,7 +47,7 @@ class Element {
 }
 
 const html = fs.readFileSync('resolver/templates/admin_v2.html', 'utf8');
-assert.match(html, /id="view-operational"[^>]*data-view="operational"/,
+assert.match(html, /class="view"[^>]*data-view="operational"/,
   'Sources, Tasks, and System must use the named shared operational view');
 assert.doesNotMatch(html, /roadmapCard|Coming soon|legacyRoute/,
   'The implemented v2 views must not retain the obsolete coming-soon fallback');

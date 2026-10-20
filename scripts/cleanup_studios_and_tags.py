@@ -32,10 +32,7 @@ CHANNEL_ID_MAP: dict[str, str] = {}
 def _init_channel_config() -> None:
     global KNOWN_CHANNELS, CHANNEL_ID_MAP
     try:
-        try:
-            from common.config_loader import load_config
-        except ImportError:
-            from config_loader import load_config
+        from common.config_loader import load_config
         cfg = load_config()
         tg = cfg.get_source("telegram")
         if tg and getattr(tg, "channels", None):

@@ -66,7 +66,6 @@ class TestAdminV2Enrichment(PgTestCase):
             scene_backfill_per_run=101,
             pbc_backfill_per_run=7,
             tpdb_backfill_per_run=9,
-            photo_backfill_per_run=3,
             daily_at="03:30",
             interval_minutes=60,
             run_on_startup=False,
@@ -79,7 +78,6 @@ class TestAdminV2Enrichment(PgTestCase):
             "pbc_actors_per_run": 7,
             "theporndb_actors_per_run": 9,
             "stashdb_actors_per_run": 9,
-            "portraits_per_run": 3,
         })
         self.assertEqual(payload["sync_schedule"], {
             "mode": "daily", "daily_at": "03:30", "interval_minutes": None,

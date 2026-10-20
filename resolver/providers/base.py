@@ -1,15 +1,12 @@
 import html
-import json
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Iterable
-from common.duration import parse_duration_seconds
 from common.performers import (
     MEDIA_EXT_SUFFIX_RE,
     is_performer_segment,
     is_valid_performer_name,  # noqa: F401
-    normalize_performers,
 )
 from common.performer_titles import parse_title_performers_with_known_map as _parse_title_performers_with_known_map
 from common.performer_titles import strip_performer_credits as _strip_performer_credits
@@ -40,101 +37,6 @@ def register_slug_token_hook(provider_name: str, fn: Callable[[str, str], str]):
 def get_slug_token_hook(provider_name: str) -> Optional[Callable[[str, str], str]]:
     """Return the slug-token hook for a provider, or None (passthrough)."""
     return _SLUG_TOKEN_HOOKS.get((provider_name or "").strip())
-
-
-# performer-photo hooks: async fn(provider_name, performer_name) -> URL|None.
-_PERFORMER_PHOTO_HOOKS: Dict[str, Callable] = {}
-
-
-def register_performer_photo_hook(provider_name: str, fn: Callable):
-    """Register a performer-photo lookup for a provider. Returns fn."""
-    name = (provider_name or "").strip()
-    if not name:
-        raise ValueError("Hook provider name must be a non-empty string.")
-    if not callable(fn):
-        raise TypeError("Performer-photo hook must be callable.")
-    _PERFORMER_PHOTO_HOOKS[name] = fn
-    return fn
-
-
-def get_performer_photo_hook(provider_name: str) -> Optional[Callable]:
-    """Return the performer-photo hook for a provider, or None."""
-    return _PERFORMER_PHOTO_HOOKS.get((provider_name or "").strip())
-
-def parse_duration(dur_str: Optional[str]) -> int:
-    """
-    Parses duration string in formats:
-    - HH:MM:SS or MM:SS or SS (e.g. '14:41', '1:02:30')
-    - Textual min/sec (e.g. '14 min', '45 sec', '12 min 30 sec')
-    Returns duration in seconds.
-    """
-    return parse_duration_seconds(dur_str)
-
-def _to_base(n: int, base: int) -> str:
-    chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    if n == 0:
-        return "0"
-    res = []
-    while n > 0:
-        res.append(chars[n % base])
-        n //= base
-    return "".join(reversed(res))
-
-def unpack_packer(packed_html: str) -> Optional[str]:
-    m = re.search(r"return p\}\('(.*?)',\s*(\d+),\s*(\d+),\s*'(.*?)'\.split\('\|'\)\)", packed_html, re.DOTALL)
-    if not m:
-        return None
-    p = m.group(1)
-    a = int(m.group(2))
-    c = int(m.group(3))
-    k = m.group(4).split("|")
-
-    for idx in range(c - 1, -1, -1):
-        if idx < len(k) and k[idx]:
-            token = _to_base(idx, a)
-            p = re.sub(r"\b" + re.escape(token) + r"\b", k[idx], p)
-    return p
-
-
-
-
-
-
-
-
-def parse_performer_links(content: str) -> List[str]:
-    """Extract performer display names from ``/performer/`` anchors.
-
-    Shared by listing cards and video pages (regex convention of the project).
-    Returns deduplicated names in document order.
-    """
-    if not content:
-        return []
-    perfs = re.findall(r'/performer/[^"\'\s>]+[^>]*>([^<]+)</a>', content)
-    return normalize_performers(perfs)
-
-
-def parse_ldjson_actor_names(page_html: str) -> List[str]:
-    """Extract Person names from LD+JSON ``"actor": [{... "name": ...}]`` blocks.
-
-    Some video pages embed a schema.org VideoObject whose actor list is the
-    authoritative performer source.
-    """
-    if not page_html:
-        return []
-    names: List[str] = []
-    for block in re.finditer(r'"actor"\s*:\s*\[(.*?)\]', page_html, re.DOTALL):
-        for nm in re.finditer(r'"name"\s*:\s*"((?:[^"\\]|\\.)*)"', block.group(1)):
-            raw = nm.group(1)
-            try:
-                name = json.loads('"' + raw + '"')
-            except Exception:
-                name = raw.replace('\\/', '/')
-            names.append(name)
-    return normalize_performers(names)
-
-
-
 
 
 def parse_title_performers(title: str, known_performers: Optional[Iterable[str]] = None) -> List[str]:

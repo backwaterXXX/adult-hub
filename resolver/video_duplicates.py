@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from common import db
 from collections import defaultdict
@@ -38,10 +37,6 @@ from video_duplicate_scoring import (
 
 
 
-
-
-
-
 def _public_row(row: dict) -> dict:
     source_url = row.get("source_url", "")
     if not source_url and row.get("provider") == "telegram":
@@ -71,16 +66,6 @@ def _public_row(row: dict) -> dict:
         "performers": sorted(row.get("performer_display", {}).values(), key=str.casefold),
         "source_url": source_url,
     }
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -360,19 +345,3 @@ def _decision_conn(db_url: str | None) -> db.Connection:
     return _decision_conn_impl(db_url, db_api=db)
 
 
-def get_job(db_url: str | None, job_id: str) -> dict | None:
-    conn = _decision_conn(db_url)
-    try:
-        row = conn.execute("SELECT * FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
-        if not row:
-            return None
-        result = dict(row)
-        result["payload"] = json.loads(result["payload"])
-        result["payload"].pop("fingerprints", None)
-        result["result"] = json.loads(result["result"]) if result["result"] else None
-        if result["result"] and "snapshots" in result["result"]:
-            result["result"] = {"operation_id": result["result"].get("operation_id"),
-                                 "recovery": "in_progress"}
-        return result
-    finally:
-        conn.close()

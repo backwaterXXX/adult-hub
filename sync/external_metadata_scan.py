@@ -11,23 +11,19 @@ def run_external_metadata_backfill(
     media_dir: Path,
     report_progress: Callable[[int, int, str], None],
     *,
-    resolver_api_url: str,
     pbc_limit: int,
-    photos_limit: int,
     tpdb_limit: int,
     scenes_limit: int,
     logger: Any,
 ) -> dict:
     """Run all bounded metadata passes, continuing when an individual provider fails."""
     from pbc import backfill_pbc
-    from photos import backfill_photos
     from theporndb import backfill_tpdb
     from stashdb import backfill_stashdb
     from scene_scrapers import backfill_scenes
 
     passes = (
         ("metadata_pbc", lambda: backfill_pbc(conn, limit=pbc_limit)),
-        ("metadata_photos", lambda: backfill_photos(conn, resolver_api_url, limit=photos_limit)),
         ("metadata_tpdb", lambda: backfill_tpdb(conn, limit=tpdb_limit)),
         # StashDB intentionally shares the existing TPDB per-run limit.
         ("metadata_stashdb", lambda: backfill_stashdb(conn, limit=tpdb_limit)),

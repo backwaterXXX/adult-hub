@@ -8,33 +8,8 @@ import re
 from typing import Optional, Set, Iterable
 
 # Provider names that should NEVER be genres (they belong in <studio> and <tag>)
-# ETAP D: the public core starts empty; the private web extension registers
-# its five providers via register_provider_names(). Historical rows keep
-# their names in <studio>/<tag> regardless.
-PROVIDER_NAMES: Set[str] = set()
-
-# Provider display names (case-insensitive matching)
-PROVIDER_DISPLAY_NAMES: Set[str] = set()
-
-# Extra explicit exclusions registered by the extension (raw -> None).
-EXTRA_EXCLUDED: Set[str] = set()
-
-
-def register_provider_names(names, display_names=(), excluded=()) -> None:
-    """Register extension provider names that must never become genres.
-
-    The extension supplies canonical keys, display variants, and raw category
-    strings to map to None. Idempotent (set union).
-    """
-    for n in (names or ()):
-        if n and str(n).strip():
-            PROVIDER_NAMES.add(str(n).strip().lower())
-    for d in (display_names or ()):
-        if d and str(d).strip():
-            PROVIDER_DISPLAY_NAMES.add(str(d).strip())
-    for e in (excluded or ()):
-        if e and str(e).strip():
-            EXTRA_EXCLUDED.add(str(e).strip().lower())
+# are rejected by the static exclusion tables below; there is no runtime
+# registration hook (the retired web extension was its only caller).
 
 if __package__:
     from .category_mapping_data import ALL_TARGET_CATEGORIES, EXCLUDED_TAGS, RAW_TO_MAPPED_CATEGORY
@@ -72,12 +47,8 @@ def map_category(category: Optional[str]) -> Optional[str]:
 
     low = raw.lower()
 
-    # Exclude provider names
-    if low in PROVIDER_NAMES or raw in PROVIDER_DISPLAY_NAMES:
-        return None
-
-    # Exclude technical/junk tags (plus extension-registered web keys)
-    if low in EXCLUDED_TAGS or low in EXTRA_EXCLUDED:
+    # Exclude technical/junk tags
+    if low in EXCLUDED_TAGS:
         return None
 
     # Check direct exact match in dictionary

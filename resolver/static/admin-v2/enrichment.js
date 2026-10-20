@@ -12,12 +12,9 @@
   let freshnessState = 'unknown';
   const POLL_INTERVAL_MS = 15_000;
 
-  function el(tag, className, text) {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text !== undefined && text !== null) node.textContent = String(text);
-    return node;
-  }
+  // Shared helpers live in admin-v2.js and are published through window.AdminV2.
+  const helpers = () => window.AdminV2 || {};
+  const el = (...args) => helpers().el(...args);
 
   function label(row) {
     const source = String(row.source || '').trim().toLowerCase();
@@ -41,19 +38,19 @@
   function renderBatchLimits(limits) {
     const target = $('#enrichmentBatchLimits');
     const values = ['videos_per_run', 'pbc_actors_per_run', 'theporndb_actors_per_run',
-      'stashdb_actors_per_run', 'portraits_per_run'].map(key => limits?.[key]);
+      'stashdb_actors_per_run'].map(key => limits?.[key]);
     if (!values.every(value => Number.isSafeInteger(value) && value >= 0)) {
       target.textContent = 'Configured per-run batch limits are unavailable.';
       return;
     }
-    target.textContent = `Configured limits per run: ${values[0].toLocaleString('en-US')} videos · PBC ${values[1].toLocaleString('en-US')} actors · ThePornDB ${values[2].toLocaleString('en-US')} actors · StashDB ${values[3].toLocaleString('en-US')} actors · ${values[4].toLocaleString('en-US')} portraits.`;
+    target.textContent = `Configured limits per run: ${values[0].toLocaleString('en-US')} videos · PBC ${values[1].toLocaleString('en-US')} actors · ThePornDB ${values[2].toLocaleString('en-US')} actors · StashDB ${values[3].toLocaleString('en-US')} actors.`;
   }
 
   function estimatedBatches(item, limits) {
     const keys = item.entity_type === 'video'
       ? { studio_scene: 'videos_per_run' }
       : { pbc: 'pbc_actors_per_run', theporndb: 'theporndb_actors_per_run',
-        stashdb: 'stashdb_actors_per_run', photos: 'portraits_per_run' };
+        stashdb: 'stashdb_actors_per_run' };
     const key = keys[item.source];
     const cap = key ? limits?.[key] : null;
     if (!Number.isSafeInteger(cap) || cap <= 0 ||

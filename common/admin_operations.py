@@ -24,11 +24,6 @@ def _canonical(value) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _row_dicts(conn, table: str, query: str, params: tuple) -> list[dict]:
-    columns = db.table_columns(conn, table)
-    return [dict(zip(columns, row)) for row in conn.execute(query, params).fetchall()]
-
-
 def _video_snapshot(conn, video_id: str, config=None) -> tuple[str | None, dict | None]:
     snapshots = _video_snapshots(conn, [video_id], config)
     return snapshots.get(str(video_id), (None, None))

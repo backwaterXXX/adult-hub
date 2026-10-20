@@ -45,15 +45,6 @@ def _valid_frame_request(body: object, profiles: set[str]) -> bool:
     )
 
 
-def _server_timeout_seconds() -> int:
-    return max(30, min(900, int(os.getenv("PHASH_SERVER_TIMEOUT_SECONDS", "600"))))
-
-
-def _server_bytes_per_second() -> int:
-    return max(64 * 1024, min(4 * 1024 * 1024,
-                              int(os.getenv("PHASH_SERVER_BYTES_PER_SECOND", str(512 * 1024)))))
-
-
 def build_router(admin):
     router = APIRouter(route_class=V2ErrorRoute)
 

@@ -32,8 +32,8 @@ assert.match(migration, /DROP CONSTRAINT IF EXISTS admin_audit_events_event_type
 assert.doesNotMatch(migration, /FOR constraint_row IN/, 'the migration must not drop unrelated audit constraints');
 
 for (const providerPath of [
-  'sync/deep_enrich_pbc.py', 'sync/pbc_backfill.py', 'sync/theporndb.py',
-  'sync/stashdb.py', 'sync/photos.py',
+  'sync/pbc_backfill.py', 'sync/theporndb.py',
+  'sync/stashdb.py',
 ]) {
   const provider = fs.readFileSync(providerPath, 'utf8');
   assert.match(provider, /lock_profile_enrichment\(conn, /,

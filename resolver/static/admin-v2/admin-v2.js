@@ -52,8 +52,6 @@
     for (const key of keys) if (object && object[key] !== undefined && object[key] !== null && object[key] !== '') return object[key];
     return null;
   }
-  function setText(target, value) { if (target) target.textContent = value; }
-  function announce(message) { setText($('#liveMessage'), message); }
   function beginOperationRequest() { state.operationRequestSeq += 1; return state.operationRequestSeq; }
   function operationRequestIsCurrent(sequence, route = state.route) {
     return state.operationRequestSeq === sequence && state.route === route;
@@ -63,12 +61,6 @@
     if (typeof error === 'string' && error.trim()) return error.trim();
     if (error && typeof error === 'object' && typeof error.message === 'string' && error.message.trim()) return error.message.trim();
     return fallback;
-  }
-  function create(tag, className, text) {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text !== undefined && text !== null) node.textContent = String(text);
-    return node;
   }
   function urlFor(route, extra = {}) {
     const url = new URL(location.href);
@@ -558,7 +550,52 @@
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  window.AdminV2 = Object.freeze({ requestJson, getJson, postJson, putJson, deleteJson, openDialog, closeDialog, setFeedback, downloadBlob });
+  // Shared Admin V2 helpers. The other Admin V2 modules use them through window.AdminV2.
+  function create(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
+  }
+  function setText(target, value) { if (target) target.textContent = value; }
+  function announce(message) { setText($('#liveMessage'), message); }
+  function safeId(value) { return value === null || value === undefined || value === '' ? '' : String(value); }
+  // Never surface raw errors, secrets, URLs, or filesystem paths in the panel.
+  function scrub(value) {
+    let text = value === null || value === undefined ? '' : String(value);
+    text = text.replace(/\b[a-zA-Z][a-zA-Z0-9+.\-]*:\/\/[^\s"'<>)]+/g, '[link hidden]');
+    text = text.replace(/\b[A-Za-z]:\\[^\s"'<>]*/g, '[path hidden]');
+    text = text.replace(/(^|[\s("'=:])\/(?:[\w.\-]+\/)+[\w.\-]*/g, (match, prefix) => `${prefix}[path hidden]`);
+    text = text.replace(/\b(pass(?:word|wd)?|secret|token|api[_-]?key|credentials?|authorization)\b\s*[:=]\s*\S+/gi, '$1: [hidden]');
+    return text.trim();
+  }
+  function titleCase(value) {
+    return safeId(value).replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
+  }
+  function detailField(label, value) {
+    const wrapper = create('div', 'detail-field');
+    wrapper.append(create('dt', '', label), create('dd', '', value));
+    return wrapper;
+  }
+  function formatDuration(ms, state) {
+    const total = Math.max(0, Math.floor(Number(ms) / 1000));
+    if (!total) return state === 'processing' ? '0s' : '—';
+    const hours = Math.floor(total / 3600), minutes = Math.floor((total % 3600) / 60), seconds = total % 60;
+    if (hours) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+    if (minutes) return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+    return `${seconds}s`;
+  }
+  const syncTimers = new WeakMap();
+  function scheduleSync(callback) {
+    if (typeof callback !== 'function') return;
+    const previous = syncTimers.get(callback);
+    if (previous !== undefined) clearTimeout(previous);
+    syncTimers.set(callback, setTimeout(callback, 0));
+  }
+  window.AdminV2 = Object.freeze({
+    requestJson, getJson, postJson, putJson, deleteJson, openDialog, closeDialog, setFeedback, downloadBlob,
+    create, el: create, setText, announce, safeId, scrub, titleCase, detailField, formatDuration, scheduleSync
+  });
   function setConnection(ok, message) {
     const element = $('#connectionState');
     if (!element) return;
@@ -1453,7 +1490,8 @@
     if (typeof value !== 'string' || !value.trim()) return null;
     try { const parsed = new URL(value, location.origin); return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : null; } catch { return null; }
   }
-  function detailField(label, value) {
+  // Detail fields that accept DOM nodes keep their own builder; window.AdminV2.detailField serves the plain-text variant.
+  function detailFieldValue(label, value) {
     const wrapper = create('div', 'detail-field');
     const dd = create('dd');
     if (value instanceof Node) dd.append(value);
@@ -1497,7 +1535,7 @@
       ['Scene match', video.scene_match_source ? `${video.scene_match_source}${video.scene_match_external_id ? ` · ${video.scene_match_external_id}` : ''}` : '']
     ];
     const overviewFields = create('dl', 'detail-fields');
-    fields.forEach(([label, value]) => overviewFields.append(detailField(label, value)));
+    fields.forEach(([label, value]) => overviewFields.append(detailFieldValue(label, value)));
     overview.append(overviewFields);
     const people = first(video, ['performers', 'people', 'cast']);
     if (people) overview.append(create('h4', 'detail-subheading', 'Performers'), create('p', 'detail-description', safeText(people)));
@@ -1564,7 +1602,7 @@
       ['Stream file', localFileLabel(video.local_files?.stream)],
       ['NFO file', localFileLabel(video.local_files?.nfo)],
       ['Artwork file', artworkValue]
-    ].forEach(([label, value]) => fileFields.append(detailField(label, value)));
+    ].forEach(([label, value]) => fileFields.append(detailFieldValue(label, value)));
     files.append(fileFields);
 
     const genArtwork = create('button', 'button button-quiet', 'Generate artwork');

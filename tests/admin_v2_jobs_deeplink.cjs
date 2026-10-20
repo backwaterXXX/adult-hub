@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { createAdminV2Helpers } = require('./helpers/admin_v2_shared_helpers.cjs');
 let focusedElement = null;
 
 class Element {
@@ -184,12 +185,14 @@ function walk(root, output = []) {
     else throw new Error(`Unexpected request ${url}`);
     return { ok: true, status: 200, json: async () => body };
   }
+  const idleTimers = { setTimeout: () => 1, clearTimeout() {} };
   vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/jobs.js', 'utf8'), {
     document, location, history, fetch, window: { confirm: () => true, AdminV2: {
+      ...createAdminV2Helpers(document, idleTimers),
       getJson: async (url, signal) => (await fetch(url, { signal })).json(),
       postJson: async url => { writes.push(url); return { ok: true, state: 'cancelled' }; },
     } }, URL, URLSearchParams,
-    AbortController, setTimeout: () => 1, clearTimeout() {}, addEventListener() {},
+    AbortController, setTimeout: idleTimers.setTimeout, clearTimeout: idleTimers.clearTimeout, addEventListener() {},
   });
   await new Promise(resolve => setTimeout(resolve, 0));
   await new Promise(resolve => setTimeout(resolve, 0));
@@ -340,18 +343,23 @@ function walk(root, output = []) {
 
   location.search = '?job_state=queued&job_action=sync&home_panel=issues&issue_type=job_stalled';
   resetHistory(`http://localhost/admin/v2/${location.search}#jobs`);
-  vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/jobs.js', 'utf8'), {
-    document, location, history, fetch, window: { confirm: () => true, AdminV2: {
-      getJson: async (url, signal) => (await fetch(url, { signal })).json(),
-      postJson: async url => { writes.push(url); return { ok: true, state: 'cancelled' }; },
-    } }, URL, URLSearchParams,
-    AbortController,
+  const pollTimers = {
     setTimeout: (callback, delay) => {
       if (delay === 0) callback();
       else scheduledPollCallback = callback;
       return ++timeoutSerial;
     },
     clearTimeout() { scheduledPollCallback = null; },
+  };
+  vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/jobs.js', 'utf8'), {
+    document, location, history, fetch, window: { confirm: () => true, AdminV2: {
+      ...createAdminV2Helpers(document, pollTimers),
+      getJson: async (url, signal) => (await fetch(url, { signal })).json(),
+      postJson: async url => { writes.push(url); return { ok: true, state: 'cancelled' }; },
+    } }, URL, URLSearchParams,
+    AbortController,
+    setTimeout: pollTimers.setTimeout,
+    clearTimeout: pollTimers.clearTimeout,
     addEventListener(type, callback) { windowListeners.set(type, callback); },
   });
   await new Promise(resolve => setTimeout(resolve, 0));

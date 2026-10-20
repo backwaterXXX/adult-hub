@@ -17,10 +17,15 @@ from common.job_queue import enqueue_job, retry_job
 BAD_URL = "postgresql://127.0.0.1:1/missing"
 
 
+def _job(db_url, job_id):
+    """Read one job through the V2 service (None when it does not exist)."""
+    return admin_services.get_job_v2(db_url, job_id).get("job")
+
+
 class TestAdminJobInspection(PgTestCase):
     def test_missing_database_reports_no_jobs(self):
         self.assertEqual(admin_services.job_listing(BAD_URL)["jobs"], [])
-        self.assertIsNone(admin_services.get_job(BAD_URL, 'missing'))
+        self.assertIsNone(_job(BAD_URL, 'missing'))
 
     def test_existing_database_without_jobs_is_unchanged(self):
         conn = db.connect(TEST_URL)
@@ -29,7 +34,7 @@ class TestAdminJobInspection(PgTestCase):
         finally:
             conn.close()
         self.assertEqual(admin_services.job_listing(TEST_URL)["jobs"], [])
-        self.assertIsNone(admin_services.get_job(TEST_URL, 'missing'))
+        self.assertIsNone(_job(TEST_URL, 'missing'))
         conn = db.connect(TEST_URL)
         try:
             after = conn.execute("SELECT count(*) FROM video_duplicate_jobs").fetchone()[0]
@@ -45,7 +50,7 @@ class TestAdminJobInspection(PgTestCase):
             conn.execute('UPDATE video_duplicate_jobs SET result=%s WHERE id=%s',
                          (json.dumps(recovery), job_id))
         conn.close()
-        public = admin_services.get_job(TEST_URL, job_id)
+        public = _job(TEST_URL, job_id)
         self.assertEqual(public['result'], {'operation_id': 'op-1', 'recovery': 'in_progress'})
         self.assertNotIn('fingerprints', public['payload'])
         self.assertNotIn('secret', json.dumps(public))
@@ -65,7 +70,7 @@ class TestAdminJobInspection(PgTestCase):
             conn.execute('UPDATE video_duplicate_jobs SET result=%s WHERE id=%s',
                          (json.dumps({'error': 'https://private-token@remote.example/'}), job_id))
         conn.close()
-        self.assertNotIn('private-token', json.dumps(admin_services.get_job(TEST_URL, job_id)))
+        self.assertNotIn('private-token', json.dumps(_job(TEST_URL, job_id)))
 
     def test_unresolved_failure_listing_reconciles_full_history_and_pages_groups(self):
         failed_a = enqueue_job(TEST_URL, 'sync', {

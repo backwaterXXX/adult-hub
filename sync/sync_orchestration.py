@@ -194,7 +194,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         _core.logger.warning(f"Performer backfill pass failed: {e}")
     _core.safe_process_duplicate_jobs_checkpoint(conn, _core.MEDIA_DIR, collected)
 
-    # 8d. Performer enrichment: PBC aliases+bios + GFF photos (rate-limited).
+    # 8d. Performer enrichment: PBC aliases+bios (rate-limited).
     try:
         from pbc import backfill_pbc  # type: ignore
         run_timed_stage("metadata_pbc", lambda: backfill_pbc(conn, limit=_core.PBC_BACKFILL_PER_RUN))
@@ -202,16 +202,6 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         pass
     except Exception as e:
         _core.logger.warning(f"PBC backfill pass failed: {e}")
-    try:
-        from photos import backfill_photos  # type: ignore
-        run_timed_stage(
-            "metadata_photos",
-            lambda: backfill_photos(conn, _core.RESOLVER_API_URL, limit=_core.PHOTO_BACKFILL_PER_RUN),
-        )
-    except ImportError:
-        pass
-    except Exception as e:
-        _core.logger.warning(f"Photo backfill pass failed: {e}")
     try:
         from theporndb import backfill_tpdb  # type: ignore
         run_timed_stage("metadata_tpdb", lambda: backfill_tpdb(conn, limit=_core.TPDB_BACKFILL_PER_RUN))

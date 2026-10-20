@@ -8,16 +8,6 @@ from common.config_loader import ConfigError, parse_and_validate_config
 
 class TestConfigLoader(unittest.TestCase):
 
-    def test_extension_registered_alias_is_used_for_source_lookup(self):
-        from common.config_loader import AppConfig, SourceConfig
-
-        cfg = AppConfig(sources={
-            "legacyname": SourceConfig(provider="legacyname", address="https://example.com")
-        })
-        cfg.register_provider_alias("legacyname", "canonicalname")
-        self.assertEqual(list(cfg.sources), ["canonicalname"])
-        self.assertIs(cfg.get_source("legacyname"), cfg.get_source("canonicalname"))
-
     def test_positive_integer_rejects_boolean(self):
         from common.config_loader import _validate_positive_int
         for value in (True, False):
@@ -31,14 +21,6 @@ class TestConfigLoader(unittest.TestCase):
                 "retention_days": 15,
             },
             "sources": [
-                {
-                    "provider": "sampleprovider",
-                    "address": "https://example.com",
-                    "enabled": True,
-                    "stream_mode": "redirect",
-                    "sections": ["trending", "popular"],
-                    "max_pages": 2,
-                },
                 {
                     "provider": "telegram",
                     "enabled": True,
@@ -59,9 +41,6 @@ class TestConfigLoader(unittest.TestCase):
         self.assertEqual(cfg.sync.retention_days, 15)
         self.assertIsNone(cfg.sync.daily_at)
         self.assertTrue(cfg.sync.run_on_startup)
-        self.assertTrue(cfg.is_provider_enabled("sampleprovider"))
-        self.assertEqual(cfg.get_source("sampleprovider").address, "https://example.com")
-        self.assertEqual(cfg.get_source("sampleprovider").max_pages, 2)
 
         tg = cfg.get_source("telegram")
         self.assertTrue(tg.enabled)
@@ -103,8 +82,8 @@ class TestConfigLoader(unittest.TestCase):
     def test_duplicate_provider_rejected(self):
         data = {
             "sources": [
-                {"provider": "sampleprovider", "address": "https://example.com"},
-                {"provider": "sampleprovider", "address": "https://example.org"},
+                {"provider": "telegram", "channels": [{"id": "@one"}]},
+                {"provider": "telegram", "channels": [{"id": "@two"}]},
             ]
         }
         with self.assertRaises(ConfigError) as ctx:
@@ -121,7 +100,7 @@ class TestConfigLoader(unittest.TestCase):
                         {"id": "-100123456789"},
                     ],
                 }
-            ]
+            ],
         }
         with self.assertRaises(ConfigError) as ctx:
             parse_and_validate_config(data)
@@ -133,19 +112,23 @@ class TestConfigLoader(unittest.TestCase):
             parse_and_validate_config(data)
         self.assertIn("Unknown top-level configuration key", str(ctx.exception))
 
-    def test_unknown_source_field_rejected(self):
+    def test_unknown_sync_key_rejected(self):
+        with self.assertRaises(ConfigError) as ctx:
+            parse_and_validate_config({"sync": {"not_a_real_setting": 1}})
+        self.assertIn("Unknown key(s) in 'sync' section", str(ctx.exception))
+
+    def test_unknown_telegram_field_rejected(self):
         data = {
             "sources": [
                 {
-                    "provider": "sampleprovider",
-                    "address": "https://example.com",
-                    "non_existent_field": True,
+                    "provider": "telegram",
+                    "channels": [{"id": "@chan", "non_existent_field": True}],
                 }
             ]
         }
         with self.assertRaises(ConfigError) as ctx:
             parse_and_validate_config(data)
-        self.assertIn("Unknown field(s) in source 'sampleprovider'", str(ctx.exception))
+        self.assertIn("Unknown field(s) in telegram channel", str(ctx.exception))
 
     def test_telegram_with_address_rejected(self):
         data = {
@@ -160,27 +143,9 @@ class TestConfigLoader(unittest.TestCase):
             parse_and_validate_config(data)
         self.assertIn("Telegram source does not take 'address'", str(ctx.exception))
 
-    def test_invalid_address_rejected(self):
-        bad_addresses = [
-            "not-a-url",
-            "ftp://example.com",
-            "",
-            None,
-        ]
-        for bad in bad_addresses:
-            data = {
-                "sources": [
-                    {"provider": "sampleprovider", "address": bad}
-                ]
-            }
-            with self.assertRaises(ConfigError):
-                parse_and_validate_config(data)
-
     def test_disabled_provider_and_channel_helpers(self):
         data = {
             "sources": [
-                {"provider": "sampleprovider", "address": "https://example.com", "enabled": False},
-                {"provider": "sampleprovider2", "address": "https://example.net", "enabled": True},
                 {
                     "provider": "telegram",
                     "enabled": True,
@@ -192,9 +157,7 @@ class TestConfigLoader(unittest.TestCase):
             ]
         }
         cfg = parse_and_validate_config(data)
-        disabled_provs = cfg.get_disabled_provider_names()
-        self.assertIn("sampleprovider", disabled_provs)
-        self.assertNotIn("sampleprovider2", disabled_provs)
+        self.assertNotIn("telegram", cfg.get_disabled_provider_names())
 
         disabled_chans = cfg.get_disabled_telegram_channel_ids()
         self.assertIn("-1000000000002", disabled_chans)
@@ -202,30 +165,28 @@ class TestConfigLoader(unittest.TestCase):
         self.assertNotIn("-1000000000001", disabled_chans)
 
 
-class TestWebValidationAndAlias(unittest.TestCase):
-    """Telegram-only: common fields validate locally, unknown fields fail fast."""
+class TestTelegramOnlyValidation(unittest.TestCase):
+    """The core is Telegram-only: every other provider is rejected up front."""
 
-    def _web(self, provider, **over):
-        src = {"provider": provider, "address": "https://example.com"}
+    def _source(self, provider, **over):
+        src = {"provider": provider}
         src.update(over)
         return {"sources": [src]}
 
     def test_malformed_provider_id_rejected(self):
         with self.assertRaises(ConfigError) as ctx:
-            parse_and_validate_config(self._web("sample-provider"))
+            parse_and_validate_config(self._source("sample-provider"))
         self.assertIn("lowercase letters and digits", str(ctx.exception))
 
-    def test_unknown_field_rejected(self):
+    def test_non_telegram_provider_rejected(self):
         with self.assertRaises(ConfigError) as ctx:
-            parse_and_validate_config(
-                self._web("sampleprovider", non_existent_field=True))
-        self.assertIn("Unknown field(s) in source 'sampleprovider'", str(ctx.exception))
+            parse_and_validate_config(self._source("sampleprovider", address="https://example.com"))
+        self.assertIn("Telegram-only", str(ctx.exception))
 
-    def test_unknown_field_always_rejected(self):
+    def test_non_telegram_provider_rejected_without_address(self):
         with self.assertRaises(ConfigError) as ctx:
-            parse_and_validate_config(
-                self._web("sampleprovider", custom_option="x"))
-        self.assertIn("Unknown field(s) in source 'sampleprovider'", str(ctx.exception))
+            parse_and_validate_config(self._source("sampleprovider"))
+        self.assertIn("Telegram-only", str(ctx.exception))
 
 
 if __name__ == "__main__":

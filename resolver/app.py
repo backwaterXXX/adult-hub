@@ -22,9 +22,6 @@ from providers import (
     list_providers,
     ensure_config_providers_registered,
 )
-from providers.base import (
-    get_performer_photo_hook,
-)
 from providers._http import get_shared_client, aclose_shared_client
 import admin as admin_module
 from admin import router as admin_router
@@ -250,22 +247,6 @@ async def _validate_proxy_url_async(url: str):
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
 
 
-async def _safe_proxy_get(client, url: str, *, headers: dict, timeout: float):
-    """GET a proxy resource while validating every redirect destination."""
-    current = url
-    for _ in range(6):
-        await _validate_proxy_url_async(current)
-        response = await client.get(current, headers=headers, timeout=timeout, follow_redirects=False)
-        if response.status_code not in _REDIRECT_CODES:
-            return response
-        location = response.headers.get("location")
-        await response.aclose()
-        if not location:
-            return response
-        current = urljoin(current, location)
-    raise HTTPException(status_code=502, detail="Too many upstream redirects")
-
-
 async def _safe_proxy_stream(client, url: str, *, headers: dict, timeout: Optional[float], method: str = "GET"):
     """Open a streaming request, checking every redirect before following it."""
     current = url
@@ -386,50 +367,12 @@ async def prometheus_metrics(request: Request):
 
 
 
-@api.get("/api/performer-photo")
-async def performer_photo(provider: str = "telegram", name: str = ""):
-    """Stable performer photo via the provider's photo hook.
-
-    With no hook for the provider: 404 (not supported).
-    """
-    wanted = (name or "").strip()
-    try:
-        get_provider(provider)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Provider '{provider}' not found")
-    if not wanted:
-        raise HTTPException(status_code=404, detail="Missing performer name")
-
-    hook = get_performer_photo_hook(provider)
-    if hook is None:
-        raise HTTPException(status_code=404, detail=f"Performer photos not supported for '{provider}'")
-
-    cache_key = f"photo:{provider}:{wanted.lower()}"
-    cached = await asyncio.to_thread(cache.get, cache_key)
-    if cached:
-        return {"provider": provider, "name": wanted, "photo_url": cached}
-
-    try:
-        photo_url = hook(provider, wanted)
-        if inspect.isawaitable(photo_url):
-            photo_url = await photo_url
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Performer lookup failed for {provider}:{wanted}: {e}")
-        raise HTTPException(status_code=502, detail=f"Performer lookup failed: {e}")
-    if not photo_url:
-        raise HTTPException(status_code=404, detail=f"No photo found for performer '{wanted}'")
-    await asyncio.to_thread(cache.set, cache_key, photo_url, ttl_seconds=30 * 86400)
-    return {"provider": provider, "name": wanted, "photo_url": photo_url}
-
-
 @api.get("/api/performer-bio")
 async def performer_bio(name: str = ""):
     """Performer information from PBC, StashDB, and local photos.
 
-    Populated by sync (backfill_pbc / backfill_photos); resolver only reads
-    (DATABASE_URL). Missing row -> 404.
+    Populated by sync (backfill_pbc, backfill_tpdb, backfill_stashdb); resolver
+    only reads (DATABASE_URL). Missing row -> 404.
     """
     import json as _json
 

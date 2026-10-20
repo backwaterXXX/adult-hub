@@ -7,12 +7,9 @@
   const state = { loading: false, loadSeq: 0, rows: [], proposalOffset: 0, proposalTotal: 0, proposalSeq: 0, busy: new Set(), fuzzyGroups: [], fuzzyOffset: 0, fuzzyLoading: false, fuzzyScanned: false, fuzzyMergeSeq: 0, fuzzyQueued: new Map(), fuzzyDismissed: new Set(), fuzzySwapped: new Map(), fuzzySelected: new Map() };
   const MAX_SELECTED_MERGES = 10;
 
-  function node(tag, className, text) {
-    const element = document.createElement(tag);
-    if (className) element.className = className;
-    if (text !== undefined && text !== null) element.textContent = String(text);
-    return element;
-  }
+  // Shared helpers live in admin-v2.js and are published through window.AdminV2.
+  const helpers = () => window.AdminV2 || {};
+  const node = (...args) => helpers().create(...args);
   function message(text, kind = 'status') { window.AdminV2.setFeedback($('#performersFeedback'), text, kind); }
   function errorText(error) { return error?.message || 'The request could not be completed.'; }
 

@@ -10,10 +10,6 @@ MAX_ATTEMPTS = 3
 LEASE_SECONDS = 90
 
 
-def _dict(row) -> dict | None:
-    return dict(row) if row is not None else None
-
-
 def enqueue(db_url: str | None, *, video_id: str, duration_us: int,
             algorithm_version: str, decoder_profile: str, user_id: str) -> dict:
     conn = db.connect(db_url)

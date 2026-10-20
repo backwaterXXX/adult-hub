@@ -16,7 +16,7 @@ V2_HOME_STATUS = (200, "application/json", b'{"ok":true,"db":{"db_ok":true},'
                  b'"attention":{},"runtime":{"version":"1.2.3"},"capabilities":{}}')
 METADATA_STATUS = (200, "application/json", b'{"available":true,"catalog":{},"sources":[],'
                    b'"batch_limits":{"videos_per_run":500,"pbc_actors_per_run":50,'
-                   b'"theporndb_actors_per_run":40,"stashdb_actors_per_run":35,"portraits_per_run":25},'
+                   b'"theporndb_actors_per_run":40,"stashdb_actors_per_run":35},'
                    b'"sync_schedule":{"mode":"interval","daily_at":null,'
                    b'"interval_minutes":60,"run_on_startup":false}}')
 QUALITY_SUMMARY = (200, "application/json", b'{"available":true,"status":"no_complete_audit",'

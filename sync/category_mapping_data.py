@@ -251,8 +251,7 @@ RAW_TO_MAPPED_CATEGORY: Dict[str, Optional[str]] = {
     "hotboys": "Twink & Young",
     "cum": "Cumshots",
 
-    # Explicit exclusions (neutral; web provider keys arrive via
-    # register_provider_names() -> EXTRA_EXCLUDED and are checked below).
+    # Explicit exclusions (neutral; provider/studio keys are listed here).
     "promotion": None,
     "uncategorized": None,
     "latest": None,

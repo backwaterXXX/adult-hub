@@ -77,7 +77,6 @@ from .telegram_download import (
     _get_global_stream_manager,
     _is_parallel_stream_enabled,
     _legal_request_size,  # noqa: F401 - compatibility export
-    _peek_global_stream_manager,
 )
 from .telegram_thumbnails import (
     _cache_thumb_impl, download_thumb_impl as _download_thumb_impl,
@@ -102,7 +101,6 @@ from .telegram_messages import (
 )
 from .telegram_item_mapping import (
     message_to_video_impl as _message_to_video_impl,
-    prepare_known_performer_map as _prepare_known_performer_map_impl,
     prepare_legacy_catalog as _prepare_legacy_catalog_impl,
 )
 from .telegram_message_cache import (
@@ -152,10 +150,6 @@ _client_lock = None
 
 
 
-
-
-def _prepare_known_performer_map(known_performers, aliases):
-    return _prepare_known_performer_map_impl(known_performers, aliases)
 
 
 def _prepare_legacy_catalog(known_performers, aliases):
@@ -509,11 +503,6 @@ class TelegramProvider(BaseProvider):
             fetch=_fetch,
         ):
             yield chunk
-
-    @property
-    def stream_manager(self):
-        """Read-only property returning existing global manager without creating it."""
-        return _peek_global_stream_manager()
 
     async def close(self):
         """Close provider resources including shared parallel stream manager."""

@@ -18,19 +18,6 @@ from .telegram_messages import (
 )
 
 
-def prepare_known_performer_map(known_performers, aliases):
-    from common.performer_titles import normalize_known_map
-
-    known_map = {str(name).strip().lower(): str(name).strip()
-                 for name in (known_performers or []) if str(name).strip()}
-    known_map.update({
-        str(alias).strip().lower(): str(canonical).strip()
-        for alias, canonical in (aliases or {}).items()
-        if str(alias).strip() and str(canonical).strip()
-    })
-    return normalize_known_map(known_map)
-
-
 def prepare_legacy_catalog(known_performers, aliases):
     """Build and index the fallback performer catalogue once per request."""
     from common.performer_catalog import prepare_catalog

@@ -197,7 +197,9 @@ The preview endpoint bounds Telegram work to 8 seconds and returns HTTP 504 on t
 
 ## Sources
 
-The system is Telegram-only. Configure your channels in `config.yaml` under `sources`; any non-Telegram provider fails fast at startup.
+The system is Telegram-only. Configure your channels in `config.yaml` under `sources`; any non-Telegram provider is rejected by the configuration loader before the services start, and the resolver registry registers Telegram only.
+
+The retired web-extension integration (provider photo lookup `GET /admin/api/performer-photo` and the web-provider scraper helpers) has been removed. Performer artwork now comes from the Telegram-only enrichment providers (PBC, ThePornDB, StashDB) that write into the `performer_photos` table.
 
 ---
 
@@ -243,7 +245,13 @@ The one-off tools under `scripts/` are grouped by their effect:
 - `rebuild_telegram_performers.py` reports performer matches by default. `--apply` writes exact matches, `--queue-proposals` queues uncertain matches, and `--rollback RUN_ID` restores a prior applied run.
 - `sync_performer_catalog.py` refreshes the local StashDB performer catalogue and requires `STASHDB_API_KEY` plus the configured database.
 - `cleanup_nationality_prefixes.py`, `cleanup_performer_data.py`, `cleanup_scene_suffixes.py`, `cleanup_studios_and_tags.py`, and `reparse_telegram_performers.py` update PostgreSQL and/or NFO files directly. They are one-off repair tools and do not expose a dry-run flag; review the script and make a database backup before invoking one.
-- `sync_jellyfin_db.py` and `sync_jellyfin_studios_and_tags.py` are retired entrypoints. They exit with instructions to use the regular sync/API flow and Jellyfin's library refresh.
+- `cleanup_performer_proposals.py` normalizes pending performer proposals in `telegram_performer_proposals`: it strips aggregator, studio, bracketed-tag, and nationality prefixes from candidate names and rejects pure studios, non-performers, and demonym descriptors. It only rewrites pending proposals and never approves or rejects them.
+- `auto_approve_exact_proposals.py` approves pending proposals whose candidate matches exactly one active multi-word performer, adds that performer to `videos.performers`, and regenerates the NFO when one exists. **It runs as a dry run by default; pass `--apply` to write changes.** Review the dry-run output and back up the database first.
+- `analyze_telegram_gop_budget.py` fetches only the MP4 `moov` index of one Telegram video (bounded to 16 MiB by default) and estimates the sample GOP packet bytes. It never transfers media packets and never computes or stores a pHash. It needs a reachable resolver:
+  ```sh
+  docker compose exec -T sync python analyze_telegram_gop_budget.py telegram:-100...:...
+  ```
+- The former direct-SQL Jellyfin writers (`sync_jellyfin_db.py`, `sync_jellyfin_studios_and_tags.py`) have been removed. Use the regular sync service to reconcile Jellyfin metadata through its HTTP API, and trigger a Jellyfin library refresh after NFO sidecars change.
 - `tools/export_video_duplicate_review_corpus.py` samples current duplicate suggestions, active hide decisions, and active dismissals for re-review. The CSV leaves `same_scene` blank, records the source of each pair, and does not alter decisions or rules. Keep the output local because it contains titles and performer names:
   ```sh
   docker compose exec resolver python /app/tools/export_video_duplicate_review_corpus.py \
@@ -255,6 +263,29 @@ The one-off tools under `scripts/` are grouped by their effect:
   ```
   The output separates current candidate errors from historical hide/dismissal reviews and states its sample scope; it is not a catalog-wide precision/recall estimate.
 - `jellyfin-ffmpeg.sh` and `jellyfin-ffprobe.sh` are executable wrappers mounted by Compose for Jellyfin; they are not maintenance commands.
+
+### Command-line tools
+
+The tools under `tools/` are optional, run by hand, and never part of the container startup path. They read local data or talk to the configured upstream services, so keep their output local.
+
+| Tool | Purpose |
+|---|---|
+| `export_telegram_performer_review.py` | Read-only export of a blind, stratified Telegram performer labeling worksheet. It never reads or writes the current cast, aliases, proposals, or match results. |
+| `export_telegram_performer_catalog.py` | Read-only export of the external StashDB catalogue only (no local performers, bios, or aliases) for offline evaluation. |
+| `prepare_telegram_performer_benchmark.py` | Validates reviewed labels and converts the worksheet into benchmark JSONL. |
+| `benchmark_telegram_performer_methods.py` | Compares performer candidate methods against independently labeled JSONL rows and prints per-method scores. |
+| `evaluate_review_corpus.py` | Summarizes human labels in fuzzy-performer or duplicate-video review CSVs. |
+| `export_video_duplicate_review_corpus.py` | Read-only export of duplicate suggestions and historical decisions for review. |
+| `search_telegram_stashdb_scenes.py` | Writes a separate StashDB scene candidate CSV for the performer review rows. It never edits the source worksheet or StashDB. |
+| `migrate_telegram_nfo.py` | Rewrites NFO metadata from authoritative local Telegram metadata. Dry run unless `--apply`. |
+| `clean_black_artwork.py` | Audits and cleans black/empty artwork, detects studio bumpers, and backfills StashDB posters. |
+| `admin_v2_release_smoke.py` | Read-only release smoke checks against a running Admin v2 instance. |
+| `admin_v2_live_visual_smoke.mjs` | Node-based visual smoke run over the Admin v2 routes in a local browser harness. |
+| `benchmark_ffprobe_ranges.py` | Bounded OSHASH + ffprobe pilot that reads only exact Telegram byte ranges. |
+| `benchmark_stream_ab.py` | Simulated A/B streaming benchmark (modeled, not a real player). Never label its output as measured player stalls. |
+| `test_oshash_metadata_128k.py` | Shows what ffprobe can learn from exactly the two OSHASH byte ranges. |
+
+The performer evaluation workflow as a whole is described in `docs/telegram-performer-review.md`.
 
 ### Database Operations & Recreation
 - **Versioned migrations**: Schema changes are managed as ordered, versioned migrations in `common/migrations/` tracked by the `schema_migrations` table.
@@ -273,7 +304,12 @@ The one-off tools under `scripts/` are grouped by their effect:
   # Create and verify a PostgreSQL backup, then apply monthly history retention
   docker compose exec -T sync python backup_scheduler.py --once
   ```
-  The scheduler supports checksum verification, archive dry-run, and restore verification; configure host scheduling separately.
+  The Compose stack also runs the `backup` service, which starts
+  `backup_scheduler.py` as a daemon and performs the daily backup at
+  `BACKUP_DAILY_AT` (default `04:30`, container local time) plus the monthly
+  history cleanup. `BACKUP_KEEP_DAYS` (default `7`) sets the archive pruning
+  window for both the daemon and the `--once` run. The scheduler supports
+  checksum verification, archive dry-run, and restore verification.
 
 ### Architecture Highlights
 - `common/`: Shared configuration loader and validation logic used across both containers, the PostgreSQL layer (`db.py`, a psycopg 3 wrapper over `DATABASE_URL`), versioned database migrations (`common/migrations/`, `migrate_db.py`, `restore_db.py`), plus `job_queue.py` (durable task queue) and `managed_collections.py`.

@@ -120,17 +120,6 @@ def _public_job(row: db.Record, *, include_failure_code: bool = False) -> dict:
     return item
 
 
-def get_job(db_url: str | None, job_id: str) -> dict | None:
-    conn = _jobs_connection(db_url)
-    if conn is None:
-        return None
-    try:
-        row = conn.execute("SELECT * FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
-        return _public_job(row) if row else None
-    finally:
-        conn.close()
-
-
 def get_job_v2(db_url: str | None, job_id: str) -> dict:
     """Read one job while distinguishing an empty result from unavailable data."""
     conn = _jobs_connection(db_url)

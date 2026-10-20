@@ -6,8 +6,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from common.performers import normalize_performers
 from providers import get_provider
-from providers.base import normalize_performers
 
 logger = logging.getLogger("resolver")
 THUMB_API_TIMEOUT_SECONDS = 10.0

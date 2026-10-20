@@ -28,7 +28,6 @@ def build_router(admin):
                 "pbc_actors_per_run": int(config.sync.pbc_backfill_per_run),
                 "theporndb_actors_per_run": int(config.sync.tpdb_backfill_per_run),
                 "stashdb_actors_per_run": int(config.sync.tpdb_backfill_per_run),
-                "portraits_per_run": int(config.sync.photo_backfill_per_run),
             }
             daily_at = config.sync.daily_at
             result["sync_schedule"] = {

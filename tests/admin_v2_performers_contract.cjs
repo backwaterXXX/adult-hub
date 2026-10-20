@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { createAdminV2Helpers } = require('./helpers/admin_v2_shared_helpers.cjs');
 
 let document;
 class Element {
@@ -78,6 +79,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   };
   const window = {
     AdminV2: {
+      ...createAdminV2Helpers(document),
       async getJson(path) {
         calls.push({ method: 'GET', path });
         if (path.includes('/proposals?')) {

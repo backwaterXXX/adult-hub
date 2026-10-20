@@ -15,7 +15,6 @@ sync:
   retry_backoff_base_seconds: 30    # Initial retry delay after an error
   retry_backoff_max_seconds: 1800   # Maximum retry delay
   stream_mode_default: redirect     # Default playback mode: redirect or proxy
-  strict_unplayable: true           # Remove unplayable items immediately
   category_fetch_delay_seconds: 2.5  # Pause between upstream category requests
   dead_stream_check_per_run: 50
   dead_stream_max_purge_per_run: 50
@@ -25,9 +24,7 @@ sync:
   pbc_backfill_per_run: 50
   tpdb_backfill_per_run: 50
   # Scene and performer source queues: ~20 daily syncs per 10k videos / 1k actors.
-  # Portraits run separately at 25 per sync (~40 runs per 1k actors).
   scene_backfill_per_run: 500
-  photo_backfill_per_run: 25
   jellyfin_people_per_run: 25
   performer_audit_per_run: 25
   performer_audit_threshold: 5

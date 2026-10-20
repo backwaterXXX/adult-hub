@@ -62,7 +62,7 @@ def declared_shared_resolver_routes():
                     continue
                 route = arg.value
                 if receiver == "api" and route not in {
-                    "/health", "/api/performer-photo", "/api/performer-bio", "/play/{video_id:path}/stream",
+                    "/health", "/api/performer-bio", "/play/{video_id:path}/stream",
                 }:
                     continue
                 if receiver == "router" and not route.startswith("/api/"):

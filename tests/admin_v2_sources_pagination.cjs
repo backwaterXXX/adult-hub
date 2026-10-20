@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { createAdminV2Helpers } = require('./helpers/admin_v2_shared_helpers.cjs');
 
 let activeElement = null;
 class Element {
@@ -69,6 +70,7 @@ function descendants(root, predicate) {
   };
   const windowListeners = {};
   const window = { addEventListener(type, callback) { windowListeners[type] = callback; }, AdminV2: {
+    ...createAdminV2Helpers(document),
     async getJson(path) {
       if (path.endsWith('/sources/list')) {
         if (sourcesFail) throw new Error('source configuration unavailable');
