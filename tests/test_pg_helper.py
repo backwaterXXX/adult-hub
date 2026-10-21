@@ -1,5 +1,6 @@
 """Test database fixture lifecycle contracts."""
 
+import os
 import subprocess
 import sys
 import unittest
@@ -55,9 +56,15 @@ class TestRunGuard(PgTestCase):
         # This process holds the run lock via setUpClass; a child attempting
         # the same database must fail fast with the guard message.
         code = CHILD_CODE.format(root=str(ROOT), tests=str(ROOT / "tests"))
+        # Deliberately minimal env: no runtime config from the parent, but
+        # CI provides TEST_DATABASE_URL only through the environment, so
+        # forward it (local runs fall back to .env) plus PATH for the binary.
+        child_env = {"PATH": os.environ.get("PATH", "")}
+        if TEST_URL:
+            child_env["TEST_DATABASE_URL"] = TEST_URL
         result = subprocess.run(
             [sys.executable, "-c", code],
-            capture_output=True, text=True, timeout=120, cwd=str(ROOT), env={},
+            capture_output=True, text=True, timeout=120, cwd=str(ROOT), env=child_env,
         )
         self.assertEqual(result.returncode, 0, result.stderr[-800:])
         self.assertIn("GUARDED:", result.stdout)
