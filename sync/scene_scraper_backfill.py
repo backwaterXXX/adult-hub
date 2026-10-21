@@ -79,6 +79,13 @@ def _store_video_fingerprint(
                    THEN CURRENT_TIMESTAMP ELSE video_fingerprints.media_probe_updated_at END""",
             (video_id, algorithm, value, probe_status, probe_bytes, probe_json),
         )
+        raw_size = probe_data.get("file_size_bytes") if isinstance(probe_data, dict) else None
+        if isinstance(raw_size, bool) or not isinstance(raw_size, (int, float)) or raw_size < 0:
+            return
+        conn.execute(
+            "UPDATE videos SET file_size_bytes=%s WHERE id=%s AND file_size_bytes IS DISTINCT FROM %s",
+            (int(raw_size), video_id, int(raw_size)),
+        )
 
 
 def _is_generated_telegram_post_title(title: Any, video_id: str) -> bool:

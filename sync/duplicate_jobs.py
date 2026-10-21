@@ -12,16 +12,11 @@ from typing import Callable
 
 from common import db
 from common.job_queue import WORKER_ACTIONS  # noqa: F401 -- exposed to duplicate_job_worker
+from common.job_stages import WORKING_STAGES
 from psycopg.types.json import Jsonb  # noqa: F401 -- job handlers read this through the facade
 
 
-_JOB_STAGES = {
-    "starting", "validating", "preparing_files", "moving_files", "saving_catalog",
-    "restoring_files", "merging_performers", "refreshing_collections", "refreshing_jellyfin",
-    "applying_metadata", "checking_availability", "auditing_library", "auditing_metadata", "checking_jellyfin_import_state",
-    "creating_backup", "testing_backup_restore", "repairing_nfo", "writing_nfo", "scanning_metadata", "downloading_artwork",
-    "metadata_pbc", "metadata_photos", "metadata_tpdb", "metadata_stashdb", "metadata_scenes",
-}
+_JOB_STAGES = WORKING_STAGES
 _LONG_RUNNING_WORKER_ACTIONS = frozenset({"metadata_backfill", "telegram_fingerprint_scan"})
 
 _AUDIT_INVENTORY_MAX_ENTRIES = 100000

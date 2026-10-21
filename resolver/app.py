@@ -598,6 +598,27 @@ async def upstream_url_alive(url: str) -> Optional[bool]:
 
 
 
+def _record_playback_file_size(ref: str, size_bytes: int) -> None:
+    """Best-effort fill of videos.file_size_bytes learned while proxying playback."""
+    db_url = (os.getenv("DATABASE_URL") or "").strip()
+    unique_id = str(ref).rsplit(":", 1)[-1].strip()
+    if not db_url or not unique_id:
+        return
+    try:
+        conn = db.connect(db_url)
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE videos SET file_size_bytes=%s "
+                    "WHERE id=%s AND file_size_bytes IS NULL",
+                    (int(size_bytes), f"telegram:{unique_id}"),
+                )
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("Playback file-size fill skipped for %s: %s", ref, exc)
+
+
 async def _proxy_telegram_response(request: Request, url: str, cache_key: Optional[str] = None):
     """Compatibility facade for the Telegram HTTP range proxy."""
     services = TelegramProxyServices(
@@ -607,6 +628,7 @@ async def _proxy_telegram_response(request: Request, url: str, cache_key: Option
         asyncio=asyncio,
         inspect=inspect,
         time=time,
+        record_file_size=_record_playback_file_size,
     )
     return await _proxy_telegram_response_impl(request, url, cache_key, services=services)
 

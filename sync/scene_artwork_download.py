@@ -1,7 +1,10 @@
 """Admin-triggered StashDB/ThePornDB artwork lookup and download."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+logger = logging.getLogger("sync.scene_artwork_download")
 
 
 def download_artwork_for_video(conn, media_dir: Path, video_id: str) -> dict:
@@ -23,11 +26,12 @@ def download_artwork_for_video(conn, media_dir: Path, video_id: str) -> dict:
         from .media_files import resolve_media_path
     except ImportError:
         from media_files import resolve_media_path
+    root = media_dir.resolve()
     artwork_path = None
     for file_row in file_rows:
         stream_path = resolve_media_path(str(file_row[0]), media_dir)
         candidate = stream_path.with_suffix(".jpg")
-        if candidate.parent == media_dir.resolve() and not candidate.is_symlink():
+        if candidate.is_relative_to(root) and not candidate.is_symlink():
             artwork_path = candidate
             break
     if artwork_path is None:
@@ -50,6 +54,7 @@ def download_artwork_for_video(conn, media_dir: Path, video_id: str) -> dict:
         from scene_scraper_text_sources import fetch_stashdb_scene_by_id, fetch_tpdb_scene_by_id, search_scene_by_exact_title
 
     matches = []
+    lookup_error = False
     scene_id = str(external_id or "").strip()
     source = str(match_source or "").casefold()
     if scene_id:
@@ -64,8 +69,10 @@ def download_artwork_for_video(conn, media_dir: Path, video_id: str) -> dict:
                 scene = lookup(scene_id)
                 if scene and scene.poster_url:
                     matches.append((provider, scene))
-            except Exception:
-                continue
+            except Exception as exc:
+                lookup_error = True
+                logger.warning("Linked scene lookup failed (%s %s): %s",
+                               provider, scene_id, exc)
 
     def save_matches(start: int = 0):
         for provider, scene in matches[start:]:
@@ -97,8 +104,9 @@ def download_artwork_for_video(conn, media_dir: Path, video_id: str) -> dict:
                     saved_provider = save_matches(len(matches) - 1)
                     if saved_provider:
                         return {"downloaded": True, "provider": saved_provider}
-            except Exception:
-                continue
+            except Exception as exc:
+                lookup_error = True
+                logger.warning("OSHASH scene lookup failed (%s): %s", provider, exc)
 
     if title and duration:
         try:
@@ -109,9 +117,10 @@ def download_artwork_for_video(conn, media_dir: Path, video_id: str) -> dict:
                 saved_provider = save_matches(len(matches) - 1)
                 if saved_provider:
                     return {"downloaded": True, "provider": saved_provider}
-        except Exception:
-            pass
+        except Exception as exc:
+            lookup_error = True
+            logger.warning("Title scene lookup failed: %s", exc)
 
-    if matches:
+    if matches or lookup_error:
         return {"downloaded": False, "local_state": "artwork_download_failed"}
     return {"downloaded": False, "local_state": "artwork_not_found"}

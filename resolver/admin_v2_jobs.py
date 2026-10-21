@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, Request
 from admin_v2_errors import V2ErrorRoute
 from common.admin_job_health import is_processing_stale
 from common.job_queue import ALL_ACTIONS
+from common.job_stages import ALL_STAGES
 from admin_v2_duplicate_routes import (
     MAX_DUPLICATE_ACTION_BYTES as MAX_DUPLICATE_ACTION_BYTES,
     register_duplicate_routes,
@@ -16,14 +17,7 @@ from admin_v2_duplicate_routes import (
 
 JOB_STATES = {"all", "active", "queued", "processing", "done", "failed", "cancelled"}
 JOB_ACTIONS = frozenset(ALL_ACTIONS)
-JOB_STAGE_LABELS = {
-    "starting", "validating", "preparing_files", "moving_files", "saving_catalog",
-    "restoring_files", "merging_performers", "refreshing_collections", "refreshing_jellyfin",
-    "applying_metadata", "checking_availability", "auditing_library", "auditing_metadata", "checking_jellyfin_import_state",
-    "creating_backup", "testing_backup_restore", "repairing_nfo", "writing_nfo", "completed", "cancelled",
-    "scanning_metadata", "downloading_artwork", "metadata_pbc", "metadata_photos", "metadata_tpdb",
-    "metadata_stashdb", "metadata_scenes",
-}
+JOB_STAGE_LABELS = ALL_STAGES
 JOB_FAILURE_MESSAGES = {
     "operation_timeout": "A required operation timed out.",
     "connection_failed": "Could not connect to a required service.",

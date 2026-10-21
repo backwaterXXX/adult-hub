@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
 
 from fastapi import HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from common import telegram_playback_activity
 
 _LOGGER = logging.getLogger(__name__)
+
+# Fire-and-forget size-recording tasks need a reference until they finish.
+_pending_size_records: set = set()
 
 
 @dataclass(frozen=True)
@@ -20,6 +23,7 @@ class TelegramProxyServices:
     asyncio: Any
     inspect: Any
     time: Any
+    record_file_size: Optional[Callable[[str, int], None]] = None
 
 
 async def proxy_telegram_response(
@@ -163,6 +167,16 @@ async def proxy_telegram_response(
     )
     playback_handle = None
     if not is_head and not worker_request:
+        if services.record_file_size is not None and total is not None:
+            async def _record_size(_sink=services.record_file_size, _ref=ref, _total=total):
+                try:
+                    await services.asyncio.to_thread(_sink, _ref, _total)
+                except Exception as exc:
+                    _LOGGER.debug("Playback file-size record failed for %s: %s", _ref, exc)
+
+            task = services.asyncio.create_task(_record_size())
+            _pending_size_records.add(task)
+            task.add_done_callback(_pending_size_records.discard)
         try:
             playback_handle = await services.asyncio.to_thread(
                 telegram_playback_activity.begin_playback,

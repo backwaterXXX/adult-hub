@@ -2,16 +2,10 @@
 import json
 import time
 from common import db
+from common.job_stages import ALL_STAGES
 
 
-_JOB_PROGRESS_STAGES = {
-    "starting", "validating", "preparing_files", "moving_files", "saving_catalog",
-    "restoring_files", "merging_performers", "refreshing_collections", "refreshing_jellyfin",
-    "applying_metadata", "checking_availability", "auditing_library", "auditing_metadata", "checking_jellyfin_import_state",
-    "creating_backup", "testing_backup_restore", "repairing_nfo", "writing_nfo", "completed", "cancelled",
-    "scanning_metadata", "downloading_artwork", "metadata_pbc", "metadata_photos", "metadata_tpdb",
-    "metadata_stashdb", "metadata_scenes",
-}
+_JOB_PROGRESS_STAGES = ALL_STAGES
 
 _SAFE_JOB_FAILURE_CODES = {
     "operation_timeout", "connection_failed", "permission_denied", "file_missing",

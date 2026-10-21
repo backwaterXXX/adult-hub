@@ -104,9 +104,11 @@ from .telegram_item_mapping import (
     prepare_legacy_catalog as _prepare_legacy_catalog_impl,
 )
 from .telegram_message_cache import (
+    _evict_cached_message,
     _get_cached_message,
     _message_cache_size_bytes,  # noqa: F401 - compatibility export
 )
+from .telegram_retry import is_retryable, retry_call, retry_stream
 from .telegram_history import (
     channel_title as _channel_title_impl,
     fetch_history as _fetch_history_impl,
@@ -447,6 +449,22 @@ class TelegramProvider(BaseProvider):
         return f"tg://{provider_video_id}"
 
     async def download_range(self, ref: str, offset: int, length: Optional[int]):
+        """Proxy byte stream with bounded retries that never start before delivery.
+
+        The whole range is retried only while zero bytes have been yielded; once
+        the client has received bytes, failures propagate so HTTP stays truthful.
+        """
+        def _on_retry(exc: BaseException, _attempt: int) -> None:
+            if type(exc).__name__ in {"FileReferenceExpiredError", "FileReferenceInvalidError"}:
+                channel_ref, message_id, _uid = _parse_ref(ref)
+                _evict_cached_message(channel_ref, int(message_id))
+
+        async for chunk in retry_stream(
+                lambda: self._download_range_once(ref, offset, length),
+                on_retry=_on_retry):
+            yield chunk
+
+    async def _download_range_once(self, ref: str, offset: int, length: Optional[int]):
         """Async generator bajtow pliku dla proxy.
 
         Validates ref/channel/document id BEFORE cache.
@@ -492,7 +510,13 @@ class TelegramProvider(BaseProvider):
         manager = _get_global_stream_manager()
 
         async def _fetch(blk_offset: int, blk_length: int) -> bytes:
-            return await _download_block(client, media, blk_offset, blk_length)
+            # A block is fully downloaded before delivery, so retrying it is safe.
+            # File-reference errors need a fresh message and cannot be fixed here.
+            return await retry_call(
+                lambda: _download_block(client, media, blk_offset, blk_length),
+                retryable=lambda exc: is_retryable(exc) and type(exc).__name__ not in {
+                    "FileReferenceExpiredError", "FileReferenceInvalidError"},
+            )
 
         cache_key = f"{ref}:{int(total)}"
         async for chunk in manager.stream(

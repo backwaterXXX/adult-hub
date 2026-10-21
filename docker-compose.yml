@@ -119,6 +119,16 @@ services:
     depends_on:
       resolver:
         condition: service_healthy
+      # Sync pushes library refreshes to Jellyfin; wait until its /health responds.
+      jellyfin:
+        condition: service_healthy
+    healthcheck:
+      # Freshness of the worker capabilities heartbeat (published every 5s, stale after 15s).
+      test: ["CMD-SHELL", "python3 -c \"import os,sys; from common.worker_capabilities import read_worker_capabilities; sys.exit(0 if read_worker_capabilities(os.environ.get('ADMIN_WORKER_CAPABILITIES_PATH', '/data/cache/worker-capabilities.json'))['available'] else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:

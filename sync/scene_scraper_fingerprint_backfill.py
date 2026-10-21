@@ -196,9 +196,21 @@ def backfill_telegram_fingerprints(
                 else:
                     remaining_budget = max(0, configured_budget - bytes_read)
                     remaining_time = max(1, configured_timeout - int(_core.time.monotonic() - started))
+
+                    def _record_phash_size(size_bytes: int, _video_id=str(video_id)) -> None:
+                        # pHash learns the true total from Content-Length; use it
+                        # only when the catalog has no size yet.
+                        with conn:
+                            conn.execute(
+                                "UPDATE videos SET file_size_bytes=%s "
+                                "WHERE id=%s AND file_size_bytes IS NULL",
+                                (int(size_bytes), _video_id),
+                            )
+
                     phash, phash_bytes = telegram_phash(
                         video_id, int(duration or 0), byte_budget=remaining_budget,
                         timeout_seconds=remaining_time, max_bytes_per_second=configured_rate,
+                        size_sink=_record_phash_size,
                     )
                     _core._store_video_fingerprint(conn, video_id, "PHASH", phash)
                 total_bytes += phash_bytes

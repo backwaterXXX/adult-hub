@@ -264,12 +264,16 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
                    max_bytes_per_second: Optional[int | Callable[[], int]] = None,
                    allow_rate_above_configured: bool = False,
                    cache_dir: Optional[str] = None, cache_id: Optional[str] = None,
-                   include_thumbnail: bool = False):
+                   include_thumbnail: bool = False,
+                   size_sink: Optional[Callable[[int], None]] = None):
     """Generate the Stash video pHash using a strict cumulative range budget.
 
     FFmpeg seeks separately to the 25 frames in Stash's 5x5 montage. Its HTTP
     input is a loopback range server, which proxies bounded 128 KiB Telegram
     requests through the resolver and persists a per-job transfer ledger.
+
+    ``size_sink`` receives the total file size learned from Content-Length; a
+    sink failure must never abort hashing.
     """
     if duration <= 0:
         raise ValueError("A known video duration is required for pHash")
@@ -298,6 +302,11 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
         cache_id=cache_id,
     )
     budget.load_size()
+    if size_sink is not None and budget.total_size is not None:
+        try:
+            size_sink(int(budget.total_size))
+        except Exception:
+            pass
     virtual_mp4 = _FaststartMP4(budget)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RangeHandler)
     server.fingerprint_budget = budget

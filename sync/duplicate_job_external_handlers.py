@@ -107,6 +107,9 @@ def execute_external_operation(action, conn, job_id, payload, media_dir, service
         result = download_artwork_for_video(conn, media_dir, video_id)
         if result.get("downloaded") is True:
             result["local_state"] = "artwork_downloaded"
+            refreshed = _core._refresh_jellyfin_with_progress(
+                conn, job_id, "artwork_downloaded", services)
+            result["jellyfin_refresh"] = "updated" if refreshed else "failed"
         return result, True
 
     if action == "collections_refresh":

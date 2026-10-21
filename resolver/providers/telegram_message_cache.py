@@ -48,6 +48,14 @@ def _message_cache_size_bytes(message: Any) -> int:
     return size
 
 
+def _evict_cached_message(channel_ref: str, message_id: int) -> None:
+    """Drop a cached message whose file reference Telegram has expired."""
+    global _MESSAGE_CACHE_BYTES
+    entry = _MESSAGE_CACHE.pop(f"{channel_ref}:{message_id}", None)
+    if entry:
+        _MESSAGE_CACHE_BYTES = max(0, _MESSAGE_CACHE_BYTES - entry[2])
+
+
 async def _get_cached_message(client, channel_ref: str, message_id: int):
     global _MESSAGE_CACHE_BYTES
     cache_key = f"{channel_ref}:{message_id}"
