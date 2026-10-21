@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "sync"))
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
+import scene_scraper_fingerprint_sources
 import scene_scraper_media_files
 import scene_scraper_text_sources
 from pg_helper import PgTestCase
@@ -18,22 +19,28 @@ from pg_helper import PgTestCase
 import scene_artwork_download
 
 
+def _seed_video(conn, tmp_path: Path, video_id: str = "telegram:123", *,
+                match_source=None, external_id=None) -> Path:
+    nested = tmp_path / "adult" / "telegram"
+    nested.mkdir(parents=True, exist_ok=True)
+    strm = nested / f"{video_id.replace(':', '_')}.strm"
+    strm.write_text("http://example/stream\n", encoding="utf-8")
+    with conn:
+        conn.execute(
+            "INSERT INTO videos (id, provider, title, duration, scene_match_source, "
+            "scene_match_external_id) VALUES (%s, %s, %s, %s, %s, %s)",
+            (video_id, "telegram", "Matched Scene Title", 600, match_source, external_id),
+        )
+        conn.execute(
+            "INSERT INTO synced_files (file_path, video_id) VALUES (%s, %s)",
+            (f"adult/telegram/{strm.name}", video_id),
+        )
+    return strm
+
+
 class ArtworkPathTests(PgTestCase):
     def _seed(self, tmp_path: Path, video_id: str = "telegram:123"):
-        nested = tmp_path / "adult" / "telegram"
-        nested.mkdir(parents=True, exist_ok=True)
-        strm = nested / f"{video_id.replace(':', '_')}.strm"
-        strm.write_text("http://example/stream\n", encoding="utf-8")
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, %s, %s, %s)",
-                (video_id, "telegram", "Matched Scene Title", 600),
-            )
-            self.conn.execute(
-                "INSERT INTO synced_files (file_path, video_id) VALUES (%s, %s)",
-                (f"adult/telegram/{strm.name}", video_id),
-            )
-        return strm
+        return _seed_video(self.conn, tmp_path, video_id)
 
     def test_nested_strm_receives_artwork_beside_it(self):
         import tempfile
@@ -89,6 +96,126 @@ class ArtworkPathTests(PgTestCase):
             with self.assertRaises(ValueError):
                 scene_artwork_download.download_artwork_for_video(
                     self.conn, tmp, "telegram:123")
+
+
+class ArtworkProviderBranchTests(PgTestCase):
+    """Cover the linked-ID, OSHASH, and title search branches of the lookup."""
+
+    def _poster_ok(self):
+        def fake_download(poster_url, artwork_path, video_id):
+            Path(artwork_path).write_bytes(b"fake-jpeg")
+            return True
+        return fake_download
+
+    def _scene(self, source):
+        return SimpleNamespace(poster_url="https://example.com/poster.jpg", source=source)
+
+    def test_linked_stashdb_id_fetches_only_stashdb(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            _seed_video(self.conn, tmp, match_source="StashDB", external_id="scene-1")
+            with patch.object(scene_scraper_text_sources, "fetch_stashdb_scene_by_id",
+                              return_value=self._scene("stashdb")) as stash, \
+                 patch.object(scene_scraper_text_sources, "fetch_tpdb_scene_by_id") as tpdb, \
+                 patch.object(scene_scraper_media_files, "_download_scene_poster",
+                              side_effect=self._poster_ok()):
+                result = scene_artwork_download.download_artwork_for_video(
+                    self.conn, tmp, "telegram:123")
+            self.assertEqual(result, {"downloaded": True, "provider": "StashDB"})
+            stash.assert_called_once_with("scene-1")
+            tpdb.assert_not_called()
+
+    def test_linked_tpdb_id_fetches_only_tpdb(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            _seed_video(self.conn, tmp, match_source="theporndb", external_id="42")
+            with patch.object(scene_scraper_text_sources, "fetch_stashdb_scene_by_id") as stash, \
+                 patch.object(scene_scraper_text_sources, "fetch_tpdb_scene_by_id",
+                              return_value=self._scene("theporndb")) as tpdb, \
+                 patch.object(scene_scraper_media_files, "_download_scene_poster",
+                              side_effect=self._poster_ok()):
+                result = scene_artwork_download.download_artwork_for_video(
+                    self.conn, tmp, "telegram:123")
+            self.assertEqual(result, {"downloaded": True, "provider": "ThePornDB"})
+            stash.assert_not_called()
+            tpdb.assert_called_once_with("42")
+
+    def test_linked_id_from_unknown_source_consults_both_and_reports_lookup_failure(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            _seed_video(self.conn, tmp, match_source="other", external_id="scene-9")
+            with patch.object(scene_scraper_text_sources, "fetch_stashdb_scene_by_id",
+                              side_effect=RuntimeError("stashdb down")), \
+                 patch.object(scene_scraper_text_sources, "fetch_tpdb_scene_by_id",
+                              side_effect=RuntimeError("tpdb down")), \
+                 patch.object(scene_scraper_text_sources, "search_scene_by_exact_title",
+                              return_value=None):
+                result = scene_artwork_download.download_artwork_for_video(
+                    self.conn, tmp, "telegram:123")
+            self.assertEqual(result, {"downloaded": False,
+                                      "local_state": "artwork_lookup_failed"})
+
+    def test_oshash_branch_falls_forward_to_second_provider(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            _seed_video(self.conn, tmp)
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO video_fingerprints (video_id, algorithm, fingerprint) "
+                    "VALUES (%s, 'OSHASH', %s)", ("telegram:123", "0123456789abcdef"),
+                )
+            with patch.object(scene_scraper_fingerprint_sources, "search_stashdb_scene_by_oshash",
+                              side_effect=RuntimeError("stashdb down")), \
+                 patch.object(scene_scraper_fingerprint_sources, "search_tpdb_scene_by_oshash",
+                              return_value=self._scene("theporndb")), \
+                 patch.object(scene_scraper_media_files, "_download_scene_poster",
+                              side_effect=self._poster_ok()):
+                result = scene_artwork_download.download_artwork_for_video(
+                    self.conn, tmp, "telegram:123")
+            self.assertEqual(result, {"downloaded": True, "provider": "ThePornDB"})
+
+    def test_title_branch_maps_source_to_provider_label(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            _seed_video(self.conn, tmp)
+            with patch.object(scene_scraper_text_sources, "search_scene_by_exact_title",
+                              return_value=self._scene("stashdb")), \
+                 patch.object(scene_scraper_media_files, "_download_scene_poster",
+                              side_effect=self._poster_ok()):
+                result = scene_artwork_download.download_artwork_for_video(
+                    self.conn, tmp, "telegram:123")
+            self.assertEqual(result, {"downloaded": True, "provider": "StashDB"})
+
+    def test_found_scene_with_failed_download_reports_download_failed(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            _seed_video(self.conn, tmp)
+            with patch.object(scene_scraper_text_sources, "search_scene_by_exact_title",
+                              return_value=self._scene("stashdb")), \
+                 patch.object(scene_scraper_media_files, "_download_scene_poster",
+                              return_value=False):
+                result = scene_artwork_download.download_artwork_for_video(
+                    self.conn, tmp, "telegram:123")
+            self.assertEqual(result, {"downloaded": False,
+                                      "local_state": "artwork_download_failed"})
+
+    def test_no_match_and_no_errors_reports_not_found(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            _seed_video(self.conn, tmp)
+            with patch.object(scene_scraper_text_sources, "search_scene_by_exact_title",
+                              return_value=None):
+                result = scene_artwork_download.download_artwork_for_video(
+                    self.conn, tmp, "telegram:123")
+            self.assertEqual(result, {"downloaded": False,
+                                      "local_state": "artwork_not_found"})
 
 
 class ArtworkJobQueueTests(PgTestCase):

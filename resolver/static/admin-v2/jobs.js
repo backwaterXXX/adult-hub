@@ -77,7 +77,7 @@
     return labels[safeId(value).toLowerCase()] || 'Progress details unavailable';
   }
   function localResultLabel(value) {
-    const labels = { hidden: 'Saved locally', dismissed: 'Saved locally', restored: 'Restored locally', quarantined: 'Quarantined locally', metadata_updated: 'Metadata updated locally', artwork_downloaded: 'Artwork downloaded locally', artwork_not_found: 'No matching artwork', artwork_download_failed: 'Poster download failed', availability_checked: 'Availability check recorded', audit_completed: 'Audit complete' };
+    const labels = { hidden: 'Saved locally', dismissed: 'Saved locally', restored: 'Restored locally', quarantined: 'Quarantined locally', metadata_updated: 'Metadata updated locally', artwork_downloaded: 'Artwork downloaded locally', artwork_not_found: 'No matching artwork', artwork_download_failed: 'Poster download failed', artwork_lookup_failed: 'Artwork lookup failed', availability_checked: 'Availability check recorded', audit_completed: 'Audit complete' };
     return labels[safeId(value).toLowerCase()] || 'Not recorded';
   }
   function jellyfinResultLabel(value) {

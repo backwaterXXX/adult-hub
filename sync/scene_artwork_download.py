@@ -121,6 +121,10 @@ def download_artwork_for_video(conn, media_dir: Path, video_id: str) -> dict:
             lookup_error = True
             logger.warning("Title scene lookup failed: %s", exc)
 
-    if matches or lookup_error:
+    if matches:
         return {"downloaded": False, "local_state": "artwork_download_failed"}
+    if lookup_error:
+        # A provider request failed; reporting "download failed" here would
+        # claim a poster was found when the search never completed.
+        return {"downloaded": False, "local_state": "artwork_lookup_failed"}
     return {"downloaded": False, "local_state": "artwork_not_found"}

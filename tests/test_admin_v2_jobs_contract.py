@@ -375,5 +375,36 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(long_id.status_code, 400)
 
 
+class TestArtworkResultSummary(unittest.TestCase):
+    def _job(self, result):
+        return {"action": "artwork_download", "state": "done", "result": result}
+
+    def test_downloaded_with_failed_refresh_mentions_refresh_failure(self):
+        summary = admin_v2_jobs._result_summary(self._job({
+            "downloaded": True, "provider": "StashDB",
+            "local_state": "artwork_downloaded", "jellyfin_refresh": "failed",
+        }))
+        self.assertEqual(summary, "Artwork downloaded from StashDB. Local result saved; Jellyfin refresh failed.")
+
+    def test_downloaded_with_successful_refresh_reports_success(self):
+        summary = admin_v2_jobs._result_summary(self._job({
+            "downloaded": True, "provider": "ThePornDB",
+            "local_state": "artwork_downloaded", "jellyfin_refresh": "updated",
+        }))
+        self.assertEqual(summary, "Artwork downloaded from ThePornDB.")
+
+    def test_lookup_failed_state_has_own_message(self):
+        summary = admin_v2_jobs._result_summary(self._job({
+            "downloaded": False, "local_state": "artwork_lookup_failed",
+        }))
+        self.assertEqual(summary, "The artwork search did not complete; metadata providers reported errors.")
+
+    def test_lookup_failed_state_survives_safe_job_projection(self):
+        job = admin_v2_jobs._safe_job(self._job({
+            "downloaded": False, "local_state": "artwork_lookup_failed",
+        }))
+        self.assertEqual(job["local_state"], "artwork_lookup_failed")
+
+
 if __name__ == "__main__":
     unittest.main()
