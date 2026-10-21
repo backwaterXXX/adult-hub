@@ -7,100 +7,28 @@ from typing import Any
 
 from common import db
 from common.migrations.base import Migration, MigrationRecord, MigrationStatus
-from common.migrations.legacy import LEGACY_MIGRATIONS
+from common.migrations.legacy import (
+    LEGACY_MIGRATIONS,
+    POST_BASELINE_MIGRATIONS,
+    admin_operation_plans,
+    video_metadata_overrides,
+)
 from common.migrations.m0001_baseline import migration as baseline
-from common.migrations.m0010_admin_operation_plans import migration as admin_operation_plans
-from common.migrations.m0011_video_metadata_overrides import migration as video_metadata_overrides
-from common.migrations.m0012_video_availability_checks import migration as video_availability_checks
-from common.migrations.m0013_admin_audit_items import migration as admin_audit_items
-from common.migrations.m0014_admin_schedules import migration as admin_schedules
-from common.migrations.m0015_admin_audit_nfo_findings import migration as admin_audit_nfo_findings
-from common.migrations.m0016_admin_audit_jellyfin_state import migration as admin_audit_jellyfin_state
-from common.migrations.m0017_admin_audit_artwork import migration as admin_audit_artwork
-from common.migrations.m0018_admin_action_events import migration as admin_action_events
-from common.migrations.m0019_admin_change_events import migration as admin_change_events
-from common.migrations.m0020_admin_audit_operations_schedules import migration as admin_audit_operations_schedules
-from common.migrations.m0021_performer_catalog import migration as performer_catalog
-from common.migrations.m0022_telegram_performer_rebuild_backup import migration as performer_rebuild_backup
-from common.migrations.m0023_admin_quality_center import migration as admin_quality_center
-from common.migrations.m0024_admin_orphan_quarantine import migration as admin_orphan_quarantine
-from common.migrations.m0025_admin_quality_acknowledgements import migration as admin_quality_acknowledgements
-from common.migrations.m0026_external_metadata_attempts import migration as external_metadata_attempts
-from common.migrations.m0027_video_fingerprints import migration as video_fingerprints
-from common.migrations.m0028_phash_provenance import migration as phash_provenance
-from common.migrations.m0029_oshash_media_probe import migration as oshash_media_probe
-from common.migrations.m0030_video_duplicate_decision_operation_index import migration as video_duplicate_decision_operation_index
-from common.migrations.m0031_video_scene_match_provenance import migration as video_scene_match_provenance
-from common.migrations.m0032_history_retention_indexes import migration as history_retention_indexes
-from common.migrations.m0033_video_duplicate_rules_provenance import migration as video_duplicate_rules_provenance
-from common.migrations.m0034_video_phash_thumbnails import migration as video_phash_thumbnails
-from common.migrations.m0035_fuzzy_performer_reviews import migration as fuzzy_performer_reviews
-from common.migrations.m0036_metadata_review_proposals import migration as metadata_review_proposals
-from common.migrations.m0037_video_phash_jobs import migration as video_phash_jobs
-from common.migrations.m0038_video_phash_job_processing_time import migration as video_phash_job_processing_time
-from common.migrations.m0039_drop_fuzzy_performer_reviews import migration as drop_fuzzy_performer_reviews
-from common.migrations.m0040_performer_profile_overrides import migration as performer_profile_overrides
-from common.migrations.m0041_performer_external_links import migration as performer_external_links
-from common.migrations.m0042_telegram_performer_resolution import migration as telegram_performer_resolution
-from common.migrations.m0043_telegram_unavailable_quarantine import migration as telegram_unavailable_quarantine
-from common.migrations.m0044_minimum_video_duration import migration as minimum_video_duration
-from common.migrations.m0045_external_metadata_error_detail import migration as external_metadata_error_detail
-from common.migrations.m0046_drop_stream_probe_columns import migration as drop_stream_probe_columns
-from common.migrations.m0047_video_file_size import migration as video_file_size
 
 logger = logging.getLogger(__name__)
 
 SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
 MIGRATION_LOCK_ID = 0xAD01780B
 
-# Fresh databases use one baseline followed by additive post-baseline changes.
-# Legacy migrations remain available only when the migration table proves that
-# a database already started that historical chain.
-MIGRATIONS: tuple[Migration, ...] = (
-    baseline,
-    admin_operation_plans,
-    video_metadata_overrides,
-    video_availability_checks,
-    admin_audit_items,
-    admin_schedules,
-    admin_audit_nfo_findings,
-    admin_audit_jellyfin_state,
-    admin_audit_artwork,
-    admin_action_events,
-    admin_change_events,
-    admin_audit_operations_schedules,
-    performer_catalog,
-    performer_rebuild_backup,
-    admin_quality_center,
-    admin_orphan_quarantine,
-    admin_quality_acknowledgements,
-    external_metadata_attempts,
-    video_fingerprints,
-    phash_provenance,
-    oshash_media_probe,
-    video_duplicate_decision_operation_index,
-    video_scene_match_provenance,
-    history_retention_indexes,
-    video_duplicate_rules_provenance,
-    video_phash_thumbnails,
-    fuzzy_performer_reviews,
-    metadata_review_proposals,
-    video_phash_jobs,
-    video_phash_job_processing_time,
-    drop_fuzzy_performer_reviews,
-    performer_profile_overrides,
-    performer_external_links,
-    telegram_performer_resolution,
-    telegram_unavailable_quarantine,
-    minimum_video_duration,
-    external_metadata_error_detail,
-    drop_stream_probe_columns,
-    video_file_size,
-)
+# A fresh database is built by this one tracked migration. The 38 changes that
+# used to follow the baseline were squashed into it in release 0.4.0 and now live
+# in POST_BASELINE_MIGRATIONS, which only databases with recorded history from
+# that chain still walk.
+MIGRATIONS: tuple[Migration, ...] = (baseline,)
 
 
 def _validate_active_migrations(migrations: tuple[Migration, ...]) -> None:
-    """Reject duplicate or out-of-order versions in the active chain only."""
+    """Reject duplicate or out-of-order versions in a chain."""
     versions = [migration.version for migration in migrations]
     if len(versions) != len(set(versions)):
         raise ValueError("Active migration versions must be unique")
@@ -109,7 +37,28 @@ def _validate_active_migrations(migrations: tuple[Migration, ...]) -> None:
 
 
 _validate_active_migrations(MIGRATIONS)
+# Ordering carries meaning here (m0039 drops the table m0035 creates).
+_validate_active_migrations(POST_BASELINE_MIGRATIONS)
 INTERIM_BASELINE_VERSION = 9
+
+# Highest version of the pre-squash chain; also the ceiling for partial upgrades.
+POST_BASELINE_CEILING = max(migration.version for migration in POST_BASELINE_MIGRATIONS)
+
+# Objects introduced by the last two migrations of the squashed chain. Their
+# presence proves a schema is at least as new as the baseline it was compared
+# against; their absence means the database never finished that chain.
+SQUASH_MARKERS: tuple[tuple[str, str], ...] = (
+    (
+        "video_phash_jobs",
+        "SELECT to_regclass('video_phash_jobs') IS NOT NULL",
+    ),
+    (
+        "videos.file_size_bytes",
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = 'videos' "
+        "AND column_name = 'file_size_bytes')",
+    ),
+)
 
 APPLICATION_TABLES: tuple[str, ...] = (
     "video_sources",
@@ -189,9 +138,23 @@ def get_applied_migrations(conn: db.Connection) -> list[MigrationRecord]:
     ]
 
 
+def _has_tables(conn: db.Connection) -> bool:
+    """True once the baseline era left any application schema behind."""
+    return conn.execute("SELECT to_regclass('videos')").fetchone()[0] is not None
+
+
 def _migration_plan(
-    applied: list[MigrationRecord], target_version: int | None = None,
+    applied: list[MigrationRecord],
+    target_version: int | None = None,
+    *,
+    pre_squash_schema: bool = False,
 ) -> list[Migration]:
+    """Migrations this database still needs.
+
+    `pre_squash_schema` comes from the caller's introspection and only matters
+    when the recorded history cannot say which schema generation a database
+    holds on its own.
+    """
     applied_versions = {record.version for record in applied}
     names_by_version = {record.version: record.name for record in applied}
     baseline_is_applied = (
@@ -210,6 +173,16 @@ def _migration_plan(
         }
         for version in applied_versions
     )
+    # Any recorded version above the interim baseline proves this database
+    # walked the pre-squash chain, so the rest of that chain still has to run.
+    # Databases created by the current baseline record version 1 alone and never
+    # see POST_BASELINE_MIGRATIONS.
+    follows_pre_squash_chain = (
+        has_legacy_history
+        or has_interim_baseline
+        or pre_squash_schema
+        or any(version > INTERIM_BASELINE_VERSION for version in applied_versions)
+    )
 
     # Explicit requests for an old target are retained for migration fixtures
     # and recovery of databases that began before the baseline existed.
@@ -221,6 +194,10 @@ def _migration_plan(
             if migration.version <= target_version and migration.version not in applied_versions
         ]
 
+    # The order of these three blocks is the execution order: the pre-baseline
+    # chain, then the baseline stamp, then the squashed chain. Sorting by version
+    # would place the baseline next to the legacy migration that also claims
+    # version 1 and collide on the schema_migrations primary key.
     plan: list[Migration] = []
     if has_legacy_history:
         plan.extend(
@@ -229,14 +206,59 @@ def _migration_plan(
         )
     if not baseline_is_applied:
         plan.append(baseline)
-    plan.extend(
-        migration for migration in MIGRATIONS
-        if migration is not baseline
-        and migration.version not in applied_versions
-    )
+    if follows_pre_squash_chain:
+        plan.extend(
+            migration for migration in POST_BASELINE_MIGRATIONS
+            if migration.version not in applied_versions
+        )
     if target_version is not None:
         plan = [m for m in plan if m.version <= target_version]
     return plan
+
+
+def _schema_predates_squash(conn: db.Connection) -> bool:
+    """True when objects introduced late in the squashed chain are absent."""
+    return any(
+        not conn.execute(probe).fetchone()[0]
+        for _, probe in SQUASH_MARKERS
+    )
+
+
+def _has_application_data(conn: db.Connection) -> bool:
+    return bool(conn.execute("SELECT EXISTS (SELECT 1 FROM videos)").fetchone()[0])
+
+
+def _untrusted_history(applied: list[MigrationRecord]) -> RuntimeError:
+    recorded = ", ".join(str(record.version) for record in applied) or "nothing"
+    return RuntimeError(
+        f"Schema history cannot be trusted: the database holds tables but records {recorded}, "
+        "and its schema predates the 0.4.0 squash. Refusing to replay the squashed chain over "
+        "existing data or to stamp it as current. Insert the rows for the versions this schema "
+        "actually has into schema_migrations, or restore a dump that includes that table."
+    )
+
+
+def _plan_for_connection(
+    conn: db.Connection,
+    applied: list[MigrationRecord],
+    target_version: int | None = None,
+) -> list[Migration]:
+    """Resolve pending migrations, trusting the schema over lost bookkeeping.
+
+    A database recording only the baseline is normally the flat shape created by
+    the current baseline. If it is missing objects from the end of the squashed
+    chain instead, it is an interrupted pre-squash upgrade: harmless to finish
+    while the tables are still empty, dangerous once they hold data, because the
+    squashed chain is not idempotent and two of its steps rewrite rows.
+    """
+    pre_squash_schema = False
+    if _has_tables(conn):
+        versions = {record.version for record in applied}
+        if versions in (set(), {baseline.version}):
+            pre_squash_schema = _schema_predates_squash(conn)
+            if pre_squash_schema and (not applied or _has_application_data(conn)):
+                raise _untrusted_history(applied)
+    return _migration_plan(applied, target_version, pre_squash_schema=pre_squash_schema)
 
 
 def get_migration_status(conn_or_url: db.Connection | str | None = None) -> MigrationStatus:
@@ -244,7 +266,7 @@ def get_migration_status(conn_or_url: db.Connection | str | None = None) -> Migr
     conn, owned = _resolve_connection(conn_or_url)
     try:
         applied = get_applied_migrations(conn)
-        pending = _migration_plan(applied)
+        pending = _plan_for_connection(conn, applied)
         curr_ver = max((rec.version for rec in applied), default=0)
         return MigrationStatus(current_version=curr_ver, applied=applied, pending=pending)
     finally:
@@ -268,7 +290,18 @@ def apply_migrations(
         try:
             ensure_schema_migrations_table(conn)
             applied = get_applied_migrations(conn)
-            for migration in _migration_plan(applied, target_version):
+            plan = _plan_for_connection(conn, applied, target_version)
+            if (
+                target_version is not None
+                and target_version < POST_BASELINE_CEILING
+                and not _has_tables(conn)
+                and any(migration is baseline for migration in plan)
+            ):
+                raise ValueError(
+                    f"target_version {target_version} cannot be honoured: the baseline creates "
+                    "the whole schema in one step, so a fresh database cannot stop partway"
+                )
+            for migration in plan:
 
                 logger.info("Applying migration %04d: %s...", migration.version, migration.name)
                 with conn:

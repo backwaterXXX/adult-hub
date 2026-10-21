@@ -23,8 +23,84 @@ from common.migrations import (
     recreate_database,
 )
 from common.migrations.base import Migration
-from common.migrations.runner import _validate_active_migrations
+from common.migrations.legacy import LEGACY_MIGRATIONS, POST_BASELINE_MIGRATIONS
+from common.migrations.m0001_baseline import SCHEMA_BASELINE_SQL, migration as baseline
+from common.migrations.runner import (
+    POST_BASELINE_CEILING,
+    _validate_active_migrations,
+    ensure_schema_migrations_table,
+)
 from tests.pg_helper import PgTestCase
+
+
+def _record(conn: db.Connection, version: int, name: str) -> None:
+    conn.execute(
+        f"INSERT INTO {SCHEMA_MIGRATIONS_TABLE} (version, name, applied_at) "
+        "VALUES (%s, %s, CURRENT_TIMESTAMP)",
+        (version, name),
+    )
+
+
+def _drop_everything(conn: db.Connection) -> None:
+    # Drop every table the schema actually holds, not just the managed list:
+    # other test modules create ad-hoc tables in this database, and comparing
+    # the baseline against the chain is only meaningful in a clean room.
+    with conn:
+        for table in sorted(db.table_names(conn)):
+            conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+
+
+def build_pre_squash_schema(conn: db.Connection, *, through_version: int) -> None:
+    """Rebuild the schema a database had at `through_version` of the old chain.
+
+    The current baseline creates the whole schema in one step, so an interim
+    shape can only be produced by replaying the migrations that database would
+    have walked, recording history the same way the runner does.
+    """
+    _drop_everything(conn)
+    ensure_schema_migrations_table(conn)
+    with conn:
+        for migration in LEGACY_MIGRATIONS:
+            migration.apply(conn)
+            _record(conn, migration.version, migration.name)
+        conn.execute(f"DELETE FROM {SCHEMA_MIGRATIONS_TABLE}")
+        _record(conn, baseline.version, baseline.name)
+        for migration in POST_BASELINE_MIGRATIONS:
+            if migration.version > through_version:
+                break
+            migration.apply(conn)
+            _record(conn, migration.version, migration.name)
+
+
+def build_baseline_schema(conn: db.Connection) -> None:
+    """Create the schema from the squashed script without touching history."""
+    _drop_everything(conn)
+    with conn:
+        conn.execute(SCHEMA_BASELINE_SQL.read_text(encoding="utf-8"))
+
+
+SNAPSHOT_SQL = """
+SELECT 'column', table_name || '.' || column_name,
+       data_type || '|' || is_nullable || '|' || coalesce(column_default, '')
+FROM information_schema.columns
+WHERE table_schema = current_schema() AND table_name <> 'schema_migrations'
+UNION ALL
+SELECT 'index', indexname, indexdef FROM pg_indexes
+WHERE schemaname = current_schema() AND tablename <> 'schema_migrations'
+UNION ALL
+SELECT 'constraint', conname, pg_get_constraintdef(oid) FROM pg_constraint
+WHERE connamespace = current_schema()::regnamespace
+  AND conrelid::regclass::text <> 'schema_migrations'
+UNION ALL
+SELECT 'function', proname, pg_get_functiondef(oid) FROM pg_proc
+WHERE pronamespace = current_schema()::regnamespace
+UNION ALL
+SELECT 'trigger', tgname, pg_get_triggerdef(oid) FROM pg_trigger WHERE NOT tgisinternal
+"""
+
+
+def schema_snapshot(conn: db.Connection) -> set[tuple[str, str, str]]:
+    return {tuple(row) for row in conn.execute(SNAPSHOT_SQL).fetchall()}
 
 
 class TestActiveMigrationValidation(unittest.TestCase):
@@ -42,23 +118,32 @@ class TestActiveMigrationValidation(unittest.TestCase):
 
 
 class TestMigrationsEngine(PgTestCase):
+    # Snapshot of the squashed schema, taken once per class by setUp.
+    baseline_reference: set[tuple[str, str, str]] | None = None
+
+    def setUp(self):
+        super().setUp()
+        if type(self).baseline_reference is None:
+            build_baseline_schema(self.conn)
+            type(self).baseline_reference = schema_snapshot(self.conn)
+        self.baseline_reference = type(self).baseline_reference
+
     def test_migration_status_and_full_application(self):
-        # 1. Recreate clean test database
+        # 1. Recreate clean test database: the baseline is the whole chain now.
         applied = recreate_database(self.conn)
-        self.assertEqual(len(applied), len(MIGRATIONS))
-        versions = [m.version for m in MIGRATIONS]
-        self.assertEqual([m.version for m in applied], versions)
+        self.assertEqual([m.version for m in applied], [baseline.version])
+        self.assertEqual(MIGRATIONS, (baseline,))
 
         # 2. Status should report up to date
         status = get_migration_status(self.conn)
         self.assertTrue(status.is_up_to_date)
-        self.assertEqual(status.current_version, versions[-1])
+        self.assertEqual(status.current_version, baseline.version)
         self.assertEqual(len(status.pending), 0)
-        self.assertEqual(len(status.applied), len(versions))
+        self.assertEqual(len(status.applied), 1)
 
         # 3. Check schema_migrations table contents
         applied_records = get_applied_migrations(self.conn)
-        self.assertEqual([r.version for r in applied_records], versions)
+        self.assertEqual([r.version for r in applied_records], [baseline.version])
         self.assertEqual(applied_records[0].name, "0001_baseline")
 
         # 4. Check that all expected application tables exist in PostgreSQL
@@ -134,7 +219,17 @@ class TestMigrationsEngine(PgTestCase):
 
         status_final = get_migration_status(self.conn)
         self.assertTrue(status_final.is_up_to_date)
-        self.assertEqual(status_final.current_version, MIGRATIONS[-1].version)
+        self.assertEqual(status_final.current_version, POST_BASELINE_CEILING)
+
+    def test_partial_target_is_refused_when_baseline_builds_the_schema(self):
+        # The squashed baseline has no intermediate shape to stop at, so a
+        # partial target on a fresh database would record version 1 while the
+        # schema is already current. Saying no beats pretending otherwise.
+        _drop_everything(self.conn)
+        self.addCleanup(recreate_database, self.conn)
+        with self.assertRaisesRegex(ValueError, "cannot be honoured"):
+            apply_migrations(self.conn, target_version=40)
+        self.assertEqual(get_applied_migrations(self.conn), [])
 
     def test_recreate_database_clears_old_data_and_reapplies(self):
         recreate_database(self.conn)
@@ -151,6 +246,76 @@ class TestMigrationsEngine(PgTestCase):
 
         row_after = self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone()
         self.assertIsNone(row_after)
+
+    def test_baseline_script_matches_the_squashed_migration_chain(self):
+        """The two ways of reaching the current schema must agree exactly."""
+        build_pre_squash_schema(self.conn, through_version=POST_BASELINE_CEILING)
+        chain_schema = schema_snapshot(self.conn)
+        build_baseline_schema(self.conn)
+        baseline_schema = schema_snapshot(self.conn)
+
+        only_chain = {f"{kind}:{name}" for kind, name, _ in chain_schema - baseline_schema}
+        only_baseline = {f"{kind}:{name}" for kind, name, _ in baseline_schema - chain_schema}
+        self.assertEqual(only_chain, set())
+        self.assertEqual(only_baseline, set())
+
+    def test_baseline_script_covers_every_application_table(self):
+        build_baseline_schema(self.conn)
+        created = set(db.table_names(self.conn)) - {SCHEMA_MIGRATIONS_TABLE}
+        self.assertEqual(created, set(APPLICATION_TABLES))
+
+    def test_recorded_old_chain_is_up_to_date_without_replaying_ddl(self):
+        build_pre_squash_schema(self.conn, through_version=POST_BASELINE_CEILING)
+        with self.conn:
+            self.conn.execute("INSERT INTO videos (id, title, duration) VALUES ('v-old', 'Old', 600)")
+        status = get_migration_status(self.conn)
+        self.assertTrue(status.is_up_to_date)
+        self.assertEqual(status.pending, [])
+        self.assertEqual(apply_migrations(self.conn), [])
+        self.assertEqual(
+            self.conn.execute("SELECT title FROM videos WHERE id = 'v-old'").fetchone()[0], "Old"
+        )
+
+    def test_lagging_old_chain_upgrades_only_the_missing_versions(self):
+        build_pre_squash_schema(self.conn, through_version=30)
+        status = get_migration_status(self.conn)
+        self.assertEqual(
+            [migration.version for migration in status.pending],
+            [migration.version for migration in POST_BASELINE_MIGRATIONS if migration.version > 30],
+        )
+        applied = apply_migrations(self.conn)
+        self.assertEqual([migration.version for migration in applied], list(range(31, 48)))
+        self.assertEqual(schema_snapshot(self.conn), self.baseline_reference)
+
+    def test_existing_schema_without_history_is_refused(self):
+        # Losing schema_migrations must not let the runner declare an unknown
+        # schema current, because the squashed chain is not safe to replay.
+        build_pre_squash_schema(self.conn, through_version=30)
+        self.addCleanup(recreate_database, self.conn)
+        with self.conn:
+            self.conn.execute("INSERT INTO videos (id, title, duration) VALUES ('v-lost', 'Lost', 600)")
+            self.conn.execute(f"DELETE FROM {SCHEMA_MIGRATIONS_TABLE}")
+        with self.assertRaisesRegex(RuntimeError, "history cannot be trusted"):
+            get_migration_status(self.conn)
+        with self.assertRaisesRegex(RuntimeError, "history cannot be trusted"):
+            apply_migrations(self.conn)
+
+    def test_interrupted_pre_squash_install_resumes_the_chain(self):
+        # An install that recorded the baseline and died before the chain ended
+        # holds no data, so finishing it is safe rather than something to refuse.
+        build_pre_squash_schema(self.conn, through_version=0)
+        with self.conn:
+            self.conn.execute(f"DELETE FROM {SCHEMA_MIGRATIONS_TABLE}")
+            _record(self.conn, baseline.version, baseline.name)
+        applied = apply_migrations(self.conn)
+        self.assertEqual([migration.version for migration in applied], list(range(10, 48)))
+        self.assertEqual(schema_snapshot(self.conn), self.baseline_reference)
+
+    def test_current_schema_without_history_is_stamped_not_replayed(self):
+        build_baseline_schema(self.conn)
+        applied = apply_migrations(self.conn)
+        self.assertEqual([migration.version for migration in applied], [baseline.version])
+        self.assertTrue(get_migration_status(self.conn).is_up_to_date)
 
     def test_existing_v8_database_is_squashed_without_rewriting_data(self):
         recreate_database(self.conn, target_version=8)
@@ -202,7 +367,9 @@ class TestMigrationsEngine(PgTestCase):
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):
-        recreate_database(self.conn)
+        # A database from the interim-baseline era: version 9 recorded, then the
+        # whole chain walked on top of it.
+        build_pre_squash_schema(self.conn, through_version=POST_BASELINE_CEILING)
         self.conn.execute(
             "INSERT INTO videos (id, title, duration) VALUES (%s, %s, 600)",
             ("existing:v9", "Keep interim data"),
@@ -229,7 +396,7 @@ class TestMigrationsEngine(PgTestCase):
     def test_admin_audit_extension_preserves_existing_rows_and_accepts_new_types(self):
         from psycopg.types.json import Jsonb
 
-        recreate_database(self.conn, target_version=19)
+        build_pre_squash_schema(self.conn, through_version=19)
         self.conn.execute(
             "ALTER TABLE admin_audit_events RENAME CONSTRAINT admin_audit_events_event_type_check TO legacy_event_guard"
         )
@@ -341,7 +508,7 @@ class TestMigrationsEngine(PgTestCase):
         self.assertEqual(float(audited_epoch), 1_700_000_000)
 
     def test_m0041_performer_external_links_columns_and_backfill(self):
-        recreate_database(self.conn, target_version=40)
+        build_pre_squash_schema(self.conn, through_version=40)
         self.conn.execute("INSERT INTO performer_bios (name, bio) VALUES ('Test Star', 'A bio')")
         self.conn.execute(
             "INSERT INTO performer_catalog (id, source, source_id, name) VALUES ('stashdb:uuid-123', 'stashdb', 'uuid-123', 'Test Star')"

@@ -14,3 +14,8 @@ dependencies = ["PyYAML==6.0.3", "psycopg[binary]==3.2.10"]
 [tool.setuptools]
 packages = ["common", "common.migrations"]
 package-dir = { common = "." }
+
+# The resolver image installs this package as a wheel (resolver/Dockerfile), so
+# the baseline schema must be declared or a fresh container has no DDL to apply.
+[tool.setuptools.package-data]
+"common.migrations" = ["*.sql"]

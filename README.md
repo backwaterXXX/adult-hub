@@ -205,7 +205,7 @@ The private `.env` of the deployment this repository serves deliberately differs
 | `TELEGRAM_STREAM_CACHE_TTL_SECONDS` | 180 | 120 | Matches the larger cache so reused blocks survive a second seek. |
 | `ADMIN_PUBLIC` | `true` | `false` | The Admin v2 UI is reachable through the reverse proxy; writes still require the `ADMIN_WRITE_TOKEN` and the same-origin checks. |
 | `RESOLVER_TRUSTED_PROXY_IPS` | `127.0.0.1,::1,172.29.0.1` | `127.0.0.1,::1` | Adds the Docker network address of the local reverse proxy so client IPs survive `X-Forwarded-For`. |
-| `APP_VERSION` | `0.3.4` | `dev` | Tags images with the release they were built from instead of `dev`. |
+| `APP_VERSION` | `0.4.0` | `dev` | Tags images with the release they were built from instead of `dev`. |
 
 ---
 
@@ -303,6 +303,11 @@ The performer evaluation workflow as a whole is described in `docs/telegram-perf
 
 ### Database Operations & Recreation
 - **Versioned migrations**: Schema changes are managed as ordered, versioned migrations in `common/migrations/` tracked by the `schema_migrations` table.
+  A fresh database is created by the single tracked baseline (version `1`) from
+  `common/migrations/schema_baseline.sql`; versions `10`–`47` only ever run
+  against databases that were built by the pre-squash chain. A new migration is
+  an incremental `ALTER` after the baseline, and `schema_baseline.sql` is
+  regenerated from the chain-built schema at the next squash.
   ```sh
   # Inspect migration status
   python3 migrate_db.py status

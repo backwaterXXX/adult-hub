@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from common.migrations.base import Migration
-from common.migrations.legacy import LEGACY_MIGRATIONS
+
+SCHEMA_BASELINE_SQL = Path(__file__).resolve().with_name("schema_baseline.sql")
 
 
 _REQUIRED_TABLES = (
@@ -63,13 +65,13 @@ def _validate_existing_schema(conn: Any) -> None:
 
 
 def apply(conn: Any, **kwargs) -> None:
-    # A new database is initialized in one tracked migration. Legacy DDL
-    # functions are reused here so the baseline stays identical to the schema
-    # that existing databases reach through the upgrade path.
     has_videos = conn.execute("SELECT to_regclass('videos')").fetchone()[0] is not None
     if not has_videos:
-        for migration in LEGACY_MIGRATIONS:
-            migration.apply(conn, **kwargs)
+        # A new database gets the squashed schema in one script. The statement
+        # runs inside the runner's transaction, so a failure leaves no partial
+        # objects, and Postgres parses the whole string itself, which keeps the
+        # dollar-quoted trigger bodies intact.
+        conn.execute(SCHEMA_BASELINE_SQL.read_text(encoding="utf-8"))
 
     # Existing databases reach the baseline only after their legacy chain has
     # completed. Validate first; never rewrite application data here.
