@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import json
+import threading
 import unittest
 from pathlib import Path
 
@@ -80,6 +81,37 @@ class TestMigrationsEngine(PgTestCase):
         status = get_migration_status(self.conn)
         self.assertTrue(status.is_up_to_date)
         self.assertEqual(status.current_version, MIGRATIONS[-1].version)
+
+    def test_concurrent_apply_migrations_is_serialized(self):
+        # Containers starting together may both call apply_migrations on an
+        # empty database; the advisory lock must keep the second writer from
+        # hitting a duplicate-key insert in schema_migrations.
+        with self.conn:
+            for tbl in (*APPLICATION_TABLES, SCHEMA_MIGRATIONS_TABLE):
+                self.conn.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE")
+
+        results: list[list] = []
+        errors: list[BaseException] = []
+
+        def worker():
+            try:
+                results.append(apply_migrations(self.db_url))
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=120)
+
+        self.assertEqual(errors, [])
+        counts = sorted(len(r) for r in results)
+        self.assertEqual(counts, [0, len(MIGRATIONS)])
+        rows = self.conn.execute(
+            f"SELECT version, COUNT(*) FROM {SCHEMA_MIGRATIONS_TABLE} GROUP BY version HAVING COUNT(*) > 1"
+        ).fetchall()
+        self.assertEqual(rows, [])
 
     def test_target_version_migration(self):
         # Drop all tables first

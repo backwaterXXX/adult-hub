@@ -261,43 +261,51 @@ def apply_migrations(
     conn, owned = _resolve_connection(conn_or_url)
     applied_now: list[MigrationRecord] = []
     try:
-        ensure_schema_migrations_table(conn)
-        applied = get_applied_migrations(conn)
-        for migration in _migration_plan(applied, target_version):
+        # Serialize against concurrent containers that start together and both
+        # call apply_migrations; without this the check-then-insert can race.
+        conn.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_LOCK_ID,))
+        conn.commit()
+        try:
+            ensure_schema_migrations_table(conn)
+            applied = get_applied_migrations(conn)
+            for migration in _migration_plan(applied, target_version):
 
-            logger.info("Applying migration %04d: %s...", migration.version, migration.name)
-            with conn:
-                migration.apply(conn, **kwargs)
-                if migration is baseline:
-                    # Squash legacy/interim history only after schema
-                    # validation succeeds. This changes metadata, not data.
-                    conn.execute(f"DELETE FROM {SCHEMA_MIGRATIONS_TABLE}")
-                conn.execute(
-                    f"INSERT INTO {SCHEMA_MIGRATIONS_TABLE} (version, name, applied_at) "
-                    "VALUES (%s, %s, CURRENT_TIMESTAMP)",
-                    (migration.version, migration.name),
-                )
+                logger.info("Applying migration %04d: %s...", migration.version, migration.name)
+                with conn:
+                    migration.apply(conn, **kwargs)
+                    if migration is baseline:
+                        # Squash legacy/interim history only after schema
+                        # validation succeeds. This changes metadata, not data.
+                        conn.execute(f"DELETE FROM {SCHEMA_MIGRATIONS_TABLE}")
+                    conn.execute(
+                        f"INSERT INTO {SCHEMA_MIGRATIONS_TABLE} (version, name, applied_at) "
+                        "VALUES (%s, %s, CURRENT_TIMESTAMP)",
+                        (migration.version, migration.name),
+                    )
 
-            # Fetch the recorded record
-            rec_row = conn.execute(
-                f"SELECT version, name, applied_at FROM {SCHEMA_MIGRATIONS_TABLE} WHERE version = %s",
-                (migration.version,),
-            ).fetchone()
+                # Fetch the recorded record
+                rec_row = conn.execute(
+                    f"SELECT version, name, applied_at FROM {SCHEMA_MIGRATIONS_TABLE} WHERE version = %s",
+                    (migration.version,),
+                ).fetchone()
+                conn.commit()
+                if rec_row:
+                    record = MigrationRecord(
+                        version=int(rec_row[0]),
+                        name=str(rec_row[1]),
+                        applied_at=rec_row[2],
+                    )
+                    applied_now.append(record)
+                    if migration is baseline:
+                        applied = [record]
+                    else:
+                        applied.append(record)
+                logger.info("Applied migration %04d: %s successfully.", migration.version, migration.name)
+
+            return applied_now
+        finally:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (MIGRATION_LOCK_ID,))
             conn.commit()
-            if rec_row:
-                record = MigrationRecord(
-                    version=int(rec_row[0]),
-                    name=str(rec_row[1]),
-                    applied_at=rec_row[2],
-                )
-                applied_now.append(record)
-                if migration is baseline:
-                    applied = [record]
-                else:
-                    applied.append(record)
-            logger.info("Applied migration %04d: %s successfully.", migration.version, migration.name)
-
-        return applied_now
     finally:
         if owned:
             conn.close()
