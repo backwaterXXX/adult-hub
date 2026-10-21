@@ -33,14 +33,14 @@ class _Provider:
 
 
 def _services(**overrides):
-    fields = dict(
-        diagnostics=SimpleNamespace(begin=lambda *a: None),
-        get_provider=lambda name: _Provider(),
-        parse_range_request=lambda raw, total: None,
-        asyncio=asyncio,
-        inspect=inspect_module,
-        time=time_module,
-    )
+    fields = {
+        "diagnostics": SimpleNamespace(begin=lambda *a: None),
+        "get_provider": lambda name: _Provider(),
+        "parse_range_request": lambda raw, total: None,
+        "asyncio": asyncio,
+        "inspect": inspect_module,
+        "time": time_module,
+    }
     fields.update(overrides)
     return TelegramProxyServices(**fields)
 
