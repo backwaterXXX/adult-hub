@@ -9,7 +9,7 @@
   const statuses = new Set(['open', 'resolved', 'acknowledged', 'all']);
   const fieldLabels = { title: 'Title', performers: 'Performers', studio: 'Studio', plot: 'Description', thumbnail: 'Artwork' };
   const reviewFieldLabels = { title: 'Title', plot: 'Description', studio: 'Studio', performers: 'Performers', tags: 'Tags', date_released: 'Release date' };
-  const state = { summary: null, offset: 0, total: 0, requestId: 0, selected: new Set(), busy: false,
+  const state = { summary: null, offset: 0, total: 0, requestId: 0, loadSequence: 0, selected: new Set(), busy: false,
     auditNotice: '', auditStale: false, proposalOffset: 0, proposalTotal: 0, proposalRequestId: 0 };
   const el = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -307,11 +307,14 @@
   }
 
   async function load() {
+    const loadSequence = ++state.loadSequence;
+    state.requestId += 1;
     readFiltersFromUrl();
     state.selected.clear();
     setFeedback('Loading the latest complete audit…');
     try {
       const summary = await window.AdminV2.getJson(`${api}/summary`);
+      if (loadSequence !== state.loadSequence) return;
       state.summary = summary;
       renderSummary(summary);
       renderHistory(summary);
@@ -348,6 +351,7 @@
       setFeedback(state.auditNotice, stale ? 'stale' : 'ready');
       await loadItems();
     } catch (error) {
+      if (loadSequence !== state.loadSequence) return;
       setFeedback(`Quality data is unavailable. ${error.message}`, 'error');
       $('#qualityRows').replaceChildren(el('p', 'catalog-state', 'Could not load the latest complete audit.'));
     }

@@ -7,6 +7,14 @@ services:
     image: jellyfin/jellyfin:12.1
     container_name: jellyfin
     restart: unless-stopped
+    # Compose's service_healthy dependency below needs an explicit condition
+    # here; this also keeps readiness behavior visible alongside the service.
+    healthcheck:
+      test: ["CMD-SHELL", "curl --noproxy 'localhost' -Lk -fsS http://localhost:8096/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     # Host networking supports native DLNA / UPnP discovery on Debian
     network_mode: host
     environment:

@@ -302,7 +302,9 @@
     const routePart = item.route.slice(1).split(/[?&]/, 1)[0];
     const routeQuery = item.route.includes('?') ? new URLSearchParams(item.route.slice(item.route.indexOf('?') + 1)) : new URLSearchParams();
     const targetRoute = item.group === 'Videos' || routePart.startsWith('film/') ? 'library'
-      : routePart === 'performers' && routeQuery.get('tab') === 'directory' ? 'organize' : routePart;
+      : routePart === 'performers' && routeQuery.get('tab') === 'directory' ? 'organize'
+        : routePart === 'quality' && ['duplicates', 'quarantine'].includes(routeQuery.get('tab')) ? 'organize'
+          : routePart;
     const onNavigate = event => {
       if (event.detail?.route !== targetRoute) return;
       document.removeEventListener('adminv2:navigate', onNavigate);

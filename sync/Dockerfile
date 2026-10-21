@@ -30,6 +30,7 @@ RUN pip install --no-cache-dir -r requirements.lock \
     && pip install --no-cache-dir --no-deps ./common
 
 COPY backup_db.py backup_scheduler.py restore_db.py ./
+COPY tools/benchmark_catalog_search.py ./tools/benchmark_catalog_search.py
 COPY sync/ .
 
 # Run as non-root: /data and /cache are volume-mounted read-write in

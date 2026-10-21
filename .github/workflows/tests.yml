@@ -8,6 +8,29 @@ permissions:
   contents: read
 
 jobs:
+  container-images-and-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate production Compose configuration
+        run: docker compose -f docker-compose.yml config --quiet
+      - name: Build images and start isolated PostgreSQL and resolver stack
+        run: |
+          compose=(docker compose -f docker-compose.dev.yml -p adult-hub-ci)
+          "${compose[@]}" up --build -d
+          for attempt in $(seq 1 30); do
+            if "${compose[@]}" exec -T resolver python3 -c \
+              "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/admin/health/ready', timeout=2)"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          "${compose[@]}" logs --no-color
+          exit 1
+      - name: Stop isolated smoke stack
+        if: always()
+        run: docker compose -f docker-compose.dev.yml -p adult-hub-ci down --volumes --remove-orphans
+
   public-tests:
     runs-on: ubuntu-24.04
     services:
