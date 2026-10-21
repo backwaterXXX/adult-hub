@@ -87,9 +87,14 @@ Advanced environment variables and fallback behavior are documented in the examp
 ### 2. Build & Launch
 
 ```sh
-docker compose build resolver sync
-docker compose up -d resolver sync
+make deploy
 ```
+
+`make deploy` reads the release number from `VERSION`, exports it as
+`APP_VERSION`, and recreates the resolver, sync, and backup services from
+images tagged with that release. Running `docker compose build resolver sync`
+and `docker compose up -d resolver sync` directly still works, but tags and
+labels the images `dev` unless you export `APP_VERSION` yourself.
 
 Resolver and sync source code is packaged into their Docker images; Compose mounts runtime data and configuration but does not overlay `/app`. Rebuild and recreate both services after code changes. This keeps each image self-contained so restoring a retained versioned image actually restores its application code.
 
@@ -97,7 +102,7 @@ Resolver and sync source code is packaged into their Docker images; Compose moun
 
 For resolver UI/API work, `make dev` starts `docker-compose.dev.yml` in the background: Uvicorn watches the mounted resolver source and reloads on Python changes. The stack publishes only `127.0.0.1:18090`, creates a disposable PostgreSQL database in tmpfs, and runs migrations against that database before starting the resolver. It uses `config.example.yaml` and mounts source files read-only; it does not use `.env`, production networks, media, Jellyfin, Telegram sessions, or runtime data. Database and `/data`/`/cache` state are ephemeral and disappear when their containers are recreated. Use `make dev-logs` to follow resolver output and `make dev-down` to stop the stack.
 
-The application version is stored in `VERSION` and is shown by the resolver health endpoint, the admin panel header, and the sync startup log. For a versioned image, set `APP_VERSION` in `.env` to the same value as `VERSION` before building and starting the services. Compose uses it for image tags and the OCI image version label. Use Git tags in the form `vX.Y.Z` for releases, keeping the tag, `VERSION`, and `.env` value aligned. Retain each release's matching source commit and resolver/sync image tags together for rollback. The `adult-hub-common` package has its own package version in `common/pyproject.toml`.
+The application version lives in `VERSION` and is what the resolver health endpoint, the admin panel header, and the sync startup log report — `common/app_version.py` reads that file from the image, never the tag. `make deploy` exports the same value as `APP_VERSION`, which Compose then uses for image tags and the OCI image version label. Use Git tags in the form `vX.Y.Z` for releases, keeping the tag and `VERSION` aligned; `.env` deliberately does not store the number, so a bumped release cannot be deployed under a stale tag. Retain each release's matching source commit and resolver/sync image tags together for rollback. The `adult-hub-common` package has its own package version in `common/pyproject.toml`.
 
 Check resolver liveness and readiness separately. Liveness only confirms the
 process can answer; readiness also verifies the PostgreSQL connection. The
@@ -205,7 +210,6 @@ The private `.env` of the deployment this repository serves deliberately differs
 | `TELEGRAM_STREAM_CACHE_TTL_SECONDS` | 180 | 120 | Matches the larger cache so reused blocks survive a second seek. |
 | `ADMIN_PUBLIC` | `true` | `false` | The Admin v2 UI is reachable through the reverse proxy; writes still require the `ADMIN_WRITE_TOKEN` and the same-origin checks. |
 | `RESOLVER_TRUSTED_PROXY_IPS` | `127.0.0.1,::1,172.29.0.1` | `127.0.0.1,::1` | Adds the Docker network address of the local reverse proxy so client IPs survive `X-Forwarded-For`. |
-| `APP_VERSION` | `0.4.0` | `dev` | Tags images with the release they were built from instead of `dev`. |
 
 ---
 

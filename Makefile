@@ -6,6 +6,11 @@ NODE ?= node
 COVERAGE ?= $(shell command -v coverage 2>/dev/null || (test -x .venv/bin/coverage && echo .venv/bin/coverage) || printf '%s' "$(PYTHON) -m coverage")
 RUFF ?= $(shell command -v ruff 2>/dev/null || (test -x .venv/bin/ruff && echo .venv/bin/ruff) || printf '%s' "$(HOME)/develop/bin/ruff")
 
+# Release images are tagged from VERSION, so a version bump has one place to
+# edit and `make deploy` can never build an image tagged with an old release.
+APP_VERSION := $(shell tr -d '[:space:]' < VERSION)
+export APP_VERSION
+
 # Shared environment for the database-backed Python suite: the isolated test
 # profile plus a fixture config, so no production credentials are consulted.
 # The Telegram transfer-budget ledger also needs a writable path; /data only
@@ -13,7 +18,7 @@ RUFF ?= $(shell command -v ruff 2>/dev/null || (test -x .venv/bin/ruff && echo .
 # counters from leaking between concurrent suites.
 TEST_ENV = ADULT_HUB_REQUIRE_TEST_DATABASE=1 ADULT_HUB_TEST_PROFILE=full CONFIG_PATH=tests/fixtures/config_telegram_only.yaml TELEGRAM_FINGERPRINT_USAGE_PATH=/tmp/adulthub-test-fingerprint-usage-$$.json
 
-.PHONY: help install-dev lock test python-test coverage ui-contracts js-check proxy-origin lint dev dev-down dev-logs
+.PHONY: help install-dev lock test python-test coverage ui-contracts js-check proxy-origin lint deploy dev dev-down dev-logs
 
 help:
 	@printf '%s\n' \
@@ -26,6 +31,7 @@ help:
 	  'js-check       Check syntax for every Admin v2 JavaScript file' \
 	  'proxy-origin   Run the proxy-origin contract' \
 	  'lint           Run Ruff correctness checks across the repository' \
+	  'deploy         Build and restart the release stack with the VERSION image tag' \
 	  'dev            Start the isolated hot-reload resolver and ephemeral test database' \
 	  'dev-down       Stop the isolated development stack' \
 	  'dev-logs       Follow the isolated development resolver logs'
@@ -68,6 +74,12 @@ proxy-origin:
 
 lint:
 	$(RUFF) check .
+
+# Only the three application services: Jellyfin is defined in the same file and
+# is not part of a release, so it stays out of a deploy.
+deploy:
+	@printf 'Deploying Adult Hub %s\n' '$(APP_VERSION)'
+	docker compose up -d --build resolver sync backup
 
 dev:
 	docker compose -f docker-compose.dev.yml -p adult-hub-dev up --build -d
