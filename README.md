@@ -205,7 +205,7 @@ The private `.env` of the deployment this repository serves deliberately differs
 | `TELEGRAM_STREAM_CACHE_TTL_SECONDS` | 180 | 120 | Matches the larger cache so reused blocks survive a second seek. |
 | `ADMIN_PUBLIC` | `true` | `false` | The Admin v2 UI is reachable through the reverse proxy; writes still require the `ADMIN_WRITE_TOKEN` and the same-origin checks. |
 | `RESOLVER_TRUSTED_PROXY_IPS` | `127.0.0.1,::1,172.29.0.1` | `127.0.0.1,::1` | Adds the Docker network address of the local reverse proxy so client IPs survive `X-Forwarded-For`. |
-| `APP_VERSION` | `0.3.3` | `dev` | Tags images with the release they were built from instead of `dev`. |
+| `APP_VERSION` | `0.3.4` | `dev` | Tags images with the release they were built from instead of `dev`. |
 
 ---
 
