@@ -170,6 +170,35 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
   assert.doesNotMatch(textOf(get('#detailContent')), /Stale detail failed/,
     'a delayed error for the prior video must not replace the current detail state');
 
+  // An action that refreshes the drawer after its own request finished must not
+  // resurrect a detail view the user dismissed while that request was in flight.
+  state.detailId = 'artwork-video';
+  const artworkDetail = deferred();
+  const detailSignals = [];
+  let detailFetches = 0;
+  context.getJson = async (_url, signal) => {
+    detailSignals.push(signal);
+    detailFetches += 1;
+    return artworkDetail.promise;
+  };
+  context.renderDetail = video => { state.renderedDetail = video; };
+  const artworkLoad = loadDetail('artwork-video');
+  assert.equal(get('#detailOverlay').open, true, 'an opened detail shows its loading drawer');
+  runSync('closeDetailVisual')();
+  state.detailId = null;
+  artworkDetail.resolve({ id: 'artwork-video', title: 'Artwork Video' });
+  await artworkLoad;
+  assert.equal(detailSignals.length, 1);
+  assert.equal(detailSignals[0].aborted, true,
+    'closing the drawer aborts the detail request it started');
+  await loadDetail('artwork-video');
+  assert.equal(detailFetches, 1,
+    'a refresh for a closed detail must not fetch the video again');
+  assert.equal(get('#detailOverlay').open, false,
+    'a finished artwork task must not reopen the dismissed VIDEO DETAILS drawer');
+  assert.equal(state.renderedDetail, undefined,
+    'the abandoned refresh must not render into the closed drawer');
+
   // A slower old preview must not replace a newer availability selection.
   const availabilityA = deferred(), availabilityB = deferred();
   const availabilityCalls = [availabilityA, availabilityB];

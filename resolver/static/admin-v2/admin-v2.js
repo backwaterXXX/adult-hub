@@ -1483,6 +1483,10 @@
   }
   function closeDetailVisual() {
     state.availabilityHistorySeq += 1;
+    if (state.detailAbort) {
+      state.detailAbort.abort();
+      state.detailAbort = null;
+    }
     const dialog = $('#detailOverlay');
     if (dialog.open) closeDialog(dialog);
   }
@@ -1694,6 +1698,12 @@
     return hours ? `${hours} hour${hours === 1 ? '' : 's'}${minutes ? ` ${minutes} min` : ''}` : `${minutes} min`;
   }
   async function loadDetail(id) {
+    // An action button refreshes the drawer after its own request finishes, and
+    // the drawer may have been closed while that request was in flight. Bailing
+    // out before touching the dialog keeps a finished task from resurrecting a
+    // detail view the user dismissed, where its loading banner would be stranded
+    // by the stale-response guard below.
+    if (state.detailId !== id) return;
     if (state.detailAbort) state.detailAbort.abort();
     const controller = new AbortController(); state.detailAbort = controller;
     const dialog = $('#detailOverlay');
