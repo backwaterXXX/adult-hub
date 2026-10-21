@@ -49,6 +49,56 @@ def require_url() -> str:
     return TEST_URL
 
 
+# A distinct session-level advisory lock (the migration lock is 0xAD01780B).
+TEST_RUN_LOCK_ID = 0xAD017BE0
+# Test modules import this file both as `pg_helper` and `tests.pg_helper`, so
+# the holder registry lives on builtins; a module-level global would let the
+# two copies fight over the same advisory lock inside one process.
+_REGISTRY_KEY = "_adulthub_test_run_locks"
+
+
+def _registry() -> dict:
+    import builtins
+    holder = getattr(builtins, _REGISTRY_KEY, None)
+    if holder is None:
+        holder = {}
+        setattr(builtins, _REGISTRY_KEY, holder)
+    return holder
+
+
+def _acquire_run_guard(url: str) -> None:
+    """Refuse a second test process sharing one TEST_DATABASE_URL.
+
+    Parallel suites truncate and deadlock each other's tables; a clear
+    message here beats hours of debugging cross-run failures.
+    """
+    registry = _registry()
+    if url in registry:
+        return
+    conn = db.connect(url)
+    conn.autocommit = True
+    row = conn.execute("SELECT pg_try_advisory_lock(%s)", (TEST_RUN_LOCK_ID,)).fetchone()
+    if not row or not bool(row[0]):
+        conn.close()
+        raise RuntimeError(
+            "Another test process already holds this TEST_DATABASE_URL. "
+            "Run one test suite at a time per database."
+        )
+    registry[url] = conn
+    import atexit
+    atexit.register(_release_run_guard)
+
+
+def _release_run_guard() -> None:
+    for url, conn in list(_registry().items()):
+        try:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (TEST_RUN_LOCK_ID,))
+            conn.close()
+        except Exception:
+            pass
+        del _registry()[url]
+
+
 from common.migrations import APPLICATION_TABLES, apply_migrations
 
 _TABLES = list(APPLICATION_TABLES)
@@ -79,6 +129,7 @@ class PgTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.db_url = require_url()
+        _acquire_run_guard(cls.db_url)
         initial_connection = init_test_db(cls.db_url)
         initial_connection.close()
 
