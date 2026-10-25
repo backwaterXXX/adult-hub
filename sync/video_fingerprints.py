@@ -59,11 +59,16 @@ class FingerprintBudget:
                  resolver_url: Optional[str] = None,
                  max_bytes_per_second: Optional[int | Callable[[], int]] = None,
                  allow_rate_above_configured: bool = False,
-                 cache_dir: Optional[str] = None, cache_id: Optional[str] = None):
+                 cache_dir: Optional[str] = None, cache_id: Optional[str] = None,
+                 variant: Optional[str] = None):
         base = (resolver_url or os.environ.get("RESOLVER_API_URL") or "http://resolver:8090").rstrip("/")
         self.base_url = base if base.endswith("/admin") else base + "/admin"
         self.video_id = video_id
-        self.stream_url = f"{self.base_url}/play/{quote(video_id, safe=':-_')}/stream?mode=proxy"
+        self.variant = str(variant).strip() if variant and str(variant).strip().lower() != "original" else None
+        stream_query = "mode=proxy"
+        if self.variant:
+            stream_query += f"&variant={quote(self.variant, safe='')}"
+        self.stream_url = f"{self.base_url}/play/{quote(video_id, safe=':-_')}/stream?{stream_query}"
         self.budget = max(0, int(budget))
         self.bytes_read = 0
         self.total_size: Optional[int] = None
@@ -75,9 +80,12 @@ class FingerprintBudget:
         self.cache_dir = None
         self.usage_path = None
         if cache_dir and cache_id:
-            identity = hashlib.sha256(
-                f"{cache_id}\0{video_id}".encode("utf-8")
-            ).hexdigest()
+            cache_identity = (
+                f"{cache_id}\0{video_id}\0{self.variant}"
+                if self.variant
+                else f"{cache_id}\0{video_id}"
+            )
+            identity = hashlib.sha256(cache_identity.encode("utf-8")).hexdigest()
             self.cache_dir = os.path.join(cache_dir, identity)
             os.makedirs(self.cache_dir, mode=0o700, exist_ok=True)
             self.usage_path = os.path.join(self.cache_dir, "usage.json")
@@ -265,7 +273,8 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
                    allow_rate_above_configured: bool = False,
                    cache_dir: Optional[str] = None, cache_id: Optional[str] = None,
                    include_thumbnail: bool = False,
-                   size_sink: Optional[Callable[[int], None]] = None):
+                   size_sink: Optional[Callable[[int], None]] = None,
+                   variant: Optional[str] = "auto"):
     """Generate the Stash video pHash using a strict cumulative range budget.
 
     FFmpeg seeks separately to the 25 frames in Stash's 5x5 montage. Its HTTP
@@ -292,6 +301,22 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
     if not ffmpeg:
         raise RuntimeError("ffmpeg is required for pHash generation")
 
+    chosen_variant = None
+    original_size = None
+    resolved_base = (resolver_url or os.environ.get("RESOLVER_API_URL") or "http://resolver:8090").rstrip("/")
+    api_base = resolved_base if resolved_base.endswith("/admin") else resolved_base + "/admin"
+
+    if variant == "auto":
+        try:
+            from common.video_variants import fetch_and_select_best_variant_with_meta
+            chosen_variant, original_size = fetch_and_select_best_variant_with_meta(
+                api_base, video_id, purpose="phash",
+            )
+        except Exception:
+            chosen_variant = None
+    elif variant and str(variant).strip().lower() != "original":
+        chosen_variant = str(variant).strip()
+
     budget = FingerprintBudget(
         video_id,
         budget=byte_budget,
@@ -300,13 +325,21 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
         allow_rate_above_configured=allow_rate_above_configured,
         cache_dir=cache_dir,
         cache_id=cache_id,
+        variant=chosen_variant,
     )
     budget.load_size()
-    if size_sink is not None and budget.total_size is not None:
-        try:
-            size_sink(int(budget.total_size))
-        except Exception:
-            pass
+    if size_sink is not None:
+        if chosen_variant is not None:
+            if original_size is not None and original_size > 0:
+                try:
+                    size_sink(int(original_size))
+                except Exception:
+                    pass
+        elif budget.total_size is not None:
+            try:
+                size_sink(int(budget.total_size))
+            except Exception:
+                pass
     virtual_mp4 = _FaststartMP4(budget)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RangeHandler)
     server.fingerprint_budget = budget

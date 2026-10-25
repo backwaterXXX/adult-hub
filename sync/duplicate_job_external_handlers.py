@@ -120,8 +120,17 @@ def execute_external_operation(action, conn, job_id, payload, media_dir, service
         if dest.is_symlink():
             raise ValueError("Artwork destination must not be a symlink.")
         base = _core.os.getenv("RESOLVER_API_URL", "http://resolver:8090").rstrip("/")
+        variant = payload.get("variant")
+        if not variant or variant == "auto":
+            from common.video_variants import fetch_and_select_best_variant
+            variant = fetch_and_select_best_variant(base, video_id, purpose="artwork")
+        elif str(variant).lower() == "original":
+            variant = None
+
+        stream_query = f"?variant={quote(str(variant), safe='')}" if variant else ""
+        stream_url = f"{base}/play/{quote(video_id, safe='')}/stream{stream_query}"
         success, error = extract_video_frame(
-            f"{base}/play/{quote(video_id, safe='')}/stream", dest, offset_seconds=offset,
+            stream_url, dest, offset_seconds=offset,
         )
         if not success:
             raise RuntimeError(f"Failed to generate artwork: {error}")
@@ -129,7 +138,8 @@ def execute_external_operation(action, conn, job_id, payload, media_dir, service
             conn, job_id, "artwork_generated", services,
         )
         return {"local_state": "artwork_generated",
-                "jellyfin_refresh": "updated" if refreshed else "failed"}, True
+                "jellyfin_refresh": "updated" if refreshed else "failed",
+                "variant": str(variant or "original")}, True
 
     if action == "artwork_download":
         video_id = payload.get("video_id")
