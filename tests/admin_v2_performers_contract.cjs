@@ -59,14 +59,22 @@ function find(root, predicate) {
 function deferred() { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; }
 
 (async () => {
-  const ids = ['performersFeedback', 'performerProposalRows', 'performersCount', 'performersState', 'performersRefresh', 'performerProposalPagination',
+  const ids = ['performersFeedback', 'performerProposalRows', 'performersCount', 'performersState', 'performersRefresh', 'performersReconcile', 'performerProposalPagination',
     'fuzzyCategory', 'fuzzyRows', 'fuzzyPagination', 'fuzzyPageInfo', 'fuzzyPrev', 'fuzzyNext', 'fuzzyFeedback',
     'fuzzyThreshold', 'fuzzyScan', 'fuzzyReviewSelected', 'fuzzySelectionStatus', 'fuzzyMergeDialog', 'fuzzyMergeContent', 'fuzzyMergeActions', 'fuzzyMergeClose'];
   const elements = Object.fromEntries(ids.map(id => [id, new Element(id === 'fuzzyMergeDialog' ? 'dialog' : 'div')]));
   elements.fuzzyThreshold.value = '0.88';
   const calls = [];
   const catalogSelects = [];
-  const proposals = Array.from({ length: 51 }, (_, index) => ({ id: index + 1, title: `Proposal ${index + 1}` }));
+  const proposals = Array.from({ length: 51 }, (_, index) => ({
+    key: `group-${index + 1}`,
+    reason: 'uncatalogued_credit',
+    candidate: `Proposal ${index + 1}`,
+    proposals: 1,
+    videos: 1,
+    matched_text: `Text ${index + 1}`,
+    example_title: `Film ${index + 1}`,
+  }));
   let failReview = false;
   let deferReview = false, rejectDeferredReview;
   let navigateListener;
@@ -82,9 +90,9 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
       ...createAdminV2Helpers(document),
       async getJson(path) {
         calls.push({ method: 'GET', path });
-        if (path.includes('/proposals?')) {
-          const offset = Number(new URLSearchParams(path.split('?')[1]).get('offset'));
-          return { items: proposals.slice(offset, offset + 50), total: proposals.length, offset, limit: 50 };
+        if (path.includes('/proposal-groups?') || path.includes('/proposals?')) {
+          const offset = Number(new URLSearchParams(path.split('?')[1]).get('offset') || 0);
+          return { items: proposals.slice(offset, offset + 50), total: proposals.length, pending: proposals.length, offset, limit: 50 };
         }
         if (path.includes('/catalog?')) return { items: [] };
         return { ok: true, stats: { total_unique_performers: 4, total_groups: 2 }, groups: [{
@@ -104,6 +112,15 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
       },
       async postJson(path, payload) {
         calls.push({ method: 'POST', path, payload });
+        const groupMatch = path.match(/\/proposal-groups\/([^/]+)\/([^/]+)$/);
+        if (groupMatch) {
+          if (deferReview) await new Promise((_, reject) => { rejectDeferredReview = () => reject(new Error('Review service unavailable.')); });
+          if (failReview) { document.activeElement = document.body; throw new Error('Review service unavailable.'); }
+          const groupKey = decodeURIComponent(groupMatch[2]);
+          const index = proposals.findIndex(item => item.key === groupKey);
+          if (index >= 0) proposals.splice(index, 1);
+          return { ok: true, reviewed: 1 };
+        }
         const reviewMatch = path.match(/\/proposals\/(\d+)$/);
         if (reviewMatch) {
           if (deferReview) await new Promise((_, reject) => { rejectDeferredReview = () => reject(new Error('Review service unavailable.')); });
@@ -111,6 +128,9 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
           const index = proposals.findIndex(item => item.id === Number(reviewMatch[1]));
           if (index >= 0) proposals.splice(index, 1);
           return { ok: true, refresh_pending: true };
+        }
+        if (path.endsWith('/proposals/reconcile')) {
+          return { processed: 0, resolved: 0, after_id: 0, has_more: false };
         }
         if (path.endsWith('/operations/preview')) return { ok: true, plan_id: payload.alias === 'Alpha' ? 'plan-1' : `plan-${payload.alias}`, items: [{
           alias: payload.alias, canonical: payload.canonical, alias_videos: payload.alias === 'Alpha' ? 2 : 1, canonical_videos: 3,
@@ -128,50 +148,50 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
     location: { hash: '' }, setTimeout, clearTimeout, encodeURIComponent, URLSearchParams };
   vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/performers.js', 'utf8'), context);
   await elements.performersRefresh.listeners.click();
-  assert.match(calls[0].path, /\/proposals\?limit=50&offset=0$/);
-  assert.equal(elements.performersCount.textContent, '51 pending');
+  assert.match(calls[0].path, /\/proposal-groups\?limit=50&offset=0$/);
+  assert.match(elements.performersCount.textContent, /^51 pending · 51 name groups$/);
   const nextPage = elements.performerProposalPagination.children.find(item => item.textContent === 'Next');
   await nextPage.listeners.click();
-  assert.match(calls.find(call => call.method === 'GET' && /\/proposals\?limit=50&offset=50$/.test(call.path))?.path || '',
-    /\/proposals\?limit=50&offset=50$/);
-  assert.match(elements.performerProposalPagination.children[0].textContent, /Showing 51–51 of 51/);
+  assert.match(calls.find(call => call.method === 'GET' && /\/proposal-groups\?limit=50&offset=50$/.test(call.path))?.path || '',
+    /\/proposal-groups\?limit=50&offset=50$/);
+  assert.match(elements.performerProposalPagination.children[0].textContent, /Showing 51–51 name groups/);
   let card = elements.performerProposalRows.children[0];
-  assert.equal(card.dataset.proposalId, 51);
+  assert.equal(card.dataset.proposalKey, 'group-51');
   const originalGetJson = window.AdminV2.getJson;
   const stalePage = deferred(), currentPage = deferred();
   let pageRequest = 0;
-  window.AdminV2.getJson = path => path.includes('/proposals?')
+  window.AdminV2.getJson = path => path.includes('/proposal-groups?') || path.includes('/proposals?')
     ? (pageRequest++ === 0 ? stalePage.promise : currentPage.promise)
     : originalGetJson(path);
   const previous = elements.performerProposalPagination.children.find(item => item.textContent === 'Previous');
   const firstPageRequest = previous.listeners.click();
   const secondPageRequest = previous.listeners.click();
-  currentPage.resolve({ items: proposals.slice(0, 50), total: proposals.length, offset: 0, limit: 50 });
+  currentPage.resolve({ items: proposals.slice(0, 50), total: proposals.length, pending: proposals.length, offset: 0, limit: 50 });
   await secondPageRequest;
-  stalePage.resolve({ items: [{ id: 999, title: 'Stale proposal' }], total: 1, offset: 0, limit: 50 });
+  stalePage.resolve({ items: [{ key: 'group-999', reason: 'uncatalogued_credit', candidate: 'Stale proposal', proposals: 1, videos: 1 }], total: 1, pending: 1, offset: 0, limit: 50 });
   await firstPageRequest;
-  assert.equal(elements.performerProposalRows.children[0].dataset.proposalId, 1,
+  assert.equal(elements.performerProposalRows.children[0].dataset.proposalKey, 'group-1',
     'a delayed proposal page must not replace the result of a newer page request');
   window.AdminV2.getJson = originalGetJson;
   await elements.performerProposalPagination.children.find(item => item.textContent === 'Next').listeners.click();
-  assert.equal(elements.performerProposalRows.children[0].dataset.proposalId, 51);
+  assert.equal(elements.performerProposalRows.children[0].dataset.proposalKey, 'group-51');
   card = elements.performerProposalRows.children[0];
   const localInput = card.querySelectorAll('input').find(input => input.type === 'text'); localInput.value = 'Local performer';
-  const approve = card.querySelectorAll('button').find(button => button.textContent === 'Approve');
+  const approve = card.querySelectorAll('button').find(button => button.textContent.startsWith('Apply to next'));
   approve.focus();
   await approve.listeners.click();
-  assert.match(calls.find(call => call.path.endsWith('/proposals/51')).path, /\/proposals\/51$/);
-  assert.equal(calls.find(call => call.path.endsWith('/proposals/51')).payload.canonical, 'Local performer');
+  assert.match(calls.find(call => call.path.includes('/proposal-groups/uncatalogued_credit/group-51')).path, /\/proposal-groups\/uncatalogued_credit\/group-51$/);
+  assert.equal(calls.find(call => call.path.includes('/proposal-groups/uncatalogued_credit/group-51')).payload.canonical, 'Local performer');
   card = elements.performerProposalRows.children.at(-1);
-  assert.equal(card.dataset.proposalId, 50, 'after removing the only item on page two, the prior page is restored');
+  assert.equal(card.dataset.proposalKey, 'group-50', 'after removing the only item on page two, the prior page is restored');
   assert.equal(document.activeElement, card.querySelector('input'), 'focus moves to the nearest remaining proposal after a page-boundary removal');
-  const reject = card.querySelectorAll('button').find(button => button.textContent === 'Reject');
+  const reject = card.querySelectorAll('button').find(button => button.textContent.startsWith('Reject next'));
   reject.focus();
   await reject.listeners.click();
   card = elements.performerProposalRows.children.at(-1);
-  assert.equal(card.dataset.proposalId, 49);
+  assert.equal(card.dataset.proposalKey, 'group-49');
   assert.equal(document.activeElement, card.querySelector('input'), 'focus moves to the next proposal after rejection');
-  const failureButton = card.querySelectorAll('button').find(button => button.textContent === 'Reject');
+  const failureButton = card.querySelectorAll('button').find(button => button.textContent.startsWith('Reject next'));
   failureButton.focus(); failReview = true;
   await failureButton.listeners.click();
   assert.equal(document.activeElement, failureButton, 'failed review leaves focus on the retry action');
@@ -191,7 +211,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   assert.equal(localName.attributes['aria-label'], 'New local performer name');
   catalogSelect.disabled = true;
   localName.value = '';
-  const proposalApprove = find(elements.performerProposalRows, item => item.tagName === 'button' && item.textContent === 'Approve');
+  const proposalApprove = find(elements.performerProposalRows, item => item.tagName === 'button' && item.textContent.startsWith('Apply to next'));
   await proposalApprove.listeners.click();
   assert.equal(document.activeElement, localName,
     'when catalogue search has no selectable match, an invalid approval focuses the active local-name field');
@@ -354,7 +374,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   const oldCatalogLoad = deferred(), currentCatalogLoad = deferred();
   let proposalLoadCount = 0, catalogLoadCount = 0;
   window.AdminV2.getJson = path => {
-    if (path.includes('/proposals?')) return proposalLoadCount++ === 0 ? oldProposals.promise : currentProposals.promise;
+    if (path.includes('/proposal-groups?') || path.includes('/proposals?')) return proposalLoadCount++ === 0 ? oldProposals.promise : currentProposals.promise;
     if (path.includes('/catalog?')) return catalogLoadCount++ === 0 ? oldCatalogLoad.promise : currentCatalogLoad.promise;
     throw new Error(`Unexpected performer refresh request: ${path}`);
   };
@@ -362,15 +382,15 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   navigateListener({ detail: { route: 'library' } });
   navigateListener({ detail: { route: 'performers' } });
   assert.equal(proposalLoadCount, 2, 'returning to Performers starts a fresh proposal request while the old one is pending');
-  currentProposals.resolve({ items: [{ id: 901, title: 'Current re-entry proposal' }], total: 1, offset: 0, limit: 50 });
+  currentProposals.resolve({ items: [{ key: 'group-901', reason: 'uncatalogued_credit', candidate: 'Current re-entry proposal', proposals: 1, videos: 1 }], total: 1, pending: 1, offset: 0, limit: 50 });
   currentCatalogLoad.resolve({ items: [] });
   await new Promise(resolve => setImmediate(resolve));
-  oldProposals.resolve({ items: [{ id: 902, title: 'Stale re-entry proposal' }], total: 1, offset: 0, limit: 50 });
+  oldProposals.resolve({ items: [{ key: 'group-902', reason: 'uncatalogued_credit', candidate: 'Stale re-entry proposal', proposals: 1, videos: 1 }], total: 1, pending: 1, offset: 0, limit: 50 });
   oldCatalogLoad.resolve({ items: [] });
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(elements.performerProposalRows.children[0].dataset.proposalId, 901,
+  assert.equal(elements.performerProposalRows.children[0].dataset.proposalKey, 'group-901',
     'a late proposal load from before navigation cannot overwrite the refreshed queue');
-  assert.match(elements.performersFeedback.textContent, /Review each detected name/,
+  assert.match(elements.performersFeedback.textContent, /proposals grouped by repeated name/,
     'the stale load cannot replace feedback from the latest queue request');
   process.stdout.write('PASS: performer search and paging reject stale responses; review focus and explicit fuzzy-merge consent remain verified\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

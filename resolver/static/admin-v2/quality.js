@@ -59,14 +59,18 @@
     const coverage = summary.fingerprint_coverage;
     const overview = $('#qualityOverviewCards');
     const statusLine = $('#qualityOverviewStatus');
-    overview.replaceChildren();
-    if (summary.status !== 'ready') {
-      statusLine.textContent = summary.current_audit_state === 'queued' || summary.current_audit_state === 'processing'
-        ? 'An audit is running. The previous complete report remains available in audit details.'
-        : 'No complete audit is available. Run a full audit to establish the current catalog status.';
-    } else {
-      const audit = summary.latest_audit;
-      statusLine.textContent = `Last complete audit: ${when(audit.created_at)} · checked ${Number(audit.checked || 0).toLocaleString('en-US')} of ${Number(audit.total || 0).toLocaleString('en-US')} videos.`;
+    if (overview) overview.replaceChildren();
+    if (statusLine) {
+      if (summary.status !== 'ready') {
+        statusLine.textContent = summary.current_audit_state === 'queued' || summary.current_audit_state === 'processing'
+          ? 'An audit is running. The previous complete report remains available in audit details.'
+          : 'No complete audit is available. Run a full audit to establish the current catalog status.';
+      } else {
+        const audit = summary.latest_audit;
+        statusLine.textContent = `Last complete audit: ${when(audit.created_at)} · checked ${Number(audit.checked || 0).toLocaleString('en-US')} of ${Number(audit.total || 0).toLocaleString('en-US')} videos.`;
+      }
+    }
+    if (overview && summary.status === 'ready') {
       const fileCount = ['missing_nfo', 'invalid_nfo', 'nfo_metadata_mismatch', 'missing_artwork']
         .reduce((total, kind) => total + Number(summary.counts?.[kind] || 0), 0);
       for (const [number, label, note, action] of [
@@ -571,8 +575,8 @@
     }
   }
 
-  $('#qualityRefresh').addEventListener('click', load);
-  $('#qualityRunOverviewAudit').addEventListener('click', () => $('#qualityRunAudit').click());
+  $('#qualityRefresh')?.addEventListener('click', load);
+  $('#qualityRunOverviewAudit')?.addEventListener('click', () => $('#qualityRunAudit')?.click());
   $('#qualityRunAudit').addEventListener('click', async () => {
     const mode = $('#qualityAuditMode').value;
     const confirmations = {

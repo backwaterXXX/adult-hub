@@ -815,9 +815,11 @@ def safe_process_duplicate_jobs_checkpoint(
         # Invariant: Unflushed in-memory video records exist! Cannot run safely now.
         return 0
     try:
+        from common.job_queue import WORKER_ACTIONS
         has_jobs = conn.execute(
             "SELECT 1 FROM video_duplicate_jobs WHERE state='queued' "
-            "AND action IN ('hide','dismiss','undo','undismiss','performer_merge','collections_refresh','quarantine','metadata_update','availability_check','catalog_full_audit','consistency_audit','metadata_quality_audit','audit_repair_nfo','audit_import_refresh','backup_create','backup_restore_test') LIMIT 1"
+            "AND action = ANY(%s) LIMIT 1",
+            (list(WORKER_ACTIONS),),
         ).fetchone()
         if not has_jobs:
             return 0

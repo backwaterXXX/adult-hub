@@ -135,39 +135,20 @@
   async function reviewGroup(item, body, card) {
     const key = `${item.reason}:${item.key}`;
     if (state.busy.has(key)) return;
+    const focusedControl = document.activeElement;
+    const focusedBeforeRequest = card.contains(focusedControl);
+    const reviewedIndex = state.rows.findIndex(row => row.key === item.key && row.reason === item.reason);
+    const originalOffset = state.proposalOffset;
     state.busy.add(key);
     card.querySelectorAll('button,input,select').forEach(control => { control.disabled = true; });
     message(body.action === 'reject' ? 'Rejecting this name group…' : 'Applying the decision to this name group…');
     try {
       const result = await post(`${API}/proposal-groups/${encodeURIComponent(item.reason)}/${encodeURIComponent(item.key)}`, body);
+      const shouldRestoreFocus = focusedBeforeRequest
+        && (card.contains(document.activeElement) || document.activeElement === document.body);
       state.pendingTotal = Math.max(0, Number(state.pendingTotal || 0) - Number(result.reviewed || 0));
       let refreshed = await loadProposalPage(state.proposalOffset);
       if (refreshed && !state.rows.length && state.proposalOffset > 0) refreshed = await loadProposalPage(Math.max(0, state.proposalOffset - PROPOSAL_PAGE_SIZE));
-      render();
-      message(`${body.action === 'reject' ? 'Rejected' : 'Reviewed'} ${result.reviewed} proposals in this group.`);
-    } catch (error) {
-      message(errorText(error), 'error');
-      card.querySelectorAll('button,input,select').forEach(control => { control.disabled = false; });
-    } finally { state.busy.delete(key); }
-  }
-  async function review(id, body, card) {
-    if (state.busy.has(id)) return;
-    const focusedControl = document.activeElement;
-    const focusedBeforeRequest = card.contains(focusedControl);
-    const reviewedIndex = state.rows.findIndex(item => String(item.id) === String(id));
-    const originalOffset = state.proposalOffset;
-    state.busy.add(id);
-    card.querySelectorAll('button,input,select').forEach(control => { control.disabled = true; });
-    message(body.action === 'reject' ? 'Rejecting proposal…' : 'Saving performer match…');
-    try {
-      const result = await post(`${API}/proposals/${encodeURIComponent(id)}`, body);
-      const shouldRestoreFocus = focusedBeforeRequest
-        && (card.contains(document.activeElement) || document.activeElement === document.body);
-      state.rows = state.rows.filter(item => String(item.id) !== String(id));
-      state.proposalTotal = Math.max(0, state.proposalTotal - 1);
-      if (!state.rows.length && state.proposalOffset > 0) {
-        await loadProposalPage(Math.max(0, state.proposalOffset - PROPOSAL_PAGE_SIZE));
-      }
       render();
       if (shouldRestoreFocus) {
         const focusIndex = state.proposalOffset < originalOffset
@@ -175,16 +156,14 @@
           : Math.min(reviewedIndex, state.rows.length - 1);
         focusProposal(focusIndex);
       }
-      message(body.action === 'reject' ? 'Proposal rejected.' : result.refresh_pending === true
-        ? 'Proposal approved. Metadata refresh queued.'
-        : 'Proposal approved. Metadata refresh could not be queued; refresh the video manually.');
+      message(`${body.action === 'reject' ? 'Rejected' : 'Reviewed'} ${result.reviewed} proposals in this group.`);
     } catch (error) {
       const shouldRestoreFocus = focusedBeforeRequest
         && (card.contains(document.activeElement) || document.activeElement === document.body);
       message(errorText(error), 'error');
       card.querySelectorAll('button,input,select').forEach(control => { control.disabled = false; });
       if (shouldRestoreFocus && focusedControl && card.contains(focusedControl)) focusedControl.focus({ preventScroll: true });
-    } finally { state.busy.delete(id); }
+    } finally { state.busy.delete(key); }
   }
   function focusProposal(index) {
     const cards = $('#performerProposalRows').querySelectorAll('.performer-proposal');
