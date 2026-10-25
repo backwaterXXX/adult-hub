@@ -30,7 +30,7 @@
   function render() {
     const rows = $('#performerProposalRows');
     rows.replaceChildren();
-    $('#performersCount').textContent = `${state.proposalTotal} pending`;
+    $('#performersCount').textContent = `${Number(state.pendingTotal || 0).toLocaleString('en-US')} pending · ${state.proposalTotal.toLocaleString('en-US')} name groups`;
     renderProposalPagination();
     $('#performersState').hidden = state.rows.length > 0;
     if (!state.rows.length) {
@@ -39,7 +39,7 @@
       empty.replaceChildren(node('span', 'empty-icon', '✓'), node('strong', '', 'No pending proposals'), node('span', '', 'New performer candidates from Telegram will appear here.'));
       return;
     }
-    for (const proposal of state.rows) rows.append(renderProposal(proposal));
+    for (const proposal of state.rows) rows.append(renderProposalGroup(proposal));
   }
   function renderProposalPagination() {
     const host = $('#performerProposalPagination');
@@ -48,7 +48,7 @@
     if (host.hidden) return;
     const start = state.proposalOffset + 1;
     const end = Math.min(state.proposalOffset + state.rows.length, state.proposalTotal);
-    host.append(node('span', 'catalog-feedback', `Showing ${start}–${end} of ${state.proposalTotal}`));
+    host.append(node('span', 'catalog-feedback', `Showing ${start}–${end} name groups`));
     const previous = node('button', 'button button-quiet', 'Previous');
     previous.type = 'button'; previous.disabled = state.proposalOffset === 0;
     previous.addEventListener('click', () => loadProposalPage(Math.max(0, state.proposalOffset - PROPOSAL_PAGE_SIZE))
@@ -59,37 +59,25 @@
       .then(render).catch(error => message(errorText(error), 'error')));
     host.append(previous, next);
   }
-  function renderProposal(item) {
+  function renderProposalGroup(item) {
     const card = node('article', 'performer-proposal');
-    card.dataset.proposalId = item.id;
+    card.dataset.proposalKey = item.key;
     const heading = node('div', 'performer-proposal-heading');
     const title = node('div', 'performer-proposal-title');
-    title.append(node('p', 'eyebrow', 'Telegram title'), node('h2', '', item.title || 'Untitled video'));
-    title.title = item.title || '';
-    heading.append(title, node('span', 'status-pill pill-warning', 'Needs review'));
+    const reasonLabels = { uncatalogued_credit: 'Unknown name', possible_typo: 'Possible spelling variant', ambiguous_catalog_alias: 'Ambiguous catalogue alias' };
+    title.append(node('p', 'eyebrow', `${item.videos} videos · ${item.proposals} proposals`), node('h2', '', item.candidate || 'Unknown name'));
+    title.title = item.example_title || '';
+    heading.append(title, node('span', 'status-pill pill-warning', reasonLabels[item.reason] || item.reason));
     const details = node('dl', 'performer-proposal-details');
-    const reasonLabels = {
-      uncatalogued_credit: 'Name-like credit not found in the catalogue',
-      possible_typo: 'Possible spelling variant of a catalogue name',
-      ambiguous_catalog_alias: 'This text matches more than one catalogue name',
-    };
     const local = document.createElement('input');
     local.type = 'text'; local.maxLength = 160; local.placeholder = 'Canonical performer name';
     local.setAttribute('aria-label', 'New local performer name');
     for (const [label, value, key] of [
-      ['Suggested performer name', item.candidate, 'candidate'],
-      ['Detected text in ' + (item.source_field || 'source'), item.matched_text, 'matched'],
-      ['Why it needs review', reasonLabels[item.reason] || item.reason, 'reason'],
+      ['Detected text', item.matched_text, 'matched'],
+      ['Example title', item.example_title, 'reason'],
     ]) {
       const group = node('div', key ? `performer-detail-${key}` : '');
       const dd = node('dd', '', value || '—');
-      if (key === 'candidate' && item.candidate) {
-        dd.title = 'Click to use as local name';
-        dd.addEventListener('click', () => {
-          local.value = item.candidate;
-          local.focus();
-        });
-      }
       group.append(node('dt', '', label), dd);
       details.append(group);
     }
@@ -126,9 +114,10 @@
     localField.append(local);
     form.append(catalogField, localField);
     const actions = node('div', 'performer-proposal-actions');
-    const reject = node('button', 'button button-quiet', 'Reject'); reject.type = 'button';
-    const approve = node('button', 'button button-primary', 'Approve'); approve.type = 'button';
-    reject.addEventListener('click', () => review(item.id, { action: 'reject' }, card));
+    const batchSize = Math.min(Number(item.proposals) || 0, 100);
+    const reject = node('button', 'button button-quiet', `Reject next ${batchSize}`); reject.type = 'button';
+    const approve = node('button', 'button button-primary', `Apply to next ${batchSize}`); approve.type = 'button';
+    reject.addEventListener('click', () => reviewGroup(item, { action: 'reject' }, card));
     approve.addEventListener('click', () => {
       const performerId = select.value;
       const canonical = local.value.trim();
@@ -137,11 +126,29 @@
         (select.disabled ? local : select).focus();
         return;
       }
-      return review(item.id, performerId ? { action: 'approve', performer_id: performerId } : { action: 'approve', canonical }, card);
+      return reviewGroup(item, performerId ? { action: 'approve', performer_id: performerId } : { action: 'approve', canonical }, card);
     });
     actions.append(reject, approve);
     card.append(heading, details, form, actions);
     return card;
+  }
+  async function reviewGroup(item, body, card) {
+    const key = `${item.reason}:${item.key}`;
+    if (state.busy.has(key)) return;
+    state.busy.add(key);
+    card.querySelectorAll('button,input,select').forEach(control => { control.disabled = true; });
+    message(body.action === 'reject' ? 'Rejecting this name group…' : 'Applying the decision to this name group…');
+    try {
+      const result = await post(`${API}/proposal-groups/${encodeURIComponent(item.reason)}/${encodeURIComponent(item.key)}`, body);
+      state.pendingTotal = Math.max(0, Number(state.pendingTotal || 0) - Number(result.reviewed || 0));
+      let refreshed = await loadProposalPage(state.proposalOffset);
+      if (refreshed && !state.rows.length && state.proposalOffset > 0) refreshed = await loadProposalPage(Math.max(0, state.proposalOffset - PROPOSAL_PAGE_SIZE));
+      render();
+      message(`${body.action === 'reject' ? 'Rejected' : 'Reviewed'} ${result.reviewed} proposals in this group.`);
+    } catch (error) {
+      message(errorText(error), 'error');
+      card.querySelectorAll('button,input,select').forEach(control => { control.disabled = false; });
+    } finally { state.busy.delete(key); }
   }
   async function review(id, body, card) {
     if (state.busy.has(id)) return;
@@ -188,13 +195,13 @@
   async function load() {
     const sequence = ++state.loadSeq;
     state.loading = true;
-    message('Loading performer proposals…');
+    message('Loading repeated performer names…');
     try {
       state.proposalOffset = 0;
       const proposalData = await loadProposalPage(0);
       if (sequence !== state.loadSeq || !proposalData) return;
       render();
-      message(proposalData.total ? 'Review each detected name before adding it to the catalogue.' : 'Proposal queue is up to date.');
+      message(proposalData.pending ? `${proposalData.pending} proposals grouped by repeated name. Decisions apply to at most 100 proposals at a time.` : 'Proposal queue is up to date.');
     } catch (error) {
       if (sequence !== state.loadSeq) return;
       message(errorText(error), 'error');
@@ -206,13 +213,41 @@
   async function loadProposalPage(offset) {
     const sequence = ++state.proposalSeq;
     let data;
-    try { data = await get(`${API}/proposals?limit=${PROPOSAL_PAGE_SIZE}&offset=${offset}`); }
+    try { data = await get(`${API}/proposal-groups?limit=${PROPOSAL_PAGE_SIZE}&offset=${offset}`); }
     catch (error) { if (sequence !== state.proposalSeq) return null; throw error; }
     if (sequence !== state.proposalSeq) return null;
     state.rows = Array.isArray(data.items) ? data.items : [];
     state.proposalTotal = Number.isInteger(data.total) ? data.total : state.rows.length;
+    state.pendingTotal = Number.isInteger(data.pending) ? data.pending : state.proposalTotal;
     state.proposalOffset = Number.isInteger(data.offset) ? data.offset : offset;
     return data;
+  }
+
+  async function reconcileClearMatches() {
+    const button = $('#performersReconcile');
+    if (button.disabled) return;
+    button.disabled = true;
+    let afterId = 0;
+    let processed = 0;
+    let resolved = 0;
+    let refreshError = false;
+    message('Checking pending proposals against current performer identities…');
+    try {
+      while (true) {
+        const result = await post(`${API}/proposals/reconcile`, { after_id: afterId });
+        processed += Number(result.processed || 0);
+        resolved += Number(result.resolved || 0);
+        refreshError = refreshError || result.refresh_error === true;
+        afterId = Number(result.after_id || afterId);
+        if (!result.has_more || !result.processed) break;
+        message(`Checked ${processed.toLocaleString('en-US')} proposals; resolved ${resolved.toLocaleString('en-US')} clear matches…`);
+      }
+      await load();
+      message(`Checked ${processed.toLocaleString('en-US')} proposals and resolved ${resolved.toLocaleString('en-US')} clear matches.${refreshError ? ' Some metadata refresh jobs could not be queued.' : ''} Ambiguous names remain grouped for review.`, refreshError ? 'warning' : 'status');
+    } catch (error) {
+      message(`Reconciliation stopped after ${processed.toLocaleString('en-US')} proposals. ${errorText(error)}`, 'error');
+      await load().catch(() => {});
+    } finally { button.disabled = false; }
   }
 
   function fuzzyRows() {
@@ -571,6 +606,7 @@
     }
   }
   $('#performersRefresh')?.addEventListener('click', load);
+  $('#performersReconcile')?.addEventListener('click', reconcileClearMatches);
   $('#fuzzyScan')?.addEventListener('click', scanFuzzy);
   $('#fuzzyReviewSelected')?.addEventListener('click', reviewSelectedMerges);
   $('#fuzzyCategory')?.addEventListener('change', () => { state.fuzzyOffset = 0; renderFuzzy(); });

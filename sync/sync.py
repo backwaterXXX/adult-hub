@@ -817,7 +817,7 @@ def safe_process_duplicate_jobs_checkpoint(
     try:
         has_jobs = conn.execute(
             "SELECT 1 FROM video_duplicate_jobs WHERE state='queued' "
-            "AND action IN ('hide','dismiss','undo','undismiss','performer_merge','collections_refresh','quarantine','metadata_update','availability_check','consistency_audit','metadata_quality_audit','audit_repair_nfo','audit_import_refresh','backup_create','backup_restore_test') LIMIT 1"
+            "AND action IN ('hide','dismiss','undo','undismiss','performer_merge','collections_refresh','quarantine','metadata_update','availability_check','catalog_full_audit','consistency_audit','metadata_quality_audit','audit_repair_nfo','audit_import_refresh','backup_create','backup_restore_test') LIMIT 1"
         ).fetchone()
         if not has_jobs:
             return 0

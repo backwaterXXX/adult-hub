@@ -270,7 +270,9 @@ class TestCompute(WorkerPatch):
     def test_a_non_zero_exit_is_a_retryable_generation_failure(self):
         result, _, _ = self.run_compute(FakeProcess(stdout="", returncode=1))
 
-        self.assertEqual(result, {"ok": False, "error_code": "generation_failed", "retryable": True})
+        self.assertEqual(result["error_code"], "generation_failed")
+        self.assertTrue(result["retryable"])
+        self.assertEqual(result.get("error_detail"), "Generator exited with status 1")
 
     def test_unparsable_and_non_object_output_is_rejected(self):
         for stdout in ("traceback on stdout", json.dumps("a scalar"), "null"):
@@ -425,7 +427,7 @@ class FakeQueue:
         self.heartbeats.append((db_url, job_id, token))
         return self.heartbeat_result
 
-    def finish_failure(self, db_url, job, error_code, *, retryable):
+    def finish_failure(self, db_url, job, error_code, *, retryable, error_detail=""):
         self.failures.append((db_url, job["id"], error_code, retryable))
         return True
 

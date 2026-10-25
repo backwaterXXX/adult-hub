@@ -93,6 +93,7 @@ def _serialize_video(row, *, detail: bool, local_files: dict[str, str] | None = 
         "telegram_url": _safe_telegram_post_url(get("provider"), get("id")),
         "title": get("title"),
         "duration_seconds": get("duration"),
+        "file_size_bytes": get("file_size_bytes"),
         "thumbnail": _safe_thumbnail(get("thumbnail")),
         "performers": performers if isinstance(performers, list) else [],
         "categories": categories if isinstance(categories, list) else [],

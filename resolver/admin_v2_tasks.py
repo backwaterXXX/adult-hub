@@ -14,7 +14,9 @@ _STATES = {"", "active", "queued", "processing", "done", "failed", "cancelled"}
 _PHASH_ERRORS = {
     "attempts_exhausted", "worker_restarted", "video_missing", "file_missing",
     "unsupported_format", "decode_failed", "timeout", "storage_failed",
-    "fingerprint_conflict", "generation_failed",
+    "fingerprint_conflict", "generation_failed", "daily_transfer_budget_exhausted",
+    "transfer_budget_unavailable", "byte_budget_exhausted", "source_unavailable",
+    "invalid_video",
 }
 
 
@@ -124,6 +126,7 @@ def _list_tasks(db_url: str | None, *, queue: str, state: str, action: str,
                     "processing_time_ms": int(item.get("processing_time_ms") or 0),
                     "thumbnail_ready": item.get("thumbnail_ready") is True,
                     "error_code": error_code if error_code in _PHASH_ERRORS else None,
+                    "error_detail": str(item.get("error_detail") or "")[:2000],
                     "stage": str(item["state"]), "events": [], "undo_available": False,
                 }
 

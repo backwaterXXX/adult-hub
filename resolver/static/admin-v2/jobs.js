@@ -19,7 +19,7 @@
   const ACTION_LABELS = {
     phash_generation: 'pHash and thumbnail',
     hide: 'Hide duplicates', dismiss: 'Dismiss pair', undo: 'Undo hide', undismiss: 'Undo dismissal',
-    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Telegram fingerprint scan', artwork_download: 'Download artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', sync: 'Sync'
+    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Telegram fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Catalog health audit schedule', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', sync: 'Sync'
   };
   const HISTORICAL_ACTION_LABELS = { lukayan_fingerprint: 'Telegram scene lookup', telegram_fingerprint: 'Telegram scene lookup' };
   const METADATA_PROGRESS_STAGES = new Set([
@@ -64,6 +64,7 @@
       writing_nfo: 'Writing performer metadata files',
       applying_metadata: 'Writing metadata and NFO files',
       downloading_artwork: 'Looking up and downloading scene artwork',
+      generating_artwork: 'Extracting artwork from a video frame',
       scanning_metadata: 'Scanning external metadata providers',
       metadata_pbc: 'Enriching actor metadata from PBC',
       metadata_photos: 'Checking actor portrait providers',
@@ -77,7 +78,7 @@
     return labels[safeId(value).toLowerCase()] || 'Progress details unavailable';
   }
   function localResultLabel(value) {
-    const labels = { hidden: 'Saved locally', dismissed: 'Saved locally', restored: 'Restored locally', quarantined: 'Quarantined locally', metadata_updated: 'Metadata updated locally', artwork_downloaded: 'Artwork downloaded locally', artwork_not_found: 'No matching artwork', artwork_download_failed: 'Poster download failed', artwork_lookup_failed: 'Artwork lookup failed', availability_checked: 'Availability check recorded', audit_completed: 'Audit complete' };
+    const labels = { hidden: 'Saved locally', dismissed: 'Saved locally', restored: 'Restored locally', quarantined: 'Quarantined locally', metadata_updated: 'Metadata updated locally', artwork_downloaded: 'Artwork downloaded locally', artwork_generated: 'Artwork generated locally', artwork_not_found: 'No matching artwork', artwork_download_failed: 'Poster download failed', artwork_lookup_failed: 'Artwork lookup failed', availability_checked: 'Availability check recorded', audit_completed: 'Audit complete' };
     return labels[safeId(value).toLowerCase()] || 'Not recorded';
   }
   function jellyfinResultLabel(value) {
@@ -481,6 +482,7 @@
     const section = create('section', 'detail-section');
     section.append(create('h3', '', 'pHash task details'), dl);
     if (job.error_code) section.append(create('p', 'job-detail-error', `Worker status: ${scrub(job.error_code)}`));
+    if (job.error_detail) section.append(create('pre', 'job-detail-error-detail', scrub(job.error_detail)));
     const videoId = safeId(job.video_id);
     if (videoId) {
       const link = create('a', 'button button-quiet', 'Open video');

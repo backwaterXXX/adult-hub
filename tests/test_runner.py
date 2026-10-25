@@ -160,7 +160,7 @@ class TestSyncRunnerProcess(PgTestCase):
 
         worker.assert_called_once_with()
 
-        scheduled = admin_schedules.list_schedules(self.db_url)[0]
+        scheduled = [s for s in admin_schedules.list_schedules(self.db_url) if s["id"] == schedule["id"]][0]
         self.assertEqual(scheduled["last_result"], "queued")
         job = self.conn.execute(
             "SELECT action,state FROM video_duplicate_jobs WHERE id=%s",
@@ -191,7 +191,7 @@ class TestSyncRunnerProcess(PgTestCase):
         # The first runner commits the due job and advances the schedule clock,
         # then exits before the worker claims the durable queue row.
         self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=now), 1)
-        before_restart = admin_schedules.list_schedules(self.db_url)[0]
+        before_restart = [s for s in admin_schedules.list_schedules(self.db_url) if s["id"] == schedule["id"]][0]
         job_id = before_restart["last_job_id"]
         self.assertEqual(before_restart["last_result"], "queued")
 

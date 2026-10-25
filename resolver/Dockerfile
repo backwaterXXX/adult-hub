@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY common/ ./common/
 COPY sync/video_fingerprints.py ./resolver_video_fingerprints.py
 COPY sync/fingerprint_mp4.py ./fingerprint_mp4.py
+COPY sync/thumbnails.py ./thumbnails.py
 COPY resolver/requirements.lock ./requirements.lock
 RUN pip install --no-cache-dir -r requirements.lock \
     && pip install --no-cache-dir --no-deps ./common

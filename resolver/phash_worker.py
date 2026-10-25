@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -106,8 +107,10 @@ except OSError:
     print(json.dumps({'ok': False, 'error_code': 'source_unavailable', 'retryable': True}))
 except ValueError:
     print(json.dumps({'ok': False, 'error_code': 'invalid_video', 'retryable': False}))
-except Exception:
-    print(json.dumps({'ok': False, 'error_code': 'generation_failed', 'retryable': True}))
+except Exception as exc:
+    detail = f'{type(exc).__name__}: {exc}'
+    print(json.dumps({'ok': False, 'error_code': 'generation_failed', 'retryable': True,
+                      'error_detail': detail[:2000]}))
 """
     payload = {
         "video_id": job["video_id"], "duration_us": int(job["duration_us"]),
@@ -124,13 +127,13 @@ except Exception:
     }
     process = subprocess.Popen(
         [sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, text=True, start_new_session=True,
+        stderr=subprocess.PIPE, text=True, start_new_session=True,
     )
     with _active_lock:
         global _active_process
         _active_process = process
     try:
-        raw, _ = process.communicate(json.dumps(payload), timeout=payload["timeout_seconds"] + 30)
+        raw, stderr = process.communicate(json.dumps(payload), timeout=payload["timeout_seconds"] + 30)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -142,16 +145,34 @@ except Exception:
         with _active_lock:
             _active_process = None
     if process.returncode != 0:
-        return {"ok": False, "error_code": "generation_failed", "retryable": True}
+        return {"ok": False, "error_code": "generation_failed", "retryable": True,
+                "error_detail": _safe_error_detail(stderr or f"Generator exited with status {process.returncode}")}
     try:
         result = json.loads(raw)
         if not isinstance(result, dict):
             raise ValueError
         if result.get("ok"):
             result["thumbnail"] = base64.b64decode(result["thumbnail"], validate=True)
+        elif result.get("error_detail"):
+            result["error_detail"] = _safe_error_detail(result["error_detail"])
         return result
-    except Exception:
-        return {"ok": False, "error_code": "generation_failed", "retryable": True}
+    except Exception as exc:
+        detail = f"Invalid worker result ({type(exc).__name__}: {exc}); output: {raw[:500]}"
+        return {"ok": False, "error_code": "generation_failed", "retryable": True,
+                "error_detail": _safe_error_detail(detail)}
+
+
+def _safe_error_detail(value: str) -> str:
+    """Bound diagnostics and strip URLs, filesystem paths, and control characters."""
+    detail = str(value or "")
+    detail = re.sub(r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s\"'<>]+", "[URL hidden]", detail)
+    detail = re.sub(r"(?:^|[\s=:])/(?:[\w.\-]+/)+[\w.\-]*", " [path hidden]", detail)
+    detail = re.sub(
+        r"\b(pass(?:word|wd)?|secret|token|api[_-]?key|credentials?|authorization)\b\s*[:=]\s*\S+",
+        r"\1: [hidden]", detail, flags=re.IGNORECASE,
+    )
+    detail = "".join(char if char.isprintable() or char in "\n\t" else " " for char in detail)
+    return detail.strip()[:2000]
 
 
 def _purge_expired_range_caches(now: float | None = None) -> int:
@@ -206,6 +227,7 @@ def _process(job: dict, leader) -> None:
             phash_jobs.finish_failure(
                 DB_URL, job, result.get("error_code", "generation_failed"),
                 retryable=bool(result.get("retryable")),
+                error_detail=result.get("error_detail", ""),
             )
             return
         conn = db.connect(DB_URL)
@@ -239,10 +261,12 @@ def _process(job: dict, leader) -> None:
             conn.close()
         LOGGER.info("pHash job %s completed (thumbnail saved)", job["id"])
     except Exception as exc:
-        LOGGER.error("pHash job %s failed (%s)", job["id"], type(exc).__name__)
+        error_detail = _safe_error_detail(f"{type(exc).__name__}: {exc}")
+        LOGGER.error("pHash job %s failed (%s): %s", job["id"], type(exc).__name__, error_detail)
         if not lease_lost.is_set() and not _stop.is_set():
             try:
-                phash_jobs.finish_failure(DB_URL, job, "generation_failed", retryable=True)
+                phash_jobs.finish_failure(DB_URL, job, "generation_failed", retryable=True,
+                                          error_detail=error_detail)
             except Exception:
                 LOGGER.exception("Could not record pHash job failure %s", job["id"])
     finally:

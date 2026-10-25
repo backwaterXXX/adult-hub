@@ -57,6 +57,37 @@
     const host = $('#qualitySummary');
     host.replaceChildren();
     const coverage = summary.fingerprint_coverage;
+    const overview = $('#qualityOverviewCards');
+    const statusLine = $('#qualityOverviewStatus');
+    overview.replaceChildren();
+    if (summary.status !== 'ready') {
+      statusLine.textContent = summary.current_audit_state === 'queued' || summary.current_audit_state === 'processing'
+        ? 'An audit is running. The previous complete report remains available in audit details.'
+        : 'No complete audit is available. Run a full audit to establish the current catalog status.';
+    } else {
+      const audit = summary.latest_audit;
+      statusLine.textContent = `Last complete audit: ${when(audit.created_at)} · checked ${Number(audit.checked || 0).toLocaleString('en-US')} of ${Number(audit.total || 0).toLocaleString('en-US')} videos.`;
+      const fileCount = ['missing_nfo', 'invalid_nfo', 'nfo_metadata_mismatch', 'missing_artwork']
+        .reduce((total, kind) => total + Number(summary.counts?.[kind] || 0), 0);
+      for (const [number, label, note, action] of [
+        [fileCount, 'File and artwork findings', 'Missing or inconsistent local files', 'files'],
+        [Number(summary.counts?.missing_metadata || 0), 'Optional metadata gaps', 'Missing descriptions and catalog fields', 'metadata'],
+      ]) {
+        const card = el('button', 'quality-stat quality-overview-stat', '');
+        card.type = 'button';
+        card.append(el('strong', '', number.toLocaleString('en-US')), el('span', '', label), el('small', '', note));
+        card.addEventListener('click', () => {
+          $('#qualityAdvanced').open = true;
+          $('#qualityEnrichmentPane').hidden = true;
+          $('#qualityIssuesPane').hidden = false;
+          $('#qualityKind').value = action === 'metadata' ? 'missing_metadata' : '';
+          $('#qualityField').value = '';
+          $('#qualityStatus').value = 'open'; state.offset = 0; state.selected.clear(); loadItems();
+          $('#qualityRows').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+        overview.append(card);
+      }
+    }
     if (coverage?.available) {
       const total = Number(coverage.total_videos) || 0;
       for (const [key, label, note] of [
@@ -541,6 +572,7 @@
   }
 
   $('#qualityRefresh').addEventListener('click', load);
+  $('#qualityRunOverviewAudit').addEventListener('click', () => $('#qualityRunAudit').click());
   $('#qualityRunAudit').addEventListener('click', async () => {
     const mode = $('#qualityAuditMode').value;
     const confirmations = {

@@ -143,7 +143,7 @@
         <section class="view" data-view="organize" aria-labelledby="organizeTitle" hidden>
           <div class="page-heading"><div><p class="eyebrow">CATALOG HEALTH</p><h1 id="organizeTitle">Catalog Health</h1><p id="organizeIntro" class="page-intro">Review duplicate candidates and make reversible catalog decisions.</p></div></div>
           <nav class="section-tabs catalog-health-tabs" aria-label="Catalog Health">
-            <a href="#quality?tab=issues" data-section-tab="issues">Issues &amp; Audits</a>
+            <a href="#quality?tab=issues" data-section-tab="issues">Overview</a>
             <a href="#quality?tab=enrichment" data-section-tab="enrichment">Enrichment</a>
             <a href="#quality?tab=duplicates" data-section-tab="duplicates">Duplicates</a>
             <a href="#quality?tab=quarantine" data-section-tab="quarantine">Quarantine</a>
@@ -188,14 +188,14 @@
         </section>
 
         <section class="view" data-view="performers" aria-labelledby="performersTitle" hidden>
-          <div class="page-heading"><div><p class="eyebrow">CATALOG REVIEW</p><h1 id="performersTitle">Performer proposals</h1><p class="page-intro">The Telegram title is the source video's title. A proposal is text detected in its title or caption; check the suggested name, then match it to a performer or add a local name.</p></div><button class="button button-quiet" id="performersRefresh" type="button">Refresh</button></div>
+          <div class="page-heading"><div><p class="eyebrow">CATALOG REVIEW</p><h1 id="performersTitle">Performers</h1><p class="page-intro">Resolve clear matches automatically, then review repeated names together. Ambiguous identities stay queued without guessing.</p></div><div class="jobs-filter-actions"><button class="button button-primary" id="performersReconcile" type="button">Resolve clear matches</button><button class="button button-quiet" id="performersRefresh" type="button">Refresh</button></div></div>
           <nav class="section-tabs performer-section-tabs" aria-label="Performers">
             <a href="#performers?tab=directory" data-section-tab="directory">Directory</a>
             <a href="#performers?tab=proposals" data-section-tab="proposals">Proposals</a>
             <a href="#performers?tab=matching" data-section-tab="matching">Name Matching</a>
           </nav>
           <section id="performerProposalsPane" class="panel" aria-label="Performer proposal review">
-            <div class="catalog-toolbar"><div id="performersFeedback" class="catalog-feedback" role="status">Ready to load proposals.</div><span id="performersCount" class="catalog-feedback"></span></div>
+            <div class="catalog-toolbar"><div id="performersFeedback" class="catalog-feedback" role="status">Ready to load repeated names.</div><span id="performersCount" class="catalog-feedback"></span></div>
             <div id="performersState" class="catalog-state" hidden role="status"></div>
             <div id="performerProposalRows" class="performer-proposal-list" aria-live="polite"></div>
             <nav id="performerProposalPagination" class="catalog-toolbar" aria-label="Performer proposal pages" hidden></nav>
@@ -224,12 +224,14 @@
           </nav>
           <section id="qualityView" class="panel operation-history-panel" hidden aria-labelledby="qualityTitle">
             <nav class="section-tabs catalog-health-tabs" aria-label="Catalog Health">
-              <a href="#quality?tab=issues" data-section-tab="issues">Issues &amp; Audits</a>
+              <a href="#quality?tab=issues" data-section-tab="issues">Overview</a>
               <a href="#quality?tab=enrichment" data-section-tab="enrichment">Enrichment</a>
               <a href="#quality?tab=duplicates" data-section-tab="duplicates">Duplicates</a>
               <a href="#quality?tab=quarantine" data-section-tab="quarantine">Quarantine</a>
               <a href="#performers?tab=directory" class="section-tab-crosslink">Performer Directory</a>
             </nav>
+            <section id="qualityOverview" class="quality-overview" aria-labelledby="qualityOverviewTitle"><div class="panel-heading"><div><p class="eyebrow">LATEST CHECK</p><h2 id="qualityOverviewTitle">Catalog status</h2><p id="qualityOverviewStatus" class="page-intro" role="status">Loading the latest complete audit…</p><p class="catalog-feedback">Daily metadata and file audits run automatically. Missing NFO files and available artwork are repaired in batches.</p></div><div class="diagnostics-actions"><button class="button button-primary" type="button" id="qualityRunOverviewAudit">Run full audit</button></div></div><div id="qualityOverviewCards" class="quality-summary" aria-label="Catalog findings summary"></div></section>
+            <details id="qualityAdvanced" class="quality-advanced"><summary>Audit details, metadata proposals and diagnostic tools</summary>
             <div id="qualityIssuesPane">
             <div class="panel-heading"><div><p class="eyebrow">CATALOG QUALITY</p><h2 id="qualityTitle">Metadata and file health</h2><p class="page-intro">Review missing catalog fields, NFO differences, missing artwork, and fingerprint coverage. PHASH is computed for only a subset of videos.</p></div><div class="diagnostics-actions"><label for="qualityAuditMode">Audit mode</label><select id="qualityAuditMode"><option value="metadata_quality">Metadata quality</option><option value="file_consistency">File consistency</option><option value="full" selected>Full audit</option></select><button class="button button-quiet" type="button" id="qualityRefresh">Refresh</button> <button class="button button-primary" type="button" id="qualityRunAudit">Run selected audit</button></div></div>
             <div id="qualityFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading the latest complete audit…</div>
@@ -266,6 +268,7 @@
               <p class="panel-footnote">Run a report from the sync container: <code>docker compose exec sync python linkcheck.py</code>. Optional: <code>docker compose exec sync python linkcheck.py --sample 5 --provider telegram</code>.</p>
             </section>
             </div>
+            </details>
             <div id="qualityEnrichmentPane" hidden>
               <section class="panel operation-history-panel" aria-labelledby="enrichmentTitle">
                 <div class="panel-heading"><div><p class="eyebrow">AUTOMATED CATALOG</p><h2 id="enrichmentTitle">External metadata progress</h2><p class="page-intro">Track catalog lookups across actor and video sources. One scan processes one bounded batch per provider. The configured sync cadence is shown below; when the sync runner is active, later runs continue the queues automatically. Remaining counts are estimates because provider eligibility and retries vary. Progress refreshes every 15 seconds while this view is active. Entity names and source error details are not shown.</p></div><div class="diagnostics-actions"><button class="button button-primary" type="button" id="enrichmentScan">Run bounded scan</button><button class="button button-quiet" type="button" id="enrichmentRefresh">Refresh progress</button></div></div>
@@ -346,7 +349,7 @@
               <form id="jobsFilters" class="filter-bar jobs-filter-bar">
                 <div class="filter-field"><label for="jobQueueFilter">Queue</label><select id="jobQueueFilter" name="queue"><option value="all">All task queues</option><option value="jobs">Admin tasks</option><option value="phash">pHash and thumbnails</option></select></div>
                 <div class="filter-field"><label for="jobStateFilter">State</label><select id="jobStateFilter" name="state"><option value="">All states</option><option value="active">Active</option><option value="queued">Queued</option><option value="processing">Processing</option><option value="done">Done</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></div>
-                <div class="filter-field"><label for="jobActionFilter">Action</label><select id="jobActionFilter" name="action"><option value="">All actions</option><option value="phash_generation">pHash and thumbnail</option><option value="hide">Hide duplicates</option><option value="dismiss">Dismiss pair</option><option value="undo">Undo hide</option><option value="undismiss">Undo dismissal</option><option value="performer_merge">Merge performers</option><option value="performer_refresh">Refresh performer metadata</option><option value="metadata_backfill">External metadata scan</option><option value="telegram_fingerprint_scan">Telegram fingerprint scan</option><option value="artwork_download">Download artwork</option><option value="collections_refresh">Update collections</option><option value="quarantine">Quarantine</option><option value="orphan_file_operation">Orphan file quarantine or restore</option><option value="metadata_update">Update metadata</option><option value="availability_check">Check availability</option><option value="consistency_audit">Consistency audit</option><option value="metadata_quality_audit">Metadata quality audit</option><option value="audit_repair_nfo">Repair audit files</option><option value="audit_import_refresh">Request Jellyfin reimport</option><option value="backup_create">Create backup</option><option value="backup_restore_test">Test backup restore</option><option value="sync">Sync</option></select></div>
+                <div class="filter-field"><label for="jobActionFilter">Action</label><select id="jobActionFilter" name="action"><option value="">All actions</option><option value="phash_generation">pHash and thumbnail</option><option value="hide">Hide duplicates</option><option value="dismiss">Dismiss pair</option><option value="undo">Undo hide</option><option value="undismiss">Undo dismissal</option><option value="performer_merge">Merge performers</option><option value="performer_refresh">Refresh performer metadata</option><option value="metadata_backfill">External metadata scan</option><option value="telegram_fingerprint_scan">Telegram fingerprint scan</option><option value="artwork_download">Download artwork</option><option value="artwork_generate">Generate artwork</option><option value="collections_refresh">Update collections</option><option value="quarantine">Quarantine</option><option value="orphan_file_operation">Orphan file quarantine or restore</option><option value="metadata_update">Update metadata</option><option value="availability_check">Check availability</option><option value="catalog_full_audit">Catalog health audit schedule</option><option value="consistency_audit">Consistency audit</option><option value="metadata_quality_audit">Metadata quality audit</option><option value="audit_repair_nfo">Repair audit files</option><option value="audit_import_refresh">Request Jellyfin reimport</option><option value="backup_create">Create backup</option><option value="backup_restore_test">Test backup restore</option><option value="sync">Sync</option></select></div>
                 <div class="jobs-filter-actions"><button class="button button-quiet" type="button" id="jobsRefresh"><span aria-hidden="true">↻</span> Refresh</button><button class="button button-quiet" type="button" id="jobsClearFilters">Clear filters</button></div>
               </form>
               <div class="catalog-toolbar"><div id="jobsFeedback" class="catalog-feedback" role="status">Ready to load jobs.</div></div>

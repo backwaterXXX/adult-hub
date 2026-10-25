@@ -104,6 +104,11 @@ def _result_summary(job: dict) -> str | None:
                     and type(enriched) is int and 0 <= enriched <= checked):
                 return f"Telegram fingerprint scan checked {checked} videos and enriched {enriched}."
             return "Telegram fingerprint scan completed."
+        if job.get("action") == "artwork_generate" and result.get("local_state") == "artwork_generated":
+            summary = "Artwork generated from a video frame."
+            if result.get("jellyfin_refresh") == "failed":
+                summary += " Local result saved; Jellyfin refresh failed."
+            return summary
         if job.get("action") == "artwork_download":
             local_state = result.get("local_state")
             if local_state == "artwork_downloaded":
@@ -185,7 +190,9 @@ def _safe_job(job: dict, *, now=None) -> dict:
     import_state = result.get("jellyfin_import")
     payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
     audit_mode = None
-    if job.get("action") == "metadata_quality_audit":
+    if job.get("action") == "catalog_full_audit":
+        audit_mode = "full"
+    elif job.get("action") == "metadata_quality_audit":
         audit_mode = "metadata_quality"
     elif job.get("action") == "consistency_audit":
         candidate = payload.get("mode")
@@ -232,7 +239,7 @@ def _safe_job(job: dict, *, now=None) -> dict:
         "stage": stage,
         "progress": safe_progress,
         "events": safe_events[-20:],
-        "local_state": local_state if isinstance(local_state, str) and local_state in {"hidden", "dismissed", "restored", "quarantined", "metadata_updated", "metadata_scan_completed", "telegram_fingerprint_scan_completed", "artwork_downloaded", "artwork_not_found", "artwork_download_failed", "artwork_lookup_failed", "availability_checked", "audit_completed", "metadata_quality_audit_completed", "nfo_repaired", "files_repaired"} else None,
+        "local_state": local_state if isinstance(local_state, str) and local_state in {"hidden", "dismissed", "restored", "quarantined", "metadata_updated", "metadata_scan_completed", "telegram_fingerprint_scan_completed", "artwork_downloaded", "artwork_generated", "artwork_not_found", "artwork_download_failed", "artwork_lookup_failed", "availability_checked", "audit_queued", "audit_completed", "metadata_quality_audit_completed", "nfo_repaired", "files_repaired"} else None,
         "jellyfin_refresh": refresh_state if isinstance(refresh_state, str) and refresh_state in {"pending", "updated", "failed"} else None,
         "jellyfin_import": import_state if isinstance(import_state, str) and import_state in {"not_requested", "not_confirmed", "confirmed"} else None,
         "error": (

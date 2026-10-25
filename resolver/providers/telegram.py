@@ -115,6 +115,12 @@ from .telegram_history import (
     passes_tag_filter,
 )
 from .telegram_session import login as _login_impl, require_client as _require_client_impl
+from .telegram_variants import (
+    extract_message_variants,
+    extract_variant_info,  # noqa: F401 - compatibility export
+    find_variant_document,
+    should_ignore_alt_documents,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -299,11 +305,10 @@ class TelegramProvider(BaseProvider):
         if message is None:
             return "missing"
         media = getattr(message, "media", None) or getattr(message, "document", None)
-        document = getattr(media, "document", None) if media is not None else None
-        if document is None and media is not None and hasattr(media, "id"):
-            document = media
-        actual_id = getattr(document, "id", None)
-        return "available" if actual_id is not None and str(actual_id) == str(unique_id) else "mismatch"
+        if media is None:
+            return "mismatch"
+        target_doc = find_variant_document(media, str(unique_id))
+        return "available" if target_doc is not None else "mismatch"
 
     async def get_categories(self) -> List[CategoryItem]:
         channels = _get_channels()
@@ -436,17 +441,67 @@ class TelegramProvider(BaseProvider):
         start = (page - 1) * PAGE_SIZE
         return matched[start:start + PAGE_SIZE]
 
-    async def resolve_stream(self, provider_video_id: str) -> str:
+    async def get_video_variants(self, ref: str) -> dict:
+        """Return all available video variants/qualities for a Telegram video reference."""
+        channel_ref, message_id, unique_id = _parse_ref(ref)
+        if not is_channel_authorized(channel_ref):
+            raise ValueError(f"Channel not authorized: {channel_ref!r}")
+        client = await _require_client()
+        message = await _get_cached_message(client, channel_ref, int(message_id))
+        if message is None:
+            raise ValueError(f"Telegram message not found for ref {ref!r}")
+        media = getattr(message, "media", None) or getattr(message, "document", None)
+        if media is None:
+            raise ValueError(f"Telegram message has no media for ref {ref!r}")
+        doc = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
+        if doc is None:
+            raise ValueError(f"Telegram message has no video document for ref {ref!r}")
+        target_doc = find_variant_document(media, str(unique_id))
+        if target_doc is None:
+            raise ValueError(f"Telegram media id mismatch: expected {unique_id!r}")
+        ignore_alts = await should_ignore_alt_documents(client)
+        variants_data = extract_message_variants(message, ignore_alt_documents=ignore_alts)
+        variants_data["video_id"] = f"telegram:{ref}"
+        return variants_data
+
+    async def resolve_stream(self, provider_video_id: str, variant: Optional[str] = None) -> str:
         """Zwraca marker tg:// - odtwarzanie idzie przez proxy resolvera.
 
         NIGDY nie zwraca http URL Telegrama.
+        Gdy podano variant, weryfikuje istnienie wariantu i zwraca ref wskazujacy
+        na wlasciwy dokument (oryginal lub alt_document).
         """
         if not provider_video_id:
             raise ValueError("Empty telegram video id")
-        channel_ref, _mid, _uid = _parse_ref(provider_video_id)
+        channel_ref, message_id, unique_id = _parse_ref(provider_video_id)
         if not is_channel_authorized(channel_ref):
             raise ValueError(f"Channel not authorized: {channel_ref!r}")
-        return f"tg://{provider_video_id}"
+
+        chosen = (variant or "").strip()
+        if not chosen or chosen.lower() == "original":
+            return f"tg://{provider_video_id}"
+
+        # Resolve selected variant
+        client = await _require_client()
+        message = await _get_cached_message(client, channel_ref, int(message_id))
+        if message is None:
+            raise ValueError(f"Telegram message not found for ref {provider_video_id!r}")
+        media = getattr(message, "media", None) or getattr(message, "document", None)
+        if media is None:
+            raise ValueError(f"Telegram message has no media for ref {provider_video_id!r}")
+
+        ignore_alts = await should_ignore_alt_documents(client)
+        if ignore_alts:
+            raise ValueError(f"Variant '{chosen}' not found (alt_documents disabled)")
+
+        target_doc = find_variant_document(media, chosen)
+        if target_doc is None:
+            raise ValueError(f"Variant '{chosen}' not found")
+        target_id = getattr(target_doc, "id", None)
+        if target_id is None:
+            raise ValueError(f"Variant '{chosen}' has no document id")
+
+        return f"tg://{channel_ref}:{message_id}:{target_id}"
 
     async def download_range(self, ref: str, offset: int, length: Optional[int]):
         """Proxy byte stream with bounded retries that never start before delivery.
@@ -482,16 +537,18 @@ class TelegramProvider(BaseProvider):
         media = getattr(message, "media", None) or getattr(message, "document", None)
         if media is None:
             raise ValueError(f"Telegram message has no media for ref {ref!r}")
-        doc = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
-        doc_id = getattr(doc, "id", None)
-        if doc_id is not None and str(doc_id) != str(unique_id):
-            raise ValueError(f"Telegram media id mismatch: expected {unique_id!r}, got {doc_id!r}")
+        target_doc = find_variant_document(media, str(unique_id))
+        if target_doc is None:
+            raise ValueError(f"Telegram media id mismatch: expected {unique_id!r}, not found in original or alt_documents")
 
         # Obtain total from document metadata
-        total = getattr(doc, "size", None)
+        total = getattr(target_doc, "size", None)
         if total is None:
             msg_dict = _message_to_dict(message, channel_ref)
             total = _size_of(msg_dict)
+
+        doc_orig = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
+        download_target = media if (target_doc == doc_orig and media is not None) else target_doc
 
         # Small probes <= 128KiB stay sequential (no large prefetch)
         is_small_probe = (length is not None and length <= 131072)
@@ -503,7 +560,7 @@ class TelegramProvider(BaseProvider):
         )
 
         if not use_parallel:
-            async for chunk in _download_sequential(client, media, offset=offset or 0, length=length):
+            async for chunk in _download_sequential(client, download_target, offset=offset or 0, length=length):
                 yield chunk
             return
 
@@ -513,7 +570,7 @@ class TelegramProvider(BaseProvider):
             # A block is fully downloaded before delivery, so retrying it is safe.
             # File-reference errors need a fresh message and cannot be fixed here.
             return await retry_call(
-                lambda: _download_block(client, media, blk_offset, blk_length),
+                lambda: _download_block(client, download_target, blk_offset, blk_length),
                 retryable=lambda exc: is_retryable(exc) and type(exc).__name__ not in {
                     "FileReferenceExpiredError", "FileReferenceInvalidError"},
             )
@@ -548,15 +605,12 @@ class TelegramProvider(BaseProvider):
         if message is None:
             return None
         media = getattr(message, "media", None) or getattr(message, "document", None)
-        doc = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
-        doc_id = getattr(doc, "id", None)
-        if doc_id is not None and str(doc_id) != str(unique_id):
+        if media is None:
             return None
-        # Some Telethon messages expose the Document directly as ``media``
-        # instead of wrapping it in ``media.document``. download_range handles
-        # that shape too; read its size directly so the HTTP proxy can answer
-        # Range requests with a truthful 206 response.
-        size = getattr(doc, "size", None)
+        target_doc = find_variant_document(media, str(unique_id))
+        if target_doc is None:
+            return None
+        size = getattr(target_doc, "size", None)
         if size is not None:
             try:
                 size = int(size)
@@ -564,7 +618,10 @@ class TelegramProvider(BaseProvider):
                 size = None
             if size is not None and size >= 0:
                 return size
-        return _size_of(_message_to_dict(message, channel_ref))
+        doc_orig = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
+        if target_doc == doc_orig:
+            return _size_of(_message_to_dict(message, channel_ref))
+        return None
 
     async def download_thumb(self, ref: str) -> Optional[bytes]:
         return await _download_thumb_impl(self, ref)

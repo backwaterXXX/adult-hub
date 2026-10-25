@@ -98,7 +98,16 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
         heartbeat = _core.threading.Thread(target=_core._heartbeat_processing_job, args=(getattr(conn, '_url', None) or _core.os.getenv('DATABASE_URL'), job_id, heartbeat_stop, services.logger), name=f'job-heartbeat-{job_id[:8]}', daemon=True)
         heartbeat.start()
         try:
-            if action == 'metadata_update':
+            if action == 'catalog_full_audit':
+                from common.job_queue import enqueue_jobs_batch
+                batch_id = _core.uuid.uuid4().hex
+                audit_ids = enqueue_jobs_batch(getattr(conn, '_url', None), [
+                    ('metadata_quality_audit', {'audit_batch_id': batch_id}),
+                    ('consistency_audit', {'mode': 'file_consistency', 'audit_batch_id': batch_id, 'auto_repair': True}),
+                ])
+                result = {'local_state': 'audit_queued', 'audit_batch_id': batch_id,
+                          'audit_job_ids': audit_ids}
+            elif action == 'metadata_update':
                 result = _core._metadata_update(conn, job_id, payload, media_dir, services)
                 catalog_committed = True
             elif action == 'performer_refresh':
@@ -128,6 +137,7 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                 or action == 'metadata_backfill'
                 or action == 'telegram_fingerprint_scan'
                 or action == 'artwork_download'
+                or action == 'artwork_generate'
                 or action == 'collections_refresh'
                 or action == 'performer_merge'
             ):
@@ -557,6 +567,27 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
             else:
                 raise ValueError('Unsupported job type.')
             _core._finish_job(conn, job_id, result)
+            if action == 'consistency_audit' and result.get('library_inventory_status') == 'complete' and payload.get('auto_repair'):
+                try:
+                    # Only absent files with a current catalog source are eligible
+                    # for unattended repair. Existing or mismatched files remain
+                    # in the interactive, revision-checked repair flow.
+                    from common.admin_operation_audits import preview_audit_repair
+                    from common.admin_operations import execute_operation
+                    finding_ids = [int(row[0]) for row in conn.execute(
+                        "SELECT i.id FROM admin_audit_items i JOIN videos v ON v.id=i.video_id "
+                        "WHERE i.job_id=%s AND i.status='open' AND i.kind IN ('missing_nfo','missing_artwork') "
+                        "AND (i.kind='missing_nfo' OR NULLIF(btrim(v.thumbnail),'') IS NOT NULL) "
+                        "ORDER BY i.id LIMIT 25", (job_id,),
+                    ).fetchall()]
+                    if finding_ids:
+                        preview = preview_audit_repair(getattr(conn, '_url', None), str(job_id), finding_ids)
+                        if preview.get('outcome') == 'previewed':
+                            queued = execute_operation(getattr(conn, '_url', None), preview['plan_id'])
+                            if queued.get('outcome') == 'queued':
+                                services.logger.info('Queued automatic repair for %s missing local files after audit %s', len(finding_ids), job_id)
+                except Exception:
+                    services.logger.exception('Could not queue safe automatic repairs after audit %s', job_id)
             completed += 1
         except Exception as exc:
             if not catalog_committed and action != 'orphan_file_operation':

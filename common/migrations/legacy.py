@@ -5,11 +5,11 @@ baseline (version 1, `0001_baseline`) creates the same schema from
 `schema_baseline.sql`, so these run only for databases whose recorded history
 proves they started before the baseline existed.
 
-`POST_BASELINE_MIGRATIONS` is the chain that was squashed into the baseline in
-release 0.4.0 (versions 10-47). Databases that recorded any of those versions
-still upgrade through it; a database built by the current baseline never sees
-them. They stay in their own files for exactly that reason, and ordering is
-load-bearing (m0039 drops the table m0035 creates).
+`POST_BASELINE_MIGRATIONS` is the compatibility chain for databases that
+recorded the historical post-baseline upgrades (versions 10-49). They still
+upgrade through it; a database built by the current baseline never sees them.
+The migrations stay in their own files for exactly that reason, and ordering
+is load-bearing (m0039 drops the table m0035 creates).
 """
 
 from common.migrations.base import Migration
@@ -59,6 +59,8 @@ from common.migrations.m0044_minimum_video_duration import migration as minimum_
 from common.migrations.m0045_external_metadata_error_detail import migration as external_metadata_error_detail
 from common.migrations.m0046_drop_stream_probe_columns import migration as drop_stream_probe_columns
 from common.migrations.m0047_video_file_size import migration as video_file_size
+from common.migrations.m0048_video_phash_job_error_detail import migration as video_phash_job_error_detail
+from common.migrations.m0049_catalog_automation import migration as catalog_automation
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -110,4 +112,6 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     external_metadata_error_detail,
     drop_stream_probe_columns,
     video_file_size,
+    video_phash_job_error_detail,
+    catalog_automation,
 )

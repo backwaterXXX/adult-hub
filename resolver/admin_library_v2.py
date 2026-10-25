@@ -167,18 +167,16 @@ def build_router(admin):
         if dest_path is None:
             return admin.JSONResponse({"ok": False, "error": "Video or target media file not found in library."}, status_code=404)
 
-        from urllib.parse import quote
-        stream_url = f"http://127.0.0.1:8090/play/{quote(video_id, safe='')}/stream"
-        from common.image_utils import extract_video_frame
-        success, err = await admin.asyncio.to_thread(
-            extract_video_frame, stream_url, dest_path, offset_seconds=offset_seconds
-        )
-        if not success:
-            return admin.JSONResponse({"ok": False, "error": f"Failed to generate artwork: {err}"}, status_code=500)
-
-        import time
-        artwork_url = f"/admin/api/v2/library/videos/{quote(video_id, safe='')}/artwork?t={int(time.time())}"
-        return {"ok": True, "artwork_url": artwork_url}
+        try:
+            from common.job_queue import enqueue_job
+            job_id = await admin.asyncio.to_thread(
+                enqueue_job, admin.HUB_DB_URL, "artwork_generate",
+                {"video_id": video_id, "offset_seconds": offset_seconds},
+            )
+        except Exception:
+            return admin.JSONResponse({"ok": False, "error": "Could not queue artwork generation."}, status_code=503)
+        admin._wake_worker("jobs")
+        return admin.JSONResponse({"ok": True, "job_id": job_id, "state": "queued"}, status_code=202)
 
     @router.post("/api/v2/library/videos/{video_id:path}/download-artwork")
     async def admin_v2_library_video_download_artwork(request: Request, video_id: str):

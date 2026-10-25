@@ -106,7 +106,7 @@
       return { route: 'organize', primaryRoute: 'performers', organizeTab: 'people', detailId: null };
     }
     if (route === 'performers') {
-      return { route, primaryRoute: route, performerTab: ['proposals', 'matching'].includes(tab) ? tab : 'proposals', detailId: null };
+      return { route, primaryRoute: route, performerTab: ['directory', 'matching'].includes(tab) ? tab : 'proposals', detailId: null };
     }
     if (route === 'organize') {
       const organizeTab = ['duplicates', 'people', 'quarantine'].includes(tab) ? tab : 'duplicates';
@@ -227,6 +227,7 @@
     });
     $('#qualityIssuesPane').hidden = next.route === 'quality' && next.qualityTab !== 'issues';
     $('#qualityEnrichmentPane').hidden = next.route === 'quality' && next.qualityTab !== 'enrichment';
+    $('#qualityOverview').hidden = next.route === 'quality' && next.qualityTab === 'enrichment';
     $$('.performer-section-tabs').forEach(nav => { nav.hidden = next.primaryRoute !== 'performers'; });
     // The legacy Organize tabs remain available on the legacy route only.
     // Canonical Performers and Catalog Health provide their own tab bars.
@@ -1603,6 +1604,7 @@
     [
       ['OSHASH', video.oshash || 'Not available'],
       ['pHash', video.phash || 'Not calculated (available for a subset of videos)'],
+      ['Video size', fileSize(video.file_size_bytes)],
       ['Stream file', localFileLabel(video.local_files?.stream)],
       ['NFO file', localFileLabel(video.local_files?.nfo)],
       ['Artwork file', artworkValue]
@@ -1615,10 +1617,11 @@
     genArtwork.addEventListener('click', async () => {
       genArtwork.disabled = true;
       const prevText = genArtwork.textContent;
-      genArtwork.textContent = 'Generating artwork…';
+      genArtwork.textContent = 'Queueing artwork generation…';
       try {
-        await postJson(`${V2_API}/library/videos/${encodeURIComponent(video.id)}/generate-artwork`, { offset_seconds: 60 });
-        await loadDetail(video.id);
+        const result = await postJson(`${V2_API}/library/videos/${encodeURIComponent(video.id)}/generate-artwork`, { offset_seconds: 60 });
+        genArtwork.textContent = 'Artwork generation queued';
+        announce(`Artwork generation task ${result.job_id} queued. Open Jobs to check when it finishes.`);
       } catch (err) {
         alert(`Failed to generate artwork: ${err.message || err}`);
         genArtwork.disabled = false;
@@ -1690,6 +1693,11 @@
     checkAvailability.type = 'button'; checkAvailability.addEventListener('click', () => reviewAvailability([String(video.id)]));
     const availabilityActions = create('div', 'detail-actions'); availabilityActions.append(checkAvailability); host.append(availabilityActions);
     loadAvailabilityHistory(String(video.id));
+  }
+  function fileSize(value) {
+    const bytes = Number(value);
+    if (value === null || value === undefined || !Number.isFinite(bytes) || bytes <= 0) return 'Not available';
+    return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${(bytes / 1e6).toFixed(2)} MB`;
   }
   function duration(value) {
     if (value === null || value === undefined || value === '') return '—';

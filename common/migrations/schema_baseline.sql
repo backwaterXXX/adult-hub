@@ -1,5 +1,5 @@
 -- Canonical baseline schema for Adult Hub (squashed from the historical
--- chain: legacy v1-v8 plus post-baseline v10-v47).
+-- chain: legacy v1-v8 plus post-baseline v10-v49).
 --
 -- Applied by common/migrations/m0001_baseline.py to a fresh database; existing
 -- databases never re-run it. Generated with:
@@ -203,7 +203,7 @@ CREATE TABLE public.admin_schedules (
     last_result text,
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT admin_schedules_action_check CHECK ((action = ANY (ARRAY['availability_check'::text, 'consistency_audit'::text, 'backup_create'::text]))),
+    CONSTRAINT admin_schedules_action_check CHECK ((action = ANY (ARRAY['availability_check'::text, 'consistency_audit'::text, 'metadata_quality_audit'::text, 'catalog_full_audit'::text, 'backup_create'::text]))),
     CONSTRAINT admin_schedules_check CHECK ((((schedule_type = 'interval'::text) AND ((interval_minutes >= 15) AND (interval_minutes <= 43200)) AND (daily_at IS NULL)) OR ((schedule_type = 'daily'::text) AND (interval_minutes IS NULL) AND (daily_at ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'::text)))),
     CONSTRAINT admin_schedules_schedule_type_check CHECK ((schedule_type = ANY (ARRAY['interval'::text, 'daily'::text]))),
     CONSTRAINT admin_schedules_timezone_check CHECK ((timezone = 'Europe/Warsaw'::text))
@@ -528,6 +528,7 @@ CREATE TABLE public.video_phash_jobs (
     fingerprint text,
     bytes_read bigint,
     error_code text,
+    error_detail text DEFAULT ''::text NOT NULL,
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     finished_at timestamp with time zone,

@@ -7,7 +7,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
@@ -47,6 +47,7 @@ def admin_stub():
         asyncio=InlineAsyncio,
         HUB_DB_URL="postgresql://test.invalid/catalog",
         MEDIA_DIR=Path("/unused/media"),
+        _wake_worker=Mock(),
     )
 
 
@@ -159,11 +160,12 @@ class TestCatalogReadContract(unittest.TestCase):
             self.assertEqual(admin_library_v2._local_file_status(["stable.strm"], root),
                              {"stream": "present", "nfo": "present", "artwork": "missing"})
 
-    def test_generate_artwork_endpoint_executes_extraction_and_returns_url(self):
+    def test_generate_artwork_endpoint_queues_job_and_wakes_worker(self):
         admin = admin_stub()
         endpoint = next(r.endpoint for r in admin_library_v2.build_router(admin).routes if r.endpoint.__name__ == "admin_v2_library_video_generate_artwork")
         with patch.object(admin_library_v2, "_get_target_artwork_path", return_value=Path("/tmp/sample.jpg")), \
-             patch("common.image_utils.extract_video_frame", return_value=(True, "")) as extract_mock:
+             patch("common.job_queue.enqueue_job", return_value="artwork-job") as enqueue_mock, \
+             patch("common.image_utils.extract_video_frame") as extract_mock:
             req = Request({
                 "type": "http", "http_version": "1.1", "method": "POST",
                 "scheme": "http", "path": "/admin/api/v2/library/videos/telegram:123/generate-artwork",
@@ -177,9 +179,18 @@ class TestCatalogReadContract(unittest.TestCase):
             req.json = json_body
 
             result = asyncio.run(endpoint(req, "telegram:123"))
-            self.assertTrue(result.get("ok"))
-            self.assertIn("/artwork?t=", result.get("artwork_url", ""))
-            self.assertTrue(extract_mock.called)
+            self.assertEqual(result.status_code, 202)
+            self.assertEqual(json.loads(result.body), {"ok": True, "job_id": "artwork-job", "state": "queued"})
+            enqueue_mock.assert_called_once_with(admin.HUB_DB_URL, "artwork_generate",
+                                                 {"video_id": "telegram:123", "offset_seconds": 60})
+            admin._wake_worker.assert_called_once_with("jobs")
+            extract_mock.assert_not_called()
+
+    def test_video_size_serialization(self):
+        for size in (None, 123456789, 2500000000):
+            video = admin_library_v2._serialize_video(
+                {"id": "telegram:123", "file_size_bytes": size}, detail=True)
+            self.assertEqual(video["file_size_bytes"], size)
 
     def test_list_caps_limit_and_rejects_invalid_filter_before_database_access(self):
         admin = admin_stub()

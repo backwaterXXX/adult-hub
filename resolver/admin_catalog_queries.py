@@ -21,7 +21,7 @@ from admin_catalog_pagination import (
 
 _MISSING_FIELDS = {"title", "performers", "studio", "plot", "thumbnail"}
 _VIDEO_OPTIONAL_COLUMNS = {
-    "provider", "title", "duration", "thumbnail", "performers", "categories",
+    "provider", "title", "duration", "file_size_bytes", "thumbnail", "performers", "categories",
     "tags", "playable", "studio", "plot", "date_released", "first_seen", "last_seen",
     "scene_match_source", "scene_match_external_id", "scene_match_url",
 }

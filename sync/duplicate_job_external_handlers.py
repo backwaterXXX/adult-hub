@@ -95,6 +95,42 @@ def execute_external_operation(action, conn, job_id, payload, media_dir, service
             "local_state": "telegram_fingerprint_scan_completed",
         }, True
 
+    if action == "artwork_generate":
+        from urllib.parse import quote
+        from common.image_utils import extract_video_frame
+        if __package__:
+            from .media_files import resolve_media_path
+        else:
+            from media_files import resolve_media_path
+
+        video_id = payload.get("video_id")
+        offset = payload.get("offset_seconds", 60)
+        if not isinstance(video_id, str) or not video_id or len(video_id) > 1000:
+            raise ValueError("Artwork generation requires one valid video ID.")
+        if type(offset) is not int or offset <= 0:
+            raise ValueError("Artwork generation requires a positive offset.")
+        _core._record_job_progress(conn, job_id, "generating_artwork")
+        rows = conn.execute(
+            "SELECT sf.file_path FROM synced_files sf JOIN videos v ON v.id=sf.video_id "
+            "WHERE sf.video_id=%s ORDER BY sf.file_path", (video_id,),
+        ).fetchall()
+        if not rows:
+            raise ValueError("Target media file not found in library.")
+        dest = resolve_media_path(str(rows[0][0]), media_dir).with_suffix(".jpg")
+        if dest.is_symlink():
+            raise ValueError("Artwork destination must not be a symlink.")
+        base = _core.os.getenv("RESOLVER_API_URL", "http://resolver:8090").rstrip("/")
+        success, error = extract_video_frame(
+            f"{base}/play/{quote(video_id, safe='')}/stream", dest, offset_seconds=offset,
+        )
+        if not success:
+            raise RuntimeError(f"Failed to generate artwork: {error}")
+        refreshed = _core._refresh_jellyfin_with_progress(
+            conn, job_id, "artwork_generated", services,
+        )
+        return {"local_state": "artwork_generated",
+                "jellyfin_refresh": "updated" if refreshed else "failed"}, True
+
     if action == "artwork_download":
         video_id = payload.get("video_id")
         if not isinstance(video_id, str) or not video_id or len(video_id) > 1000:

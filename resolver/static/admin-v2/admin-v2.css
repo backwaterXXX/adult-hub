@@ -398,6 +398,13 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
 .job-detail .detail-section:last-child { padding-bottom: 0; }
 .job-detail-fields { grid-template-columns: repeat(3, minmax(0,1fr)); }
 .job-detail-error { margin: 0; padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border)); border-radius: 9px; color: var(--danger); background: color-mix(in srgb, var(--danger) 6%, var(--surface)); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.job-detail-error-detail { margin: 0; padding: 11px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.quality-overview { margin: 0 0 18px; padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.quality-overview .panel-heading { margin-bottom: 14px; }
+.quality-overview-stat { text-align: left; }
+.quality-advanced { margin-top: 12px; border-top: 1px solid var(--border); }
+.quality-advanced > summary { padding: 14px 4px; color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 650; }
+.quality-advanced[open] > summary { margin-bottom: 12px; }
 .job-stale-warning { margin: 12px 0 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border)); border-radius: 9px; color: var(--warning); background: color-mix(in srgb, var(--warning) 7%, var(--surface)); }
 .job-detail-note { margin: 10px 0 0; color: var(--warning); font-size: 11px; }
 .job-detail-loading { margin: 0; color: var(--muted); font-size: 12px; }
@@ -449,9 +456,12 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
 @media (max-width: 900px) {
   #systemDiagnosticsView .panel-heading { flex-wrap: wrap; }
   #systemDiagnosticsView .diagnostics-actions { flex: 1 0 100%; justify-content: flex-start; }
-  #qualityView > #qualityIssuesPane > .panel-heading { flex-wrap: wrap; }
-  #qualityView > #qualityIssuesPane > .panel-heading > :first-child { flex: 1 1 100%; min-width: 0; }
-  #qualityView > #qualityIssuesPane > .panel-heading .diagnostics-actions { flex: 1 0 100%; justify-content: flex-start; }
+  #qualityView #qualityIssuesPane > .panel-heading,
+  #qualityView #qualityEnrichmentPane .panel-heading { flex-wrap: wrap; }
+  #qualityView #qualityIssuesPane > .panel-heading > :first-child,
+  #qualityView #qualityEnrichmentPane .panel-heading > :first-child { flex: 1 1 100%; min-width: 0; }
+  #qualityView #qualityIssuesPane > .panel-heading .diagnostics-actions,
+  #qualityView #qualityEnrichmentPane .panel-heading .diagnostics-actions { flex: 1 0 100%; justify-content: flex-start; }
 }
 .audit-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 12px 0; }
 .activity-change-detail p { overflow-wrap: anywhere; white-space: pre-wrap; }

@@ -287,7 +287,7 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
         except ImportError:
             from thumbnails import _get_cached_bumper_hashes, _valid_thumbnail_bytes
     except ImportError as exc:
-        raise RuntimeError("Pillow is required for pHash generation") from exc
+        raise RuntimeError(f"Pillow is required for pHash generation: {exc}") from exc
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("ffmpeg is required for pHash generation")

@@ -211,11 +211,11 @@ class TestMigrationsEngine(PgTestCase):
         status_part1 = get_migration_status(self.conn)
         self.assertFalse(status_part1.is_up_to_date)
         self.assertEqual(status_part1.current_version, 2)
-        self.assertEqual([m.version for m in status_part1.pending], list(range(3, 9)) + [1] + list(range(10, 48)))
+        self.assertEqual([m.version for m in status_part1.pending], list(range(3, 9)) + [1] + list(range(10, POST_BASELINE_CEILING + 1)))
 
         # Complete remaining migrations
         applied_part2 = apply_migrations(self.conn)
-        self.assertEqual([m.version for m in applied_part2], list(range(3, 9)) + [1] + list(range(10, 48)))
+        self.assertEqual([m.version for m in applied_part2], list(range(3, 9)) + [1] + list(range(10, POST_BASELINE_CEILING + 1)))
 
         status_final = get_migration_status(self.conn)
         self.assertTrue(status_final.is_up_to_date)
@@ -284,7 +284,7 @@ class TestMigrationsEngine(PgTestCase):
             [migration.version for migration in POST_BASELINE_MIGRATIONS if migration.version > 30],
         )
         applied = apply_migrations(self.conn)
-        self.assertEqual([migration.version for migration in applied], list(range(31, 48)))
+        self.assertEqual([migration.version for migration in applied], list(range(31, POST_BASELINE_CEILING + 1)))
         self.assertEqual(schema_snapshot(self.conn), self.baseline_reference)
 
     def test_existing_schema_without_history_is_refused(self):
@@ -308,7 +308,7 @@ class TestMigrationsEngine(PgTestCase):
             self.conn.execute(f"DELETE FROM {SCHEMA_MIGRATIONS_TABLE}")
             _record(self.conn, baseline.version, baseline.name)
         applied = apply_migrations(self.conn)
-        self.assertEqual([migration.version for migration in applied], list(range(10, 48)))
+        self.assertEqual([migration.version for migration in applied], list(range(10, POST_BASELINE_CEILING + 1)))
         self.assertEqual(schema_snapshot(self.conn), self.baseline_reference)
 
     def test_current_schema_without_history_is_stamped_not_replayed(self):
@@ -327,7 +327,7 @@ class TestMigrationsEngine(PgTestCase):
 
         applied = apply_migrations(self.conn)
 
-        self.assertEqual([record.version for record in applied], [1] + list(range(10, 48)))
+        self.assertEqual([record.version for record in applied], [1] + list(range(10, POST_BASELINE_CEILING + 1)))
         row = self.conn.execute(
             "SELECT title, EXTRACT(EPOCH FROM first_seen) FROM videos WHERE id = %s",
             ("existing:v8",),
@@ -364,6 +364,8 @@ class TestMigrationsEngine(PgTestCase):
             (45, "0045_external_metadata_error_detail"),
             (46, "0046_drop_stream_probe_columns"),
             (47, "0047_video_file_size"),
+            (48, "0048_video_phash_job_error_detail"),
+            (49, "0049_catalog_automation"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):

@@ -55,7 +55,7 @@ def enqueue(db_url: str | None, *, video_id: str, duration_us: int,
                 ).fetchone()
             elif row["state"] != "done":
                 row = conn.execute(
-                    """UPDATE video_phash_jobs SET state='done',fingerprint=%s,error_code=NULL,
+                    """UPDATE video_phash_jobs SET state='done',fingerprint=%s,error_code=NULL,error_detail='',
                        processing_duration_ms=processing_duration_ms + CASE WHEN processing_started_at IS NOT NULL
                            THEN GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP-processing_started_at))*1000)::BIGINT)
                            ELSE 0 END,processing_started_at=NULL,
@@ -69,7 +69,7 @@ def enqueue(db_url: str | None, *, video_id: str, duration_us: int,
             row = conn.execute(
                 """UPDATE video_phash_jobs SET state='queued',duration_us=%s,attempts=0,
                    available_at=CURRENT_TIMESTAMP,lease_token=NULL,lease_until=NULL,
-                   fingerprint=NULL,bytes_read=NULL,error_code=NULL,finished_at=NULL,
+                   fingerprint=NULL,bytes_read=NULL,error_code=NULL,error_detail='',finished_at=NULL,
                    updated_at=CURRENT_TIMESTAMP WHERE id=%s RETURNING *""",
                 (duration_us, row["id"]),
             ).fetchone()
@@ -181,7 +181,7 @@ def cancel_job(db_url: str | None, job_id: str) -> str:
             conn.commit()
             return "conflict"
         conn.execute(
-            """UPDATE video_phash_jobs SET state='cancelled',error_code=NULL,
+            """UPDATE video_phash_jobs SET state='cancelled',error_code=NULL,error_detail='',
                processing_duration_ms=processing_duration_ms + CASE
                    WHEN state='processing' AND processing_started_at IS NOT NULL
                    THEN GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP-processing_started_at))*1000)::BIGINT)
@@ -204,7 +204,7 @@ def retry_job(db_url: str | None, job_id: str) -> bool:
     try:
         changed = conn.execute(
             """UPDATE video_phash_jobs SET state='queued',attempts=0,available_at=CURRENT_TIMESTAMP,
-               lease_token=NULL,lease_until=NULL,fingerprint=NULL,bytes_read=NULL,error_code=NULL,
+               lease_token=NULL,lease_until=NULL,fingerprint=NULL,bytes_read=NULL,error_code=NULL,error_detail='',
                finished_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=%s AND state IN ('failed','cancelled')""",
             (job_id,),
         ).rowcount
@@ -262,7 +262,7 @@ def claim_next(db_url: str | None) -> dict | None:
         result = conn.execute(
             """UPDATE video_phash_jobs SET state='processing',attempts=attempts+1,
                lease_token=%s,lease_until=CURRENT_TIMESTAMP + (%s * INTERVAL '1 second'),
-               processing_started_at=CURRENT_TIMESTAMP,error_code=NULL,
+               processing_started_at=CURRENT_TIMESTAMP,error_code=NULL,error_detail='',
                updated_at=CURRENT_TIMESTAMP WHERE id=%s RETURNING *""",
             (token, LEASE_SECONDS, row["id"]),
         ).fetchone()
@@ -295,7 +295,9 @@ def heartbeat(db_url: str | None, job_id: str, token: str) -> bool:
         conn.close()
 
 
-def finish_failure(db_url: str | None, job: dict, error_code: str, *, retryable: bool) -> bool:
+def finish_failure(db_url: str | None, job: dict, error_code: str, *, retryable: bool,
+                   error_detail: str = "") -> bool:
+    error_detail = str(error_detail or "")[:2000]
     conn = db.connect(db_url)
     try:
         if retryable and int(job["attempts"]) < MAX_ATTEMPTS:
@@ -305,9 +307,9 @@ def finish_failure(db_url: str | None, job: dict, error_code: str, *, retryable:
                    processing_duration_ms=processing_duration_ms + CASE WHEN processing_started_at IS NOT NULL
                        THEN GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP-processing_started_at))*1000)::BIGINT)
                        ELSE 0 END,processing_started_at=NULL,
-                   error_code=%s,available_at=CURRENT_TIMESTAMP + (%s * INTERVAL '1 second'),
+                   error_code=%s,error_detail=%s,available_at=CURRENT_TIMESTAMP + (%s * INTERVAL '1 second'),
                    updated_at=CURRENT_TIMESTAMP WHERE id=%s AND state='processing' AND lease_token=%s""",
-                (error_code, delay, job["id"], job["lease_token"]),
+                (error_code, error_detail, delay, job["id"], job["lease_token"]),
             ).rowcount
         else:
             changed = conn.execute(
@@ -315,9 +317,9 @@ def finish_failure(db_url: str | None, job: dict, error_code: str, *, retryable:
                    processing_duration_ms=processing_duration_ms + CASE WHEN processing_started_at IS NOT NULL
                        THEN GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP-processing_started_at))*1000)::BIGINT)
                        ELSE 0 END,processing_started_at=NULL,
-                   error_code=%s,finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+                   error_code=%s,error_detail=%s,finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
                    WHERE id=%s AND state='processing' AND lease_token=%s""",
-                (error_code, job["id"], job["lease_token"]),
+                (error_code, error_detail, job["id"], job["lease_token"]),
             ).rowcount
         conn.commit()
         return changed == 1
@@ -331,7 +333,7 @@ def finish_failure(db_url: str | None, job: dict, error_code: str, *, retryable:
 def finish_success(conn, job: dict, fingerprint: str, bytes_read: int) -> bool:
     """Mark complete in the same transaction as fingerprint/provenance/thumbnail storage."""
     changed = conn.execute(
-        """UPDATE video_phash_jobs SET state='done',fingerprint=%s,bytes_read=%s,error_code=NULL,
+        """UPDATE video_phash_jobs SET state='done',fingerprint=%s,bytes_read=%s,error_code=NULL,error_detail='',
            processing_duration_ms=processing_duration_ms + CASE WHEN processing_started_at IS NOT NULL
                THEN GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP-processing_started_at))*1000)::BIGINT)
                ELSE 0 END,processing_started_at=NULL,

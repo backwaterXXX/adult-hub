@@ -379,6 +379,16 @@ class TestArtworkResultSummary(unittest.TestCase):
     def _job(self, result):
         return {"action": "artwork_download", "state": "done", "result": result}
 
+    def test_generated_artwork_survives_projection_and_reports_refresh(self):
+        for refresh in ("updated", "failed"):
+            job = admin_v2_jobs._safe_job({
+                "action": "artwork_generate", "state": "done",
+                "result": {"local_state": "artwork_generated", "jellyfin_refresh": refresh},
+            })
+            self.assertEqual(job["local_state"], "artwork_generated")
+            self.assertTrue(job["result_summary"].startswith("Artwork generated from a video frame."))
+            self.assertEqual("Jellyfin refresh failed" in job["result_summary"], refresh == "failed")
+
     def test_downloaded_with_failed_refresh_mentions_refresh_failure(self):
         summary = admin_v2_jobs._result_summary(self._job({
             "downloaded": True, "provider": "StashDB",

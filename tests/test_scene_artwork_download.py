@@ -1,6 +1,7 @@
 """Tests for admin-triggered scene artwork download path selection."""
 
 import sys
+import logging
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -219,6 +220,56 @@ class ArtworkProviderBranchTests(PgTestCase):
 
 
 class ArtworkJobQueueTests(PgTestCase):
+    def test_generated_artwork_job_runs_and_records_jellyfin_result(self):
+        import tempfile
+        from common.job_queue import enqueue_job
+        import duplicate_jobs
+        import json
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            stream = _seed_video(self.conn, root)
+            job_id = enqueue_job(self.db_url, "artwork_generate",
+                                 {"video_id": "telegram:123", "offset_seconds": 90})
+            services = SimpleNamespace(
+                trigger_jellyfin_refresh=lambda: True, logger=logging.getLogger(__name__),
+                jobs_lock_root=lambda conn, media_dir: media_dir,
+            )
+            with patch("common.image_utils.extract_video_frame", return_value=(True, "")) as extract:
+                completed = duplicate_jobs.process_video_duplicate_jobs_locked(self.conn, root, services)
+            self.assertEqual(completed, 1)
+            self.assertEqual(extract.call_args.args[1], stream.with_suffix(".jpg"))
+            self.assertTrue(extract.call_args.args[0].endswith("/play/telegram%3A123/stream"))
+            self.assertEqual(extract.call_args.kwargs, {"offset_seconds": 90})
+            state, raw = self.conn.execute(
+                "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,),
+            ).fetchone()
+            self.assertEqual(state, "done")
+            result = json.loads(raw)
+            self.assertEqual(result["local_state"], "artwork_generated")
+            self.assertEqual(result["jellyfin_refresh"], "updated")
+            self.assertIn("generating_artwork", [event["stage"] for event in result["events"]])
+
+    def test_generated_artwork_failure_is_visible_as_failed_job(self):
+        import tempfile
+        import json
+        from common.job_queue import enqueue_job
+        import duplicate_jobs
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _seed_video(self.conn, root)
+            job_id = enqueue_job(self.db_url, "artwork_generate", {"video_id": "telegram:123"})
+            with patch("common.image_utils.extract_video_frame", return_value=(False, "ffmpeg failed")):
+                duplicate_jobs.process_video_duplicate_jobs_locked(
+                    self.conn, root, SimpleNamespace(logger=logging.getLogger(__name__),
+                                                    jobs_lock_root=lambda conn, media_dir: media_dir))
+            state, raw = self.conn.execute(
+                "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,),
+            ).fetchone()
+            self.assertEqual(state, "failed")
+            self.assertEqual(json.loads(raw)["progress"]["stage"], "generating_artwork")
+
     def test_enqueue_and_claim_artwork_download_job(self):
         from common.job_queue import claim_job, enqueue_job
 

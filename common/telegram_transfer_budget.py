@@ -24,6 +24,18 @@ class DailyTelegramTransferBudgetUnavailable(RuntimeError):
     """The shared transfer ledger could not be read or safely updated."""
 
 
+def _resolve_ledger_path() -> Path:
+    configured = os.environ.get("TELEGRAM_FINGERPRINT_USAGE_PATH")
+    if configured:
+        return Path(configured)
+    default = Path(DEFAULT_LEDGER_PATH)
+    try:
+        default.parent.mkdir(parents=True, exist_ok=True)
+        return default
+    except OSError:
+        return Path(tempfile.gettempdir()) / "adult-hub" / "cache" / "telegram-fingerprint-daily-usage.json"
+
+
 def reserve_telegram_fingerprint_bytes(
     byte_count: int,
     *,
@@ -53,7 +65,7 @@ def reserve_telegram_fingerprint_bytes(
         raise DailyTelegramTransferBudgetUnavailable("Fingerprint transfer budgets must be positive")
     rate = (override_rate if allow_rate_above_configured
             else min(configured_rate, override_rate))
-    ledger_path = Path(os.environ.get("TELEGRAM_FINGERPRINT_USAGE_PATH", DEFAULT_LEDGER_PATH))
+    ledger_path = _resolve_ledger_path()
     lock_path = ledger_path.with_suffix(ledger_path.suffix + ".lock")
 
     try:

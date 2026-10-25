@@ -474,13 +474,82 @@ def _get_stream_candidate_ids(requested_id: str) -> list[str]:
         return [requested_id]
 
 
+@api.get("/play/{video_id:path}/variants")
+@api.get("/api/videos/{video_id:path}/variants")
+async def get_video_variants(video_id: str):
+    """Get available video variants/qualities.
+
+    Returns the variant contract for Android and desktop clients.
+    Distinguishes:
+      - 'ready': alternatives available
+      - 'original_only': recognition finished, only original available
+      - 'processing': Telegram server transcoding in progress
+    """
+    candidates = await asyncio.to_thread(_get_stream_candidate_ids, video_id)
+    last_error = None
+
+    for cand_id in candidates:
+        try:
+            provider_name, raw_id = _parse_play_id_or_400(cand_id)
+        except Exception:
+            continue
+
+        if provider_name == "telegram":
+            channel_ref = (raw_id or "").split(":", 1)[0]
+            try:
+                tg_prov = get_provider("telegram")
+            except KeyError:
+                last_error = HTTPException(status_code=502, detail="Telegram provider not available")
+                continue
+
+            auth_check = getattr(tg_prov, "is_channel_authorized", None)
+            if callable(auth_check) and not auth_check(channel_ref):
+                last_error = HTTPException(status_code=403, detail="Telegram channel is not authorized")
+                continue
+
+            variants_fn = getattr(tg_prov, "get_video_variants", None)
+            if not callable(variants_fn):
+                continue
+
+            try:
+                res = await variants_fn(raw_id)
+                res["video_id"] = cand_id
+                return res
+            except HTTPException as exc:
+                last_error = exc
+                continue
+            except ValueError as exc:
+                last_error = HTTPException(status_code=404, detail=str(exc))
+                continue
+            except Exception as exc:
+                last_error = exc
+                logger.warning(f"Failed to fetch variants for {cand_id}: {exc}")
+                continue
+
+    if last_error is not None:
+        if isinstance(last_error, HTTPException):
+            raise last_error
+        logger.error(f"Failed to resolve variants for {video_id}: {last_error}")
+        raise HTTPException(status_code=502, detail=f"Failed to resolve video variants: {last_error}")
+
+    raise HTTPException(status_code=404, detail=f"No video found for {video_id}")
+
+
 @api.api_route("/play/{video_id:path}/stream", methods=["GET", "HEAD"])
-async def play_stream(request: Request, video_id: str, mode: str = Query("redirect", pattern="^(redirect|proxy)$")):
+async def play_stream(
+    request: Request,
+    video_id: str,
+    mode: str = Query("redirect", pattern="^(redirect|proxy)$"),
+    variant: Optional[str] = Query(None),
+    variant_id: Optional[str] = Query(None),
+):
     """
     Resolve stream and redirect client (302) or proxy.
     video_id format: '<provider>:<id>' or just '<id>' (Telegram-only).
     Supports multi-source failover from video_sources.
+    Supports variant selection for alternative video qualities.
     """
+    chosen_variant = (variant or variant_id or "").strip() or None
     candidates = await asyncio.to_thread(_get_stream_candidate_ids, video_id)
     stream_url = None
     active_cache_key = None
@@ -492,6 +561,8 @@ async def play_stream(request: Request, video_id: str, mode: str = Query("redire
         except Exception:
             continue
         cache_key = f"{provider_name}:{raw_id}"
+        if chosen_variant and chosen_variant.lower() != "original":
+            cache_key = f"{cache_key}:variant:{chosen_variant}"
 
         if provider_name == "telegram":
             channel_ref = (raw_id or "").split(":", 1)[0]
@@ -523,7 +594,10 @@ async def play_stream(request: Request, video_id: str, mode: str = Query("redire
                         cand_stream = await asyncio.to_thread(cache.get, cache_key)
                     if not cand_stream:
                         prov = get_provider(provider_name)
-                        cand_stream = await prov.resolve_stream(raw_id)
+                        if chosen_variant:
+                            cand_stream = await prov.resolve_stream(raw_id, variant=chosen_variant)
+                        else:
+                            cand_stream = await prov.resolve_stream(raw_id)
                         if not cand_stream:
                             raise ValueError(f"Empty stream URL resolved for {cache_key}")
                         if cand_stream.startswith("tg://"):
@@ -534,8 +608,15 @@ async def play_stream(request: Request, video_id: str, mode: str = Query("redire
                             if use_cache:
                                 await asyncio.to_thread(cache.set, cache_key, cand_stream, ttl_seconds=cache_ttl_for_provider(provider_name))
                             logger.info(f"Resolved new stream for {cache_key}")
-            except Exception as e:
+            except HTTPException as e:
                 last_error = e
+                logger.warning(f"Failed to resolve {cache_key}: {e}")
+                continue
+            except Exception as e:
+                if chosen_variant and "not found" in str(e).lower():
+                    last_error = HTTPException(status_code=404, detail=str(e))
+                else:
+                    last_error = e
                 logger.warning(f"Failed to resolve {cache_key}: {e}")
                 continue
 
@@ -621,6 +702,7 @@ def _record_playback_file_size(ref: str, size_bytes: int) -> None:
 
 async def _proxy_telegram_response(request: Request, url: str, cache_key: Optional[str] = None):
     """Compatibility facade for the Telegram HTTP range proxy."""
+    is_variant = bool(cache_key and ":variant:" in cache_key)
     services = TelegramProxyServices(
         diagnostics=diagnostics,
         get_provider=get_provider,
@@ -628,7 +710,7 @@ async def _proxy_telegram_response(request: Request, url: str, cache_key: Option
         asyncio=asyncio,
         inspect=inspect,
         time=time,
-        record_file_size=_record_playback_file_size,
+        record_file_size=(None if is_variant else _record_playback_file_size),
     )
     return await _proxy_telegram_response_impl(request, url, cache_key, services=services)
 

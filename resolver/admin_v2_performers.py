@@ -51,6 +51,72 @@ def build_router(admin):
         except Exception:
             return admin.JSONResponse({"error": "Could not load performer proposals."}, status_code=503)
 
+    @router.get("/api/v2/performers/proposal-groups")
+    async def proposal_groups(request: Request, limit: int = Query(50, ge=1, le=100),
+                              offset: int = Query(0, ge=0, le=1_000_000)):
+        if admin._admin_blocked(request):
+            return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
+        try:
+            from common.performer_proposals import list_pending_groups
+            return await admin.asyncio.to_thread(list_pending_groups, admin.HUB_DB_URL, limit, offset)
+        except Exception:
+            return admin.JSONResponse({"error": "Could not summarize performer proposals."}, status_code=503)
+
+    @router.post("/api/v2/performers/proposals/reconcile")
+    async def reconcile(request: Request):
+        denied = admin._write_denied(request)
+        if denied is not None:
+            return denied
+        try:
+            raw = await request.body()
+            if len(raw) > 1024:
+                return admin.JSONResponse({"error": "Request is too large."}, status_code=413)
+            body = json.loads(raw or b"{}")
+        except Exception:
+            return admin.JSONResponse({"error": "Specify a valid reconciliation cursor."}, status_code=400)
+        if (not isinstance(body, dict) or set(body) - {"after_id"}
+                or ("after_id" in body and (type(body["after_id"]) is not int or body["after_id"] < 0))):
+            return admin.JSONResponse({"error": "Specify a valid reconciliation cursor."}, status_code=400)
+        try:
+            from common.performer_proposals import reconcile_clear_matches
+            return await admin.asyncio.to_thread(
+                reconcile_clear_matches, admin.HUB_DB_URL, body.get("after_id", 0),
+                wake_worker=admin._wake_worker)
+        except Exception:
+            return admin.JSONResponse({"error": "Could not reconcile clear performer matches."}, status_code=503)
+
+    @router.post("/api/v2/performers/proposal-groups/{reason}/{key}")
+    async def review_proposal_group(request: Request, reason: str, key: str):
+        denied = admin._write_denied(request)
+        if denied is not None:
+            return denied
+        try:
+            body = json.loads(await request.body())
+        except Exception:
+            body = None
+        if not isinstance(body, dict) or body.get("action") not in {"approve", "reject"}:
+            return admin.JSONResponse({"error": "Choose approve or reject."}, status_code=400)
+        allowed = {"action"} if body["action"] == "reject" else {"action", "performer_id", "canonical"}
+        if set(body) - allowed or (body["action"] == "approve" and
+                                   (int("performer_id" in body) + int("canonical" in body) != 1)):
+            return admin.JSONResponse({"error": "Specify one matching performer or local name."}, status_code=400)
+        if body["action"] == "approve":
+            field = "performer_id" if "performer_id" in body else "canonical"
+            maximum = 200 if field == "performer_id" else 160
+            if not isinstance(body[field], str) or not 1 <= len(body[field]) <= maximum:
+                return admin.JSONResponse({"error": "Invalid performer choice."}, status_code=400)
+            if field == "performer_id" and not body[field].strip():
+                return admin.JSONResponse({"error": "Choose a catalogue performer."}, status_code=400)
+        try:
+            from common.performer_proposals import ProposalError, review_proposal_group as review_group
+            result = await admin.asyncio.to_thread(
+                review_group, admin.HUB_DB_URL, key, reason, body, wake_worker=admin._wake_worker)
+            return result
+        except ProposalError as exc:
+            return admin.JSONResponse({"error": exc.message}, status_code=exc.status_code)
+        except Exception:
+            return admin.JSONResponse({"error": "Could not review performer group."}, status_code=503)
+
     @router.get("/api/v2/performers/catalog")
     async def catalog(request: Request, q: str = Query("", max_length=200), limit: int = Query(100, ge=1, le=200)):
         if admin._admin_blocked(request):
