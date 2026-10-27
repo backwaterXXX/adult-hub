@@ -97,17 +97,15 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                     continue
                 source_started = _core.time.monotonic()
                 try:
-                    _core.sync_telegram_channel_pipeline(ch.id, ch, conn, _core.MEDIA_DIR, collected, sync_mode=sync_mode)
+                    synced_ids = _core.sync_telegram_channel_pipeline(ch.id, ch, conn, _core.MEDIA_DIR, collected, sync_mode=sync_mode)
                     providers_succeeded.add(f"telegram:{ch.id}")
                     if sync_mode == "scheduled":
                         try:
-                            current_ids = {video_id for video_id in collected
-                                           if video_id.startswith(f"telegram:{ch.id}:")}
                             outcome = _core.reconcile_telegram_channel(
                                 conn, ch.id, _core.MEDIA_DIR,
                                 _core.DATA_DIR / "telegram-unavailable-quarantine",
                                 _core.RESOLVER_API_URL, _core.fetch_json_with_retry,
-                                _core.logger, current_video_ids=current_ids,
+                                _core.logger, current_video_ids=synced_ids,
                                 limit=int(os.getenv("TELEGRAM_AVAILABILITY_CHECKS_PER_RUN", "20")),
                                 now=int(_core.time.time()),
                             )

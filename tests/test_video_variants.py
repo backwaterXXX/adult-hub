@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -213,6 +214,7 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
         # extract_video_frame must have received stream URL with ?variant=alt_480_av1
         called_url = mock_extract.call_args[0][0]
         self.assertIn("?variant=alt_480_av1", called_url)
+        self.assertEqual(called_url.split("/play/")[0], "http://resolver:8090/admin")
 
     @patch("common.image_utils.extract_video_frame", return_value=(True, None))
     @patch("sync.media_files.resolve_media_path", return_value=Path("/tmp/test.mp4"))
@@ -237,6 +239,29 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
         mock_fetch_variant.assert_not_called()
         called_url = mock_extract.call_args[0][0]
         self.assertNotIn("?variant=", called_url)
+
+    def test_admin_base_is_not_nested_twice(self):
+        # Import the handler the flat way the sync image does, so this does not
+        # depend on which module identity the suite happened to load first.
+        import duplicate_job_external_handlers
+        import media_files
+
+        handlers = duplicate_job_external_handlers
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchall.return_value = [("test.mp4",)]
+        with patch.object(media_files, "resolve_media_path", return_value=Path("/tmp/test.mp4")), \
+                patch.object(handlers._core, "_refresh_jellyfin_with_progress", return_value=True), \
+                patch("common.video_variants.fetch_and_select_best_variant", return_value="alt_480_av1"), \
+                patch("common.image_utils.extract_video_frame", return_value=(True, None)) as mock_extract, \
+                patch.dict(os.environ, {"RESOLVER_API_URL": "http://resolver:8090/admin/"}):
+            handlers.execute_external_operation(
+                "artwork_generate", mock_conn, 103,
+                {"video_id": "telegram:10:20:30", "offset_seconds": 60, "variant": "auto"},
+                "/tmp/media", MagicMock(),
+            )
+        called_url = mock_extract.call_args[0][0]
+        self.assertIn("/admin/play/", called_url)
+        self.assertNotIn("/admin/admin", called_url)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ import uuid
 import unittest
 import xml.etree.ElementTree as ET
 from dataclasses import replace
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -1786,6 +1786,31 @@ class TestVideoDuplicateJobs(PgTestCase):
             self.conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0],
             "done"
         )
+
+
+class TestScheduledReconcileMergeGate(unittest.TestCase):
+    """A scheduled reconciliation queues hides only after an explicit opt-in."""
+
+    def execute_merges_argument(self) -> bool:
+        import duplicate_job_external_handlers
+        import video_duplicate_automation
+
+        with patch.object(video_duplicate_automation, "reconcile",
+                          return_value={"outcome": "completed"}) as reconcile:
+            result, committed = duplicate_job_external_handlers.execute_external_operation(
+                "duplicate_reconcile", None, "job-1", {}, Path("/nonexistent-media-dir"), MagicMock())
+        self.assertTrue(committed)
+        self.assertEqual(result["local_state"], "duplicate_reconciliation_completed")
+        return reconcile.call_args.kwargs["execute_merges"]
+
+    def test_reports_candidates_when_the_flag_is_unset(self):
+        with patch.dict(os.environ):
+            os.environ.pop("DUPLICATE_AUTO_MERGE_ENABLED", None)
+            self.assertFalse(self.execute_merges_argument())
+
+    def test_operator_opt_in_queues_automatic_merges(self):
+        with patch.dict(os.environ, {"DUPLICATE_AUTO_MERGE_ENABLED": "true"}):
+            self.assertTrue(self.execute_merges_argument())
 
 
 if __name__ == "__main__":

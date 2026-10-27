@@ -1,5 +1,6 @@
 -- Canonical baseline schema for Adult Hub (squashed from the historical
--- chain: legacy v1-v8 plus post-baseline v10-v49).
+-- chain: legacy v1-v8 plus post-baseline v10-v49, and the end state of the
+-- forward upgrades v50-v54 that CURRENT_MIGRATIONS replay onto a fresh base).
 --
 -- Applied by common/migrations/m0001_baseline.py to a fresh database; existing
 -- databases never re-run it. Generated with:
@@ -41,6 +42,21 @@ CREATE OR REPLACE FUNCTION public.adult_hub_sync_video_performers() RETURNS trig
             ORDER BY first_position;
             RETURN NEW;
         END $$;
+
+CREATE OR REPLACE FUNCTION public.archive_video_visual_row() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      IF TG_TABLE_NAME = 'video_visual_signatures' THEN
+        INSERT INTO video_visual_history(kind,record,image)
+          VALUES ('signature', to_jsonb(OLD) - 'contact_sheet', OLD.contact_sheet);
+      ELSE
+        INSERT INTO video_visual_history(kind,record,image)
+          VALUES ('comparison', to_jsonb(OLD) - 'frame_sheet', OLD.frame_sheet);
+      END IF;
+      IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+      RETURN NEW;
+    END; $$;
 
 CREATE OR REPLACE FUNCTION public.reject_unverified_short_video_duration() RETURNS trigger
     LANGUAGE plpgsql
@@ -584,6 +600,90 @@ ALTER TABLE public.video_sources ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTIT
     CACHE 1
 );
 
+CREATE TABLE public.video_visual_comparisons (
+    id text NOT NULL,
+    left_id text NOT NULL,
+    right_id text NOT NULL,
+    algorithm_version text NOT NULL,
+    left_source_key text NOT NULL,
+    right_source_key text NOT NULL,
+    state text NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    frame_sheet bytea,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    expires_at bigint,
+    CONSTRAINT video_visual_comparisons_check CHECK ((left_id < right_id)),
+    CONSTRAINT video_visual_comparisons_state_check CHECK ((state = ANY (ARRAY['queued'::text, 'processing'::text, 'confirmed'::text, 'review'::text, 'different'::text, 'inconclusive'::text, 'failed'::text])))
+);
+
+CREATE TABLE public.video_visual_history (
+    id bigint NOT NULL,
+    kind text NOT NULL,
+    record jsonb NOT NULL,
+    image bytea,
+    archived_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+CREATE SEQUENCE public.video_visual_history_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+ALTER SEQUENCE public.video_visual_history_id_seq OWNED BY public.video_visual_history.id;
+
+CREATE TABLE public.video_visual_jobs (
+    id text NOT NULL,
+    dedupe_key text NOT NULL,
+    kind text NOT NULL,
+    video_id text,
+    left_id text,
+    right_id text,
+    source_key text DEFAULT ''::text NOT NULL,
+    right_source_key text DEFAULT ''::text NOT NULL,
+    algorithm_version text NOT NULL,
+    state text NOT NULL,
+    priority smallint DEFAULT 20 NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    available_at bigint DEFAULT (EXTRACT(epoch FROM CURRENT_TIMESTAMP))::bigint NOT NULL,
+    lease_token text,
+    lease_until bigint,
+    error_code text,
+    error_detail text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    finished_at bigint,
+    CONSTRAINT video_visual_jobs_attempts_check CHECK ((attempts >= 0)),
+    CONSTRAINT video_visual_jobs_check CHECK ((((kind = 'signature'::text) AND (video_id IS NOT NULL) AND (left_id IS NULL) AND (right_id IS NULL)) OR ((kind = 'verify_pair'::text) AND (video_id IS NULL) AND (left_id IS NOT NULL) AND (right_id IS NOT NULL) AND (left_id < right_id)))),
+    CONSTRAINT video_visual_jobs_check1 CHECK (((state = 'processing'::text) = ((lease_token IS NOT NULL) AND (lease_until IS NOT NULL)))),
+    CONSTRAINT video_visual_jobs_kind_check CHECK ((kind = ANY (ARRAY['signature'::text, 'verify_pair'::text]))),
+    CONSTRAINT video_visual_jobs_priority_check CHECK (((priority >= 0) AND (priority <= 100))),
+    CONSTRAINT video_visual_jobs_state_check CHECK ((state = ANY (ARRAY['queued'::text, 'processing'::text, 'done'::text, 'failed'::text, 'cancelled'::text])))
+);
+
+CREATE TABLE public.video_visual_signatures (
+    video_id text NOT NULL,
+    algorithm_version text NOT NULL,
+    source_key text NOT NULL,
+    duration_seconds double precision NOT NULL,
+    signature jsonb NOT NULL,
+    contact_sheet bytea,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+CREATE TABLE public.video_visual_state (
+    id smallint NOT NULL,
+    algorithm_version text NOT NULL,
+    report_started_at bigint NOT NULL,
+    automatic_enabled_at bigint,
+    pair_cursor bigint DEFAULT 0 NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT video_visual_state_id_check CHECK ((id = 1))
+);
+
 CREATE TABLE public.videos (
     id text NOT NULL,
     provider text,
@@ -628,6 +728,8 @@ ALTER TABLE ONLY public.metadata_review_proposals ALTER COLUMN id SET DEFAULT ne
 ALTER TABLE ONLY public.performer_catalog_aliases ALTER COLUMN id SET DEFAULT nextval('public.performer_catalog_aliases_id_seq'::regclass);
 
 ALTER TABLE ONLY public.telegram_performer_proposals ALTER COLUMN id SET DEFAULT nextval('public.telegram_performer_proposals_id_seq'::regclass);
+
+ALTER TABLE ONLY public.video_visual_history ALTER COLUMN id SET DEFAULT nextval('public.video_visual_history_id_seq'::regclass);
 
 ALTER TABLE ONLY public.admin_action_events
     ADD CONSTRAINT admin_action_events_pkey PRIMARY KEY (id);
@@ -779,6 +881,24 @@ ALTER TABLE ONLY public.video_sources
 ALTER TABLE ONLY public.video_sources
     ADD CONSTRAINT video_sources_source_id_key UNIQUE (source_id);
 
+ALTER TABLE ONLY public.video_visual_comparisons
+    ADD CONSTRAINT video_visual_comparisons_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.video_visual_history
+    ADD CONSTRAINT video_visual_history_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.video_visual_jobs
+    ADD CONSTRAINT video_visual_jobs_dedupe_key_key UNIQUE (dedupe_key);
+
+ALTER TABLE ONLY public.video_visual_jobs
+    ADD CONSTRAINT video_visual_jobs_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.video_visual_signatures
+    ADD CONSTRAINT video_visual_signatures_pkey PRIMARY KEY (video_id);
+
+ALTER TABLE ONLY public.video_visual_state
+    ADD CONSTRAINT video_visual_state_pkey PRIMARY KEY (id);
+
 ALTER TABLE ONLY public.videos
     ADD CONSTRAINT videos_pkey PRIMARY KEY (id);
 
@@ -866,6 +986,18 @@ CREATE INDEX video_phash_jobs_ready_idx ON public.video_phash_jobs USING btree (
 
 CREATE UNIQUE INDEX video_phash_jobs_single_active_idx ON public.video_phash_jobs USING btree ((1)) WHERE (state = 'processing'::text);
 
+CREATE INDEX video_visual_comparisons_state_idx ON public.video_visual_comparisons USING btree (state, updated_at DESC);
+
+CREATE INDEX video_visual_jobs_ready_idx ON public.video_visual_jobs USING btree (available_at, created_at, id) WHERE (state = 'queued'::text);
+
+CREATE UNIQUE INDEX video_visual_jobs_single_active_idx ON public.video_visual_jobs USING btree ((1)) WHERE (state = 'processing'::text);
+
+CREATE INDEX video_visual_signatures_duration_idx ON public.video_visual_signatures USING btree (duration_seconds, video_id);
+
+CREATE TRIGGER archive_visual_comparison BEFORE DELETE OR UPDATE OF evidence, frame_sheet, left_source_key, right_source_key ON public.video_visual_comparisons FOR EACH ROW EXECUTE FUNCTION public.archive_video_visual_row();
+
+CREATE TRIGGER archive_visual_signature BEFORE DELETE OR UPDATE OF source_key, algorithm_version, signature, contact_sheet ON public.video_visual_signatures FOR EACH ROW EXECUTE FUNCTION public.archive_video_visual_row();
+
 CREATE TRIGGER videos_minimum_duration_insert BEFORE INSERT ON public.videos FOR EACH ROW EXECUTE FUNCTION public.reject_unverified_short_video_duration();
 
 CREATE TRIGGER videos_minimum_duration_update BEFORE UPDATE OF duration ON public.videos FOR EACH ROW EXECUTE FUNCTION public.reject_unverified_short_video_duration();
@@ -931,3 +1063,21 @@ ALTER TABLE ONLY public.video_phash_provenance
 
 ALTER TABLE ONLY public.video_phash_thumbnails
     ADD CONSTRAINT video_phash_thumbnails_video_id_fkey FOREIGN KEY (video_id) REFERENCES public.videos(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.video_visual_comparisons
+    ADD CONSTRAINT video_visual_comparisons_left_id_fkey FOREIGN KEY (left_id) REFERENCES public.videos(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.video_visual_comparisons
+    ADD CONSTRAINT video_visual_comparisons_right_id_fkey FOREIGN KEY (right_id) REFERENCES public.videos(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.video_visual_jobs
+    ADD CONSTRAINT video_visual_jobs_left_id_fkey FOREIGN KEY (left_id) REFERENCES public.videos(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.video_visual_jobs
+    ADD CONSTRAINT video_visual_jobs_right_id_fkey FOREIGN KEY (right_id) REFERENCES public.videos(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.video_visual_jobs
+    ADD CONSTRAINT video_visual_jobs_video_id_fkey FOREIGN KEY (video_id) REFERENCES public.videos(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.video_visual_signatures
+    ADD CONSTRAINT video_visual_signatures_video_id_fkey FOREIGN KEY (video_id) REFERENCES public.videos(id) ON DELETE CASCADE;

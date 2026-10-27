@@ -178,8 +178,8 @@ def dispatch_due_schedules(db_url, *, now=None, limit=20) -> int:
     dispatched = 0
     try:
         conn.execute("BEGIN")
-        # Provision a paired daily audit once. Operator changes to these rows are
-        # respected on subsequent starts, including disabling either schedule.
+        # Provision the built-in daily audit once. Operator changes to this row
+        # are respected on subsequent starts, including disabling the schedule.
         for schedule_id, name, action, payload, daily_at in (
             ("catalog-health-full", "Catalog health: daily full audit", "catalog_full_audit", {}, "03:00"),
         ):
@@ -189,12 +189,6 @@ def dispatch_due_schedules(db_url, *, now=None, limit=20) -> int:
                 (schedule_id, name, action, json.dumps(payload), daily_at,
                  next_run("daily", None, daily_at, after=instant), instant.timestamp(), instant.timestamp()),
             )
-        conn.execute(
-            "INSERT INTO admin_schedules (id,name,action,payload,schedule_type,interval_minutes,timezone,enabled,revision,next_run_at,created_at,updated_at) "
-            "VALUES ('duplicate-reconcile','Duplicate reconciliation','duplicate_reconcile','{}','interval',15,'Europe/Warsaw',TRUE,1,%s,%s,%s) "
-            "ON CONFLICT(id) DO NOTHING",
-            (instant + timedelta(minutes=15), instant.timestamp(), instant.timestamp()),
-        )
         due = conn.execute(
             "SELECT id,action,payload,schedule_type,interval_minutes,daily_at,last_job_id "
             "FROM admin_schedules WHERE enabled=TRUE AND next_run_at<=%s "

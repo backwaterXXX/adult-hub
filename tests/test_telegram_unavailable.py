@@ -109,12 +109,14 @@ class TelegramAvailabilityIntegrationTests(PgTestCase):
             raise TimeoutError("temporary")
         self.assertEqual(self.check(fail)["errors"], 1)
         self.assertEqual(self.conn.execute("SELECT miss_count FROM telegram_unavailable_quarantine WHERE video_id=%s", (video,)).fetchone()[0], 0)
-        missing = lambda *args, **kwargs: {"status": "missing"}
+        def missing(*args, **kwargs):
+            return {"status": "missing"}
         self.assertEqual(self.check(missing, now=self.now+86400)["suspect"], 1)
         self.assertTrue((self.media / "1.strm").exists())
         self.assertEqual(self.check(missing, now=self.now+2*86400)["quarantined"], 1)
         self.assertFalse((self.media / "1.strm").exists())
-        available = lambda *args, **kwargs: {"status": "available"}
+        def available(*args, **kwargs):
+            return {"status": "available"}
         self.assertEqual(self.check(available, now=self.now+3*86400)["restored"], 1)
         self.assertTrue((self.media / "1.strm").exists())
         self.assertIsNone(self.conn.execute("SELECT status FROM telegram_unavailable_quarantine WHERE video_id=%s", (video,)).fetchone())

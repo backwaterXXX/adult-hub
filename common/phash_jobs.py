@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import timezone
 
 from common import db
 from common.telegram_transfer_budget import (

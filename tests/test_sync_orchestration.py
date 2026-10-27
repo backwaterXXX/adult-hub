@@ -88,11 +88,14 @@ class Recorder:
         self.calls.append(Call(args, kwargs))
         if self.trace is not None:
             self.trace(self.name)
-        if self.side_effect is not None:
-            self.side_effect(*args, **kwargs)
+        outcome = self.side_effect(*args, **kwargs) if self.side_effect is not None else None
         error = self._take(self.raises)
         if error is not None:
             raise error if isinstance(error, BaseException) else error()
+        if self.results is None and self.result is None:
+            # No scripted value: report what the scenario actually produced, the
+            # way the real dependency would.
+            return outcome
         return self._take(self.results, default=self.result)
 
     @staticmethod
@@ -223,7 +226,17 @@ class CoreDouble:
         return recorder
 
     def collect_videos(self, channel_id, _channel, _conn, _media, collected, **_kwargs):
+        video_id = f"telegram:{channel_id}:1"
+        collected[video_id] = {}
+        # The real pipeline persists and clears `collected` before returning, so a
+        # double that leaves it populated would pass for the wrong reason.
+        collected.clear()
+        return {video_id}
+
+    def collect_without_persisting(self, channel_id, _channel, _conn, _media, collected, **_kwargs):
+        """Records a pipeline never flushed, left for the end-of-pass flush."""
         collected[f"telegram:{channel_id}:1"] = {}
+        return set()
 
     def record_http_retry(self, *_args, **_kwargs):
         metrics = self._ACTIVE_SYNC_METRICS
@@ -475,6 +488,7 @@ class TestMaintenanceAheadOfTheScans(SyncPassHarness):
             self.assertIs(args[2], collected)
 
     def test_the_remaining_videos_are_flushed_once_after_the_scans(self):
+        self.sink("sync_telegram_channel_pipeline").side_effect = self.core.collect_without_persisting
         self.sync()
 
         flush = self.sink("flush_collected")
@@ -776,6 +790,7 @@ class TestEnrichmentStages(SyncPassHarness):
         self.assertFalse(self.sink("hide_dead_streams").called)
 
     def test_the_dead_stream_filter_keeps_every_video_when_it_fails(self):
+        self.sink("sync_telegram_channel_pipeline").side_effect = self.core.collect_without_persisting
         self.explode("hide_dead_streams", RuntimeError("denylist unreadable"))
 
         self.assertTrue(self.sync())

@@ -49,8 +49,6 @@ class EvidencePolicyTest(unittest.TestCase):
         self.assertIsNone(reevaluate_evidence(evidence))
 
 
-if __name__ == '__main__': unittest.main()
-
 try:
     from pg_helper import PgTestCase
 except ImportError:
@@ -79,3 +77,7 @@ class VisualHistoryTest(PgTestCase):
         self.assertEqual(ids, {'candidate-a', 'candidate-b'})
         again = _reconcile_visual(self.db_url, [{'left': {'id': 'candidate-a'}, 'right': {'id': 'candidate-b'}}])
         self.assertEqual(again['visual_signatures_queued'], 0)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -107,7 +107,10 @@ def sync_telegram_channel_pipeline(
     collected: Dict[str, Dict[str, Any]], *, services: TelegramSyncServices,
     sync_mode: str = "scheduled",
 ):
-    """Run latest-only, history-only, or scheduled combined Telegram work."""
+    """Run latest-only, history-only, or scheduled combined Telegram work.
+
+    Returns the video IDs this channel persisted during the run.
+    """
     if sync_mode not in {"scheduled", "new", "backfill"}:
         raise ValueError("Unsupported Telegram sync mode.")
     monotonic = getattr(services.time, "monotonic", _time.monotonic)
@@ -198,19 +201,22 @@ def sync_telegram_channel_pipeline(
     # later network request or batch write fails and rolls back its transaction.
     conn.commit()
 
+    synced_ids: set[str] = set()
+
     def collect(videos):
         started = monotonic()
         accepted = 0
+        collected_ids: list[str] = []
         failed = False
         try:
             for video in videos:
                 if (passes_minimum_video_duration(video.get("duration"))
                         and telegram_passes_tags(telegram_video_tags(video), whitelist, blacklist)):
-                    collect_single_telegram_video(
+                    collected_ids.append(collect_single_telegram_video(
                         video, channel_id, studio, collected, services=services
-                    )
+                    ))
                     accepted += 1
-            return accepted
+            return accepted, collected_ids
         except Exception:
             failed = True
             raise
@@ -236,8 +242,9 @@ def sync_telegram_channel_pipeline(
                 raise ValueError("Telegram latest cursor did not advance")
             if latest_head is None and count:
                 latest_head = head
-            accepted = collect(batch["videos"])
+            accepted, page_ids = collect(batch["videos"])
             services.flush_collected(collected, conn, media_dir, f"Telegram: {studio}", raise_on_error=True)
+            synced_ids.update(page_ids)
             complete = not count or not batch["has_more"] or watermark is None or next_id <= watermark
             if complete:
                 watermark = max(watermark or 0, latest_head or 0) or None
@@ -293,7 +300,7 @@ def sync_telegram_channel_pipeline(
                 services.observe_stage("telegram_history_fetch", monotonic() - history_started)
             count = batch["message_count"]
             next_cursor = batch["next_offset_id"]
-            added = collect(batch["videos"])
+            added, batch_ids = collect(batch["videos"])
             # Persist accepted entries before advancing cursor. A failed write retries this batch.
             persist_started = monotonic()
             try:
@@ -306,6 +313,7 @@ def sync_telegram_channel_pipeline(
                     services.observe_stage("telegram_persist", monotonic() - persist_started, True)
                 raise
             else:
+                synced_ids.update(batch_ids)
                 if services.observe_stage:
                     services.observe_stage("telegram_persist", monotonic() - persist_started)
             if count and (next_cursor is None or (cursor is not None and next_cursor >= cursor)):
@@ -328,6 +336,7 @@ def sync_telegram_channel_pipeline(
                 "Telegram history batch failed for %s: %s; will resume", channel_id, detail
             )
     persist_started = monotonic()
+    pending_ids = set(collected)
     try:
         services.flush_collected(collected, conn, media_dir, f"Telegram: {studio}")
     except Exception:
@@ -335,6 +344,7 @@ def sync_telegram_channel_pipeline(
             services.observe_stage("telegram_persist", monotonic() - persist_started, True)
         raise
     else:
+        synced_ids.update(pending_ids)
         if services.observe_stage:
             services.observe_stage("telegram_persist", monotonic() - persist_started)
     if failures:
@@ -358,3 +368,4 @@ def sync_telegram_channel_pipeline(
             "Telegram %s: reevaluated stored entries: kept=%d removed=%d",
             channel_id, kept, removed,
         )
+    return synced_ids

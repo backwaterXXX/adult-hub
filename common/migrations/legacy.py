@@ -6,7 +6,7 @@ baseline (version 1, `0001_baseline`) creates the same schema from
 proves they started before the baseline existed.
 
 `POST_BASELINE_MIGRATIONS` is the compatibility chain for databases that
-recorded the historical post-baseline upgrades (versions 10-50). They still
+recorded the historical post-baseline upgrades (versions 10-55). They still
 upgrade through it; a database built by the current baseline never sees them.
 The migrations stay in their own files for exactly that reason, and ordering
 is load-bearing (m0039 drops the table m0035 creates).
@@ -66,6 +66,7 @@ from common.migrations.m0051_video_visual_duplicates import migration as video_v
 from common.migrations.m0052_video_visual_timestamps import migration as video_visual_timestamps
 from common.migrations.m0053_visual_history import migration as video_visual_history
 from common.migrations.m0054_telegram_latest_cursor import migration as telegram_latest_cursor
+from common.migrations.m0055_duplicate_reconcile_opt_in import migration as duplicate_reconcile_opt_in
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -124,4 +125,5 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     video_visual_timestamps,
     video_visual_history,
     telegram_latest_cursor,
+    duplicate_reconcile_opt_in,
 )

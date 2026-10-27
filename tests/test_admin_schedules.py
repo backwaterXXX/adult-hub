@@ -9,6 +9,7 @@ from threading import Barrier
 
 from common import admin_schedules
 from common.admin_audit_events import list_change_events
+from common.migrations.m0055_duplicate_reconcile_opt_in import current_migration as reconcile_opt_in
 from tests.pg_helper import PgTestCase
 
 
@@ -74,6 +75,12 @@ class TestScheduleDispatch(PgTestCase):
         self.conn.commit()
         return created
 
+    def _listed(self, schedule_id):
+        # The dispatcher's built-in rows share the fixture's created_at, so the
+        # row order in the listing depends on a random schedule ID.
+        return next(item for item in admin_schedules.list_schedules(self.db_url)
+                    if item["id"] == schedule_id)
+
     def test_dispatch_is_durable_deduplicated_and_skips_active_overlap(self):
         now = datetime(2026, 1, 1, 0, tzinfo=timezone.utc)
         created = admin_schedules.create_schedule(
@@ -88,8 +95,7 @@ class TestScheduleDispatch(PgTestCase):
 
         self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=now), 1)
         self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=now), 0)
-        schedule = next(item for item in admin_schedules.list_schedules(self.db_url)
-                        if item["id"] == created["id"])
+        schedule = self._listed(created["id"])
         self.assertEqual(schedule["last_result"], "queued")
         job = self.conn.execute(
             "SELECT action,state,payload FROM video_duplicate_jobs WHERE id=%s", (schedule["last_job_id"],)
@@ -100,8 +106,7 @@ class TestScheduleDispatch(PgTestCase):
         self.conn.execute("UPDATE admin_schedules SET next_run_at=%s WHERE id=%s", (now, created["id"]))
         self.conn.commit()
         self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=now), 0)
-        schedule = next(item for item in admin_schedules.list_schedules(self.db_url)
-                        if item["id"] == created["id"])
+        schedule = self._listed(created["id"])
         self.assertEqual(schedule["last_result"], "skipped_overlap")
         self.assertEqual(self.conn.execute("SELECT count(*) FROM video_duplicate_jobs").fetchone()[0], 1)
 
@@ -109,20 +114,20 @@ class TestScheduleDispatch(PgTestCase):
         now = datetime(2026, 1, 1, 0, tzinfo=timezone.utc)
         created = self._make_due_schedule(now)
         self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=now), 1)
-        first_job_id = admin_schedules.list_schedules(self.db_url)[0]["last_job_id"]
+        first_job_id = self._listed(created["id"])["last_job_id"]
 
         self.conn.execute("UPDATE video_duplicate_jobs SET state='processing' WHERE id=%s", (first_job_id,))
         self.conn.execute("UPDATE admin_schedules SET next_run_at=%s WHERE id=%s", (now, created["id"]))
         self.conn.commit()
         self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=now), 0)
-        self.assertEqual(admin_schedules.list_schedules(self.db_url)[0]["last_result"], "skipped_overlap")
+        self.assertEqual(self._listed(created["id"])["last_result"], "skipped_overlap")
         self.assertEqual(self.conn.execute("SELECT count(*) FROM video_duplicate_jobs").fetchone()[0], 1)
 
         self.conn.execute("UPDATE video_duplicate_jobs SET state='done' WHERE id=%s", (first_job_id,))
         self.conn.execute("UPDATE admin_schedules SET next_run_at=%s WHERE id=%s", (now, created["id"]))
         self.conn.commit()
         self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=now), 1)
-        schedule = admin_schedules.list_schedules(self.db_url)[0]
+        schedule = self._listed(created["id"])
         self.assertEqual(schedule["last_result"], "queued")
         self.assertNotEqual(schedule["last_job_id"], first_job_id)
         self.assertEqual(self.conn.execute("SELECT count(*) FROM video_duplicate_jobs").fetchone()[0], 2)
@@ -247,3 +252,38 @@ class TestScheduleDispatch(PgTestCase):
             self.conn.execute("DROP TRIGGER IF EXISTS fail_schedule_update ON admin_schedules")
             self.conn.execute("DROP FUNCTION IF EXISTS fail_schedule_update()")
             self.conn.commit()
+
+
+class TestReconcileScheduleOptIn(PgTestCase):
+    """Automatic duplicate merges are an explicit operator choice."""
+
+    SCHEDULE_ID = "duplicate-reconcile"
+
+    def row(self):
+        return self.conn.execute(
+            "SELECT enabled,next_run_at,revision FROM admin_schedules WHERE id=%s", (self.SCHEDULE_ID,)
+        ).fetchone()
+
+    def test_dispatch_no_longer_provisions_the_reconcile_schedule(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=now), 0)
+        self.assertIsNone(self.row())
+
+    def test_migration_seeds_the_schedule_disabled_and_repeats_itself(self):
+        with self.conn:
+            reconcile_opt_in.apply(self.conn)
+        self.assertEqual(self.row(), (False, None, 1))
+        with self.conn:
+            reconcile_opt_in.apply(self.conn)
+        self.assertEqual(self.row(), (False, None, 1))
+
+    def test_migration_revokes_a_schedule_an_earlier_release_enabled(self):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO admin_schedules (id,name,action,payload,schedule_type,interval_minutes,"
+                "timezone,enabled,revision,next_run_at) VALUES "
+                "(%s,'Duplicate reconciliation','duplicate_reconcile','{}','interval',15,"
+                "'Europe/Warsaw',TRUE,1,CURRENT_TIMESTAMP + INTERVAL '15 minutes')", (self.SCHEDULE_ID,))
+        with self.conn:
+            reconcile_opt_in.apply(self.conn)
+        self.assertEqual(self.row(), (False, None, 2))

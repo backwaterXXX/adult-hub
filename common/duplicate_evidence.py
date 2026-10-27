@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 
 PHASH_GENERATOR = 'stash-phash-689a6b400625d6da2afb58a7f908c88bcdb6f8ab-v2:resolver-ffmpeg-stash-v2'
@@ -40,7 +41,8 @@ def pair_evidence(conn, left_id: str, right_id: str) -> dict | None:
             return None
     except (ValueError, TypeError):
         return None
-    ap, an = _part(a); bp, bn = _part(b)
+    ap, an = _part(a)
+    bp, bn = _part(b)
     if (ap or bp) and (not an or an != bn):
         return None
     if conn.execute('SELECT 1 FROM video_duplicate_dismissals WHERE left_id=%s AND right_id=%s AND active=1', (left_id,right_id)).fetchone():
@@ -60,10 +62,11 @@ def pair_evidence(conn, left_id: str, right_id: str) -> dict | None:
         (left_id,right_id,_source(a),_source(b))).fetchone()
     if row:
         evidence = row[0]
-        if isinstance(evidence,str):
-            import json
-            try: evidence = json.loads(evidence)
-            except ValueError: evidence = {}
+        if isinstance(evidence, str):
+            try:
+                evidence = json.loads(evidence)
+            except ValueError:
+                evidence = {}
         if isinstance(evidence,dict) and evidence.get('confirmation_policy') == VISUAL_POLICY:
             return {'type': 'visual_sequence', 'policy': VISUAL_POLICY}
     return None

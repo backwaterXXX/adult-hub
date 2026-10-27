@@ -19,11 +19,16 @@ from resolver_video_fingerprints import telegram_phash
 LOG = logging.getLogger("resolver.video_visual_worker")
 DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None
 STOP = False
+IDLE_SECONDS = 2
 
 
 def _stop(_signum, _frame):
     global STOP
     STOP = True
+
+
+def _enabled() -> bool:
+    return os.getenv("VIDEO_VISUAL_WORKER_ENABLED", "false").strip().lower() == "true"
 
 
 def _resolver_ready() -> bool:
@@ -117,8 +122,13 @@ def _comparison(job: dict) -> None:
 def main() -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+    if not _enabled():
+        LOG.info("Visual duplicate worker is idle; set VIDEO_VISUAL_WORKER_ENABLED=true to start it")
     first_cycle = True
     while not STOP:
+        if not _enabled():
+            time.sleep(IDLE_SECONDS)
+            continue
         try:
             recover_expired(DB_URL, force=first_cycle)
             first_cycle = False
@@ -130,7 +140,7 @@ def main() -> int:
                 time.sleep(2)
                 continue
             heartbeat_stop = threading.Event()
-            def keep_lease() -> None:
+            def keep_lease(job=job, heartbeat_stop=heartbeat_stop) -> None:
                 while not heartbeat_stop.wait(15):
                     try:
                         if not heartbeat(DB_URL, job):

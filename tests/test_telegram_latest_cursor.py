@@ -1,7 +1,6 @@
 import logging
 import tempfile
 import time
-import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,9 +40,12 @@ class LatestCursorTests(PgTestCase):
         first = {"videos": [], "message_count": 50, "highest_id": 200, "next_offset_id": 151, "has_more": True}
         second = {"videos": [], "message_count": 50, "highest_id": 150, "next_offset_id": 101, "has_more": True}
         third = {"videos": [], "message_count": 2, "highest_id": 100, "next_offset_id": 99, "has_more": False}
-        self.run_scan([first]); self.assertEqual(self.state(), (100, 151, 200))
-        self.assertIn("offset_id=151", self.run_scan([second])[0]); self.assertEqual(self.state(), (100, 101, 200))
-        self.run_scan([third]); self.assertEqual(self.state(), (200, None, None))
+        self.run_scan([first])
+        self.assertEqual(self.state(), (100, 151, 200))
+        self.assertIn("offset_id=151", self.run_scan([second])[0])
+        self.assertEqual(self.state(), (100, 101, 200))
+        self.run_scan([third])
+        self.assertEqual(self.state(), (200, None, None))
         self.run_scan([{"videos": [], "message_count": 2, "highest_id": 205, "next_offset_id": 199, "has_more": False}])
         self.assertEqual(self.state(), (205, None, None))
 
@@ -83,6 +85,6 @@ class LatestCursorTests(PgTestCase):
             for migration in POST_BASELINE_MIGRATIONS:
                 if migration.version < 53:
                     self.conn.execute("INSERT INTO schema_migrations(version,name,applied_at) VALUES (%s,%s,CURRENT_TIMESTAMP)", (migration.version, migration.name))
-        self.assertEqual([item.version for item in apply_migrations(self.db_url)], [54])
+        self.assertEqual([item.version for item in apply_migrations(self.db_url)], [54, 55])
         rows = self.conn.execute("SELECT channel_id,backfill_in_progress,backfill_cursor FROM telegram_channel_state ORDER BY channel_id").fetchall()
         self.assertEqual(rows, [(self.channel, 1, None), ("other", 1, 42)])

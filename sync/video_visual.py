@@ -141,7 +141,6 @@ def compare_pair(left_id: str, right_id: str, left_duration: float, right_durati
     coarse_right_times = sorted({round(left_anchors[i] + delta, 3)
                                  for delta in coarse_offsets for i in coarse_indices
                                  if 0 <= left_anchors[i] + delta < right_duration})
-    fine_offsets_by_center: dict[float, list[float]] = {}
 
     def extract(video_id: str, times: list[float], cache_id: str) -> list[bytes]:
         try:

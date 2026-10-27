@@ -148,7 +148,6 @@ def reconcile(db_url: str | None, *, limit: int = MAX_AUTO_LOSERS,
     from common.job_queue import enqueue_jobs_batch
     from common.phash_jobs import enqueue as enqueue_phash
     import video_duplicates
-    import video_duplicate_scoring as duplicate_rules
 
     scan = video_duplicates.scan_duplicate_index(db_url)
     visual = _reconcile_visual(db_url, scan.get("pairs", [])) if scan.get("complete") else {}

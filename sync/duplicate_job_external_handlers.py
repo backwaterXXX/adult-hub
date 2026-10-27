@@ -49,8 +49,11 @@ def execute_external_operation(action, conn, job_id, payload, media_dir, service
             from .video_duplicate_automation import reconcile
         except ImportError:
             from video_duplicate_automation import reconcile
+        # Automatic merges hide library entries, so a scheduled pass only reports
+        # candidates until the operator opts in.
+        execute_merges = _core.os.getenv("DUPLICATE_AUTO_MERGE_ENABLED", "false").strip().lower() == "true"
         result = reconcile(getattr(conn, "_url", None) or _core.os.getenv("DATABASE_URL"),
-                           execute_merges=True)
+                           execute_merges=execute_merges)
         result["local_state"] = "duplicate_reconciliation_completed"
         return result, True
 
@@ -130,15 +133,18 @@ def execute_external_operation(action, conn, job_id, payload, media_dir, service
         if dest.is_symlink():
             raise ValueError("Artwork destination must not be a symlink.")
         base = _core.os.getenv("RESOLVER_API_URL", "http://resolver:8090").rstrip("/")
+        # The resolver only serves /play/* under /admin; bare /play/* answers 307,
+        # which httpx does not follow while ffmpeg does.
+        api_base = base if base.endswith("/admin") else base + "/admin"
         variant = payload.get("variant")
         if not variant or variant == "auto":
             from common.video_variants import fetch_and_select_best_variant
-            variant = fetch_and_select_best_variant(base, video_id, purpose="artwork")
+            variant = fetch_and_select_best_variant(api_base, video_id, purpose="artwork")
         elif str(variant).lower() == "original":
             variant = None
 
         stream_query = f"?variant={quote(str(variant), safe='')}" if variant else ""
-        stream_url = f"{base}/play/{quote(video_id, safe='')}/stream{stream_query}"
+        stream_url = f"{api_base}/play/{quote(video_id, safe='')}/stream{stream_query}"
         success, error = extract_video_frame(
             stream_url, dest, offset_seconds=offset,
         )

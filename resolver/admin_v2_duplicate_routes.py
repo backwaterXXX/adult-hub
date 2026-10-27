@@ -74,7 +74,6 @@ def register_duplicate_routes(router: APIRouter, admin) -> None:
         if denied is not None:
             return denied
         try:
-            import json
             body = await request.json()
             left, right = body.get("left_id"), body.get("right_id")
             if not isinstance(left, str) or not isinstance(right, str) or left == right or max(len(left), len(right)) > 512:

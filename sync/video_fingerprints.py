@@ -474,7 +474,6 @@ def telegram_frame_samples(video_id: str, timestamps: list[float], *,
                           cache_id: Optional[str] = None) -> list[bytes]:
     """Extract bounded grayscale 160x90 frames at caller-selected timestamps."""
     import shutil
-    from PIL import Image
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("ffmpeg is required for visual verification")

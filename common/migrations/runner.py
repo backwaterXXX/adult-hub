@@ -26,6 +26,9 @@ from common.migrations.m0052_video_visual_timestamps import (
 
 from common.migrations.m0053_visual_history import current_migration as current_video_visual_history
 from common.migrations.m0054_telegram_latest_cursor import current_migration as current_telegram_latest_cursor
+from common.migrations.m0055_duplicate_reconcile_opt_in import (
+    current_migration as current_duplicate_reconcile_opt_in,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,7 @@ MIGRATION_LOCK_ID = 0xAD01780B
 CURRENT_MIGRATIONS: tuple[Migration, ...] = (
     current_duplicate_reconcile_schedule, current_video_visual_duplicates,
     current_video_visual_timestamps, current_video_visual_history, current_telegram_latest_cursor,
+    current_duplicate_reconcile_opt_in,
 )
 MIGRATIONS: tuple[Migration, ...] = (baseline, *CURRENT_MIGRATIONS)
 
@@ -192,7 +196,7 @@ def _migration_plan(
             "0002_admin_operation_plans", current_duplicate_reconcile_schedule.name,
             current_video_visual_duplicates.name,
             current_video_visual_timestamps.name, current_video_visual_history.name,
-            current_telegram_latest_cursor.name,
+            current_telegram_latest_cursor.name, current_duplicate_reconcile_opt_in.name,
         }
         for version in applied_versions
     )
