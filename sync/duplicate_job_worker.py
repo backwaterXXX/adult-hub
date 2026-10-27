@@ -1,5 +1,6 @@
 """Execution loop for durable duplicate decision jobs."""
 from __future__ import annotations
+import uuid
 
 if __package__:
     from . import duplicate_jobs as _core
@@ -100,7 +101,7 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
         try:
             if action == 'catalog_full_audit':
                 from common.job_queue import enqueue_jobs_batch
-                batch_id = _core.uuid.uuid4().hex
+                batch_id = uuid.uuid4().hex
                 audit_ids = enqueue_jobs_batch(getattr(conn, '_url', None), [
                     ('metadata_quality_audit', {'audit_batch_id': batch_id}),
                     ('consistency_audit', {'mode': 'file_consistency', 'audit_batch_id': batch_id, 'auto_repair': True}),
@@ -135,6 +136,7 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                 action == 'backup_create'
                 or action == 'backup_restore_test'
                 or action == 'metadata_backfill'
+                or action == 'duplicate_reconcile'
                 or action == 'telegram_fingerprint_scan'
                 or action == 'artwork_download'
                 or action == 'artwork_generate'
@@ -164,6 +166,10 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                 losers = [str(x) for x in payload['loser_ids']]
                 if not losers or keeper in losers or len(set(losers)) != len(losers):
                     raise ValueError('Invalid item list.')
+                from common.duplicate_evidence import pair_evidence
+                for loser in losers:
+                    if not pair_evidence(conn, keeper, loser):
+                        raise ValueError('Duplicate identity has not been confirmed, or duration/part safeguards failed.')
                 fingerprints = payload.get('fingerprints') or {}
                 expected_revisions = payload.get('expected_revisions') or {}
                 validation_ids = list(dict.fromkeys([
@@ -336,6 +342,28 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                     k_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper,)).fetchone()
                     k_cols = _core.db.table_columns(conn, 'videos')
                     k_vid = dict(zip(k_cols, k_row)) if k_row else {}
+                    keeper_override_row = conn.execute(
+                        'SELECT fields,updated_at FROM video_metadata_overrides WHERE video_id=%s',
+                        (keeper,),
+                    ).fetchone()
+                    keeper_override_fields = (_core.json.loads(keeper_override_row[0])
+                                              if keeper_override_row and isinstance(keeper_override_row[0], str)
+                                              else dict(keeper_override_row[0] or {}) if keeper_override_row else {})
+                    def _epoch(value):
+                        if value is None:
+                            return 0.0
+                        return float(value.timestamp()) if hasattr(value, 'timestamp') else float(value)
+                    def _iso_timestamp(value):
+                        if value is None:
+                            return None
+                        if hasattr(value, 'isoformat'):
+                            return value.isoformat()
+                        return _core.time.strftime('%Y-%m-%dT%H:%M:%SZ', _core.time.gmtime(float(value)))
+                    keeper_before = {
+                        'video': dict(k_vid),
+                        'overrides': keeper_override_fields,
+                        'override_updated_at': _epoch(keeper_override_row[1]) if keeper_override_row else None,
+                    }
 
                     def _parse_list_field(val):
                         if not val:
@@ -353,9 +381,85 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                     merged_cats = set(_parse_list_field(k_vid.get('categories')))
                     merged_tags = set(_parse_list_field(k_vid.get('tags')))
                     k_studio = (k_vid.get('studio') or '').strip()
+                    metadata_fields = ('title', 'plot', 'studio', 'date_released')
+                    metadata_candidates = {field: [] for field in metadata_fields}
+                    list_override_candidates = {'performers': [], 'tags': []}
+                    performer_candidates = []
+                    def _performer_priority(video):
+                        resolution = video.get('performer_resolution') or {}
+                        if isinstance(resolution, str):
+                            try:
+                                resolution = _core.json.loads(resolution)
+                            except (TypeError, ValueError):
+                                resolution = {}
+                        source = str(video.get('scene_match_source') or '').casefold()
+                        return (100 if any(token in source for token in ('oshash', 'phash', 'fingerprint'))
+                                else 70 if source else int((resolution or {}).get('priority') or 10))
+                    keeper_performers = _parse_list_field(k_vid.get('performers'))
+                    if keeper_performers:
+                        performer_candidates.append((_performer_priority(k_vid), len(keeper_performers),
+                                                     True, keeper_performers))
+                    keeper_override_time = _epoch(keeper_override_row[1]) if keeper_override_row else 0.0
+                    for field in list_override_candidates:
+                        if field in keeper_override_fields:
+                            list_override_candidates[field].append((keeper_override_time, True,
+                                                                    keeper_override_fields[field]))
+                    for field in metadata_fields:
+                        value = k_vid.get(field)
+                        if value not in (None, ''):
+                            metadata_candidates[field].append((10, 0.0, True, str(value)))
                     for snapshot in snapshots:
                         loser = snapshot['video']['id']
                         l_vid = snapshot.get('video') or {}
+                        snapshot['keeper_before'] = keeper_before
+                        if payload.get('automatic'):
+                            snapshot['automatic'] = True
+                            snapshot['duplicate_evidence'] = str(payload.get('evidence') or '')[:40]
+                        loser_override_row = conn.execute(
+                            'SELECT fields,updated_at,revision FROM video_metadata_overrides WHERE video_id=%s',
+                            (loser,),
+                        ).fetchone()
+                        loser_overrides = (_core.json.loads(loser_override_row[0])
+                                           if loser_override_row and isinstance(loser_override_row[0], str)
+                                           else dict(loser_override_row[0] or {}) if loser_override_row else {})
+                        if loser_override_row:
+                            snapshot['metadata_overrides'] = {
+                                'fields': loser_overrides,
+                                'updated_at': _iso_timestamp(loser_override_row[1]),
+                                'revision': int(loser_override_row[2]),
+                            }
+                        loser_override_time = _epoch(loser_override_row[1]) if loser_override_row else 0.0
+                        resolution = l_vid.get('performer_resolution') or {}
+                        if isinstance(resolution, str):
+                            try:
+                                resolution = _core.json.loads(resolution)
+                            except (TypeError, ValueError):
+                                resolution = {}
+                        source_name = str(l_vid.get('scene_match_source') or '').casefold()
+                        source_priority = 100 if any(token in source_name for token in ('oshash', 'phash', 'fingerprint')) else 70 if source_name else int((resolution or {}).get('priority') or 10)
+                        for field in metadata_fields:
+                            value = l_vid.get(field)
+                            if value not in (None, ''):
+                                metadata_candidates[field].append((source_priority, 0.0, False, str(value)))
+                        for field, value in loser_overrides.items():
+                            if field in metadata_candidates:
+                                metadata_candidates[field].append((1000, loser_override_time, False, str(value)))
+                            elif field in list_override_candidates:
+                                list_override_candidates[field].append((loser_override_time, False, value))
+                        loser_performers = _parse_list_field(l_vid.get('performers'))
+                        if loser_performers:
+                            performer_candidates.append((_performer_priority(l_vid), len(loser_performers),
+                                                         False, loser_performers))
+                        for field, value in keeper_override_fields.items():
+                            if field in metadata_candidates:
+                                metadata_candidates[field].append((1000, keeper_override_time, True, str(value)))
+                        if (not k_vid.get('scene_match_external_id') and l_vid.get('scene_match_external_id')):
+                            k_vid['scene_match_source'] = l_vid.get('scene_match_source')
+                            k_vid['scene_match_external_id'] = l_vid.get('scene_match_external_id')
+                            k_vid['scene_match_url'] = l_vid.get('scene_match_url')
+                            k_vid['scene_match_confidence'] = l_vid.get('scene_match_confidence')
+                        if not k_vid.get('thumbnail') and l_vid.get('thumbnail'):
+                            k_vid['thumbnail'] = l_vid.get('thumbnail')
                         l_channel = loser.split(':')[1] if ':' in loser and len(loser.split(':')) >= 2 else ''
                         conn.execute('INSERT INTO video_sources\n                            (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at)\n                            VALUES (%s, %s, %s, %s, %s, %s, 2, 1, %s)\n                            ON CONFLICT (source_id) DO UPDATE SET\n                                video_id=EXCLUDED.video_id, provider=EXCLUDED.provider,\n                                provider_ref=EXCLUDED.provider_ref, source_url=EXCLUDED.source_url,\n                                channel_id=EXCLUDED.channel_id, priority=EXCLUDED.priority,\n                                is_active=EXCLUDED.is_active, created_at=EXCLUDED.created_at', (keeper, loser, 'telegram', loser, f"https://t.me/c/{(l_channel[4:] if l_channel.startswith('-100') else l_channel.lstrip('-'))}" if l_channel else '', l_channel, now))
                         merged_perfs.update(_parse_list_field(l_vid.get('performers')))
@@ -366,12 +470,66 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                             merged_tags.add(l_studio)
                         if not k_studio and l_studio:
                             k_studio = l_studio
+                        merged_override_fields = dict(keeper_override_fields)
+                        for field, candidates in metadata_candidates.items():
+                            if not candidates:
+                                continue
+                            candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+                            winner = candidates[0][3]
+                            if field in {'title', 'plot', 'studio', 'date_released'}:
+                                k_vid[field] = winner
+                            if candidates[0][0] >= 1000:
+                                merged_override_fields[field] = winner
+                        k_studio = k_vid.get('studio') or ''
                         conn.execute('DELETE FROM video_categories WHERE video_id=%s', (loser,))
                         conn.execute('DELETE FROM synced_files WHERE video_id=%s', (loser,))
                         conn.execute('DELETE FROM videos WHERE id=%s', (loser,))
                         conn.execute("INSERT INTO video_duplicate_decisions (loser_id,keeper_id,operation_id,state,created_at,snapshot,rules_version) VALUES (%s,%s,%s,'active',%s,%s,%s)", (loser, keeper, job_id, now, _core.json.dumps(snapshot, ensure_ascii=False), payload.get('rules_version')))
                     if k_row:
-                        conn.execute('UPDATE videos SET\n                            performers=%s, categories=%s, tags=%s, studio=%s WHERE id=%s', (_core.json.dumps(sorted(merged_perfs), ensure_ascii=False), _core.json.dumps(sorted(merged_cats), ensure_ascii=False), _core.json.dumps(sorted(merged_tags), ensure_ascii=False), k_studio, keeper))
+                        merged_perfs.update(_parse_list_field(k_vid.get('performers')))
+                        merged_tags.update(_parse_list_field(k_vid.get('tags')))
+                        merged_cats.update(_parse_list_field(k_vid.get('categories')))
+                        for field, candidates in list_override_candidates.items():
+                            if candidates:
+                                candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+                                value = candidates[0][2]
+                                if field == 'performers':
+                                    merged_perfs = set(_parse_list_field(value))
+                                else:
+                                    merged_tags = set(_parse_list_field(value))
+                                merged_override_fields[field] = value
+                        if not list_override_candidates['performers'] and performer_candidates:
+                            strongest_priority = max(item[0] for item in performer_candidates)
+                            merged_perfs = {
+                                performer for priority, _length, _is_keeper, values in performer_candidates
+                                if priority == strongest_priority for performer in values
+                            }
+                        conn.execute('UPDATE videos SET title=%s,plot=%s,studio=%s,date_released=%s,thumbnail=%s,performers=%s,categories=%s,tags=%s,scene_match_source=%s,scene_match_external_id=%s,scene_match_url=%s,scene_match_confidence=%s WHERE id=%s',
+                                     (k_vid.get('title'), k_vid.get('plot'), k_vid.get('studio'),
+                                      k_vid.get('date_released'), k_vid.get('thumbnail'),
+                                      _core.json.dumps(sorted(merged_perfs), ensure_ascii=False),
+                                      _core.json.dumps(sorted(merged_cats), ensure_ascii=False),
+                                      _core.json.dumps(sorted(merged_tags), ensure_ascii=False),
+                                      k_vid.get('scene_match_source'), k_vid.get('scene_match_external_id'),
+                                      k_vid.get('scene_match_url'), k_vid.get('scene_match_confidence'), keeper))
+                        if merged_override_fields:
+                            conn.execute('INSERT INTO video_metadata_overrides (video_id,fields,revision,updated_at) VALUES (%s,%s,1,CURRENT_TIMESTAMP) ON CONFLICT (video_id) DO UPDATE SET fields=EXCLUDED.fields,revision=video_metadata_overrides.revision+1,updated_at=CURRENT_TIMESTAMP',
+                                         (keeper, _core.json.dumps(merged_override_fields, ensure_ascii=False)))
+                        keeper_after_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper,)).fetchone()
+                        keeper_after = dict(zip(k_cols, keeper_after_row)) if keeper_after_row else {}
+                        after_override = conn.execute(
+                            'SELECT fields FROM video_metadata_overrides WHERE video_id=%s', (keeper,),
+                        ).fetchone()
+                        keeper_after_overrides = (after_override[0] if after_override else {})
+                        if isinstance(keeper_after_overrides, str):
+                            keeper_after_overrides = _core.json.loads(keeper_after_overrides)
+                        conn.execute(
+                            "UPDATE video_duplicate_decisions SET snapshot=(jsonb_set(snapshot::jsonb,'{keeper_after}',%s::jsonb,TRUE)::text) "
+                            "WHERE operation_id=%s AND state='active'",
+                            (_core.json.dumps({'video': keeper_after, 'overrides': keeper_after_overrides}, ensure_ascii=False), job_id),
+                        )
+                        for snapshot in snapshots:
+                            snapshot['keeper_after'] = {'video': keeper_after, 'overrides': keeper_after_overrides}
                         for cat in merged_cats:
                             conn.execute('INSERT INTO video_categories (video_id, category) VALUES (%s, %s) ON CONFLICT DO NOTHING', (keeper, cat))
                         try:
@@ -380,7 +538,7 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                                 k_strm = services.resolve_media_path(k_file[0], media_dir)
                                 k_nfo = k_strm.with_suffix('.nfo')
                                 if k_nfo.exists():
-                                    k_dict = {'id': keeper, 'provider': k_vid.get('provider', 'telegram'), 'provider_video_id': keeper.split(':', 1)[-1] if ':' in keeper else keeper, 'title': k_vid.get('title', ''), 'slug': k_vid.get('slug', ''), 'duration': k_vid.get('duration', 0), 'thumbnail': k_vid.get('thumbnail', ''), 'performers': sorted(merged_perfs), 'performer_thumbs': services.load_performer_thumbs(conn, sorted(merged_perfs)), 'studio': k_studio, 'dateadded': services.format_dateadded(k_vid.get('first_seen') or now)}
+                                    k_dict = {'id': keeper, 'provider': k_vid.get('provider', 'telegram'), 'provider_video_id': keeper.split(':', 1)[-1] if ':' in keeper else keeper, 'title': k_vid.get('title', ''), 'slug': k_vid.get('slug', ''), 'duration': k_vid.get('duration', 0), 'thumbnail': k_vid.get('thumbnail', ''), 'performers': sorted(merged_perfs), 'performer_thumbs': services.load_performer_thumbs(conn, sorted(merged_perfs)), 'studio': k_vid.get('studio') or '', 'plot': k_vid.get('plot', ''), 'date_released': k_vid.get('date_released', ''), 'dateadded': services.format_dateadded(k_vid.get('first_seen') or now)}
                                     services.create_nfo_file(k_dict, set(merged_cats), merged_tags, k_nfo)
                         except Exception as nfo_exc:
                             services.logger.warning(f'Could not update keeper NFO metadata: {nfo_exc}')
@@ -559,8 +717,88 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                                 else:
                                     conflict_sql = 'ON CONFLICT (video_id, category) DO NOTHING'
                                 conn.execute(f"INSERT INTO {table} ({','.join(names)}) VALUES ({','.join(('%s' for _ in names))}) {conflict_sql}", [record[n] for n in names])
+                        override_snapshot = snapshot.get('metadata_overrides')
+                        if isinstance(override_snapshot, dict):
+                            conn.execute(
+                                'INSERT INTO video_metadata_overrides (video_id,fields,revision,updated_at) '
+                                'VALUES (%s,%s,%s,coalesce(%s::timestamptz,CURRENT_TIMESTAMP)) '
+                                'ON CONFLICT (video_id) DO UPDATE SET fields=EXCLUDED.fields,'
+                                'revision=EXCLUDED.revision,updated_at=EXCLUDED.updated_at',
+                                (video['id'], _core.json.dumps(override_snapshot.get('fields') or {}, ensure_ascii=False),
+                                 override_snapshot.get('revision', 1), override_snapshot.get('updated_at')),
+                            )
                         conn.execute("UPDATE video_duplicate_decisions SET state='undone' WHERE loser_id=%s", (video['id'],))
                         conn.execute('DELETE FROM video_sources WHERE source_id=%s', (video['id'],))
+                    keeper_states = [snapshot for snapshot in snapshots if snapshot.get('keeper_before') and snapshot.get('keeper_after')]
+                    if keeper_states:
+                        before = keeper_states[0]['keeper_before']
+                        after = keeper_states[0]['keeper_after']
+                        keeper_id = str(before.get('video', {}).get('id') or '')
+                        current_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper_id,)).fetchone()
+                        if current_row:
+                            columns = _core.db.table_columns(conn, 'videos')
+                            current = dict(zip(columns, current_row))
+                            old_video, new_video = before.get('video', {}), after.get('video', {})
+                            for field in ('title', 'plot', 'studio', 'date_released', 'thumbnail', 'performers', 'categories', 'tags',
+                                          'scene_match_source', 'scene_match_external_id', 'scene_match_url',
+                                          'scene_match_confidence'):
+                                if current.get(field) == new_video.get(field):
+                                    conn.execute(f'UPDATE videos SET {field}=%s WHERE id=%s', (old_video.get(field), keeper_id))
+                            current_categories = set(_core.json.loads(current.get('categories') or '[]')
+                                                     if isinstance(current.get('categories'), str) else current.get('categories') or [])
+                            after_categories = set(_core.json.loads(new_video.get('categories') or '[]')
+                                                   if isinstance(new_video.get('categories'), str) else new_video.get('categories') or [])
+                            before_categories = _core.json.loads(old_video.get('categories') or '[]') if isinstance(old_video.get('categories'), str) else old_video.get('categories') or []
+                            if current_categories == after_categories:
+                                conn.execute('DELETE FROM video_categories WHERE video_id=%s', (keeper_id,))
+                                for category in before_categories:
+                                    conn.execute('INSERT INTO video_categories (video_id,category) VALUES (%s,%s) ON CONFLICT DO NOTHING', (keeper_id, category))
+                            current_override = conn.execute('SELECT fields FROM video_metadata_overrides WHERE video_id=%s', (keeper_id,)).fetchone()
+                            current_fields = current_override[0] if current_override else {}
+                            if isinstance(current_fields, str):
+                                current_fields = _core.json.loads(current_fields)
+                            if current_fields == after.get('overrides', {}):
+                                old_fields = before.get('overrides', {})
+                                if old_fields:
+                                    conn.execute('INSERT INTO video_metadata_overrides (video_id,fields,revision,updated_at) VALUES (%s,%s,1,CURRENT_TIMESTAMP) ON CONFLICT (video_id) DO UPDATE SET fields=EXCLUDED.fields,revision=video_metadata_overrides.revision+1,updated_at=CURRENT_TIMESTAMP', (keeper_id, _core.json.dumps(old_fields, ensure_ascii=False)))
+                                else:
+                                    conn.execute('DELETE FROM video_metadata_overrides WHERE video_id=%s', (keeper_id,))
+                            keeper_file = conn.execute(
+                                'SELECT file_path FROM synced_files WHERE video_id=%s ORDER BY file_path LIMIT 1',
+                                (keeper_id,),
+                            ).fetchone()
+                            if keeper_file:
+                                stream = services.resolve_media_path(keeper_file[0], media_dir)
+                                if stream.is_symlink() or not stream.resolve().is_relative_to(media_dir.resolve()):
+                                    raise ValueError('Unsafe keeper path detected while restoring metadata.')
+                                restored_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper_id,)).fetchone()
+                                restored_video = dict(zip(columns, restored_row)) if restored_row else {}
+                                def _restore_list(value):
+                                    if isinstance(value, list):
+                                        return value
+                                    try:
+                                        parsed = _core.json.loads(value or '[]')
+                                        return parsed if isinstance(parsed, list) else []
+                                    except (TypeError, ValueError):
+                                        return []
+                                restored_categories = _restore_list(restored_video.get('categories'))
+                                restored_tags = _restore_list(restored_video.get('tags'))
+                                restored_performers = _restore_list(restored_video.get('performers'))
+                                services.create_nfo_file(
+                                    {'id': keeper_id, 'provider': restored_video.get('provider', 'telegram'),
+                                     'provider_video_id': keeper_id.split(':', 1)[-1],
+                                     'title': restored_video.get('title') or '',
+                                     'slug': restored_video.get('slug') or '',
+                                     'duration': restored_video.get('duration') or 0,
+                                     'thumbnail': restored_video.get('thumbnail') or '',
+                                     'performers': restored_performers,
+                                     'performer_thumbs': services.load_performer_thumbs(conn, restored_performers),
+                                     'studio': restored_video.get('studio') or '',
+                                     'plot': restored_video.get('plot') or '',
+                                     'date_released': restored_video.get('date_released') or '',
+                                     'dateadded': services.format_dateadded(restored_video.get('first_seen') or now)},
+                                    set(restored_categories), set(restored_tags), stream.with_suffix('.nfo'), conn=conn,
+                                )
                 catalog_committed = True
                 refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'restored', services)
                 result = {'operation_id': operation, 'restored': [s['video']['id'] for s in snapshots], 'local_state': 'restored', 'jellyfin_refresh': 'updated' if refreshed else 'failed'}

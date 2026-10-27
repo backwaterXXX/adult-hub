@@ -6,7 +6,7 @@ baseline (version 1, `0001_baseline`) creates the same schema from
 proves they started before the baseline existed.
 
 `POST_BASELINE_MIGRATIONS` is the compatibility chain for databases that
-recorded the historical post-baseline upgrades (versions 10-49). They still
+recorded the historical post-baseline upgrades (versions 10-50). They still
 upgrade through it; a database built by the current baseline never sees them.
 The migrations stay in their own files for exactly that reason, and ordering
 is load-bearing (m0039 drops the table m0035 creates).
@@ -61,6 +61,11 @@ from common.migrations.m0046_drop_stream_probe_columns import migration as drop_
 from common.migrations.m0047_video_file_size import migration as video_file_size
 from common.migrations.m0048_video_phash_job_error_detail import migration as video_phash_job_error_detail
 from common.migrations.m0049_catalog_automation import migration as catalog_automation
+from common.migrations.m0050_duplicate_reconcile_schedule import migration as duplicate_reconcile_schedule
+from common.migrations.m0051_video_visual_duplicates import migration as video_visual_duplicates
+from common.migrations.m0052_video_visual_timestamps import migration as video_visual_timestamps
+from common.migrations.m0053_visual_history import migration as video_visual_history
+from common.migrations.m0054_telegram_latest_cursor import migration as telegram_latest_cursor
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -114,4 +119,9 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     video_file_size,
     video_phash_job_error_detail,
     catalog_automation,
+    duplicate_reconcile_schedule,
+    video_visual_duplicates,
+    video_visual_timestamps,
+    video_visual_history,
+    telegram_latest_cursor,
 )

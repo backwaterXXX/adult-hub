@@ -396,7 +396,8 @@ class TelegramProvider(BaseProvider):
                 videos.append(item)
         videos = [item.__dict__ for item in videos]
         cursor = min((int(msg.id) for msg in messages), default=None)
-        return {"videos": videos, "next_offset_id": cursor,
+        head = max((int(msg.id) for msg in messages), default=None)
+        return {"videos": videos, "next_offset_id": cursor, "highest_id": head,
                 "message_count": len(messages), "has_more": len(messages) >= limit}
 
     async def search(self, query: str, page: int = 1) -> List[VideoItem]:
@@ -599,7 +600,11 @@ class TelegramProvider(BaseProvider):
             return None
         client = await _require_client()
         try:
-            message = await _get_cached_message(client, channel_ref, int(message_id))
+            message = await retry_call(
+                lambda: _get_cached_message(client, channel_ref, int(message_id)),
+                retryable=lambda exc: is_retryable(exc)
+                or "database is locked" in str(exc).casefold(),
+            )
         except Exception:
             return None
         if message is None:

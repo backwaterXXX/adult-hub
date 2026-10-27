@@ -31,6 +31,11 @@ class TestConfigSourcesMigration(PgTestCase):
         self.media_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.db_url
 
+    @staticmethod
+    def _empty_latest():
+        return {"videos": [], "message_count": 0, "highest_id": None,
+                "next_offset_id": None, "has_more": False}
+
     def tearDown(self):
         if sync_module is not None:
             self.temp_dir.cleanup()
@@ -98,7 +103,7 @@ class TestConfigSourcesMigration(PgTestCase):
 
             # Enabled ones must be purged
             self.assertNotIn("exampleweb:101", remaining)
-            self.assertNotIn("telegram:-1000000000001:1:u1", remaining)
+            self.assertIn("telegram:-1000000000001:1:u1", remaining)
 
             # Disabled ones must be PRESERVED
             self.assertIn("exampleweb2:201", remaining)
@@ -130,7 +135,7 @@ class TestConfigSourcesMigration(PgTestCase):
         collected = {}
         effective = AppConfig(sources={"telegram": SourceConfig(
             provider="telegram", enabled=True, channels=[chan_cfg])})
-        with patch.object(sync_module, "CONFIG", effective), patch("sync.fetch_json_with_retry", return_value=[]):
+        with patch.object(sync_module, "CONFIG", effective), patch("sync.fetch_json_with_retry", return_value=self._empty_latest()):
             sync_module.sync_telegram_channel_pipeline(chan_id, chan_cfg, self.conn, self.media_dir, collected)
 
         remaining = {r[0] for r in self.conn.execute("SELECT id FROM videos").fetchall()}
@@ -164,6 +169,8 @@ class TestConfigSourcesMigration(PgTestCase):
         ]
 
         def fake_fetch(url, **kwargs):
+            if kwargs.get("desc", "").startswith("category/"):
+                return self._empty_latest()
             if "limit=" in url:
                 return {"videos": mock_batch, "message_count": 2, "next_offset_id": 50, "has_more": True}
             return []
@@ -179,7 +186,7 @@ class TestConfigSourcesMigration(PgTestCase):
         self.assertEqual(state[2], 50)
 
         # Next run: batch returns empty (end of channel)
-        with patch("sync.fetch_json_with_retry", side_effect=lambda url, **kwargs: {"videos": [], "message_count": 0, "next_offset_id": None, "has_more": False} if "history/" in url else []):
+        with patch("sync.fetch_json_with_retry", return_value=self._empty_latest()):
             sync_module.sync_telegram_channel_pipeline(chan_id, chan_cfg, self.conn, self.media_dir, collected)
 
         state2 = self.conn.execute("SELECT backfill_in_progress, backfill_cursor, backfill_completed_at FROM telegram_channel_state WHERE channel_id = %s", (chan_id,)).fetchone()
@@ -197,6 +204,8 @@ class TestConfigSourcesMigration(PgTestCase):
         ]
         urls = []
         def fetch(url, **kwargs):
+            if kwargs.get("desc", "").startswith("category/"):
+                return self._empty_latest()
             if "history/" in url:
                 urls.append(url)
                 return responses.pop(0)
@@ -222,7 +231,7 @@ class TestConfigSourcesMigration(PgTestCase):
         cfg = TelegramChannelConfig(id=chan_id, min_duration_seconds=420,
                                     tags_whitelist=["new"], tags_blacklist=["other"])
         with patch("sync.fetch_json_with_retry", side_effect=lambda url, **kwargs:
-                   {"videos": [], "message_count": 1, "next_offset_id": 90,
+                   self._empty_latest() if kwargs.get("desc", "").startswith("category/") else {"videos": [], "message_count": 1, "next_offset_id": 90,
                     "has_more": True} if "history/" in url else []):
             sync_module.sync_telegram_channel_pipeline(chan_id, cfg, self.conn,
                                                        self.media_dir, {})
@@ -243,7 +252,7 @@ class TestConfigSourcesMigration(PgTestCase):
                                     tags_whitelist=["wanted"])
         effective = AppConfig(sources={"telegram": SourceConfig(
             provider="telegram", enabled=True, channels=[cfg])})
-        with patch.object(sync_module, "CONFIG", effective), patch("sync.fetch_json_with_retry", return_value=[]):
+        with patch.object(sync_module, "CONFIG", effective), patch("sync.fetch_json_with_retry", return_value=self._empty_latest()):
             sync_module.sync_telegram_channel_pipeline(chan_id, cfg, self.conn,
                                                        self.media_dir, {})
         self.assertEqual(self.conn.execute("SELECT count(*) FROM videos").fetchone()[0], 0)
@@ -258,6 +267,8 @@ class TestConfigSourcesMigration(PgTestCase):
                                     max_pages=1, history_batch_size=2)
 
         def fail_history(url, **kwargs):
+            if kwargs.get("desc", "").startswith("category/"):
+                return self._empty_latest()
             if "history/" in url:
                 raise OSError("temporary resolver failure")
             return []
@@ -294,6 +305,8 @@ class TestConfigSourcesMigration(PgTestCase):
         ], "message_count": 2, "next_offset_id": 50, "has_more": True}
 
         def fetch(url, **kwargs):
+            if kwargs.get("desc", "").startswith("category/"):
+                return self._empty_latest()
             return batch if "history/" in url else []
 
         with patch("sync.fetch_json_with_retry", side_effect=fetch):
@@ -317,12 +330,12 @@ class TestConfigSourcesMigration(PgTestCase):
             VALUES (%s,420,'[]','[]',1,75,%s)""", (chan_id, int(time.time())))
         cfg = TelegramChannelConfig(id=chan_id, max_pages=1, history_batch_size=2)
         urls = []
-        with patch("sync.fetch_json_with_retry", side_effect=lambda url, **kwargs: urls.append(url) or []):
+        with patch("sync.fetch_json_with_retry", side_effect=lambda url, **kwargs: urls.append(url) or self._empty_latest()):
             sync_module.sync_telegram_channel_pipeline(
                 chan_id, cfg, self.conn, self.media_dir, {}, sync_mode="new"
             )
         self.assertEqual(len(urls), 1)
-        self.assertIn("category/", urls[0])
+        self.assertIn("history/", urls[0])
         state = self.conn.execute(
             "SELECT backfill_in_progress,backfill_cursor FROM telegram_channel_state WHERE channel_id=%s",
             (chan_id,),

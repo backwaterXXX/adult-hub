@@ -36,6 +36,11 @@ except Exception:  # pragma: no cover - older deployments may not have migration
     dispatch_due_schedules = None
 
 try:
+    from db_schema import init_db
+except ImportError:  # pragma: no cover - module is present in the sync image
+    init_db = None
+
+try:
     from common.app_version import __version__ as APP_VERSION
 except ImportError:
     APP_VERSION = os.getenv("APP_VERSION", "0+unknown")
@@ -524,6 +529,12 @@ def run_loop():
 
 
 if __name__ == "__main__":
+    if init_db is not None:
+        try:
+            init_db(DB_URL)
+        except Exception:
+            LOGGER.exception("[sync-daemon] Could not apply database migrations; refusing to start.")
+            sys.exit(1)
     heartbeat = threading.Thread(target=worker_heartbeat_loop, name="worker-capabilities", daemon=True)
     heartbeat.start()
     try:

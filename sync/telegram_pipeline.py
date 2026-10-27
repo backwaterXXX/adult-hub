@@ -123,7 +123,8 @@ def sync_telegram_channel_pipeline(
     failures = []
     wl_json, bl_json = json.dumps(sorted(whitelist)), json.dumps(sorted(blacklist))
     row = conn.execute("""SELECT last_min_duration, last_tags_whitelist,
-        last_tags_blacklist, backfill_in_progress, backfill_cursor
+        last_tags_blacklist, backfill_in_progress, backfill_cursor,
+        latest_watermark, latest_cursor, latest_head
         FROM telegram_channel_state WHERE channel_id = %s""", (channel_id,)).fetchone()
     filter_changed = False
     to_purge = []
@@ -134,9 +135,10 @@ def sync_telegram_channel_pipeline(
              backfill_in_progress, updated_at) VALUES (%s, %s, %s, %s, 1, %s)""",
             (channel_id, min_dur, wl_json, bl_json, int(services.time.time())))
         backfill, cursor = 1, None
+        watermark, latest_cursor, latest_head = None, None, None
         services.logger.info("Telegram %s: scheduled initial history scan", channel_id)
     else:
-        old_min, old_wl_raw, old_bl_raw, backfill, cursor = row
+        old_min, old_wl_raw, old_bl_raw, backfill, cursor, watermark, latest_cursor, latest_head = row
         old_min = old_min if old_min is not None else 0
         old_wl = set(json.loads(old_wl_raw or "[]"))
         old_bl = set(json.loads(old_bl_raw or "[]"))
@@ -186,6 +188,16 @@ def sync_telegram_channel_pipeline(
         )
         conn.commit()
 
+    if sync_mode != "backfill" and watermark is None and not backfill:
+        # A previously empty channel may receive more than one batch before
+        # its first watermark exists; history must cover everything below it.
+        backfill, cursor = 1, None
+        conn.execute("UPDATE telegram_channel_state SET backfill_in_progress=1, backfill_cursor=NULL WHERE channel_id=%s", (channel_id,))
+
+    # Keep initialization and a scheduled history restart durable even if a
+    # later network request or batch write fails and rolls back its transaction.
+    conn.commit()
+
     def collect(videos):
         started = monotonic()
         accepted = 0
@@ -208,13 +220,38 @@ def sync_telegram_channel_pipeline(
 
     for page in range(1, max_pages + 1) if sync_mode != "backfill" else ():
         fetch_started = monotonic()
-        url = (f"{services.resolver_api_url.rstrip('/')}/admin/api/category/{quote(channel_id)}"
-               f"?provider=telegram&page={page}&min_duration={min_dur}")
+        url = (f"{services.resolver_api_url.rstrip('/')}/admin/api/telegram/history/{quote(channel_id)}"
+               "?limit=50")
+        if latest_cursor is not None:
+            url += f"&offset_id={latest_cursor}"
         try:
-            videos = services.fetch_json_with_retry(
+            batch = services.fetch_json_with_retry(
                 url, timeout=20.0, desc=f"category/telegram/{channel_id}/p.{page}"
             )
+            count = batch["message_count"]
+            next_id = batch["next_offset_id"]
+            head = batch["highest_id"]
+            if count and (head is None or next_id is None or head < next_id or
+                          (latest_cursor is not None and (head >= latest_cursor or next_id >= latest_cursor))):
+                raise ValueError("Telegram latest cursor did not advance")
+            if latest_head is None and count:
+                latest_head = head
+            accepted = collect(batch["videos"])
+            services.flush_collected(collected, conn, media_dir, f"Telegram: {studio}", raise_on_error=True)
+            complete = not count or not batch["has_more"] or watermark is None or next_id <= watermark
+            if complete:
+                watermark = max(watermark or 0, latest_head or 0) or None
+                latest_cursor = latest_head = None
+            else:
+                latest_cursor = next_id
+            conn.execute("""UPDATE telegram_channel_state SET latest_watermark=%s,
+                latest_cursor=%s, latest_head=%s, updated_at=%s WHERE channel_id=%s""",
+                (watermark, latest_cursor, latest_head, int(services.time.time()), channel_id))
+            conn.commit()
+            services.logger.info("Telegram %s latest batch %d: accepted=%d cursor=%s complete=%s",
+                                 channel_id, page, accepted, latest_cursor, complete)
         except Exception as exc:
+            conn.rollback()
             if services.observe_stage:
                 services.observe_stage("telegram_category_fetch", monotonic() - fetch_started, True)
             detail = safe_error_detail(exc)
@@ -222,24 +259,20 @@ def sync_telegram_channel_pipeline(
             services.logger.error(
                 "Telegram latest fetch failed for %s page %d: %s", channel_id, page, detail
             )
+            break
         else:
             if services.observe_stage:
                 services.observe_stage("telegram_category_fetch", monotonic() - fetch_started)
-            try:
-                services.logger.info(
-                    "Telegram %s page %d: accepted=%d", channel_id, page, collect(videos)
-                )
-            except Exception as exc:
-                detail = safe_error_detail(exc)
-                failures.append(f"latest page {page} processing: {detail}")
-                services.logger.error(
-                    "Telegram page processing failed for %s page %d: %s", channel_id, page, detail
-                )
+            if complete:
+                break
         # Space requests even after failures so a throttled channel does not
         # immediately trigger another request on the next page.
         delay = max(0.0, float(services.category_fetch_delay_seconds))
         if delay:
             services.time.sleep(delay)
+
+    if sync_mode != "backfill" and latest_cursor is not None and not failures:
+        services.logger.info("Telegram %s latest scan incomplete; will resume at message %s", channel_id, latest_cursor)
 
     if backfill and sync_mode != "new":
         url = (f"{services.resolver_api_url.rstrip('/')}/admin/api/telegram/history/{quote(channel_id)}"

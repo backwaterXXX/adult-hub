@@ -68,6 +68,13 @@ def preview_hide(db_url: str | None, keeper_id: str, loser_ids: list[str], confi
                               "title": str(snapshot["video"].get("title") or "Untitled"),
                               "file_count": len(snapshot["files"]),
                               "already_queued": already_queued})
+        from common.duplicate_evidence import pair_evidence
+        for item in items:
+            proof = pair_evidence(conn, keeper_id, item["video_id"])
+            if not proof:
+                conn.rollback()
+                return {"outcome": "conflict", "message": "Duplicate identity has not been confirmed, or duration/part safeguards failed.", "video_id": item["video_id"]}
+            item["evidence"] = proof
         plan_id = uuid.uuid4().hex
         now = int(time.time())
         expires_at = now + PLAN_TTL_SECONDS
@@ -156,8 +163,10 @@ def preview_exact_merge_plan(db_url: str | None, config_path: str | None = None)
                 keeper_id = str(live[0]["id"])
                 dismissed = {tuple(sorted(map(str, values))) for values in pair.get("dismissed_pairs", [])
                              if isinstance(values, (list, tuple)) and len(values) == 2}
+                from common.duplicate_evidence import pair_evidence
                 losers = [str(member["id"]) for member in live[1:]
-                          if tuple(sorted((keeper_id, str(member["id"])))) not in dismissed]
+                          if tuple(sorted((keeper_id, str(member["id"])))) not in dismissed
+                          and pair_evidence(conn, keeper_id, str(member["id"]))]
                 if not losers:
                     continue
                 if total_losers + len(losers) > MAX_QUARANTINE_BATCH:

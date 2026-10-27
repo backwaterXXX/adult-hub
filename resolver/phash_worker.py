@@ -30,7 +30,7 @@ HEALTH_URL = "http://127.0.0.1:8090/admin/health/ready"
 POLL_SECONDS = 2
 HEARTBEAT_SECONDS = 15
 MAX_TIMEOUT_SECONDS = 1200
-MAX_BYTE_BUDGET = 256 * 1024 * 1024
+MAX_BYTE_BUDGET = 1024 * 1024 * 1024
 PHASH_RANGE_CACHE_DIR = os.getenv("PHASH_RANGE_CACHE_DIR", "/data/cache/phash-ranges")
 PHASH_RANGE_CACHE_TTL_SECONDS = 24 * 60 * 60
 _stop = threading.Event()
@@ -224,11 +224,15 @@ def _process(job: dict, leader) -> None:
         if lease_lost.is_set() or _stop.is_set():
             return
         if not result.get("ok"):
-            phash_jobs.finish_failure(
-                DB_URL, job, result.get("error_code", "generation_failed"),
-                retryable=bool(result.get("retryable")),
-                error_detail=result.get("error_detail", ""),
-            )
+            error_code = result.get("error_code", "generation_failed")
+            if error_code == "daily_transfer_budget_exhausted":
+                phash_jobs.defer_until_daily_reset(DB_URL, job)
+            else:
+                phash_jobs.finish_failure(
+                    DB_URL, job, error_code,
+                    retryable=bool(result.get("retryable")),
+                    error_detail=result.get("error_detail", ""),
+                )
             return
         conn = db.connect(DB_URL)
         try:

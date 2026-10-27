@@ -88,7 +88,8 @@ class TestScheduleDispatch(PgTestCase):
 
         self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=now), 1)
         self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=now), 0)
-        schedule = admin_schedules.list_schedules(self.db_url)[0]
+        schedule = next(item for item in admin_schedules.list_schedules(self.db_url)
+                        if item["id"] == created["id"])
         self.assertEqual(schedule["last_result"], "queued")
         job = self.conn.execute(
             "SELECT action,state,payload FROM video_duplicate_jobs WHERE id=%s", (schedule["last_job_id"],)
@@ -99,7 +100,8 @@ class TestScheduleDispatch(PgTestCase):
         self.conn.execute("UPDATE admin_schedules SET next_run_at=%s WHERE id=%s", (now, created["id"]))
         self.conn.commit()
         self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=now), 0)
-        schedule = admin_schedules.list_schedules(self.db_url)[0]
+        schedule = next(item for item in admin_schedules.list_schedules(self.db_url)
+                        if item["id"] == created["id"])
         self.assertEqual(schedule["last_result"], "skipped_overlap")
         self.assertEqual(self.conn.execute("SELECT count(*) FROM video_duplicate_jobs").fetchone()[0], 1)
 

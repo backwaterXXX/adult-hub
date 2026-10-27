@@ -12,10 +12,13 @@ from typing import Any
 
 from common.performers import TITLE_STOPWORDS
 
-RULES_VERSION = 3
+RULES_VERSION = 10
 MIN_SCORE = 70.0
 EPISODE_PART_SCORE_PENALTY = 20.0
 MAX_HEURISTIC_CANDIDATES = 100_000
+PHASH_NEAR_MAX_DISTANCE = 10
+PHASH_NEAR_SOLO_TITLE_SIMILARITY = 0.90
+PHASH_NEAR_SOLO_MAX_DURATION_DELTA = 1
 
 
 def _normalize_name(value: str) -> str:
@@ -69,7 +72,7 @@ def _score(left: dict, right: dict, shared: set[str]) -> dict | None:
     a_cast, b_cast = left["performer_norm"], right["performer_norm"]
     union = a_cast | b_cast
     jaccard = len(shared) / len(union) if union else 0.0
-    if jaccard < 0.8:
+    if jaccard < 0.6:
         return None
     delta = abs(a - b)
     tolerance = min(15.0, max(5.0, 0.01 * max(a, b)))
@@ -79,8 +82,6 @@ def _score(left: dict, right: dict, shared: set[str]) -> dict | None:
     k = min(len(shared) / 3.0, 1.0)
     cast_points, duration_points, count_points = 55 * jaccard, 30 * d_score, 10 * k
     raw_total = cast_points + duration_points + count_points
-    if raw_total < MIN_SCORE:
-        return None
     penalty = EPISODE_PART_SCORE_PENALTY if _has_different_season_markers(
         left.get("title", ""), right.get("title", "")) else 0.0
     total = raw_total - penalty
@@ -152,7 +153,7 @@ def _score_solo(left: dict, right: dict) -> dict | None:
         return None
 
     sim = _title_similarity(left.get("title", ""), right.get("title", ""))
-    if sim < 0.65:
+    if sim < 0.55:
         return None
 
     d_score = 1.0 - 0.5 * delta / tolerance
@@ -160,8 +161,6 @@ def _score_solo(left: dict, right: dict) -> dict | None:
     duration_points = 30.0 * d_score
     actor_points = 10.0
     raw_total = title_points + duration_points + actor_points
-    if raw_total < MIN_SCORE:
-        return None
     penalty = EPISODE_PART_SCORE_PENALTY if _has_different_season_markers(
         left.get("title", ""), right.get("title", "")) else 0.0
     total = raw_total - penalty

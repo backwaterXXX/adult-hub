@@ -273,6 +273,7 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
                    allow_rate_above_configured: bool = False,
                    cache_dir: Optional[str] = None, cache_id: Optional[str] = None,
                    include_thumbnail: bool = False,
+                   include_visual_signature: bool = False,
                    size_sink: Optional[Callable[[int], None]] = None,
                    variant: Optional[str] = "auto"):
     """Generate the Stash video pHash using a strict cumulative range budget.
@@ -350,6 +351,7 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
     thread.start()
     deadline = time.monotonic() + max(1, int(timeout_seconds))
     frames = []
+    visual_samples = []
     thumbnail_bytes = None
     thumbnail_candidates = []
     sample_times = _stash_sample_times(duration)
@@ -393,6 +395,19 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
             if image.width != 160:
                 raise RuntimeError("ffmpeg returned an unexpected pHash frame size")
             frames.append(image)
+            if include_visual_signature:
+                gray = image.convert("L")
+                histogram = gray.histogram()
+                total = max(1, sum(histogram))
+                entropy = -sum((count / total) * __import__("math").log2(count / total)
+                               for count in histogram if count)
+                visual_samples.append({
+                    "t": round(float(timestamp), 3),
+                    "phash": _stash_phash(image),
+                    "dhash": compute_dhash(image),
+                    "valid": __import__("statistics").pstdev(gray.getdata()) >= 12
+                             and entropy >= 4,
+                })
             if include_thumbnail:
                 try:
                     if is_black_image(image):
@@ -436,7 +451,68 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
 
         sprite = combine_images(frames)
         result = (_stash_phash(sprite), budget.bytes_read)
+        if include_visual_signature:
+            signature = {"algorithm": "visual-sequence-v1", "duration": float(duration), "samples": visual_samples}
+            visual_sheet = BytesIO()
+            sprite.convert("RGB").save(visual_sheet, format="JPEG", quality=62, optimize=True)
+            sheet_bytes = visual_sheet.getvalue()
+            if len(sheet_bytes) > 1_000_000:
+                raise RuntimeError("visual contact sheet exceeded its storage limit")
+            return (*result, thumbnail_bytes, signature, sheet_bytes) if include_thumbnail else (*result, signature, sheet_bytes)
         return (*result, thumbnail_bytes) if include_thumbnail else result
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def telegram_frame_samples(video_id: str, timestamps: list[float], *,
+                          byte_budget: int = DEFAULT_BYTE_BUDGET,
+                          timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+                          resolver_url: Optional[str] = None,
+                          cache_dir: Optional[str] = None,
+                          cache_id: Optional[str] = None) -> list[bytes]:
+    """Extract bounded grayscale 160x90 frames at caller-selected timestamps."""
+    import shutil
+    from PIL import Image
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is required for visual verification")
+    if not timestamps or len(timestamps) > 256 or any(float(t) < 0 for t in timestamps):
+        raise ValueError("Invalid visual verification timestamps")
+    budget = FingerprintBudget(video_id, budget=byte_budget, resolver_url=resolver_url,
+                               cache_dir=cache_dir, cache_id=cache_id, variant=None)
+    budget.load_size()
+    virtual_mp4 = _FaststartMP4(budget)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RangeHandler)
+    server.fingerprint_budget = budget
+    server.virtual_mp4 = virtual_mp4
+    server.request_ranges = []
+    server.transfer_error = None
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + max(1, int(timeout_seconds))
+    output = []
+    try:
+        video_url = f"http://127.0.0.1:{server.server_address[1]}/video.mp4"
+        for timestamp in timestamps:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Visual verification exceeded its time limit")
+            remaining = max(1.0, min(90.0, deadline - time.monotonic()))
+            result = subprocess.run(
+                [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-ss",
+                 f"{float(timestamp):.3f}", "-seekable", "1", "-i", video_url,
+                 "-frames:v", "1", "-vf", "scale=160:90,format=gray", "-pix_fmt", "gray",
+                 "-f", "rawvideo", "pipe:1"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=remaining, check=False,
+            )
+            if result.returncode or len(result.stdout) != 160 * 90:
+                detail = str(getattr(server, "transfer_error", "") or "")
+                if "budget exhausted" in detail.lower():
+                    raise FingerprintBudgetExceeded("Visual verification byte budget exhausted")
+                raise RuntimeError(f"Could not extract visual verification frame at {timestamp:.3f}s")
+            output.append(result.stdout)
+        return output
     finally:
         server.shutdown()
         server.server_close()

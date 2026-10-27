@@ -20,6 +20,29 @@ from pg_helper import PgTestCase
 import scene_artwork_download
 
 
+class PosterRedirectTests(unittest.TestCase):
+    def test_http_redirect_is_followed_and_image_saved(self):
+        import io
+        import random
+        import tempfile
+        import httpx
+        from PIL import Image
+
+        pixels = random.Random(42).randbytes(128 * 128 * 3)
+        image = Image.frombytes("RGB", (128, 128), pixels)
+        data = io.BytesIO()
+        image.save(data, "JPEG", quality=95)
+        def respond(request):
+            if request.url.scheme == "http":
+                return httpx.Response(301, headers={"Location": "https://example.test/poster"})
+            return httpx.Response(200, content=data.getvalue())
+        with tempfile.TemporaryDirectory() as directory, httpx.Client(transport=httpx.MockTransport(respond)) as client:
+            target = Path(directory) / "poster.jpg"
+            self.assertTrue(scene_scraper_media_files._download_scene_poster(
+                "http://example.test/poster", target, "video", http_client=client))
+            self.assertTrue(target.exists())
+
+
 def _seed_video(conn, tmp_path: Path, video_id: str = "telegram:123", *,
                 match_source=None, external_id=None) -> Path:
     nested = tmp_path / "adult" / "telegram"

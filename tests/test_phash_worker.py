@@ -420,6 +420,7 @@ class FakeQueue:
         self.heartbeat_result = True
         self.heartbeats = []
         self.failures = []
+        self.deferred = []
         self.successes = []
         self.finish_success_result = True
 
@@ -429,6 +430,10 @@ class FakeQueue:
 
     def finish_failure(self, db_url, job, error_code, *, retryable, error_detail=""):
         self.failures.append((db_url, job["id"], error_code, retryable))
+        return True
+
+    def defer_until_daily_reset(self, db_url, job):
+        self.deferred.append((db_url, job["id"]))
         return True
 
     def finish_success(self, conn, job, fingerprint, bytes_read):
@@ -481,8 +486,8 @@ class TestJobProcessing(JobProcessingHarness):
 
         self.process_job()
 
-        self.assertEqual(self.queue.failures, [(DB_URL, JOB["id"],
-                                                "daily_transfer_budget_exhausted", False)])
+        self.assertEqual(self.queue.deferred, [(DB_URL, JOB["id"])])
+        self.assertEqual(self.queue.failures, [])
         self.store.assert_not_called()
         self.assertEqual(self.queue.successes, [])
 

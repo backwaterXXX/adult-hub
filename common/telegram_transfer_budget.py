@@ -11,7 +11,7 @@ from datetime import datetime, time as datetime_time, timedelta
 from pathlib import Path
 
 
-DEFAULT_DAILY_BYTE_BUDGET = 10_000_000_000
+DEFAULT_DAILY_BYTE_BUDGET = 30_000_000_000
 DEFAULT_MAX_BYTES_PER_SECOND = 2 * 1024 * 1024
 DEFAULT_LEDGER_PATH = "/data/cache/telegram-fingerprint-daily-usage.json"
 
@@ -22,6 +22,22 @@ class DailyTelegramTransferBudgetExceeded(RuntimeError):
 
 class DailyTelegramTransferBudgetUnavailable(RuntimeError):
     """The shared transfer ledger could not be read or safely updated."""
+
+
+def current_local_day_start_timestamp(now: datetime | None = None) -> float:
+    """Return the start of the current local transfer-budget day."""
+    now = now or datetime.now().astimezone()
+    day_start = datetime.combine(now.date(), datetime_time.min, tzinfo=now.tzinfo)
+    return day_start.timestamp()
+
+
+def next_daily_reset_timestamp(now: datetime | None = None) -> float:
+    """Return the next local midnight when the shared daily budget resets."""
+    now = now or datetime.now().astimezone()
+    next_midnight = datetime.combine(
+        now.date() + timedelta(days=1), datetime_time.min, tzinfo=now.tzinfo,
+    )
+    return next_midnight.timestamp()
 
 
 def _resolve_ledger_path() -> Path:

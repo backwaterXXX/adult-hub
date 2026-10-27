@@ -8,6 +8,85 @@ MAX_DUPLICATE_ACTION_BYTES = 8192
 
 
 def register_duplicate_routes(router: APIRouter, admin) -> None:
+    @router.get("/api/v2/duplicates/visual")
+    async def admin_v2_visual_duplicates(request: Request, limit: int = Query(50, ge=1, le=200)):
+        if admin._admin_blocked(request):
+            return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
+        try:
+            from common import db
+            conn = db.connect(admin.HUB_DB_URL)
+            try:
+                conn.row_factory = db.Record
+                state = conn.execute("SELECT report_started_at,automatic_enabled_at FROM video_visual_state WHERE id=1").fetchone()
+                rows = conn.execute("""SELECT c.id,c.left_id,c.right_id,c.state,c.evidence,c.updated_at,
+                    l.title AS left_title,l.duration AS left_duration,r.title AS right_title,r.duration AS right_duration
+                    FROM video_visual_comparisons c JOIN videos l ON l.id=c.left_id
+                    JOIN videos r ON r.id=c.right_id ORDER BY c.updated_at DESC LIMIT %s""", (limit,)).fetchall()
+                total = conn.execute("SELECT count(*) FROM video_visual_comparisons").fetchone()[0]
+                stats = conn.execute("""SELECT count(*) FILTER (WHERE state='queued') queued,
+                    count(*) FILTER (WHERE state='processing') processing,
+                    count(*) FILTER (WHERE state='review') review,
+                    count(*) FILTER (WHERE state='confirmed') confirmed FROM video_visual_comparisons""").fetchone()
+                pending_signatures = conn.execute("""SELECT count(*) FROM video_visual_jobs
+                    WHERE kind='signature' AND state IN ('queued','processing')""").fetchone()[0]
+                ready_signatures = conn.execute("SELECT count(*) FROM video_visual_signatures WHERE algorithm_version='visual-sequence-v1'").fetchone()[0]
+                total_signatures = conn.execute("SELECT count(*) FROM videos WHERE provider='telegram' AND duration>0").fetchone()[0]
+                import json
+                items = []
+                for row in rows:
+                    item = dict(row)
+                    if isinstance(item.get("evidence"), str):
+                        try:
+                            item["evidence"] = json.loads(item["evidence"])
+                        except (TypeError, ValueError):
+                            item["evidence"] = {}
+                    items.append(item)
+                return {"ok": True, "items": items, "total": total,
+                        "state": dict(state) if state else None,
+                        "queue": {**dict(stats), "signatures_pending": pending_signatures,
+                                  "signatures_ready": ready_signatures, "signatures_total": total_signatures}}
+            finally:
+                conn.close()
+        except Exception:
+            return admin.JSONResponse({"error": "Could not load visual duplicate comparisons."}, status_code=503)
+
+    @router.get("/api/v2/duplicates/visual/{comparison_id}/sheet")
+    async def admin_v2_visual_sheet(request: Request, comparison_id: str):
+        if admin._admin_blocked(request):
+            return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
+        try:
+            from common import db
+            conn = db.connect(admin.HUB_DB_URL)
+            try:
+                row = conn.execute("SELECT frame_sheet FROM video_visual_comparisons WHERE id=%s", (comparison_id,)).fetchone()
+            finally:
+                conn.close()
+            if not row or not row[0]:
+                return admin.JSONResponse({"error": "Frame comparison is not available."}, status_code=404)
+            from fastapi.responses import Response
+            return Response(content=bytes(row[0]), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+        except Exception:
+            return admin.JSONResponse({"error": "Could not load frame comparison."}, status_code=503)
+
+    @router.post("/api/v2/duplicates/visual/verify")
+    async def admin_v2_visual_verify(request: Request):
+        denied = admin._write_denied(request)
+        if denied is not None:
+            return denied
+        try:
+            import json
+            body = await request.json()
+            left, right = body.get("left_id"), body.get("right_id")
+            if not isinstance(left, str) or not isinstance(right, str) or left == right or max(len(left), len(right)) > 512:
+                return admin.JSONResponse({"error": "Specify two different video IDs."}, status_code=400)
+            from common.video_visual_jobs import enqueue_pair
+            job_id = await admin.asyncio.to_thread(enqueue_pair, admin.HUB_DB_URL, left, right, priority=5)
+            if not job_id:
+                return admin.JSONResponse({"error": "Both items must be Telegram videos with known durations."}, status_code=400)
+            return {"ok": True, "job_id": job_id, "state": "queued"}
+        except Exception:
+            return admin.JSONResponse({"error": "Could not queue visual comparison."}, status_code=503)
+
     @router.get("/api/v2/duplicates")
     async def admin_v2_duplicate_candidates(
         request: Request,

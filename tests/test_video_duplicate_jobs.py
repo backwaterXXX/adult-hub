@@ -172,6 +172,23 @@ class TestVideoDuplicateJobs(PgTestCase):
         }, set(), set(), self.media, self.conn)
         (self.media / (sync.stable_media_basename(video_id) + ".jpg")).write_bytes(b"thumb")
 
+    def _confirm_duplicate(self, *ids):
+        with self.conn:
+            self.conn.executemany("INSERT INTO video_fingerprints (video_id,algorithm,fingerprint) VALUES (%s,'OSHASH','0123456789abcdef') ON CONFLICT (video_id,algorithm) DO UPDATE SET fingerprint=EXCLUDED.fingerprint", [(value,) for value in ids])
+
+    def test_full_catalog_audit_queues_both_audits(self):
+        job_id = enqueue_job(self.db_url, "catalog_full_audit", {})
+        with patch("common.job_queue.enqueue_jobs_batch", return_value=["quality", "consistency"]) as batch:
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        state, raw = self.conn.execute("SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
+        result = json.loads(raw)
+        self.assertEqual(state, "done")
+        self.assertEqual(result["audit_job_ids"], ["quality", "consistency"])
+        jobs = batch.call_args.args[1]
+        self.assertEqual([job[0] for job in jobs], ["metadata_quality_audit", "consistency_audit"])
+        self.assertEqual(jobs[0][1]["audit_batch_id"], jobs[1][1]["audit_batch_id"])
+        self.assertTrue(jobs[1][1]["auto_repair"])
+
     def test_metadata_backfill_is_excluded_from_sync_checkpoints_but_runs_in_jobs_worker(self):
         job_id = enqueue_job(self.db_url, "metadata_backfill", {})
         progress = []
@@ -476,6 +493,7 @@ class TestVideoDuplicateJobs(PgTestCase):
         self.assertEqual(self.conn.execute("SELECT status FROM admin_audit_items WHERE id=%s", (finding_id,)).fetchone()[0], "open")
 
     def test_hide_quarantines_and_sync_does_not_readd_then_undo_restores(self):
+        self._confirm_duplicate(self.keeper, self.loser)
         job_id = enqueue_job(self.db_path, "hide", {
             "keeper_id": self.keeper, "loser_ids": [self.loser],
         })
@@ -545,6 +563,7 @@ class TestVideoDuplicateJobs(PgTestCase):
             "studio": "Studio L",
         }, {"Blowjob"}, {"Tag2"}, self.media, self.conn)
 
+        self._confirm_duplicate(k_id, l_id)
         enqueue_job(self.db_path, "hide", {"keeper_id": k_id, "loser_ids": [l_id]})
         with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
             self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
@@ -563,9 +582,44 @@ class TestVideoDuplicateJobs(PgTestCase):
         self.assertIn("Tag1", tags)
         self.assertIn("Tag2", tags)
         self.assertEqual(studio, "Studio K")
-
-        vc = {r[0] for r in self.conn.execute("SELECT category FROM video_categories WHERE video_id=%s", (k_id,)).fetchall()}
+        vc = {r[0] for r in self.conn.execute(
+            "SELECT category FROM video_categories WHERE video_id=%s", (k_id,),
+        ).fetchall()}
         self.assertTrue({"Anal", "Oral & Rimming"}.issubset(vc))
+
+    def test_hide_copies_and_undo_restores_loser_manual_metadata_overrides(self):
+        self._confirm_duplicate(self.keeper, self.loser)
+        fields = {"title": "Manual source title", "plot": "Manual scene notes"}
+        self.conn.execute(
+            "INSERT INTO video_metadata_overrides (video_id,fields,revision,updated_at) "
+            "VALUES (%s,%s::jsonb,3,CURRENT_TIMESTAMP)",
+            (self.loser, json.dumps(fields)),
+        )
+        hide_id = enqueue_job(self.db_url, "hide", {
+            "keeper_id": self.keeper, "loser_ids": [self.loser], "automatic": True,
+            "rules_version": 4, "evidence": "phash",
+        })
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        keeper_title, keeper_plot = self.conn.execute(
+            "SELECT title,plot FROM videos WHERE id=%s", (self.keeper,),
+        ).fetchone()
+        self.assertEqual((keeper_title, keeper_plot), ("Manual source title", "Manual scene notes"))
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM video_metadata_overrides WHERE video_id=%s", (self.loser,),
+        ).fetchone())
+
+        undo_id = enqueue_job(self.db_url, "undo", {"operation_id": hide_id})
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        restored = self.conn.execute(
+            "SELECT fields,revision FROM video_metadata_overrides WHERE video_id=%s", (self.loser,),
+        ).fetchone()
+        self.assertEqual(json.loads(restored[0]), fields)
+        self.assertEqual(restored[1], 3)
+        self.assertEqual(self.conn.execute(
+            "SELECT state FROM video_duplicate_jobs WHERE id=%s", (undo_id,),
+        ).fetchone()[0], "done")
 
     def test_metadata_update_keeps_source_and_retries_jellyfin_after_local_nfo_write(self):
         payload = {
@@ -1345,6 +1399,7 @@ class TestVideoDuplicateJobs(PgTestCase):
         self.assertTrue((self.media / (sync.stable_media_basename(self.loser) + ".strm")).exists())
 
     def test_hide_worker_rejects_catalog_changes_after_plan_execution(self):
+        self._confirm_duplicate(self.keeper, self.loser)
         from common.admin_operations import execute_operation, preview_hide
         plan = preview_hide(self.db_path, self.keeper, [self.loser])
         queued = execute_operation(self.db_path, plan["plan_id"])
@@ -1477,6 +1532,7 @@ class TestVideoDuplicateJobs(PgTestCase):
         self.assertEqual(state, "failed")
 
     def test_hide_rejects_quarantine_target_symlink_to_source(self):
+        self._confirm_duplicate(self.keeper, self.loser)
         job_id = enqueue_job(self.db_path, "hide", {
             "keeper_id": self.keeper, "loser_ids": [self.loser],
         })
@@ -1502,6 +1558,7 @@ class TestVideoDuplicateJobs(PgTestCase):
         self.assertIn("Quarantine file has different contents", json.loads(result)["error"])
 
     def test_restart_resumes_from_persisted_file_journal(self):
+        self._confirm_duplicate(self.keeper, self.loser)
         job_id = enqueue_job(self.db_path, "hide", {
             "keeper_id": self.keeper, "loser_ids": [self.loser],
         })

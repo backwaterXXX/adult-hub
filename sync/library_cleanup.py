@@ -90,7 +90,7 @@ def cleanup_retention(conn: db.Connection, media_dir: Path, retention_days: int,
     cutoff = now - (retention_days * 86400)
 
     cur = conn.execute("""SELECT v.id, v.provider, v.title FROM videos v
-        WHERE v.last_seen < %s AND NOT EXISTS (
+        WHERE v.provider IS DISTINCT FROM 'telegram' AND v.last_seen < %s AND NOT EXISTS (
             SELECT 1 FROM telegram_unavailable_quarantine q
             WHERE q.video_id=v.id AND q.status='quarantined'
         )""", (cutoff,))
@@ -101,9 +101,7 @@ def cleanup_retention(conn: db.Connection, media_dir: Path, retention_days: int,
             expired.append((vid_id, title))
 
     if not expired:
-        services.logger.info(
-            f"Retention check: all active videos seen within {retention_days} days."
-        )
+        services.logger.info("Retention check: no eligible non-Telegram videos expired within %s days.", retention_days)
         return
 
     services.logger.info(

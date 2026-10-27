@@ -14,17 +14,32 @@ from common.migrations.legacy import (
     video_metadata_overrides,
 )
 from common.migrations.m0001_baseline import migration as baseline
+from common.migrations.m0050_duplicate_reconcile_schedule import (
+    current_migration as current_duplicate_reconcile_schedule,
+)
+from common.migrations.m0051_video_visual_duplicates import (
+    current_migration as current_video_visual_duplicates,
+)
+from common.migrations.m0052_video_visual_timestamps import (
+    current_migration as current_video_visual_timestamps,
+)
+
+from common.migrations.m0053_visual_history import current_migration as current_video_visual_history
+from common.migrations.m0054_telegram_latest_cursor import current_migration as current_telegram_latest_cursor
 
 logger = logging.getLogger(__name__)
 
 SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
 MIGRATION_LOCK_ID = 0xAD01780B
 
-# A fresh database is built by this one tracked migration. The 38 changes that
-# used to follow the baseline were squashed into it in release 0.4.0 and now live
-# in POST_BASELINE_MIGRATIONS, which only databases with recorded history from
-# that chain still walk.
-MIGRATIONS: tuple[Migration, ...] = (baseline,)
+# A fresh database is built by the tracked baseline and receives small forward
+# upgrades separately. The historical post-baseline chain is replayed only by
+# databases whose recorded history proves they began before the squash.
+CURRENT_MIGRATIONS: tuple[Migration, ...] = (
+    current_duplicate_reconcile_schedule, current_video_visual_duplicates,
+    current_video_visual_timestamps, current_video_visual_history, current_telegram_latest_cursor,
+)
+MIGRATIONS: tuple[Migration, ...] = (baseline, *CURRENT_MIGRATIONS)
 
 
 def _validate_active_migrations(migrations: tuple[Migration, ...]) -> None:
@@ -72,6 +87,11 @@ APPLICATION_TABLES: tuple[str, ...] = (
     "video_phash_provenance",
     "video_phash_thumbnails",
     "video_phash_jobs",
+    "video_visual_signatures",
+    "video_visual_comparisons",
+    "video_visual_jobs",
+    "video_visual_state",
+    "video_visual_history",
     "videos",
     "dead_streams",
     "meta",
@@ -169,14 +189,18 @@ def _migration_plan(
         version < INTERIM_BASELINE_VERSION
         and names_by_version[version] not in {
             baseline.name, admin_operation_plans.name, video_metadata_overrides.name,
-            "0002_admin_operation_plans"
+            "0002_admin_operation_plans", current_duplicate_reconcile_schedule.name,
+            current_video_visual_duplicates.name,
+            current_video_visual_timestamps.name, current_video_visual_history.name,
+            current_telegram_latest_cursor.name,
         }
         for version in applied_versions
     )
     # Any recorded version above the interim baseline proves this database
     # walked the pre-squash chain, so the rest of that chain still has to run.
-    # Databases created by the current baseline record version 1 alone and never
-    # see POST_BASELINE_MIGRATIONS.
+    # Current-baseline databases never replay POST_BASELINE_MIGRATIONS; they
+    # receive only CURRENT_MIGRATIONS. Historical chain databases keep their own
+    # migration numbering and continue through POST_BASELINE_MIGRATIONS.
     follows_pre_squash_chain = (
         has_legacy_history
         or has_interim_baseline
@@ -211,6 +235,13 @@ def _migration_plan(
             migration for migration in POST_BASELINE_MIGRATIONS
             if migration.version not in applied_versions
         )
+    elif baseline_is_applied:
+        plan.extend(
+            migration for migration in CURRENT_MIGRATIONS
+            if migration.version not in applied_versions
+        )
+    else:
+        plan.extend(CURRENT_MIGRATIONS)
     if target_version is not None:
         plan = [m for m in plan if m.version <= target_version]
     return plan

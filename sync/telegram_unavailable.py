@@ -77,13 +77,12 @@ def reconcile_telegram_channel(
         SELECT v.id, q.status, q.miss_count, q.files
         FROM videos v LEFT JOIN telegram_unavailable_quarantine q ON q.video_id=v.id
         WHERE v.provider='telegram' AND (v.id LIKE %s OR v.id LIKE %s)
+          AND (q.video_id IS NOT NULL OR NOT (v.id = ANY(%s)))
           AND (q.video_id IS NULL OR q.last_checked_at < to_timestamp(%s) - interval '20 hours')
-        ORDER BY CASE WHEN q.status='quarantined' THEN 0
-                      WHEN q.status='suspect' THEN 1 ELSE 2 END,
-                 q.last_checked_at NULLS FIRST, v.first_seen NULLS FIRST, v.id
+        ORDER BY COALESCE(q.last_checked_at, v.last_seen, v.first_seen) ASC NULLS FIRST, v.id
         LIMIT %s
-    """, (prefix_a, prefix_b, now, max(1, min(int(limit), 50)))).fetchall()
-    counts = {"checked": 0, "suspect": 0, "quarantined": 0, "restored": 0, "errors": 0}
+    """, (prefix_a, prefix_b, list(current_video_ids), now, max(1, min(int(limit), 50)))).fetchall()
+    counts = {"checked": 0, "available": 0, "suspect": 0, "quarantined": 0, "restored": 0, "errors": 0}
     for video_id, old_status, old_misses, old_files in rows:
         ref = _ref(video_id)
         if ref is None:
@@ -120,7 +119,9 @@ def reconcile_telegram_channel(
         if status == "available":
             try:
                 _restore_files(old_files)
+                conn.execute("UPDATE videos SET last_seen=GREATEST(COALESCE(last_seen, to_timestamp(%s)), to_timestamp(%s)) WHERE id=%s", (now, now, video_id))
                 conn.execute("DELETE FROM telegram_unavailable_quarantine WHERE video_id=%s", (video_id,))
+                counts["available"] += 1
                 if old_status == "quarantined":
                     counts["restored"] += 1
             except Exception as exc:

@@ -371,11 +371,12 @@ def _backfill_linked_scene_artwork(
             if scene and str(scene.external_id or "") == str(external_id or "") and scene.poster_url:
                 scene = replace(scene, title="", plot="", date="", performers=[], tags=[], studio="")
                 with conn:
-                    conn.execute("UPDATE videos SET thumbnail=%s WHERE id=%s", (scene.poster_url, video_id))
                     image_saved = _core._update_media_files(
                         media_dir=media_dir, video_id=str(video_id), matched=scene,
                         performers=[], http_client=http_client, conn=conn,
                     )
+                    if image_saved:
+                        conn.execute("UPDATE videos SET thumbnail=%s WHERE id=%s", (scene.poster_url, video_id))
                 if image_saved:
                     updated += 1
                     outcome = "found"

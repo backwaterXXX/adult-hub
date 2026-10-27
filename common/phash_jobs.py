@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from common import db
+from common.telegram_transfer_budget import (
+    current_local_day_start_timestamp,
+    next_daily_reset_timestamp,
+)
 
 MAX_ATTEMPTS = 3
 LEASE_SECONDS = 90
@@ -65,7 +70,14 @@ def enqueue(db_url: str | None, *, video_id: str, duration_us: int,
             conn.commit()
             return {"outcome": "complete", "job": dict(row)}
 
-        if row is not None and row["state"] == "done":
+        retry_after_budget_reset = False
+        if row is not None and row["state"] == "failed" and row["error_code"] == "daily_transfer_budget_exhausted":
+            updated_at = row["updated_at"]
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            retry_after_budget_reset = updated_at.timestamp() < current_local_day_start_timestamp()
+
+        if row is not None and (row["state"] == "done" or retry_after_budget_reset):
             row = conn.execute(
                 """UPDATE video_phash_jobs SET state='queued',duration_us=%s,attempts=0,
                    available_at=CURRENT_TIMESTAMP,lease_token=NULL,lease_until=NULL,
@@ -321,6 +333,30 @@ def finish_failure(db_url: str | None, job: dict, error_code: str, *, retryable:
                    WHERE id=%s AND state='processing' AND lease_token=%s""",
                 (error_code, error_detail, job["id"], job["lease_token"]),
             ).rowcount
+        conn.commit()
+        return changed == 1
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def defer_until_daily_reset(db_url: str | None, job: dict) -> bool:
+    """Keep daily-budget-limited work queued until the transfer budget resets."""
+    reset_at = next_daily_reset_timestamp()
+    conn = db.connect(db_url)
+    try:
+        changed = conn.execute(
+            """UPDATE video_phash_jobs SET state='queued',attempts=0,available_at=to_timestamp(%s),
+               lease_token=NULL,lease_until=NULL,processing_duration_ms=processing_duration_ms + CASE
+                   WHEN processing_started_at IS NOT NULL
+                   THEN GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP-processing_started_at))*1000)::BIGINT)
+                   ELSE 0 END,processing_started_at=NULL,error_code='daily_transfer_budget_exhausted',
+               error_detail='Waiting for the daily Telegram transfer budget to reset.',finished_at=NULL,
+               updated_at=CURRENT_TIMESTAMP WHERE id=%s AND state='processing' AND lease_token=%s""",
+            (reset_at, job["id"], job["lease_token"]),
+        ).rowcount
         conn.commit()
         return changed == 1
     except Exception:

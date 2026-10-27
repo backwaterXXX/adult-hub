@@ -129,21 +129,20 @@ class TestMigrationsEngine(PgTestCase):
         self.baseline_reference = type(self).baseline_reference
 
     def test_migration_status_and_full_application(self):
-        # 1. Recreate clean test database: the baseline is the whole chain now.
+        # 1. Recreate clean test database from the squashed baseline and its forward upgrades.
         applied = recreate_database(self.conn)
-        self.assertEqual([m.version for m in applied], [baseline.version])
-        self.assertEqual(MIGRATIONS, (baseline,))
+        self.assertEqual([m.version for m in applied], [baseline.version, MIGRATIONS[-1].version])
 
         # 2. Status should report up to date
         status = get_migration_status(self.conn)
         self.assertTrue(status.is_up_to_date)
-        self.assertEqual(status.current_version, baseline.version)
+        self.assertEqual(status.current_version, MIGRATIONS[-1].version)
         self.assertEqual(len(status.pending), 0)
-        self.assertEqual(len(status.applied), 1)
+        self.assertEqual(len(status.applied), len(MIGRATIONS))
 
         # 3. Check schema_migrations table contents
         applied_records = get_applied_migrations(self.conn)
-        self.assertEqual([r.version for r in applied_records], [baseline.version])
+        self.assertEqual([r.version for r in applied_records], [baseline.version, MIGRATIONS[-1].version])
         self.assertEqual(applied_records[0].name, "0001_baseline")
 
         # 4. Check that all expected application tables exist in PostgreSQL
@@ -314,7 +313,7 @@ class TestMigrationsEngine(PgTestCase):
     def test_current_schema_without_history_is_stamped_not_replayed(self):
         build_baseline_schema(self.conn)
         applied = apply_migrations(self.conn)
-        self.assertEqual([migration.version for migration in applied], [baseline.version])
+        self.assertEqual([migration.version for migration in applied], [baseline.version, MIGRATIONS[-1].version])
         self.assertTrue(get_migration_status(self.conn).is_up_to_date)
 
     def test_existing_v8_database_is_squashed_without_rewriting_data(self):
@@ -366,6 +365,7 @@ class TestMigrationsEngine(PgTestCase):
             (47, "0047_video_file_size"),
             (48, "0048_video_phash_job_error_detail"),
             (49, "0049_catalog_automation"),
+            (50, "0050_duplicate_reconcile_schedule"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):

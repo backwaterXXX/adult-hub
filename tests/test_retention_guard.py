@@ -166,6 +166,17 @@ class RetentionGuardTest(PgTestCase):
         self.assertFalse(old_target.exists())
         self.assertTrue(fresh_target.exists())
 
+    def test_expired_telegram_item_survives_successful_channel_sync(self):
+        channel = "-1001111111111"
+        sync_module.CONFIG = _mock_config(telegram=SourceConfig(
+            provider="telegram", enabled=True,
+            channels=[TelegramChannelConfig(id=channel, enabled=True)]))
+        video_id = f"telegram:{channel}:10:doc"
+        target = self._seed_expired(video_id, "telegram")
+        sync_module.cleanup_retention(self.conn, self.media, 30, {f"telegram:{channel}"})
+        self.assertIsNotNone(self.conn.execute("SELECT id FROM videos WHERE id=%s", (video_id,)).fetchone())
+        self.assertTrue(target.exists())
+
     def test_e_disabled_telegram_channel_is_protected(self):
         """Per-channel enabled flag: disabled channel keeps rows/files/URLs
         while the enabled channel of the same provider is collected."""

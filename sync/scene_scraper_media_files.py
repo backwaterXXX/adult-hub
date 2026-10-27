@@ -227,9 +227,11 @@ def _download_scene_poster(url: str, jpg_path: Path, video_id: str,
     try:
         resp = request_with_host_limit(
             client, "get", url,
-            headers={"User-Agent": _core.USER_AGENT}, timeout=10.0,
+            headers={"User-Agent": _core.USER_AGENT}, timeout=10.0, follow_redirects=True,
         )
         if resp.status_code != 200 or len(resp.content) <= 5000:
+            _core.logger.warning("Linked poster download failed for %s (HTTP %s, %s bytes)",
+                                 video_id, resp.status_code, len(resp.content))
             return False
         from io import BytesIO
         from PIL import Image
@@ -237,11 +239,13 @@ def _download_scene_poster(url: str, jpg_path: Path, video_id: str,
         with Image.open(BytesIO(resp.content)) as downloaded:
             downloaded.load()
             if is_black_image(downloaded):
+                _core.logger.warning("Linked poster rejected for %s (black image)", video_id)
                 return False
             output = BytesIO()
             downloaded.convert("RGB").save(output, format="JPEG", quality=92, optimize=True)
         image_bytes = output.getvalue()
         if len(image_bytes) <= 5000:
+            _core.logger.warning("Linked poster rejected for %s (encoded image too small)", video_id)
             return False
         tmp = jpg_path.with_suffix(".jpg.tmp")
         tmp.write_bytes(image_bytes)
@@ -256,6 +260,6 @@ def _download_scene_poster(url: str, jpg_path: Path, video_id: str,
             pass
         return True
     except Exception as image_error:
-        _core.logger.debug("Could not save linked poster for %s (%s)", video_id,
+        _core.logger.warning("Could not save linked poster for %s (%s)", video_id,
                            type(image_error).__name__)
         return False

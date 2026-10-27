@@ -203,7 +203,7 @@ CREATE TABLE public.admin_schedules (
     last_result text,
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT admin_schedules_action_check CHECK ((action = ANY (ARRAY['availability_check'::text, 'consistency_audit'::text, 'metadata_quality_audit'::text, 'catalog_full_audit'::text, 'backup_create'::text]))),
+    CONSTRAINT admin_schedules_action_check CHECK ((action = ANY (ARRAY['availability_check'::text, 'consistency_audit'::text, 'metadata_quality_audit'::text, 'catalog_full_audit'::text, 'backup_create'::text, 'duplicate_reconcile'::text]))),
     CONSTRAINT admin_schedules_check CHECK ((((schedule_type = 'interval'::text) AND ((interval_minutes >= 15) AND (interval_minutes <= 43200)) AND (daily_at IS NULL)) OR ((schedule_type = 'daily'::text) AND (interval_minutes IS NULL) AND (daily_at ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'::text)))),
     CONSTRAINT admin_schedules_schedule_type_check CHECK ((schedule_type = ANY (ARRAY['interval'::text, 'daily'::text]))),
     CONSTRAINT admin_schedules_timezone_check CHECK ((timezone = 'Europe/Warsaw'::text))
@@ -367,7 +367,10 @@ CREATE TABLE public.telegram_channel_state (
     backfill_completed_at timestamp with time zone,
     updated_at timestamp with time zone,
     last_tags_whitelist text,
-    last_tags_blacklist text
+    last_tags_blacklist text,
+    latest_watermark bigint,
+    latest_cursor bigint,
+    latest_head bigint
 );
 
 CREATE TABLE public.telegram_performer_proposals (

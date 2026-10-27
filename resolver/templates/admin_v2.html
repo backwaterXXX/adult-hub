@@ -134,9 +134,6 @@
             <div id="videoTableWrap" class="table-wrap" hidden><table class="video-table"><thead><tr><th><span class="sr-only">Select</span></th><th>Item</th><th>Studio</th><th>Source</th><th>Availability</th><th>Reason</th><th>Last detected</th><th>Added</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="videoRows"></tbody></table></div>
             <div id="pagination" class="pagination" hidden><button class="button button-quiet" type="button" id="pagePrev">← Previous</button><span id="pageInfo">Page 1</span><button class="button button-quiet" type="button" id="pageNext">Next →</button></div>
           </section>
-          <dialog class="source-detail" id="detailOverlay" aria-labelledby="detailTitle">
-            <article class="source-detail-panel detail-drawer" tabindex="-1"><button type="button" class="drawer-close" data-action="close-detail" aria-label="Close details">×</button><div id="detailContent"></div></article>
-          </dialog>
           <dialog class="operation-dialog" id="metadataDialog" aria-labelledby="metadataDialogTitle"><section class="operation-dialog-panel"><button class="drawer-close" type="button" aria-label="Close metadata editor" data-close-dialog="metadataDialog">×</button><div id="metadataDialogContent"></div><div class="operation-dialog-actions" id="metadataDialogActions"></div></section></dialog>
         </section>
 
@@ -146,6 +143,7 @@
             <a href="#quality?tab=issues" data-section-tab="issues">Overview</a>
             <a href="#quality?tab=enrichment" data-section-tab="enrichment">Enrichment</a>
             <a href="#quality?tab=duplicates" data-section-tab="duplicates">Duplicates</a>
+            <a href="#quality?tab=visual" data-section-tab="visual">Visual comparisons</a>
             <a href="#quality?tab=quarantine" data-section-tab="quarantine">Quarantine</a>
             <a href="#performers?tab=directory" class="section-tab-crosslink">Performer Directory</a>
           </nav>
@@ -160,6 +158,10 @@
               <div class="filter-field"><label for="duplicateCategory">View</label><select id="duplicateCategory"><option value="">Active suggestions</option><option value="same_file">Same file candidates</option><option value="strong">Strong suggestions</option><option value="review">Needs review</option><option value="oshash_linked">Linked by OSHASH</option></select></div>
               <div class="jobs-filter-actions"><button class="button button-quiet" type="button" id="autoMergeExact" aria-describedby="duplicateBatchHelp">Hide exact-file duplicates</button><button class="button button-quiet" type="button" id="duplicateRefresh">Refresh scan</button></div>
             </form>
+            <section class="panel visual-duplicate-section" aria-labelledby="visualDuplicateTitle">
+              <div class="panel-heading visual-duplicate-heading"><div><p class="eyebrow">VISUAL SEQUENCE CHECKS</p><h2 id="visualDuplicateTitle" tabindex="-1">Frame comparison results</h2><p class="page-intro" id="visualDuplicateStatus">Building frame signatures for suspected duplicate pairs.</p></div><button class="button button-quiet" id="visualDuplicateRefresh" type="button">Refresh visual results</button></div>
+              <div id="visualDuplicateRows" class="duplicate-candidate-list"></div>
+            </section>
             <p id="duplicateBatchHelp" class="detail-muted">Queues a bounded batch after a fresh server preview. Duplicate records are hidden; source files are kept.</p>
             <div id="duplicateNotice" class="state-banner" hidden role="status"></div>
             <div id="duplicateFeedback" class="catalog-feedback" role="status">Ready to scan duplicate candidates.</div>
@@ -438,5 +440,8 @@
     </main>
   </div>
   <dialog class="operation-dialog" id="operationDialog" aria-labelledby="operationDialogTitle"><section class="operation-dialog-panel"><button class="drawer-close" type="button" aria-label="Close operation preview" data-close-dialog="operationDialog">×</button><div id="operationDialogContent"></div><div class="operation-dialog-actions" id="operationDialogActions"></div></section></dialog>
+  <dialog class="source-detail" id="detailOverlay" aria-labelledby="detailTitle">
+    <article class="source-detail-panel detail-drawer" tabindex="-1"><button type="button" class="drawer-close" data-action="close-detail" aria-label="Close details">×</button><div id="detailContent"></div></article>
+  </dialog>
 </body>
 </html>

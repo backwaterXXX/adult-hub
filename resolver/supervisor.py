@@ -20,6 +20,7 @@ UVICORN_COMMAND = [
     "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8090",
 ]
 PHASH_WORKER_COMMAND = ["python3", "phash_worker.py"]
+VISUAL_WORKER_COMMAND = ["python3", "video_visual_worker.py"]
 HEALTH_URL = "http://127.0.0.1:8090/admin/health/live"
 CHECK_INTERVAL = max(2.0, float(os.getenv("RESOLVER_WATCHDOG_INTERVAL_SECONDS", "10")))
 CHECK_TIMEOUT = max(1.0, float(os.getenv("RESOLVER_WATCHDOG_TIMEOUT_SECONDS", "4")))
@@ -80,13 +81,19 @@ def main() -> int:
     signal.signal(signal.SIGINT, _request_stop)
     restart_delay = 2.0
     worker = None
+    visual_worker = None
     worker_restart_at = 0.0
     worker_restart_delay = 2.0
+    visual_restart_at = 0.0
+    visual_restart_delay = 2.0
 
     while not _stop_requested:
         if worker is None and time.monotonic() >= worker_restart_at:
             worker = subprocess.Popen(PHASH_WORKER_COMMAND, start_new_session=True)
             _log(f"started pHash worker pid={worker.pid}")
+        if visual_worker is None and time.monotonic() >= visual_restart_at:
+            visual_worker = subprocess.Popen(VISUAL_WORKER_COMMAND, start_new_session=True)
+            _log(f"started visual duplicate worker pid={visual_worker.pid}")
         child = subprocess.Popen(UVICORN_COMMAND)
         started_at = time.monotonic()
         failures = 0
@@ -101,6 +108,13 @@ def main() -> int:
                 worker = None
                 worker_restart_at = time.monotonic() + worker_restart_delay
                 worker_restart_delay = min(worker_restart_delay * 2.0, MAX_RESTART_DELAY)
+            if visual_worker is not None and visual_worker.poll() is not None:
+                code = visual_worker.returncode
+                _log(f"visual duplicate worker exited with code {code}; restarting in {visual_restart_delay:g}s",
+                     logging.WARNING)
+                visual_worker = None
+                visual_restart_at = time.monotonic() + visual_restart_delay
+                visual_restart_delay = min(visual_restart_delay * 2.0, MAX_RESTART_DELAY)
 
             return_code = child.poll()
             if return_code is not None:
@@ -113,6 +127,8 @@ def main() -> int:
                     restart_delay = 2.0
                     if worker is not None and worker.poll() is None:
                         worker_restart_delay = 2.0
+                    if visual_worker is not None and visual_worker.poll() is None:
+                        visual_restart_delay = 2.0
                 else:
                     failures += 1
                     _log(f"healthcheck failed ({failures}/{FAILURES_TO_RESTART})", logging.WARNING)
@@ -127,6 +143,8 @@ def main() -> int:
             _stop_child(child)
             if worker is not None:
                 _stop_child(worker)
+            if visual_worker is not None:
+                _stop_child(visual_worker)
             return 0
 
         _log(f"restarting Uvicorn: {reason}; next attempt in {restart_delay:g}s", logging.WARNING)

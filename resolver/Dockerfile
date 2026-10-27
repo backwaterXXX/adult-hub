@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # package's runtime dependencies, before installing the local package itself.
 COPY common/ ./common/
 COPY sync/video_fingerprints.py ./resolver_video_fingerprints.py
+COPY sync/video_visual.py ./resolver_video_visual.py
 COPY sync/fingerprint_mp4.py ./fingerprint_mp4.py
 COPY sync/thumbnails.py ./thumbnails.py
 COPY resolver/requirements.lock ./requirements.lock

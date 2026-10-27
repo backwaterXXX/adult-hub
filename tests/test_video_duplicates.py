@@ -23,6 +23,26 @@ import admin_v2_jobs
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "sync"))
 import duplicate_files
+import video_duplicate_automation
+
+
+class TestAutomaticDuplicateRules(unittest.TestCase):
+    def test_split_part_identity_uses_original_filename_markers(self):
+        first = {"source_filename": "Studio_scene_s1.mp4"}
+        second = {"source_filename": "Studio_scene_s2.mp4"}
+        self.assertEqual(video_duplicate_automation._part_identity(first), (True, 1))
+        self.assertEqual(video_duplicate_automation._part_identity(second), (True, 2))
+
+    def test_split_scene_provenance_without_number_is_ambiguous(self):
+        row = {"scene_match_source": "stashdb:split_title_duration_v1",
+               "source_filename": "Studio_scene.mp4", "title": "Same catalog title"}
+        self.assertEqual(video_duplicate_automation._part_identity(row), (True, None))
+
+    def test_duration_tolerance_is_bounded(self):
+        self.assertTrue(video_duplicate_automation._duration_matches(
+            {"duration": 858}, {"duration": 866}))
+        self.assertFalse(video_duplicate_automation._duration_matches(
+            {"duration": 858}, {"duration": 880}))
 
 
 class TestDuplicateFileMoveAtomic(unittest.TestCase):
@@ -545,12 +565,12 @@ class TestVideoDuplicateCandidates(PgTestCase):
         self.assertLessEqual(at_85["score"], 95)
         self.assertIsNone(_score(row(0, "abc"), row(1, "abc"), set("abc")))
 
-    def test_close_time_but_low_cast_similarity_is_omitted(self):
+    def test_close_time_with_matching_cast_is_a_candidate(self):
         self.add_video("a:1", "Same title", duration=3000,
                        performers=["A", "B", "C", "D"])
         self.add_video("b:2", "Same title", duration=3015,
                        performers=["A", "B", "C", "D", "E"])
-        self.assertEqual(find_duplicate_candidates(TEST_URL)["total"], 0)
+        self.assertEqual(find_duplicate_candidates(TEST_URL)["total"], 1)
 
     def test_one_shared_actor_does_not_create_suggestion(self):
         self.add_video("a:1", "Men", duration=600, performers=["Alex"])
@@ -613,7 +633,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
         self.assertEqual(pair["evidence"], "oshash")
         self.assertEqual(pair["category"], "Strong suggestion")
         self.assertLess(pair["score"], 100)
-        self.assertIn("review before merging", pair["reasons"][0])
+        self.assertIn("Matching OSHASH", pair["reasons"][0])
 
     def test_telegram_ref_remains_identity_when_slug_conflicts(self):
         self.add_video("telegram:-1001:1:900719925474099312345", "#OnlyFans",

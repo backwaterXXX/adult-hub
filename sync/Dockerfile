@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # Install the fully pinned sync dependency set, including the shared
 # package's runtime dependencies, before installing the local package itself.
 COPY common/ ./common/
+COPY resolver/video_duplicates.py resolver/video_duplicate_scoring.py resolver/video_duplicate_merge_history.py ./
 COPY sync/requirements.lock ./requirements.lock
 RUN pip install --no-cache-dir -r requirements.lock \
     && pip install --no-cache-dir --no-deps ./common

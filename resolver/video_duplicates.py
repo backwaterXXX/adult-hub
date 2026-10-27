@@ -17,6 +17,9 @@ from video_duplicate_scoring import (
     EPISODE_PART_SCORE_PENALTY as EPISODE_PART_SCORE_PENALTY,
     MAX_HEURISTIC_CANDIDATES as MAX_HEURISTIC_CANDIDATES,
     MIN_SCORE as MIN_SCORE,
+    PHASH_NEAR_MAX_DISTANCE as PHASH_NEAR_MAX_DISTANCE,
+    PHASH_NEAR_SOLO_MAX_DURATION_DELTA as PHASH_NEAR_SOLO_MAX_DURATION_DELTA,
+    PHASH_NEAR_SOLO_TITLE_SIMILARITY as PHASH_NEAR_SOLO_TITLE_SIMILARITY,
     RULES_VERSION as RULES_VERSION,
     _candidate_pairs as _candidate_pairs,
     _clean_title_for_solo as _clean_title_for_solo,
@@ -96,7 +99,9 @@ def _collect_duplicate_candidates(db_url: str | None, category: str = "") -> tup
         if "id" not in cols:
             return [], 0, True
         optional = {"provider": "''", "title": "''", "slug": "''", "duration": "NULL",
-                    "performers": "'[]'", "studio": "''", "thumbnail": "NULL"}
+                    "performers": "'[]'", "studio": "''", "thumbnail": "NULL",
+                    "scene_match_source": "''", "scene_match_external_id": "NULL",
+                    "source_text": "''", "source_filename": "''"}
         select = ["id"] + [n if n in cols else f"{fallback} AS {n}" for n, fallback in optional.items()]
         if "url" in cols:
             select.append("url AS source_url")
@@ -130,10 +135,18 @@ def _collect_duplicate_candidates(db_url: str | None, category: str = "") -> tup
                     aliases.setdefault(canonical, canonical)
         oshashes: dict[str, str] = {}
         phashes: dict[str, str] = {}
-        if "video_fingerprints" in tables_available:
+        if "video_fingerprints" in tables_available and "video_phash_provenance" in tables_available:
+            current_phash_generator = (
+                "stash-phash-689a6b400625d6da2afb58a7f908c88bcdb6f8ab-v2:"
+                "resolver-ffmpeg-stash-v2"
+            )
             for video_id, algorithm, fingerprint in conn.execute(
-                "SELECT video_id, algorithm, fingerprint FROM video_fingerprints "
-                "WHERE algorithm=ANY(%s)", (["OSHASH", "PHASH"],)
+                """SELECT video_id,algorithm,fingerprint FROM video_fingerprints WHERE algorithm='OSHASH'
+                   UNION ALL
+                   SELECT f.video_id,f.algorithm,f.fingerprint FROM video_fingerprints f
+                   JOIN video_phash_provenance p ON p.video_id=f.video_id
+                     AND p.fingerprint=f.fingerprint AND p.generator_version=%s
+                   WHERE f.algorithm='PHASH'""", (current_phash_generator,)
             ).fetchall():
                 value = str(fingerprint or "").strip().lower()
                 if not video_id or not re.fullmatch(r"[0-9a-f]{16}", value):
@@ -163,6 +176,8 @@ def _collect_duplicate_candidates(db_url: str | None, category: str = "") -> tup
     found: list[dict] = []
     file_groups: dict[str, list[int]] = defaultdict(list)
     hash_groups: dict[str, list[int]] = defaultdict(list)
+    phash_groups: dict[str, list[int]] = defaultdict(list)
+    scene_groups: dict[str, list[int]] = defaultdict(list)
     for i, row in enumerate(rows):
         fid = _telegram_file_id(row)
         if fid is not None:
@@ -170,6 +185,20 @@ def _collect_duplicate_candidates(db_url: str | None, category: str = "") -> tup
         oshash = oshashes.get(str(row.get("id") or ""))
         if row.get("provider") == "telegram" and oshash:
             hash_groups[oshash].append(i)
+        phash = phashes.get(str(row.get("id") or ""))
+        if phash and not str(row.get("scene_match_source") or "").casefold().endswith(
+                "split_title_duration_v1"):
+            duration = _duration_values(row)
+            if duration is not None:
+                phash_groups[f"{phash}:{duration}"].append(i)
+        scene_id = str(row.get("scene_match_external_id") or "").strip()
+        source = str(row.get("scene_match_source") or "").casefold()
+        if scene_id and not source.endswith("split_title_duration_v1"):
+            provider = "theporndb" if "theporndb" in source or "tpdb" in source else "stashdb" if "stashdb" in source else ""
+            if provider:
+                duration = _duration_values(row)
+                if duration is not None:
+                    scene_groups[f"{provider}:{scene_id}:{duration}"].append(i)
 
     # Group repeated Telegram IDs as proven same-file entries. Shared OSHASH
     # values join the same review group but remain suggestions because OSHASH
@@ -194,6 +223,8 @@ def _collect_duplicate_candidates(db_url: str | None, category: str = "") -> tup
     exact_group_indexes = list(file_groups.values())
     if category != "Same file":
         exact_group_indexes.extend(hash_groups.values())
+        exact_group_indexes.extend(phash_groups.values())
+        exact_group_indexes.extend(scene_groups.values())
     for indexes in exact_group_indexes:
         union(indexes)
 
@@ -250,8 +281,26 @@ def _collect_duplicate_candidates(db_url: str | None, category: str = "") -> tup
             file_id = None
         if file_id and any(row.get("slug") and str(row["slug"]) != file_id for row in member_rows):
             warnings.append("Inconsistent metadata: slug differs from file ID in ref")
-        if len(member_file_ids) > 1 and shared_oshashes:
-            reasons = ["Matching OSHASH fingerprint across Telegram messages; review before merging"]
+        phash_counts: dict[str, int] = defaultdict(int)
+        for i in members:
+            fingerprint = phashes.get(str(rows[i]["id"]))
+            if fingerprint:
+                phash_counts[fingerprint] += 1
+        shared_phashes = sorted(fingerprint for fingerprint, count in phash_counts.items() if count > 1)
+        shared_stashdb_scene = {
+            str(rows[i].get("scene_match_external_id") or "").strip()
+            for i in members
+            if str(rows[i].get("scene_match_source") or "").casefold().startswith("stashdb")
+        }
+        has_shared_stashdb_scene = (
+            len(shared_stashdb_scene) == 1 and "" not in shared_stashdb_scene
+            and all(str(rows[i].get("scene_match_source") or "").casefold().startswith("stashdb")
+                    for i in members)
+        )
+        if len(shared_phashes) == 1:
+            reasons = ["Matching pHash across videos; automatic match requires runtime and part checks"]
+        elif len(member_file_ids) > 1 and shared_oshashes:
+            reasons = ["Matching OSHASH fingerprint across Telegram messages"]
         else:
             reasons = ["Same Telegram file, different messages"]
         same_file = same_telegram_file
@@ -261,9 +310,13 @@ def _collect_duplicate_candidates(db_url: str | None, category: str = "") -> tup
             "dismissed_pairs": [list(pair) for pair in sorted(group_dismissals)],
             "score": 100.0 if same_file else 92.0, "score_max": 100,
             "category": "Same file" if same_file else "Strong suggestion",
-            "evidence": "telegram_file_id" if same_telegram_file else "oshash",
+            "evidence": "telegram_file_id" if same_telegram_file else
+                        "phash" if len(shared_phashes) == 1 else
+                        "stashdb_scene" if has_shared_stashdb_scene
+                        else "oshash",
             "rules_version": RULES_VERSION,
             "components": ({"telegram_file_id": file_id} if same_telegram_file else
+                           {"phash": shared_phashes[0]} if len(shared_phashes) == 1 else
                            {"oshashes": shared_oshashes} if shared_oshashes else {}),
             "reasons": [*reasons, *sorted(set(warnings))],
         })
@@ -276,7 +329,7 @@ def _collect_duplicate_candidates(db_url: str | None, category: str = "") -> tup
         candidate_pairs, scan_complete = _candidate_pairs(rows)
     for i, j in candidate_pairs:
         left, right = rows[i], rows[j]
-        if i in exact_members or j in exact_members:
+        if i in exact_members and j in exact_members:
             continue
         if left["id"] in decisions or right["id"] in decisions:
             continue
@@ -301,6 +354,67 @@ def _collect_duplicate_candidates(db_url: str | None, category: str = "") -> tup
                 continue
         score["left"], score["right"] = _public_row(left), _public_row(right)
         found.append(score)
+
+    if category != "Same file":
+        # Stash-compatible pHash values are 64-bit hashes. Compare nearby
+        # values only among videos with compatible runtimes and safe part IDs.
+        hash_rows = [i for i, row in enumerate(rows)
+                     if phashes.get(str(row.get("id") or ""))]
+
+        def part_identity(row: dict) -> tuple[bool, int | None]:
+            split_source = str(row.get("scene_match_source") or "").casefold().endswith(
+                "split_title_duration_v1")
+            text = " ".join(str(row.get(key) or "") for key in
+                            ("source_filename", "source_text", "title"))
+            match = re.search(r"(?i)(?<![A-Za-z0-9])(?:part[\s_.-]*|pt\.?[\s_.-]*|s[\s_.-]*)(\d{1,2})(?!\d)", text)
+            number = int(match.group(1)) if match and 1 <= int(match.group(1)) <= 12 else None
+            return split_source or number is not None, number
+
+        near_count = 0
+        for offset, i in enumerate(hash_rows):
+            left = rows[i]
+            left_duration = _duration_values(left)
+            left_hash = int(phashes[str(left["id"])], 16)
+            left_split, left_part = part_identity(left)
+            for j in hash_rows[offset + 1:]:
+                right = rows[j]
+                right_duration = _duration_values(right)
+                if (left_duration is None or right_duration is None
+                        or abs(left_duration - right_duration) > min(15, max(5, .01 * max(left_duration, right_duration)))):
+                    continue
+                right_split, right_part = part_identity(right)
+                distance = (left_hash ^ int(phashes[str(right["id"])], 16)).bit_count()
+                if not 0 < distance <= PHASH_NEAR_MAX_DISTANCE:
+                    continue
+                part_conflict = (left_split or right_split) and (not left_part or left_part != right_part)
+                if part_conflict:
+                    continue
+                pair_ids = tuple(sorted((str(left["id"]), str(right["id"]))))
+                if pair_ids in dismissed or left["id"] in decisions or right["id"] in decisions:
+                    continue
+                score = {"score": 90.0 if distance <= 2 else 85.0, "score_max": 100,
+                         "category": "Strong suggestion", "rules_version": RULES_VERSION,
+                         "evidence": "phash_near", "components": {"phash_distance": distance},
+                         "reasons": [f"Similar pHash (Hamming distance {distance}) and matching duration"]}
+                score["left"], score["right"] = _public_row(left), _public_row(right)
+                existing = next((candidate for candidate in found
+                                 if {str(candidate.get("left", {}).get("id")),
+                                     str(candidate.get("right", {}).get("id"))} == set(pair_ids)), None)
+                if existing:
+                    if existing.get("evidence") not in {
+                            "telegram_file_id", "oshash", "phash", "stashdb_scene", "visual_sequence"}:
+                        existing["evidence"] = "phash_near"
+                        existing.setdefault("components", {})["phash_distance"] = distance
+                        existing.setdefault("reasons", []).append(
+                            f"Similar pHash (Hamming distance {distance}) and matching duration")
+                else:
+                    found.append(score)
+                near_count += 1
+                if near_count >= MAX_HEURISTIC_CANDIDATES:
+                    scan_complete = False
+                    break
+            if near_count >= MAX_HEURISTIC_CANDIDATES:
+                break
 
     category_rank = {"Same file": 0, "Strong suggestion": 1, "Needs review": 2}
     found.sort(key=lambda x: (category_rank[x["category"]], -x["score"],

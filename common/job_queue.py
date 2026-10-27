@@ -25,7 +25,7 @@ WORKER_ACTIONS = (
     "hide", "dismiss", "undo", "undismiss", "performer_merge", "performer_refresh",
     "collections_refresh", "quarantine", "metadata_update", "availability_check",
     "consistency_audit", "metadata_quality_audit", "catalog_full_audit", "audit_repair_nfo", "audit_import_refresh", "orphan_file_operation",
-    "backup_create", "backup_restore_test", "metadata_backfill", "telegram_fingerprint_scan", "artwork_download", "artwork_generate",
+    "backup_create", "backup_restore_test", "metadata_backfill", "telegram_fingerprint_scan", "artwork_download", "artwork_generate", "duplicate_reconcile",
 )
 # ``sync`` is claimed by the runner, which owns full-sync execution.
 SYNC_ACTION = "sync"

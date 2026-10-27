@@ -44,6 +44,16 @@ def execute_external_operation(action, conn, job_id, payload, media_dir, service
             "catalog_rows": int(verification.get("catalog_rows") or 0),
         }, True
 
+    if action == "duplicate_reconcile":
+        try:
+            from .video_duplicate_automation import reconcile
+        except ImportError:
+            from video_duplicate_automation import reconcile
+        result = reconcile(getattr(conn, "_url", None) or _core.os.getenv("DATABASE_URL"),
+                           execute_merges=True)
+        result["local_state"] = "duplicate_reconciliation_completed"
+        return result, True
+
     if action == "metadata_backfill":
         if services.external_metadata_backfill is None:
             raise RuntimeError("External metadata scanning is unavailable in this worker.")

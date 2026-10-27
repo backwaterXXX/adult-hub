@@ -30,7 +30,7 @@
     personMergePreviewSeq: 0,
     personFilmographySeq: 0,
     availabilityRequest: null,
-    operationPollTimer: null, operationRefreshing: false, detailOpener: null };
+    operationPollTimer: null, operationRefreshing: false, detailOpener: null, sideDetailId: null };
   const routeInfo = {
     start: { title: 'Dashboard', intro: 'Your library and service status at a glance.' },
     library: { title: 'Library', intro: 'Find videos and check their source and availability.' },
@@ -97,6 +97,9 @@
     }
     if (route === 'quality' && tab === 'enrichment') {
       return { route: 'quality', primaryRoute: 'quality', qualityTab: 'enrichment', detailId: null };
+    }
+    if (route === 'quality' && tab === 'visual') {
+      return { route: 'organize', primaryRoute: 'quality', qualityTab: 'visual', organizeTab: 'duplicates', detailId: null, focusTarget: '#visualDuplicateTitle' };
     }
     if (route === 'quality' && ['duplicates', 'quarantine'].includes(tab)) {
       return { route: 'organize', primaryRoute: 'quality', organizeTab: tab, detailId: null };
@@ -273,7 +276,11 @@
     document.dispatchEvent(new CustomEvent('adminv2:navigate', {
       detail: { route: state.route, detailId: state.detailId, tab: state.qualityTab, systemTab: state.systemTab, sourcesTab: next.sourcesTab || null }
     }));
-    if (next.focusTarget) requestAnimationFrame(() => $(next.focusTarget)?.focus({ preventScroll: true }));
+    if (next.focusTarget) requestAnimationFrame(() => {
+      const target = $(next.focusTarget);
+      target?.focus({ preventScroll: true });
+      if (next.qualityTab === 'visual') target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
     if (restoreDetailFocus?.isConnected) requestAnimationFrame(() => restoreDetailFocus.focus({ preventScroll: true }));
   }
   function showOperationalView(routeState) {
@@ -560,6 +567,37 @@
   }
   function setText(target, value) { if (target) target.textContent = value; }
   function announce(message) { setText($('#liveMessage'), message); }
+  async function copyToClipboard(value) {
+    if (navigator.clipboard?.writeText) {
+      try { await navigator.clipboard.writeText(value); return; } catch { /* Use the local fallback below. */ }
+    }
+    const field = document.createElement('textarea');
+    field.value = value;
+    field.setAttribute('readonly', '');
+    field.style.position = 'fixed';
+    field.style.left = '-10000px';
+    document.body.append(field);
+    field.select();
+    const copied = document.execCommand('copy');
+    field.remove();
+    if (!copied) throw new Error('Clipboard access is unavailable.');
+  }
+  function appendTelegramId(host, video) {
+    const id = typeof video?.id === 'string' ? video.id : '';
+    if (!id.startsWith('telegram:')) return;
+    const row = create('p', 'duplicate-telegram-id');
+    row.append(create('span', '', 'Telegram ID: '));
+    const button = create('button', '', id);
+    button.type = 'button';
+    button.title = 'Copy Telegram ID';
+    button.setAttribute('aria-label', `Copy Telegram ID ${id}`);
+    button.addEventListener('click', async () => {
+      try { await copyToClipboard(id); announce('Telegram ID copied to clipboard.'); }
+      catch { announce('Could not copy the Telegram ID.'); }
+    });
+    row.append(button);
+    host.append(row);
+  }
   function safeId(value) { return value === null || value === undefined || value === '' ? '' : String(value); }
   // Never surface raw errors, secrets, URLs, or filesystem paths in the panel.
   function scrub(value) {
@@ -1484,12 +1522,21 @@
   }
   function closeDetailVisual() {
     state.availabilityHistorySeq += 1;
+    state.sideDetailId = null;
+    stopDetailPlayback();
     if (state.detailAbort) {
       state.detailAbort.abort();
       state.detailAbort = null;
     }
     const dialog = $('#detailOverlay');
     if (dialog.open) closeDialog(dialog);
+  }
+  function stopDetailPlayback() {
+    const player = $('#detailContent video');
+    if (!player) return;
+    player.pause();
+    player.removeAttribute('src');
+    player.load();
   }
   function safeExternalUrl(value) {
     if (typeof value !== 'string' || !value.trim()) return null;
@@ -1510,6 +1557,7 @@
   function renderDetail(video) {
     state.availabilityHistorySeq += 1;
     state.detailVideo = video;
+    stopDetailPlayback();
     const host = $('#detailContent'); host.replaceChildren();
     const title = safeText(first(video, ['title', 'name']), 'Untitled');
     const heading = create('h2', 'detail-title', title); heading.id = 'detailTitle';
@@ -1528,6 +1576,39 @@
       art.append(img);
       host.append(art);
     }
+    const preview = create('section', 'detail-preview');
+    const play = create('button', 'button button-primary', '▶ Play preview');
+    const playableId = first(video, ['id', 'video_id', 'videoId']);
+    play.type = 'button';
+    play.disabled = !playableId;
+    const playerHost = create('div', 'detail-preview-player');
+    play.addEventListener('click', async () => {
+      if (!playerHost.querySelector('video')) {
+        const player = document.createElement('video');
+        player.className = 'detail-video-player';
+        player.controls = true;
+        player.playsInline = true;
+        player.preload = 'metadata';
+        if (artwork) player.poster = artwork;
+        player.src = `/admin/play/${encodeURIComponent(String(playableId))}/stream?mode=proxy`;
+        player.addEventListener('error', () => {
+          player.pause();
+          player.removeAttribute('src');
+          player.load();
+          playerHost.replaceChildren();
+          play.textContent = '▶ Retry preview';
+        }, { once: true });
+        playerHost.replaceChildren(player);
+        play.textContent = '■ Stop preview';
+        try { await player.play(); } catch { /* Native controls remain available when autoplay is blocked. */ }
+        return;
+      }
+      stopDetailPlayback();
+      playerHost.replaceChildren();
+      play.textContent = '▶ Play preview';
+    });
+    preview.append(play, playerHost);
+    host.append(preview);
     const overview = create('section', 'detail-section');
     overview.setAttribute('aria-labelledby', 'detailOverviewHeading');
     const overviewHeading = create('h3', '', 'Overview'); overviewHeading.id = 'detailOverviewHeading';
@@ -1711,7 +1792,8 @@
     // out before touching the dialog keeps a finished task from resurrecting a
     // detail view the user dismissed, where its loading banner would be stranded
     // by the stale-response guard below.
-    if (state.detailId !== id) return;
+    const isCurrentDetail = () => state.detailId === id || state.sideDetailId === id;
+    if (!isCurrentDetail()) return;
     if (state.detailAbort) state.detailAbort.abort();
     const controller = new AbortController(); state.detailAbort = controller;
     const dialog = $('#detailOverlay');
@@ -1721,23 +1803,33 @@
     host.replaceChildren(create('p', 'detail-kicker', 'VIDEO DETAILS'), heading, create('div', 'state-banner state-loading', 'Loading video details…'));
     try {
       const payload = await getJson(`${V2_API}/library/videos/${encodeURIComponent(id)}`, controller.signal);
-      if (state.detailId !== id) return;
+      if (!isCurrentDetail()) return;
       const video = payload.item || payload.video || payload.data || payload;
       renderDetail(video);
       $('.detail-drawer').focus({ preventScroll: true });
     } catch (error) {
-      if (error.name === 'AbortError' || state.detailId !== id) return;
+      if (error.name === 'AbortError' || !isCurrentDetail()) return;
       const errorHeading = create('h2', 'detail-title', 'Could not open video'); errorHeading.id = 'detailTitle';
       host.replaceChildren(create('p', 'detail-kicker', 'VIDEO DETAILS'), errorHeading, create('p', 'detail-description', error.message));
       $('.detail-drawer').focus({ preventScroll: true });
     }
   }
   function closeDetail() {
+    if (state.sideDetailId !== null) {
+      state.sideDetailId = null;
+      closeDetailVisual();
+      return;
+    }
     const url = new URL(location.href);
     if (url.hash.startsWith('#film/')) {
       if (history.state && history.state.detailOpener) history.back();
       else { history.replaceState({}, '', urlFor('library')); renderLocation(); }
     }
+  }
+  function openSideDetail(id) {
+    if (!id) return;
+    state.sideDetailId = String(id);
+    loadDetail(state.sideDetailId);
   }
   function metadataPayloadFromEditor() {
     const video = state.detailVideo;
@@ -2026,6 +2118,7 @@
     }
   }
   async function loadDuplicateCandidates({ refresh = false } = {}) {
+    void loadVisualDuplicateResults();
     if (state.route !== 'organize') return;
     const sequence = ++state.duplicateRequestSeq;
     const category = $('#duplicateCategory').value;
@@ -2121,6 +2214,85 @@
       $('#duplicateState').hidden = false; $('#duplicateState').textContent = 'Duplicate suggestions are unavailable. Refresh to try again.';
     } finally { if (sequence === state.duplicateRequestSeq) state.duplicateBusy = false; }
   }
+  async function loadVisualDuplicateResults() {
+    const host = $('#visualDuplicateRows');
+    if (!host || state.route !== 'organize' || $('#organizeDuplicatesPane').hidden) return;
+    const status = $('#visualDuplicateStatus');
+    try {
+      const payload = await getJson(`${V2_API}/duplicates/visual?limit=50`);
+      if (!payload?.ok) throw new Error(responseError(payload, 'Could not load visual comparisons.'));
+      const visualState = payload.state || {};
+      const confirmedAt = Number(visualState.automatic_enabled_at || 0);
+      const progress = `${payload.queue?.signatures_ready || 0}/${payload.queue?.signatures_total || 0} frame signatures ready · ${payload.queue?.signatures_pending || 0} queued`;
+      setText(status, confirmedAt
+        ? `Automatic merging is active. ${payload.queue?.confirmed || 0} confirmed · ${payload.queue?.review || 0} need review. ${progress}.`
+        : `Automatic merging will activate on the next reconciliation run. ${payload.queue?.confirmed || 0} confirmed · ${payload.queue?.review || 0} need review · ${payload.queue?.queued || 0} comparisons queued. ${progress}.`);
+      host.replaceChildren();
+      for (const item of payload.items || []) {
+        const card = create('article', 'duplicate-candidate-card');
+        const heading = create('h3', '', `${item.state}: ${item.left_title || item.left_id} ↔ ${item.right_title || item.right_id}`);
+        card.append(heading);
+        const left = { id: item.left_id, title: item.left_title || item.left_id };
+        const right = { id: item.right_id, title: item.right_title || item.right_id };
+        const actions = create('div', 'visual-comparison-actions');
+        for (const [side, video, label] of [['left', left, 'Left item'], ['right', right, 'Right item']]) {
+          const details = create('button', 'button button-quiet', `Open ${label} details`);
+          details.type = 'button';
+          details.addEventListener('click', () => openSideDetail(video.id));
+          actions.append(details);
+          const keep = create('button', 'button button-primary', `Keep ${label.toLowerCase()} & hide other`);
+          keep.type = 'button';
+          keep.addEventListener('click', () => previewDuplicate({ left, right }, side, keep));
+          actions.append(keep);
+        }
+        card.append(actions);
+        appendTelegramId(card, left);
+        appendTelegramId(card, right);
+        const feedback = create('p', 'duplicate-action-feedback');
+        feedback.hidden = true;
+        feedback.setAttribute('role', 'status');
+        card.append(feedback);
+        const sheet = document.createElement('img');
+        sheet.className = 'visual-comparison-sheet';
+        sheet.alt = `25-frame comparison: ${item.left_title || item.left_id} and ${item.right_title || item.right_id}`;
+        sheet.loading = 'lazy';
+        sheet.src = `${V2_API}/duplicates/visual/${encodeURIComponent(item.id)}/sheet`;
+        sheet.addEventListener('error', () => sheet.remove(), { once: true });
+        card.append(sheet);
+        card.append(create('p', 'detail-muted', `${Number(item.left_duration || 0).toFixed(1)} s · ${Number(item.right_duration || 0).toFixed(1)} s`));
+        const evidence = item.evidence || {};
+        const strictMatches = Number(evidence.strict_matches ?? evidence.matches?.filter(match => match.match).length) || 0;
+        const looseMatches = Number(evidence.loose_matches ?? evidence.matches?.filter(match => match.loose).length) || 0;
+        const informativeFrames = Number(evidence.informative_frames) || 0;
+        const medianSsim = Number(evidence.median_ssim);
+        const offset = Number(evidence.offset_fit?.intercept);
+        const residual = Number(evidence.offset_fit?.max_residual_seconds);
+        const metrics = [`${strictMatches}/${informativeFrames} strict matches`, `${looseMatches} loose`];
+        if (Number.isFinite(medianSsim) && medianSsim > 0) metrics.push(`median SSIM ${medianSsim.toFixed(3)}`);
+        if (Number.isFinite(offset)) metrics.push(`offset ${offset >= 0 ? '+' : ''}${offset.toFixed(2)} s`);
+        if (Number.isFinite(residual) && residual < 90) metrics.push(`offset residual ${residual.toFixed(2)} s`);
+        card.append(create('p', 'detail-muted', metrics.join(' · ')));
+        if (evidence.sections) card.append(create('p', 'detail-muted', `Timeline coverage: ${Object.entries(evidence.sections).filter(([, found]) => found).map(([key]) => key).join(', ') || 'none'}`));
+        if (item.state === 'review' || item.state === 'inconclusive') {
+          const button = create('button', 'button button-quiet', 'Re-run visual comparison');
+          button.type = 'button';
+          button.addEventListener('click', async () => {
+            button.disabled = true;
+            try {
+              const result = await postJson(`${V2_API}/duplicates/visual/verify`, { left_id: item.left_id, right_id: item.right_id });
+              if (!result?.ok) throw new Error(responseError(result, 'Could not queue comparison.'));
+              announce('Visual comparison queued.');
+              setTimeout(loadVisualDuplicateResults, 1500);
+            } catch (error) { announce(error.message); }
+            finally { button.disabled = false; }
+          });
+          card.append(button);
+        }
+        host.append(card);
+      }
+      if (!payload.items?.length) host.append(create('p', 'detail-muted', 'No visual comparisons are ready yet. Signatures and candidate checks run in the background.'));
+    } catch (error) { setText(status, error.message); }
+  }
   function appendDuplicateFingerprints(host, video) {
     const hashes = create('p', 'duplicate-fingerprints');
     hashes.append(document.createTextNode('OSHASH: '));
@@ -2159,10 +2331,12 @@
           item.append(artwork, create('span', 'status-pill pill-neutral', label),
             create('h3', '', video?.title || 'Untitled'),
             create('p', '', `${video?.provider || 'Unknown source'} · ${video?.duration ? `${video.duration}s` : 'Duration unknown'}`));
+          appendTelegramId(item, video);
           if (video?.studio) item.append(create('p', '', `Studio: ${video.studio}`));
           if (Array.isArray(video?.performers) && video.performers.length) item.append(create('p', '', `Cast: ${video.performers.join(', ')}`));
           appendDuplicateFingerprints(item, video);
-          const open = create('a', 'text-link', 'Open item details →'); open.href = `#film/${encodeURIComponent(video?.id || '')}`; item.append(open);
+          const open = create('button', 'button button-quiet duplicate-open-details', 'Open item details →');
+          open.type = 'button'; open.disabled = !video?.id; open.addEventListener('click', () => openSideDetail(video?.id)); item.append(open);
           compare.append(item);
         }
         card.append(compare);
@@ -2190,10 +2364,12 @@
         item.append(artwork);
         const title = create('h3', '', video?.title || 'Untitled');
         item.append(title, create('p', '', `${video?.provider || 'Unknown source'} · ${video?.duration ? `${video.duration}s` : 'Duration unknown'}`));
+        appendTelegramId(item, video);
         if (video?.studio) item.append(create('p', '', `Studio: ${video.studio}`));
         if (Array.isArray(video?.performers) && video.performers.length) item.append(create('p', '', `Cast: ${video.performers.join(', ')}`));
         appendDuplicateFingerprints(item, video);
-        const open = create('a', 'text-link', 'Open item details →'); open.href = `#film/${encodeURIComponent(video?.id || '')}`; item.append(open);
+        const open = create('button', 'button button-quiet duplicate-open-details', 'Open item details →');
+        open.type = 'button'; open.disabled = !video?.id; open.addEventListener('click', () => openSideDetail(video?.id)); item.append(open);
         const keep = create('button', 'button button-quiet', 'Keep & hide other'); keep.type = 'button'; keep.addEventListener('click', () => previewDuplicate(pair, side, keep)); item.append(keep);
         compare.append(item);
       }
@@ -2637,9 +2813,9 @@
     state.duplicatePending = pending;
     const route = state.route;
     const sequence = beginOperationRequest();
-    const card = trigger?.closest('.duplicate-candidate');
+    const card = trigger?.closest('.duplicate-candidate, .duplicate-candidate-card');
     const feedback = card?.querySelector('.duplicate-action-feedback');
-    const actionButtons = $('#duplicateRows').querySelectorAll('button');
+    const actionButtons = card?.querySelectorAll('button') || [];
     actionButtons.forEach(button => { button.disabled = true; });
     if (trigger) trigger.textContent = 'Queuing…';
     if (feedback) {
@@ -2670,6 +2846,7 @@
       }
       announce(message);
       loadDuplicateCandidates({ refresh: true });
+      loadVisualDuplicateResults();
     } catch (error) {
       if (operationRequestIsCurrent(sequence, route) && state.duplicatePending === pending) {
         if (feedback) {
@@ -2753,6 +2930,7 @@
     $('#issueKind').addEventListener('change', changeIssueFilters);
     $('#issuesLoadMore').addEventListener('click', () => loadIssues({ append: true }));
     $('#duplicateRefresh').addEventListener('click', () => loadDuplicateCandidates({ refresh: true }));
+    $('#visualDuplicateRefresh').addEventListener('click', () => loadVisualDuplicateResults());
     $('#autoMergeExact').addEventListener('click', previewAutoMergeExact);
     $('#duplicateCategory').addEventListener('change', () => { state.duplicateOffset = 0; loadDuplicateCandidates({ refresh: true }); });
     $('#duplicatePrev').addEventListener('click', () => { state.duplicateOffset = Math.max(0, state.duplicateOffset - DUPLICATE_PAGE_SIZE); loadDuplicateCandidates(); });
@@ -2886,6 +3064,9 @@
   });
   state.headerStatusTimer = setInterval(loadHeaderStatus, 15_000);
   state.headerSyncTimer = setInterval(loadHeaderSyncStatus, 60_000);
+  state.visualResultsTimer = setInterval(() => {
+    if (state.route === 'organize' && !$('#organizeDuplicatesPane').hidden) loadVisualDuplicateResults();
+  }, 30_000);
   setupTheme(); setupEvents();
   // Feature scripts register for adminv2:navigate after this router script.
   // Wait for DOMContentLoaded (all defer scripts have run) before the initial
