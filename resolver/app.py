@@ -144,14 +144,22 @@ api = APIRouter(prefix="/admin")
 api.include_router(catalog_api_router)
 
 
-def _provider_health() -> dict:
-    """Provider part of health (Telegram-only)."""
+def _process_health() -> dict:
+    """Liveness state built from process memory only; performs no I/O."""
     return {
         "status": "ok",
         "version": APP_VERSION,
         "providers": list(list_providers().keys()),
-        "cache_entries": len(cache),
     }
+
+
+def _provider_health() -> dict:
+    """Provider health including the persisted stream-cache size.
+
+    ``len(cache)`` opens a PostgreSQL connection when the persistent cache is
+    enabled, so event-loop callers run this through ``asyncio.to_thread``.
+    """
+    return {**_process_health(), "cache_entries": len(cache)}
 
 
 def _admin_extra():
@@ -265,13 +273,13 @@ async def _safe_proxy_stream(client, url: str, *, headers: dict, timeout: "float
 
 @api.get("/health")
 async def health_check():
-    return _provider_health()
+    return await asyncio.to_thread(_provider_health)
 
 
 @api.get("/health/live")
 async def health_liveness():
     """Process liveness; deliberately independent of the database."""
-    return _provider_health()
+    return _process_health()
 
 
 def _check_database_ready() -> None:
@@ -289,7 +297,7 @@ async def health_readiness():
         await asyncio.to_thread(_check_database_ready)
     except Exception:
         return JSONResponse({"status": "not_ready", "database": "unavailable"}, status_code=503)
-    return {**_provider_health(), "database": "ok"}
+    return {**(await asyncio.to_thread(_provider_health)), "database": "ok"}
 
 
 @app.get("/metrics", include_in_schema=False)

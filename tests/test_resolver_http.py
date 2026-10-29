@@ -325,6 +325,8 @@ class FakeConnection:
         self.error = error
         self.statements = []
         self.closed = False
+        self.commit_count = 0
+        self.rollback_count = 0
 
     def execute(self, sql, params=None):
         statement = " ".join(sql.split())
@@ -335,6 +337,22 @@ class FakeConnection:
             if needle in statement:
                 return Cursor(rows)
         return Cursor([])
+
+    def commit(self):
+        self.commit_count += 1
+
+    def rollback(self):
+        self.rollback_count += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, _exc, _tb):
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
+        return False
 
     def close(self):
         self.closed = True
@@ -507,6 +525,21 @@ class ResolverHarness(unittest.TestCase):
     def use_cache(self, module, **kwargs):
         module.cache = FakeCache(**kwargs)
         return module.cache
+
+    def use_persistent_cache(self, module, *, entries=7):
+        """Install the real PostgreSQL-backed cache, which probes the server.
+
+        ``len(cache)`` opens a connection while the persistent store is live, so
+        a health route that touches it cannot hide behind a stubbed cache.
+        """
+        stream_cache = sys.modules["stream_cache"]
+        database = FakeDb(answers=[("count(*) FROM stream_cache", [(entries,)])])
+        self.stack.enter_context(patch.object(stream_cache, "db", database))
+        cache = stream_cache.PersistentLRUCache(db_url="postgresql://hub.invalid/adulthub")
+        self.assertTrue(cache._pg_ok, "the test cache must stay database-backed")
+        database.urls.clear()
+        module.cache = cache
+        return database
 
     def use_providers(self, module, **by_name):
         registry = dict(by_name)
@@ -762,13 +795,30 @@ class TestHealthEndpoints(ResolverHarness):
 
     def test_liveness_never_opens_the_database(self):
         module = self.load()
-        self.use_cache(module)
+        cache_database = self.use_persistent_cache(module)
         self.use_database(module, error=RuntimeError("database is down"))
 
         response = self.get(module, "/admin/health/live")
 
+        body = response.json()
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "ok")
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(cache_database.urls, [])
+        self.assertNotIn("cache_entries", body)
+
+    def test_the_persisted_cache_size_is_still_reported_elsewhere(self):
+        module = self.load()
+        cache_database = self.use_persistent_cache(module, entries=7)
+        self.use_database(module, answers=[("SELECT 1", [(1,)])])
+        self.use_admin(module)
+
+        health = self.get(module, "/admin/health").json()
+        ready = self.get(module, "/admin/health/ready").json()
+
+        self.assertEqual(health["cache_entries"], 7)
+        self.assertEqual(ready["cache_entries"], 7)
+        self.assertEqual(ready["database"], "ok")
+        self.assertEqual(len(cache_database.urls), 2)
 
     def test_readiness_checks_the_shared_catalog(self):
         module = self.load()
