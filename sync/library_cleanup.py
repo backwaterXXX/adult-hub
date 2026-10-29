@@ -2,9 +2,20 @@
 
 from common import db
 import time as _time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
+
+# Destructive upkeep removes catalog rows for material that is already gone, so
+# a replaced or half-mounted media volume is indistinguishable from a healthy
+# source that simply lost most of its files. A pass may therefore delete at most
+# CLEANUP_LOSS_FRACTION_LIMIT of a source's entries, but never fewer than
+# CLEANUP_LOSS_MIN_ENTRIES: small sources legitimately churn away completely,
+# while a real library losing a quarter of its registrations is an environment
+# fault that has to stop and wait for the operator.
+CLEANUP_LOSS_FRACTION_LIMIT = 0.25
+CLEANUP_LOSS_MIN_ENTRIES = 10
 
 
 def _media_root_is_safe_for_cleanup(media_dir: Path, conn: db.Connection,
@@ -14,21 +25,48 @@ def _media_root_is_safe_for_cleanup(media_dir: Path, conn: db.Connection,
         logger.warning("Skipping library cleanup: media directory is unavailable: %s", media_dir)
         return False
     try:
-        has_catalog_files = conn.execute(
-            "SELECT 1 FROM synced_files LIMIT 1"
-        ).fetchone() is not None
-        has_media_entries = next(media_dir.iterdir(), None) is not None
+        registered_files = conn.execute(
+            "SELECT count(*) FROM synced_files"
+        ).fetchone()[0]
+        # A single unrelated file (a lock, a leftover note) must not be enough to
+        # convince the guard that this directory really is the indexed library.
+        has_stream_files = any(entry.name.endswith(".strm") for entry in media_dir.iterdir())
     except Exception as exc:
         logger.warning("Skipping library cleanup: cannot validate media directory %s: %s",
                        media_dir, exc)
         return False
-    if has_catalog_files and not has_media_entries:
+    if registered_files and not has_stream_files:
         logger.warning(
-            "Skipping library cleanup: media directory is empty but the catalog has indexed files: %s",
-            media_dir,
+            "Skipping library cleanup: %s holds no stream files while the catalog "
+            "registers %s of them: the volume is missing or was replaced",
+            media_dir, registered_files,
         )
         return False
     return True
+
+
+def _loss_limit(population: int) -> int:
+    return max(CLEANUP_LOSS_MIN_ENTRIES, int(population * CLEANUP_LOSS_FRACTION_LIMIT))
+
+
+def _sources_blocked_by_scale(planned: Dict[str, int], population: Dict[str, int],
+                             what: str, logger: Any) -> Set[str]:
+    """Return sources whose deletion plan is too large to be trusted."""
+    blocked = set()
+    for source, count in sorted(planned.items()):
+        total = population.get(source, 0)
+        limit = _loss_limit(total)
+        if count > limit:
+            logger.warning(
+                "Skipping %s for source '%s': the pass would remove %s of %s "
+                "catalogued entries, above the guard limit of %s. Treating that as "
+                "a missing or replaced media volume, or a source that stopped "
+                "listing its items. Entries and files are kept, so stale rows "
+                "survive until the source or the volume is repaired.",
+                what, source, count, total, limit,
+            )
+            blocked.add(source)
+    return blocked
 
 
 @dataclass(frozen=True)
@@ -54,7 +92,10 @@ def cleanup_orphaned_records(media_dir: Path, conn: db.Connection,
             WHERE q.video_id=sf.video_id AND q.status='quarantined'
         )""")
     missing = []
+    entries_by_source: Dict[str, int] = {}
     for file_path_str, video_id in cur.fetchall():
+        source = video_id.split(":", 1)[0]
+        entries_by_source[source] = entries_by_source.get(source, 0) + 1
         try:
             actual_path = services.resolve_media_path(file_path_str, media_dir)
         except ValueError as exc:
@@ -62,20 +103,29 @@ def cleanup_orphaned_records(media_dir: Path, conn: db.Connection,
             continue
         if not actual_path.exists() and services.is_cleanup_allowed(
                 video_id, providers_succeeded=providers_succeeded):
-            missing.append((file_path_str, video_id))
+            missing.append((file_path_str, video_id, source))
 
-    if missing:
-        services.logger.info(
-            f"Removing {len(missing)} missing file records from database..."
-        )
-        with conn:
-            for file_path_str, video_id in missing:
-                conn.execute("DELETE FROM synced_files WHERE file_path = %s", (file_path_str,))
-                count = conn.execute(
-                    "SELECT count(*) FROM synced_files WHERE video_id = %s", (video_id,)
-                ).fetchone()[0]
-                if count == 0:
-                    conn.execute("DELETE FROM videos WHERE id = %s", (video_id,))
+    if not missing:
+        return
+
+    planned = dict(Counter(source for _, _, source in missing))
+    blocked = _sources_blocked_by_scale(planned, entries_by_source,
+                                        "orphaned-entry cleanup", services.logger)
+    survivors = [item for item in missing if item[2] not in blocked]
+    if not survivors:
+        return
+
+    services.logger.info(
+        f"Removing {len(survivors)} missing file records from database..."
+    )
+    with conn:
+        for file_path_str, video_id, _source in survivors:
+            conn.execute("DELETE FROM synced_files WHERE file_path = %s", (file_path_str,))
+            count = conn.execute(
+                "SELECT count(*) FROM synced_files WHERE video_id = %s", (video_id,)
+            ).fetchone()[0]
+            if count == 0:
+                conn.execute("DELETE FROM videos WHERE id = %s", (video_id,))
 
 
 def cleanup_retention(conn: db.Connection, media_dir: Path, retention_days: int,
@@ -98,10 +148,18 @@ def cleanup_retention(conn: db.Connection, media_dir: Path, retention_days: int,
     expired = []
     for vid_id, provider, title in candidates:
         if services.is_cleanup_allowed(vid_id, provider, providers_succeeded):
-            expired.append((vid_id, title))
+            expired.append((vid_id, title, provider))
 
     if not expired:
         services.logger.info("Retention check: no eligible non-Telegram videos expired within %s days.", retention_days)
+        return
+
+    population = {row[0]: row[1] for row in conn.execute(
+        "SELECT provider, count(*) FROM videos GROUP BY provider").fetchall()}
+    blocked = _sources_blocked_by_scale(dict(Counter(p for _, _, p in expired)),
+                                        population, "retention", services.logger)
+    expired = [item for item in expired if item[2] not in blocked]
+    if not expired:
         return
 
     services.logger.info(
@@ -109,7 +167,7 @@ def cleanup_retention(conn: db.Connection, media_dir: Path, retention_days: int,
     )
     # Per-item transactions: a DB error must not roll back deletions that
     # already committed, leaving catalog rows pointing at deleted files.
-    for vid_id, title in expired:
+    for vid_id, title, _provider in expired:
         f_cur = conn.execute(
             "SELECT file_path FROM synced_files WHERE video_id = %s", (vid_id,)
         )
