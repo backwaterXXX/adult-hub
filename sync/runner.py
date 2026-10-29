@@ -354,7 +354,13 @@ def run_full_sync(source_filter=None, sync_mode="scheduled"):
         if exit_code == 0:
             success = True
         elif interrupted:
-            LOGGER.info(f"[sync-daemon] Sync child stopped at its shutdown checkpoint (exit {exit_code}).")
+            if exit_code < 0:
+                LOGGER.warning(
+                    f"[sync-daemon] Sync child was killed by signal {-exit_code} instead of "
+                    f"reaching its shutdown checkpoint within {SHUTDOWN_GRACE_SECONDS}s."
+                )
+            else:
+                LOGGER.info(f"[sync-daemon] Sync child stopped during shutdown (exit {exit_code}).")
         elif consecutive_errors < 3:
             LOGGER.warning(f"[sync-daemon] Sync exited with code {exit_code}")
     except Exception as e:

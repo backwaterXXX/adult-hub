@@ -940,8 +940,32 @@ class TestFullSync(RunnerHarness):
         self.assertEqual(child.terminated, 1)
         self.assertEqual(child.wait_calls, [10, None])
         self.assertEqual(status.kwargs(1), {"running": False, "exit_code": 1, "success": False})
-        self.assertTrue(self.logs.has("Sync child stopped at its shutdown checkpoint (exit 1).", "info"))
+        self.assertTrue(self.logs.has("Sync child stopped during shutdown (exit 1).", "info"))
         self.assertEqual(self.logs.text("warning"), [], "a pass cut short is not reported as a crash")
+
+    def test_a_child_that_needs_to_be_forced_is_reported_as_not_drained(self):
+        module = self.load(shutdown_grace=10)
+        self.children(FakeProcess(returncode=-signal.SIGKILL, alive_polls=2))
+        self.record("update_sync_status")
+        module.stop_event.set()
+
+        self.assertEqual(module.run_full_sync(), (False, -signal.SIGKILL))
+
+        self.assertTrue(self.logs.has(
+            "Sync child was killed by signal 9 instead of reaching its shutdown checkpoint within 10s.",
+            "warning"))
+
+    def test_a_child_terminated_by_someone_else_is_reported_as_not_drained(self):
+        module = self.load(shutdown_grace=10)
+        self.children(FakeProcess(returncode=-signal.SIGTERM, alive_polls=2))
+        self.record("update_sync_status")
+        module.stop_event.set()
+
+        module.run_full_sync()
+
+        self.assertTrue(self.logs.has(
+            "Sync child was killed by signal 15 instead of reaching its shutdown checkpoint",
+            "warning"))
 
     def test_a_child_that_drained_to_a_clean_exit_is_a_successful_sync(self):
         module = self.load()
