@@ -1045,6 +1045,33 @@ class TestShutdownBetweenChannels(SyncPassHarness):
         self.assertEqual(gate, {"telegram:chan-one"})
         self.assertIs(self.sink("cleanup_retention").args()[3], gate)
 
+    def test_no_enrichment_stage_starts_once_the_stop_is_requested(self):
+        self.stop_after_scans(1)
+
+        self.sync()
+
+        for stage in ("metadata_scenes", "performer_title_backfill", "metadata_pbc",
+                      "metadata_tpdb", "metadata_stashdb", "jellyfin_metadata_reconciliation",
+                      "jellyfin_people", "jellyfin_titles"):
+            with self.subTest(stage=stage):
+                self.assertTrue(self.core.logger.has(
+                    f"skipping the {stage} stage until the next pass", "warning"))
+        for sink in ("backfill_scenes", "backfill_performers_from_titles", "backfill_pbc",
+                     "backfill_tpdb", "backfill_stashdb", "sync_jellyfin_telegram_metadata",
+                     "sync_jellyfin_people", "sync_jellyfin_titles"):
+            with self.subTest(operation=sink):
+                self.assertFalse(self.sink(sink).called)
+
+    def test_the_interrupted_pass_still_finishes_the_work_it_cannot_resume(self):
+        self.stop_after_scans(1)
+
+        self.sync()
+
+        self.assertTrue(self.sink("trigger_jellyfin_refresh").called,
+                        "files written by this pass must become visible")
+        self.assertTrue(self.sink("cleanup_orphaned_records").called)
+        self.assertTrue(self.sink("cleanup_retention").called)
+
 
 class TestShutdownInTheEnvironmentChannelLoop(SyncPassHarness):
     """The unmanaged-config loop walks TELEGRAM_CHANNELS and must honour the same stop."""

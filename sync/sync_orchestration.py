@@ -20,7 +20,21 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         "http_hosts": {},
     }
 
+    def skip_stage(name: str) -> bool:
+        """True once a shutdown is pending: the stage waits for the next pass.
+
+        Every enrichment and backfill stage selects its work again from scratch, so
+        skipping one costs nothing but delay. Not skipping is what made a stop wait
+        for a single stage longer than the container's grace period and end in SIGKILL.
+        """
+        if not _core.stop_requested():
+            return False
+        _core.logger.warning("Shutdown requested; skipping the %s stage until the next pass.", name)
+        return True
+
     def run_timed_stage(name: str, operation):
+        if skip_stage(name):
+            return None
         started = _core.time.monotonic()
         failed = False
         try:
@@ -266,17 +280,19 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
     _core.trigger_jellyfin_refresh()
 
     # Publish structured StashDB details to existing Jellyfin person pages.
-    try:
-        from jellyfin_people import sync_jellyfin_people
-        sync_jellyfin_people(
-            conn, _core.JELLYFIN_URL, _core.JELLYFIN_API_KEY,
-            limit=_core.JELLYFIN_PEOPLE_PER_RUN,
-        )
-    except Exception as e:
-        _core.logger.warning(f"Jellyfin person metadata pass failed: {e}")
+    if not skip_stage("jellyfin_people"):
+        try:
+            from jellyfin_people import sync_jellyfin_people
+            sync_jellyfin_people(
+                conn, _core.JELLYFIN_URL, _core.JELLYFIN_API_KEY,
+                limit=_core.JELLYFIN_PEOPLE_PER_RUN,
+            )
+        except Exception as e:
+            _core.logger.warning(f"Jellyfin person metadata pass failed: {e}")
 
     # 11. Sync display titles through Jellyfin's supported item API.
-    _core.sync_jellyfin_titles()
+    if not skip_stage("jellyfin_titles"):
+        _core.sync_jellyfin_titles()
     expected_sources = set()
     if _core.CONFIG:
         for source in _core.CONFIG.get_enabled_sources():
