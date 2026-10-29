@@ -84,7 +84,6 @@ const context = vm.createContext({
   operationRequestIsCurrent: (sequence, route = state.route) => sequence === state.operationRequestSeq && route === state.route,
   create: (_tag, _className, text) => ({ textContent: text, href: '' }),
   announce: () => {},
-  loadVisualDuplicateResults: () => {},
   window: {
     AdminV2: {
       postJson: async (url, body) => {
@@ -96,7 +95,14 @@ const context = vm.createContext({
     },
   },
 });
-vm.runInContext(`${source.slice(start, end)}\n${source.slice(actionStart, actionEnd)}\nglobalThis.loadDuplicateCandidates = loadDuplicateCandidates;\nglobalThis.previewDuplicate = previewDuplicate;\nglobalThis.dismissDuplicateSuggestion = dismissDuplicateSuggestion;`, context);
+vm.runInContext(`${source.slice(start, end)}\n${source.slice(actionStart, actionEnd)}\nglobalThis.loadDuplicateCandidates = loadDuplicateCandidates;\nglobalThis.loadVisualDuplicateResults = loadVisualDuplicateResults;\nglobalThis.previewDuplicate = previewDuplicate;\nglobalThis.dismissDuplicateSuggestion = dismissDuplicateSuggestion;`, context);
+
+let visualRefreshes = 0;
+const origLoadVisual = context.loadVisualDuplicateResults;
+context.loadVisualDuplicateResults = (...args) => {
+  visualRefreshes++;
+  return origLoadVisual(...args);
+};
 
 (async () => {
   await context.loadDuplicateCandidates();
@@ -212,9 +218,16 @@ vm.runInContext(`${source.slice(start, end)}\n${source.slice(actionStart, action
 
   state.duplicateOffset = 50;
   const dismissButton = { isConnected: true, disabled: false };
-  const dismissFeedback = { hidden: true, className: '', textContent: '' };
+  const dismissFeedback = { hidden: true, className: '', textContent: '', appended: [], append(node) { this.appended.push(node); } };
+  const initialVisualRefreshes = visualRefreshes;
   await context.dismissDuplicateSuggestion({ left: { id: 'v1' }, right: { id: 'v2' } }, dismissButton, dismissFeedback);
   assert.equal(state.duplicateOffset, 50, 'dismissing/rejecting a duplicate on page 2+ must preserve current page offset');
+  assert.equal(visualRefreshes, initialVisualRefreshes + 2, 'dismissing duplicate suggestion must refresh visual duplicate results');
+  assert.equal(dismissButton.disabled, true, 'successful duplicate dismissal keeps button disabled to avoid duplicate execution');
+
+  context.window.AdminV2.postJson = async () => { throw new Error('network down'); };
+  await context.dismissDuplicateSuggestion({ left: { id: 'v1' }, right: { id: 'v2' } }, dismissButton, dismissFeedback);
+  assert.equal(dismissButton.disabled, false, 'failed duplicate dismissal re-enables button for retry');
 
   process.stdout.write('PASS: duplicate results keep 25-card pages while reusing 200-result scan batches\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

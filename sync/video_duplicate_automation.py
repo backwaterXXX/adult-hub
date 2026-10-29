@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import re
-
 from common import db
+from common.duplicate_evidence import extract_part_identity
 
 RULES_VERSION = 11
 PHASH_ALGORITHM_VERSION = "stash-phash-689a6b400625d6da2afb58a7f908c88bcdb6f8ab-v2"
@@ -27,14 +26,8 @@ def _as_json(value):
     return value if isinstance(value, dict) else {}
 
 
-def _part_identity(row: dict) -> tuple[bool, int | None]:
-    split_source = str(row.get("scene_match_source") or "").casefold().endswith(
-        "split_title_duration_v1")
-    text = " ".join(str(row.get(key) or "") for key in
-                    ("source_filename", "source_text", "title"))
-    marker = re.search(r"(?i)(?<![A-Za-z0-9])(?:(?:vol(?:ume)?\.?|part|pt\.?|ep(?:isode)?\.?|sc(?:ene)?\.?|ch(?:apter)?\.?|cd)[\s_.-]*(\d{1,5})|s[\s_.-]*(\d{1,2}))(?!\d)", text)
-    part = int(marker.group(1) or marker.group(2)) if marker else None
-    return split_source or part is not None, part
+def _part_identity(row: dict) -> tuple[bool, int | tuple[tuple[str, int], ...] | None]:
+    return extract_part_identity(row)
 
 
 def _duration_matches(left: dict, right: dict) -> bool:
@@ -256,6 +249,9 @@ def reconcile(db_url: str | None, *, limit: int = MAX_AUTO_LOSERS,
                 continue
             keeper_split, keeper_part = _part_identity(keeper)
             loser_split, loser_part = _part_identity(loser)
+            if (keeper_split or loser_split) and (not keeper_part or keeper_part != loser_part):
+                skipped += 1
+                continue
             from common.duplicate_evidence import pair_evidence
             evidence_conn = db.connect(db_url)
             try:

@@ -6,6 +6,7 @@ import re
 from common import db
 from collections import defaultdict
 from urllib.parse import urlsplit
+from common.duplicate_evidence import extract_part_identity
 from common.job_queue import enqueue_job, retry_job  # noqa: F401 - compatibility export used by Admin routes
 
 from video_duplicate_merge_history import (
@@ -361,14 +362,7 @@ def _collect_duplicate_candidates(db_url: str | None, category: str = "") -> tup
         hash_rows = [i for i, row in enumerate(rows)
                      if phashes.get(str(row.get("id") or ""))]
 
-        def part_identity(row: dict) -> tuple[bool, int | None]:
-            split_source = str(row.get("scene_match_source") or "").casefold().endswith(
-                "split_title_duration_v1")
-            text = " ".join(str(row.get(key) or "") for key in
-                            ("source_filename", "source_text", "title"))
-            match = re.search(r"(?i)(?<![A-Za-z0-9])(?:(?:vol(?:ume)?\.?|part|pt\.?|ep(?:isode)?\.?|sc(?:ene)?\.?|ch(?:apter)?\.?|cd)[\s_.-]*(\d{1,5})|s[\s_.-]*(\d{1,2}))(?!\d)", text)
-            number = int(match.group(1) or match.group(2)) if match else None
-            return split_source or number is not None, number
+        part_identity = extract_part_identity
 
         near_count = 0
         for offset, i in enumerate(hash_rows):

@@ -2872,11 +2872,13 @@
     state.duplicatePending = pending;
     button.disabled = true;
     feedback.hidden = true;
+    let succeeded = false;
     try {
       const result = await window.AdminV2.postJson(`${V2_API}/duplicates/actions`, {
         action: 'dismiss', left_id: pair.left.id, right_id: pair.right.id,
       });
       if (state.duplicatePending !== pending) return;
+      succeeded = true;
       const jobId = typeof result.job_id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(result.job_id) ? result.job_id : '';
       const message = `Decision queued: different videos.${jobId ? ` Task ${jobId}.` : ''}`;
       feedback.hidden = false;
@@ -2885,10 +2887,11 @@
       if (jobId) {
         const taskLink = create('a', 'text-link', ' Open task');
         taskLink.href = `/admin/v2/?job_id=${encodeURIComponent(jobId)}#jobs`;
-        feedback.append(taskLink);
+        if (typeof feedback?.append === 'function') feedback.append(taskLink);
       }
       announce(message);
       loadDuplicateCandidates({ refresh: true });
+      loadVisualDuplicateResults();
     } catch (error) {
       if (state.duplicatePending !== pending) return;
       feedback.hidden = false;
@@ -2897,7 +2900,7 @@
       announce(`Could not dismiss suggestion. ${error.message}`);
     } finally {
       if (state.duplicatePending === pending) state.duplicatePending = null;
-      if (button.isConnected) button.disabled = false;
+      if (!succeeded && button.isConnected) button.disabled = false;
     }
   }
   function toggleTheme() {

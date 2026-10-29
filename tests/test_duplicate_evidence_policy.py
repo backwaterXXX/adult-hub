@@ -31,6 +31,10 @@ class EvidencePolicyTest(unittest.TestCase):
         self.assertIsNone(pair_evidence(Conn(('0', '0')), 'a', 'b'))
         self.assertIsNone(pair_evidence(Conn(('0000000000000000',)*2, dismissed=True), 'a', 'b'))
         self.assertIsNone(pair_evidence(Conn(('0000000000000000',)*2, parts=('part 1','part 2')), 'a', 'b'))
+        self.assertIsNone(pair_evidence(Conn(('0000000000000000',)*2, parts=('Series Vol 2 Part 1', 'Series Vol 2 Part 2')), 'a', 'b'))
+        self.assertIsNone(pair_evidence(Conn(('0000000000000000',)*2, parts=('Series Vol 2 Part 1', 'Series Vol 2')), 'a', 'b'))
+        self.assertIsNone(pair_evidence(Conn(('0000000000000000',)*2, parts=('Series Vol 1 Part 2', 'Series Vol 2 Part 2')), 'a', 'b'))
+        self.assertEqual(pair_evidence(Conn(('0000000000000000',)*2, parts=('Series Vol 2 Part 1', 'Series Vol 2 Part 1')), 'a', 'b')['type'], 'phash')
         self.assertEqual(pair_evidence(Conn(('', ''), oshashes=('same', 'same')), 'a', 'b')['type'], 'oshash')
 
     def test_saved_measurements_policy(self):

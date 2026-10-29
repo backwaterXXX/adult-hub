@@ -280,6 +280,10 @@ class TestAdminOperations(PgTestCase):
             )
             self.conn.execute("INSERT INTO synced_files (video_id,file_path,created_at) VALUES (%s,'Keeper.strm',12345)",
                               (keeper,))
+            self.conn.executemany(
+                "INSERT INTO video_fingerprints (video_id,algorithm,fingerprint) VALUES (%s,'OSHASH','0123456789abcdef')",
+                [(keeper,), (loser,)],
+            )
         plan = preview_exact_merge_plan(self.db_url)
         self.assertEqual(plan["outcome"], "previewed")
         self.assertEqual(plan["operation_type"], "hide_batch")

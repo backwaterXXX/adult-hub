@@ -38,6 +38,19 @@ class TestAutomaticDuplicateRules(unittest.TestCase):
                "source_filename": "Studio_scene.mp4", "title": "Same catalog title"}
         self.assertEqual(video_duplicate_automation._part_identity(row), (True, None))
 
+    def test_multi_marker_part_identity_detects_conflicts(self):
+        first = {"title": "Series Vol 2 Part 1"}
+        second = {"title": "Series Vol 2 Part 2"}
+        third = {"title": "Series Vol 2 Part 1"}
+        self.assertEqual(video_duplicate_automation._part_identity(first), (True, (('part', 1), ('vol', 2))))
+        self.assertEqual(video_duplicate_automation._part_identity(second), (True, (('part', 2), ('vol', 2))))
+        self.assertNotEqual(video_duplicate_automation._part_identity(first), video_duplicate_automation._part_identity(second))
+        self.assertEqual(video_duplicate_automation._part_identity(first), video_duplicate_automation._part_identity(third))
+
+    def test_conflicting_part_numbers_within_row_is_ambiguous(self):
+        row = {"source_filename": "Series_Part1.mp4", "title": "Series Part 2"}
+        self.assertEqual(video_duplicate_automation._part_identity(row), (True, None))
+
     def test_duration_tolerance_is_bounded(self):
         self.assertTrue(video_duplicate_automation._duration_matches(
             {"duration": 858}, {"duration": 866}))

@@ -13,11 +13,58 @@ def _source(row):
     return hashlib.sha256('\0'.join(str(row.get(k) or '') for k in ('id', 'duration', 'file_size_bytes', 'oshash')).encode()).hexdigest()
 
 
-def _part(row):
+PART_REGEX = re.compile(
+    r'(?i)(?<![A-Za-z0-9])(?:(vol(?:ume)?\.?|part|pt\.?|ep(?:isode)?\.?|sc(?:ene)?\.?|ch(?:apter)?\.?|cd)[\s_.-]*(\d{1,5})|(s)[\s_.-]*(\d{1,2}))(?!\d)'
+)
+
+
+def _normalize_marker_kind(prefix: str) -> str:
+    p = prefix.lower().rstrip('.')
+    if p in ('vol', 'volume'):
+        return 'vol'
+    if p in ('part', 'pt'):
+        return 'part'
+    if p in ('ep', 'episode'):
+        return 'ep'
+    if p in ('sc', 'scene'):
+        return 'sc'
+    if p in ('ch', 'chapter'):
+        return 'ch'
+    if p == 'cd':
+        return 'cd'
+    if p == 's':
+        return 's'
+    return p
+
+
+def extract_part_identity(row: dict) -> tuple[bool, int | tuple[tuple[str, int], ...] | None]:
+    split_source = bool(str(row.get('scene_match_source') or '').casefold().endswith('split_title_duration_v1'))
     text = ' '.join(str(row.get(k) or '') for k in ('source_filename', 'source_text', 'title'))
-    match = re.search(r'(?i)(?<![A-Za-z0-9])(?:(?:vol(?:ume)?\.?|part|pt\.?|ep(?:isode)?\.?|sc(?:ene)?\.?|ch(?:apter)?\.?|cd)[\s_.-]*(\d{1,5})|s[\s_.-]*(\d{1,2}))(?!\d)', text)
-    number = int(match.group(1) or match.group(2)) if match else None
-    return bool(number or str(row.get('scene_match_source') or '').casefold().endswith('split_title_duration_v1')), number
+    markers: dict[str, int] = {}
+    conflict = False
+    for match in PART_REGEX.finditer(text):
+        if match.group(1):
+            kind = _normalize_marker_kind(match.group(1))
+            num = int(match.group(2))
+        else:
+            kind = 's'
+            num = int(match.group(4))
+        if kind in markers and markers[kind] != num:
+            conflict = True
+            break
+        markers[kind] = num
+
+    if conflict:
+        return True, None
+    if not markers:
+        return split_source, None
+    if len(markers) == 1:
+        return True, next(iter(markers.values()))
+    return True, tuple(sorted(markers.items()))
+
+
+def _part(row):
+    return extract_part_identity(row)
 
 
 def pair_evidence(conn, left_id: str, right_id: str) -> dict | None:
