@@ -11,10 +11,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pg_helper import PgTestCase
+from common import db
 from video_persistence import (
     VideoPersistenceServices,
     _merge_video_fields,
     persist_prepared_video,
+    publication_pending_ids,
+    republish_pending_videos,
     sync_unique_video,
     flush_collected,
     write_media_files,
@@ -169,10 +172,16 @@ class TestVideoPersistence(PgTestCase):
         services.write_stream_file.assert_not_called()
         self.assertEqual(self.conn.execute("SELECT count(*) FROM videos").fetchone()[0], 0)
 
-        write_media_files(services, prepared)
+        write_media_files(services, prepared, self.conn)
         services.create_nfo_file.assert_called_once()
         services.download_image.assert_called_once()
         services.write_stream_file.assert_called_once()
+        # Registration is the last step: a file that is on disk is the file the
+        # library cleanup is allowed to reason about.
+        self.assertEqual(
+            self.conn.execute("SELECT file_path FROM synced_files").fetchall(),
+            [("testprov_v100.strm",)],
+        )
 
     def test_sync_unique_video_commit(self):
         services = self._make_services()
@@ -379,6 +388,102 @@ class TestVideoPersistence(PgTestCase):
         self.assertIn("<originaltitle>Lukayan SHOW #45</originaltitle>", xml)
         self.assertIn('<uniqueid type="stashdb" default="false">stash-uuid-1</uniqueid>', xml)
         self.assertIn("<lockdata>true</lockdata>", xml)
+
+    def _collect_one(self, video_id="testprov:v9"):
+        return {
+            video_id: {
+                "video": {"provider": "testprov", "provider_video_id": video_id.split(":")[-1],
+                          "title": "Unpublished Video", "duration": 600, "performers": ["Alice"]},
+                "genres": {"Action"},
+                "tags": {"tagA"},
+            },
+        }
+
+    def _publish_for_real(self, path, video_id):
+        path.write_text(f"http://resolver.invalid/admin/play/{video_id}/stream?mode=proxy\n",
+                        encoding="utf-8")
+        return True
+
+    def _write_nfo_from_catalog(self, video, genres, tags, path):
+        path.write_text(f"<movie><title>{video.get('title')}</title>"
+                        f"<genre>{','.join(sorted(genres))}</genre></movie>", encoding="utf-8")
+
+    def test_file_write_failure_after_the_commit_keeps_the_entry_unpublished(self):
+        """A catalog row that could not be published stays pending, not lost."""
+        services = self._make_services(
+            write_stream_file=MagicMock(side_effect=OSError("Read-only file system")),
+            create_nfo_file=self._write_nfo_from_catalog,
+        )
+        collected = self._collect_one()
+
+        with self.assertRaisesRegex(RuntimeError, "file write: OSError"):
+            flush_collected(collected=collected, conn=self.conn, media_dir=self.media_dir,
+                            source_name="TestSource", raise_on_error=True, services=services)
+
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM videos").fetchone()[0], 1,
+                         "the durable catalog row must survive the failed publication")
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM synced_files").fetchone()[0], 0,
+                         "an unpublished stream must not be registered")
+        self.assertEqual(list(self.media_dir.glob("*.strm")), [])
+        self.assertEqual(publication_pending_ids(self.conn, 10), ["testprov:v9"])
+
+    def test_republish_pending_videos_recovers_an_entry_from_an_earlier_run(self):
+        """Publication retries from the database, so a restart can still recover."""
+        broken = self._make_services(
+            write_stream_file=MagicMock(side_effect=OSError("Read-only file system")),
+            create_nfo_file=self._write_nfo_from_catalog,
+        )
+        with self.assertRaises(RuntimeError):
+            flush_collected(collected=self._collect_one(), conn=self.conn,
+                            media_dir=self.media_dir, raise_on_error=True, services=broken)
+        self.conn.close()
+        self.conn = db.connect(self.db_url)
+        self.addCleanup(self.conn.close)
+
+        recovered = self._make_services(write_stream_file=self._publish_for_real,
+                                        create_nfo_file=self._write_nfo_from_catalog)
+        result = republish_pending_videos(self.conn, self.media_dir, services=recovered)
+
+        self.assertEqual(result, {"pending": 1, "published": 1, "failed": 0})
+        self.assertEqual(
+            self.conn.execute("SELECT file_path FROM synced_files").fetchall(),
+            [("testprov_v9.strm",)],
+        )
+        self.assertEqual(publication_pending_ids(self.conn, 10), [])
+        self.assertEqual(
+            sorted(path.name for path in self.media_dir.glob("*")),
+            ["testprov_v9.nfo", "testprov_v9.strm"],
+        )
+        # The retry rebuilds metadata from the catalog row, not from memory.
+        self.assertIn("<title>Unpublished Video</title>",
+                      (self.media_dir / "testprov_v9.nfo").read_text(encoding="utf-8"))
+        self.assertIn("<genre>Action</genre>",
+                      (self.media_dir / "testprov_v9.nfo").read_text(encoding="utf-8"))
+
+    def test_republish_pending_videos_leaves_a_hidden_duplicate_alone(self):
+        """Merging a video away is a decision; a retry pass must not undo it."""
+        services = self._make_services(write_stream_file=self._publish_for_real)
+        flush_collected(collected=self._collect_one(), conn=self.conn,
+                        media_dir=self.media_dir, services=services)
+        self.conn.execute(
+            "INSERT INTO video_duplicate_decisions (loser_id,keeper_id,operation_id,state,created_at,snapshot)"
+            " VALUES (%s,%s,'op-1','active',1,'{}')", ("testprov:v9", "testprov:v1"),
+        )
+        self.conn.execute("DELETE FROM synced_files WHERE video_id = %s", ("testprov:v9",))
+        self.conn.commit()
+
+        result = republish_pending_videos(self.conn, self.media_dir, services=services)
+
+        self.assertEqual(result["published"], 0)
+        self.assertEqual(publication_pending_ids(self.conn, 10), [],
+                         "the active decision is what hides this row from the retry")
+        self.assertEqual(self.conn.execute(
+            "SELECT count(*) FROM synced_files WHERE video_id = %s", ("testprov:v9",)).fetchone()[0], 0)
+        with self.conn:
+            self.conn.execute("UPDATE video_duplicate_decisions SET state='undone' WHERE loser_id=%s",
+                              ("testprov:v9",))
+        self.assertEqual(publication_pending_ids(self.conn, 10), ["testprov:v9"],
+                         "the row is otherwise a genuine publication candidate")
 
 
 if __name__ == "__main__":

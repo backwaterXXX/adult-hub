@@ -31,6 +31,7 @@ CORE_CALLS = (
     "migrate_redundant_performers",
     "cleanup_legacy_folders",
     "cleanup_old_transcodes",
+    "republish_pending_videos",
     "safe_process_duplicate_jobs_checkpoint",
     "sync_telegram_channel_pipeline",
     "reconcile_telegram_channel",
@@ -402,13 +403,13 @@ class TestMaintenanceAheadOfTheScans(SyncPassHarness):
         self.assertEqual(order[:scanned], [
             "init_db", "sync_catalog_if_due", "_video_id_snapshot", "migrate_synced_files",
             "migrate_categories", "migrate_display_titles", "migrate_redundant_performers",
-            "cleanup_legacy_folders", "cleanup_old_transcodes",
+            "cleanup_legacy_folders", "cleanup_old_transcodes", "republish_pending_videos",
             "safe_process_duplicate_jobs_checkpoint",
         ])
         self.assertEqual(self.sink("init_db").args(), ())
         self.assertEqual(self.sink("_video_id_snapshot").args(), (CONN,))
         for name in ("migrate_synced_files", "migrate_categories", "migrate_display_titles",
-                     "migrate_redundant_performers"):
+                     "migrate_redundant_performers", "republish_pending_videos"):
             self.assertEqual(self.sink(name).args(), (CONN, MEDIA_DIR), name)
         self.assertEqual(self.sink("cleanup_legacy_folders").args(), (MEDIA_DIR,))
         self.assertEqual(self.sink("cleanup_old_transcodes").args(), ())
@@ -495,6 +496,29 @@ class TestMaintenanceAheadOfTheScans(SyncPassHarness):
         self.assertEqual(flush.call_count, 1)
         self.assertEqual(flush.args(), ({"telegram:chan-one:1": {}, "telegram:chan-two:1": {}},
                                         CONN, MEDIA_DIR, "remaining"))
+        self.assertEqual(flush.kwargs(), {"raise_on_error": True},
+                         "an unpublished entry must not count as a synced source")
+
+    def test_the_end_of_pass_flush_failure_is_reported_without_aborting_upkeep(self):
+        self.sink("sync_telegram_channel_pipeline").side_effect = self.core.collect_without_persisting
+        self.explode("flush_collected", RuntimeError("library volume full"))
+
+        self.assertTrue(self.sync())
+
+        self.assertTrue(self.core.logger.has(
+            "Final catalog flush failed: safe detail for library volume full", "error"))
+        for name in ("cleanup_orphaned_records", "cleanup_retention", "sync_jellyfin_titles"):
+            self.assertTrue(self.sink(name).called, f"{name} still runs")
+
+    def test_a_failed_publication_retry_keeps_the_pass_going(self):
+        self.explode("republish_pending_videos", OSError("library volume busy"))
+
+        self.assertTrue(self.sync())
+
+        self.assertTrue(self.core.logger.has(
+            "Could not retry pending library publications: library volume busy",
+            "warning"))
+        self.assertTrue(self.sink("sync_telegram_channel_pipeline").called, "the scans still run")
 
 
 class TestConfiguredTelegramChannels(SyncPassHarness):

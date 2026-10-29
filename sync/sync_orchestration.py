@@ -65,6 +65,14 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
     _core.migrate_redundant_performers(conn, _core.MEDIA_DIR)
     _core.cleanup_legacy_folders(_core.MEDIA_DIR)
     _core.cleanup_old_transcodes()
+    # File publication is the one step that can fail after the catalog batch
+    # commits, so entries can be durable in the database and still missing from
+    # the library - including when the process died mid-publication. Retry them
+    # before the crawlers run so this pass's Jellyfin refresh picks them up.
+    try:
+        _core.republish_pending_videos(conn, _core.MEDIA_DIR)
+    except Exception as e:
+        _core.logger.warning("Could not retry pending library publications: %s", e)
     run_duplicate_jobs_checkpoint(conn)
 
     # Dictionary: composite_id -> {"video": dict, "genres": set(), "tags": set()}
@@ -153,7 +161,14 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
             _core.logger.warning(f"Dead-stream filtering failed (keeping all): {e}")
 
     # 8. Flush any remaining videos (if any)
-    _core.flush_collected(collected, conn, _core.MEDIA_DIR, "remaining")
+    # Leftovers belong to channels whose own pipeline flush already failed, so a
+    # failure here must be reported but must not cost the pass its maintenance
+    # stages: rows that were committed stay unpublished and the retry pass above
+    # publishes them on the next run.
+    try:
+        _core.flush_collected(collected, conn, _core.MEDIA_DIR, "remaining", raise_on_error=True)
+    except Exception as e:
+        _core.logger.error("Final catalog flush failed: %s", _core._safe_error_detail(e))
     run_duplicate_jobs_checkpoint(conn, collected)
 
     # 8b. Rewrite stale .strm files to the currently configured per-provider

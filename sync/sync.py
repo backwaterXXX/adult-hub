@@ -119,6 +119,7 @@ from video_persistence import (
     persist_prepared_video as _persist_prepared_video_impl,
     sync_unique_video as _sync_unique_video_impl,
     flush_collected as _flush_collected_impl,
+    republish_pending_videos as _republish_pending_videos_impl,
 )
 from duplicate_files import (
     _write_catalog_backup, _duplicate_file_matches, _duplicate_move_file,
@@ -671,6 +672,14 @@ def flush_collected(collected: Dict[str, Dict[str, Any]], conn: db.Connection,
         source_name=source_name,
         raise_on_error=raise_on_error,
         services=_video_persistence_services(conn),
+    )
+
+
+def republish_pending_videos(conn: db.Connection, media_dir: Path,
+                             limit: int = 50) -> Dict[str, int]:
+    """Retry library publication for catalog rows whose sidecars never landed."""
+    return _republish_pending_videos_impl(
+        conn, media_dir, services=_video_persistence_services(conn), limit=limit,
     )
 
 

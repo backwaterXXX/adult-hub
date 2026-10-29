@@ -338,7 +338,11 @@ def sync_telegram_channel_pipeline(
     persist_started = monotonic()
     pending_ids = set(collected)
     try:
-        services.flush_collected(collected, conn, media_dir, f"Telegram: {studio}")
+        # A publication or persistence failure must fail the channel: it is the
+        # only signal that keeps the source out of providers_succeeded, so
+        # cleanup cannot treat the unpublished entry as an ordinary orphan.
+        services.flush_collected(collected, conn, media_dir, f"Telegram: {studio}",
+                                 raise_on_error=True)
     except Exception:
         if services.observe_stage:
             services.observe_stage("telegram_persist", monotonic() - persist_started, True)

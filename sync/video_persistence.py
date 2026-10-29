@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 import logging
 from common import db
-from common.duration import passes_minimum_video_duration
+from common.duration import (
+    MIN_VIDEO_DURATION_SECONDS,
+    passes_minimum_video_duration,
+)
 from common.performer_catalog import normalize_name
+from common.video_metadata import load_metadata_state
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -147,18 +151,31 @@ def persist_prepared_video(
         """, (comp_id, candidate, normalized, str(proposal.get("matched_text") or ""),
               str(proposal.get("source_field") or ""), str(proposal.get("reason") or ""),
               proposal.get("performer_id")))
-    conn.execute("""INSERT INTO synced_files (file_path, video_id, category, created_at)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (file_path) DO UPDATE SET
-            video_id = EXCLUDED.video_id,
-            category = EXCLUDED.category,
-            created_at = EXCLUDED.created_at""", (prepared["strm_file"].name, comp_id,
-                                 ", ".join(sorted(mapped_genres)), now))
     conn.execute("DELETE FROM video_categories WHERE video_id = %s", (comp_id,))
     for genre in mapped_genres:
         if genre and not genre.startswith("Browse"):
             conn.execute("INSERT INTO video_categories (video_id, category) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                          (comp_id, genre))
+
+
+def register_stream_file(conn: db.Connection, prepared: Dict[str, Any],
+                         time_fn: Callable[[], float] = time.time) -> None:
+    """Record a stream that is already on disk, so cleanup can track its files.
+
+    Registration happens after publication and never before: an entry whose
+    sidecars could not be written stays unregistered, which keeps
+    ``cleanup_orphaned_records`` from reading a publication failure as an
+    ordinary missing file and deleting the catalog row along with the entry.
+    """
+    conn.execute("""INSERT INTO synced_files (file_path, video_id, category, created_at)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (file_path) DO UPDATE SET
+            video_id = EXCLUDED.video_id,
+            category = EXCLUDED.category,
+            created_at = EXCLUDED.created_at""", (prepared["strm_file"].name,
+                                 prepared["comp_id"],
+                                 ", ".join(sorted(prepared.get("genres") or [])),
+                                 int(time_fn())))
 
 
 def sync_unique_video(
@@ -360,17 +377,21 @@ def sync_unique_video(
         raise
     # The catalog row is durable; publish sidecars (NFO first so the library
     # scanner sees metadata before a new stream file becomes visible).
-    write_media_files(services, prepared)
+    write_media_files(services, prepared, conn, commit=commit)
     return None
 
 
-def write_media_files(services: VideoPersistenceServices, prepared: Dict[str, Any]) -> None:
-    """Publish NFO, thumbnail, and STRM sidecars for an already-persisted video."""
+def write_media_files(services: VideoPersistenceServices, prepared: Dict[str, Any],
+                      conn: db.Connection, *, commit: bool = True) -> None:
+    """Publish NFO, thumbnail and STRM, then register the stream that exists."""
     services.create_nfo_file(prepared["video"], prepared["genres"], prepared["tags"], prepared["nfo_file"])
     thumb_url = prepared.get("thumb_url")
     if thumb_url and not prepared["jpg_file"].exists():
         services.download_image(thumb_url, prepared["jpg_file"])
     services.write_stream_file(prepared["strm_file"], prepared["comp_id"])
+    register_stream_file(conn, prepared, time_fn=services.time_fn)
+    if commit:
+        conn.commit()
 
 
 def flush_collected(
@@ -472,10 +493,13 @@ def flush_collected(
         written = 0
 
     # Publish sidecars only after the catalog batch is durable, so a rolled-back
-    # batch cannot leave unmanaged .strm/.nfo files in the library.
+    # batch cannot leave unmanaged .strm/.nfo files in the library. A failed
+    # publication leaves the entry registered as nothing at all: its catalog row
+    # survives, the library never sees a half-written item, and
+    # republish_pending_videos() retries it from the database on the next pass.
     for prepared in committed_items:
         try:
-            write_media_files(services, prepared)
+            write_media_files(services, prepared, conn)
         except Exception as e:
             errors.append(f"{prepared['comp_id']} file write: {type(e).__name__}: {e}")
             services.logger.error("Failed to publish files for %s: %s", prepared["comp_id"], e)
@@ -488,3 +512,96 @@ def flush_collected(
         services.logger.info(f"Successfully saved {written}/{count} videos{label} to {media_dir} and DB.")
     collected.clear()
     return written
+
+
+def publication_pending_ids(conn: db.Connection, limit: int) -> List[str]:
+    """Catalog rows that were persisted but never published to the library.
+
+    A ``videos`` row without a ``synced_files`` registration is only produced by
+    a failed or interrupted publication: every successful pass registers its
+    stream right after writing it. Deliberately hidden duplicates are excluded
+    so a retry can never resurrect a merged-away entry.
+    """
+    rows = conn.execute("""
+        SELECT v.id FROM videos v
+        WHERE v.duration >= %s
+          AND NOT EXISTS (SELECT 1 FROM synced_files sf WHERE sf.video_id = v.id)
+          AND NOT EXISTS (SELECT 1 FROM video_duplicate_decisions d
+                          WHERE d.loser_id = v.id AND d.state = 'active')
+        ORDER BY v.id
+        LIMIT %s""", (MIN_VIDEO_DURATION_SECONDS, max(1, int(limit)))).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def prepared_from_catalog(comp_id: str, media_dir: Path, conn: db.Connection,
+                          services: VideoPersistenceServices) -> Optional[Dict[str, Any]]:
+    """Rebuild a publication record from the catalog row for one video."""
+    state = load_metadata_state(conn, comp_id)
+    if state is None:
+        return None
+    source = state["source"]
+    if not passes_minimum_video_duration(source.get("duration")):
+        return None
+    provider, _, raw_id = str(comp_id).partition(":")
+    genres = {str(row[0]) for row in conn.execute(
+        "SELECT category FROM video_categories WHERE video_id = %s", (comp_id,)).fetchall()
+        if row[0]}
+    tags = {str(t).strip() for t in (state["metadata"].get("tags") or []) if str(t).strip()}
+    performers = services.normalize_performers(state["metadata"].get("performers") or [])
+    public_thumb_url, download_thumb_url = services.thumbnail_urls(source.get("thumbnail"))
+    base_name = services.stable_media_basename(comp_id)
+    video = {**source, **state["metadata"],
+             "id": comp_id, "_video_id": comp_id, "provider": provider,
+             "provider_video_id": raw_id,
+             "performers": performers, "thumbnail": public_thumb_url,
+             "performer_thumbs": services.load_performer_thumbs(conn, performers),
+             "dateadded": services.format_dateadded(source.get("first_seen"))}
+    return {
+        "comp_id": comp_id, "provider": provider,
+        "title": video.get("title") or comp_id, "video": video,
+        "genres": genres, "tags": tags,
+        "strm_file": media_dir / f"{base_name}.strm",
+        "nfo_file": media_dir / f"{base_name}.nfo",
+        "jpg_file": media_dir / f"{base_name}.jpg",
+        "thumb_url": download_thumb_url, "studio": source.get("studio"),
+    }
+
+
+def republish_pending_videos(
+    conn: db.Connection,
+    media_dir: Path,
+    *,
+    services: VideoPersistenceServices,
+    limit: int = 50,
+) -> Dict[str, int]:
+    """Retry sidecar publication for catalog rows still waiting on their files.
+
+    Publication is the only step that can fail after the catalog batch commits,
+    so this is the durable recovery path: it reads the pending state from the
+    database and therefore also repairs entries left by a crashed run.
+    """
+    pending = publication_pending_ids(conn, limit)
+    if not pending:
+        return {"pending": 0, "published": 0, "failed": 0}
+    media_dir.mkdir(parents=True, exist_ok=True)
+    published = 0
+    failed = 0
+    for comp_id in pending:
+        try:
+            prepared = prepared_from_catalog(comp_id, media_dir, conn, services)
+            if prepared is None:
+                continue
+            write_media_files(services, prepared, conn)
+            published += 1
+        except Exception as exc:
+            failed += 1
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            services.logger.error("Republish failed for %s: %s", comp_id, exc)
+    services.logger.info(
+        "Republished %d/%d catalog row(s) awaiting library publication (%d failed, %d still pending)",
+        published, len(pending), failed, max(0, len(pending) - published - failed),
+    )
+    return {"pending": len(pending), "published": published, "failed": failed}

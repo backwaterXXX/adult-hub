@@ -140,6 +140,31 @@ class RetentionGuardTest(PgTestCase):
         self.assertEqual(self._snapshot(), before)
         self.assertTrue(target.exists())
 
+    def test_a_row_awaiting_publication_is_not_an_orphan(self):
+        """Publication, not the catalog row, is what a synced_files entry means.
+
+        A video persisted in an earlier run whose files could not be written has
+        no registration yet, so the orphan sweep must leave it for the retry
+        pass - while an ordinary missing file is still removed.
+        """
+        sync_module.CONFIG = _mock_config(exampleweb=_extra_source("exampleweb", enabled=True))
+        pending = "exampleweb:pending1"
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, last_seen, first_seen)"
+                " VALUES (%s, 'exampleweb', %s, %s, %s)", (pending, pending, NOW, NOW))
+        keeper = self._seed_expired("exampleweb:keeper11", "exampleweb")
+        gone = self._seed_expired("exampleweb:gone12", "exampleweb")
+        gone.unlink()
+
+        sync_module.cleanup_orphaned_records(self.media, self.conn, {"exampleweb"})
+
+        remaining = {r[0] for r in self.conn.execute("SELECT id FROM videos").fetchall()}
+        self.assertIn(pending, remaining, "an unpublished entry is not a deletion candidate")
+        self.assertIn("exampleweb:keeper11", remaining)
+        self.assertNotIn("exampleweb:gone12", remaining, "a real orphan is still pruned")
+        self.assertTrue(keeper.exists())
+
     def test_d_active_and_succeeded_provider_may_be_purged(self):
         """Registered + enabled + succeeded provider: retention applies."""
         sync_module.CONFIG = _mock_config(exampleweb=_extra_source("exampleweb", enabled=True))
