@@ -199,6 +199,9 @@ class CoreDouble:
         self.JELLYFIN_URL = "http://jellyfin:8096"
         self.JELLYFIN_API_KEY = "jf-key"
         self.CONFIG = config
+        # State the pass reads at each channel boundary, not a dependency it
+        # calls for a result: a scenario flips it through shutdown_during().
+        self.stop_requested = lambda: False
         self._ACTIVE_SYNC_METRICS = None
         self.order = []
         self.stages = []
@@ -303,6 +306,21 @@ class SyncPassHarness(unittest.TestCase):
 
     def scanned_channels(self):
         return [args[0] for args in self.sink("sync_telegram_channel_pipeline").every_args()]
+
+    def stop_after_scans(self, count: int) -> None:
+        """Ask the process for a shutdown once ``count`` channels have been scanned."""
+        state = {"scanned": 0}
+        pipeline = self.sink("sync_telegram_channel_pipeline")
+        collect = pipeline.side_effect
+
+        def scan(*args, **kwargs):
+            result = collect(*args, **kwargs)
+            state["scanned"] += 1
+            if state["scanned"] >= count:
+                self.core.stop_requested = lambda: True
+            return result
+
+        pipeline.side_effect = scan
 
 
 class TestPassOpeningAndClosing(SyncPassHarness):
@@ -980,6 +998,70 @@ class TestHistorySourceRows(SyncPassHarness):
         self.assertFalse(self.sync(skip_telegram_channels=True))
 
         self.assertEqual([row["source"] for row in self.history()["sources"]], ["pctv"])
+
+
+class TestShutdownBetweenChannels(SyncPassHarness):
+    """A deploy's SIGTERM arrives mid-pass: stop at the next boundary, keep the pass consistent."""
+
+    def test_the_pass_stops_before_starting_another_channel(self):
+        self.stop_after_scans(1)
+
+        self.assertFalse(self.sync())
+
+        self.assertEqual(self.scanned_channels(), ["chan-one"])
+        self.assertTrue(self.core.logger.has(
+            "Shutdown requested before Telegram channel chan-two", "warning"))
+
+    def test_an_interrupted_pass_reports_itself_as_interrupted(self):
+        self.stop_after_scans(1)
+
+        self.sync()
+
+        history = self.history()
+        self.assertIs(history["interrupted"], True)
+        self.assertIs(history["success"], False)
+        self.assertIs(self.rows()["telegram:chan-two"]["success"], False)
+
+    def test_a_pass_that_never_saw_a_stop_is_not_marked_interrupted(self):
+        self.assertTrue(self.sync())
+
+        self.assertIs(self.history()["interrupted"], False)
+
+    def test_the_material_already_synced_still_gets_its_publication_and_upkeep(self):
+        self.stop_after_scans(1)
+
+        self.sync()
+
+        self.assertTrue(self.sink("flush_collected").called)
+        self.assertTrue(self.sink("republish_pending_videos").called)
+        self.assertEqual(self.sink("rewrite_all_stream_files").args()[2], {"telegram:chan-one"})
+
+    def test_a_channel_never_scanned_stays_out_of_the_destructive_gate(self):
+        self.stop_after_scans(1)
+
+        self.sync()
+
+        gate = self.sink("cleanup_orphaned_records").args()[2]
+        self.assertEqual(gate, {"telegram:chan-one"})
+        self.assertIs(self.sink("cleanup_retention").args()[3], gate)
+
+
+class TestShutdownInTheEnvironmentChannelLoop(SyncPassHarness):
+    """The unmanaged-config loop walks TELEGRAM_CHANNELS and must honour the same stop."""
+
+    def setUp(self):
+        super().setUp()
+        self.use_core(config=None, telegram_channels=["chan-one", "chan-two"])
+
+    def test_the_environment_loop_stops_at_the_same_boundary(self):
+        self.stop_after_scans(1)
+
+        self.sync()
+
+        self.assertEqual(self.scanned_channels(), ["chan-one"])
+        self.assertTrue(self.core.logger.has(
+            "Shutdown requested before Telegram channel chan-two", "warning"))
+        self.assertIs(self.history()["interrupted"], True)
 
 
 class TestTheCoreFacadeImport(unittest.TestCase):

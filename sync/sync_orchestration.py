@@ -103,6 +103,11 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
             for ch in enabled_channels:
                 if source_filter and source_filter != "telegram" and telegram_channel_filter != ch.id:
                     continue
+                if _core.stop_requested():
+                    _core.logger.warning(
+                        "Shutdown requested before Telegram channel %s: skipping the rest of this "
+                        "pass so the channel already synced stays consistent.", ch.id)
+                    break
                 source_started = _core.time.monotonic()
                 try:
                     synced_ids = _core.sync_telegram_channel_pipeline(ch.id, ch, conn, _core.MEDIA_DIR, collected, sync_mode=sync_mode)
@@ -134,6 +139,11 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                 channel_name = channel.strip()
                 if not channel_name:
                     continue
+                if _core.stop_requested():
+                    _core.logger.warning(
+                        "Shutdown requested before Telegram channel %s: skipping the rest of this "
+                        "pass so the channel already synced stays consistent.", channel_name)
+                    break
                 class _SimpleCh:
                     studio = channel_name
                     min_duration_seconds = 420
@@ -326,6 +336,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         "duration_seconds": max(0, ended_at - started_at),
         "managed_config_revision": int(getattr(_core.CONFIG, "managed_revision", 0)),
         "sync_mode": sync_mode, "success": not failed_sources, "source_filter": source_filter,
+        "interrupted": _core.stop_requested(),
         "skip_telegram_channels": skip_telegram_channels,
         "sources": source_rows, "stages": stage_summary,
         "jellyfin_refresh_poll": _core._ACTIVE_SYNC_METRICS.get("jellyfin_refresh_poll", {}),

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Set, Tuple, Iterable
 
 from category_mapping import map_category, map_categories
+from sync_shutdown import install_signal_handlers, stop_requested
 from db_schema import init_db as _init_db_impl
 from jellyfin_db import sync_jellyfin_titles as _sync_jellyfin_titles
 from jellyfin_db import sync_jellyfin_telegram_metadata as _sync_jellyfin_telegram_metadata
@@ -1087,6 +1088,12 @@ if __name__ == "__main__":
     if args.jobs_only:
         run_jobs_only()
         raise SystemExit(0)
+    # A deploy stops the container, and Docker's SIGTERM used to kill this
+    # process mid-channel. Record the request instead so the pass can finish the
+    # channel it is on, flush the collected batch and write its history. The
+    # jobs-only worker is left with the default disposition: it has no
+    # checkpoint to reach, and durable jobs are recovered by their leases.
+    install_signal_handlers()
     raise SystemExit(0 if run_sync(
         args.source, args.sync_mode,
         skip_telegram_channels=args.skip_telegram_channels,
