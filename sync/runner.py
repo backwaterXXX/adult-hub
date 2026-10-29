@@ -53,6 +53,7 @@ try:
     run_on_startup = getattr(cfg.sync, "run_on_startup", True)
     BASE_BACKOFF_SECONDS = cfg.sync.retry_backoff_base_seconds
     MAX_BACKOFF_SECONDS = cfg.sync.retry_backoff_max_seconds
+    SHUTDOWN_GRACE_SECONDS = getattr(cfg.sync, "shutdown_grace_seconds", 180)
 except ConfigError as ce:
     LOGGER.critical(f"[sync-daemon] FATAL CONFIG ERROR: {ce}")
     sys.exit(1)
@@ -304,8 +305,17 @@ def wait_with_trigger(duration: float):
     return False
 
 
-def _stop_child(process, grace_seconds: float = 10.0):
-    """Ask the sync child to stop, then force and reap it after a grace period."""
+def _stop_child(process, grace_seconds: float | None = None):
+    """Ask the sync child to stop, then force and reap it after a grace period.
+
+    The full-sync child turns SIGTERM into a stop request it honours at its next
+    channel boundary, so the default wait is that drain: ending it sooner would
+    kill it with a batch half-published, which is the failure this exists to
+    avoid. A child that never reaches its checkpoint is forced once the window
+    expires.
+    """
+    if grace_seconds is None:
+        grace_seconds = SHUTDOWN_GRACE_SECONDS
     if process.poll() is not None:
         return process.wait()
     try:
@@ -330,20 +340,23 @@ def run_full_sync(source_filter=None, sync_mode="scheduled"):
     update_sync_status(running=True, source=source_filter)
     success = False
     exit_code = -1
+    interrupted = False
     try:
         current_process = subprocess.Popen([sys.executable, "sync.py", *source_arg, *mode_arg])
         while current_process.poll() is None:
             if stop_event.is_set():
                 _stop_child(current_process)
+                interrupted = True
                 break
             time.sleep(0.5)
 
-        if not stop_event.is_set():
-            exit_code = current_process.returncode
-            if exit_code == 0:
-                success = True
-            elif consecutive_errors < 3:
-                LOGGER.warning(f"[sync-daemon] Sync exited with code {exit_code}")
+        exit_code = current_process.returncode if current_process.returncode is not None else -1
+        if exit_code == 0:
+            success = True
+        elif interrupted:
+            LOGGER.info(f"[sync-daemon] Sync child stopped at its shutdown checkpoint (exit {exit_code}).")
+        elif consecutive_errors < 3:
+            LOGGER.warning(f"[sync-daemon] Sync exited with code {exit_code}")
     except Exception as e:
         if consecutive_errors < 3:
             LOGGER.warning(f"[sync-daemon] Sync execution error: {e}")
@@ -430,12 +443,19 @@ def run_pending_sync_jobs() -> bool:
             source_failures = _failed_sync_sources(sync_started_at, sync_ended_at, source)
             if source_failures:
                 result["source_failures"] = source_failures
-        try:
-            finalized = finish_job(DB_URL, job["id"], "done" if success else "failed", result)
-            if not finalized:
-                LOGGER.warning(f"[sync-daemon] Sync job {job['id']} was no longer pending when its result arrived.")
-        except Exception as e:
-            LOGGER.warning(f"[sync-daemon] Could not record sync job result: {e}")
+        if stop_event.is_set():
+            # A pass cut short by this shutdown is not the requester's failure:
+            # leaving the job in `processing` hands it to requeue_processing() on
+            # the next start, which is the designed recovery for a lost worker.
+            LOGGER.info(f"[sync-daemon] Leaving sync job {job['id']} for the next start to requeue: "
+                        "this pass was stopped by a shutdown.")
+        else:
+            try:
+                finalized = finish_job(DB_URL, job["id"], "done" if success else "failed", result)
+                if not finalized:
+                    LOGGER.warning(f"[sync-daemon] Sync job {job['id']} was no longer pending when its result arrived.")
+            except Exception as e:
+                LOGGER.warning(f"[sync-daemon] Could not record sync job result: {e}")
     finally:
         heartbeat_stop.set()
         heartbeat_thread.join(timeout=2)

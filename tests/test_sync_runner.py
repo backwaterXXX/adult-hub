@@ -235,7 +235,7 @@ class RunnerHarness(unittest.TestCase):
         self.addCleanup(self.stack.close)
 
     def load(self, *, daily_at=None, interval_minutes=15, run_on_startup=True,
-             backoff_base=30, backoff_max=900, config_error=None, temp_files=True):
+             backoff_base=30, backoff_max=900, shutdown_grace=180, config_error=None, temp_files=True):
         """Execute the daemon with the given config and hand it a recorded logger.
 
         ``temp_files=False`` leaves the file paths the environment asked for, so
@@ -243,7 +243,8 @@ class RunnerHarness(unittest.TestCase):
         """
         sync = types.SimpleNamespace(
             interval_minutes=interval_minutes, daily_at=daily_at, run_on_startup=run_on_startup,
-            retry_backoff_base_seconds=backoff_base, retry_backoff_max_seconds=backoff_max)
+            retry_backoff_base_seconds=backoff_base, retry_backoff_max_seconds=backoff_max,
+            shutdown_grace_seconds=shutdown_grace)
         self.logs = LogCapture()
         loader = Recorder("load_config", raises=[config_error]) if config_error else lambda: self.config(sync)
         self.stack.enter_context(patch("common.config_loader.load_config", loader))
@@ -336,6 +337,11 @@ class TestStartupConfiguration(RunnerHarness):
         self.assertIsNone(module.daily_at)
         self.assertTrue(module.run_on_startup)
         self.assertEqual((module.BASE_BACKOFF_SECONDS, module.MAX_BACKOFF_SECONDS), (45, 1_200))
+
+    def test_the_configured_drain_window_is_what_a_stopped_child_gets(self):
+        module = self.load(shutdown_grace=45)
+
+        self.assertEqual(module.SHUTDOWN_GRACE_SECONDS, 45)
 
     def test_the_startup_log_announces_the_interval(self):
         self.load(interval_minutes=25, backoff_base=45, backoff_max=1_200)
@@ -779,14 +785,24 @@ class TestChildShutdown(RunnerHarness):
 
     def test_a_child_that_ignores_the_terminate_is_killed_after_the_grace_period(self):
         module = self.load()
-        timeout = subprocess.TimeoutExpired(cmd="sync.py", timeout=10)
+        timeout = subprocess.TimeoutExpired(cmd="sync.py", timeout=1.5)
         child = FakeProcess(alive_polls=1, wait_raises=[timeout])
 
-        self.assertEqual(module._stop_child(child), 0)
+        self.assertEqual(module._stop_child(child, grace_seconds=1.5), 0)
 
         self.assertEqual(child.terminated, 1)
         self.assertEqual(child.killed, 1)
-        self.assertEqual(child.wait_calls, [10.0, None])
+        self.assertEqual(child.wait_calls, [1.5, None])
+
+    def test_a_draining_child_is_given_the_configured_window_before_being_forced(self):
+        module = self.load(shutdown_grace=45)
+        timeout = subprocess.TimeoutExpired(cmd="sync.py", timeout=45)
+        child = FakeProcess(alive_polls=1, wait_raises=[timeout])
+
+        module._stop_child(child)
+
+        self.assertEqual(child.wait_calls, [45, None],
+                         "the child needs the whole drain window to reach its next channel boundary")
 
     def test_a_child_that_stops_after_the_terminate_needs_no_kill(self):
         module = self.load()
@@ -913,17 +929,29 @@ class TestFullSync(RunnerHarness):
         self.assertEqual(self.logs.text("warning"), [])
 
     def test_a_shutdown_during_the_sync_stops_the_child_and_reports_no_success(self):
-        module = self.load()
-        child = FakeProcess(returncode=0, alive_polls=2)
+        module = self.load(shutdown_grace=10)
+        child = FakeProcess(returncode=1, alive_polls=2)
         self.children(child)
         status = self.record("update_sync_status")
         module.stop_event.set()
 
-        self.assertEqual(module.run_full_sync(), (False, -1))
+        self.assertEqual(module.run_full_sync(), (False, 1))
 
         self.assertEqual(child.terminated, 1)
-        self.assertEqual(child.wait_calls, [10.0, None])
-        self.assertEqual(status.kwargs(1), {"running": False, "exit_code": -1, "success": False})
+        self.assertEqual(child.wait_calls, [10, None])
+        self.assertEqual(status.kwargs(1), {"running": False, "exit_code": 1, "success": False})
+        self.assertTrue(self.logs.has("Sync child stopped at its shutdown checkpoint (exit 1).", "info"))
+        self.assertEqual(self.logs.text("warning"), [], "a pass cut short is not reported as a crash")
+
+    def test_a_child_that_drained_to_a_clean_exit_is_a_successful_sync(self):
+        module = self.load()
+        self.children(FakeProcess(returncode=0, alive_polls=2))
+        status = self.record("update_sync_status")
+        module.stop_event.set()
+
+        self.assertEqual(module.run_full_sync(), (True, 0))
+
+        self.assertEqual(status.kwargs(1), {"running": False, "exit_code": 0, "success": True})
 
     def test_a_child_still_alive_in_the_cleanup_is_asked_twice_to_stop(self):
         module = self.load()
@@ -1129,6 +1157,22 @@ class TestDurableSyncJobs(RunnerHarness):
 
         self.assertTrue(self.logs.has(
             "Could not update sync-job heartbeat (OSError).", "warning"))
+
+    def test_a_shutdown_let_the_child_reach_its_checkpoint_leaves_the_request_behind(self):
+        module = self.load()
+        self.record("claim_job", result=self.job())
+        self.record("run_full_sync", results=[(False, 1)],
+                    side_effect=lambda *_a: module.stop_event.set())
+        finished = self.record("finish_job", result=True)
+        cleared = self.record("_clear_sync_trigger")
+
+        self.assertTrue(module.run_pending_sync_jobs())
+
+        self.assertFalse(finished.called,
+                         "the requester must not see another process's shutdown as its own failure")
+        self.assertTrue(self.logs.has(
+            "Leaving sync job job-one for the next start to requeue", "info"))
+        self.assertTrue(cleared.called, "the wake signal is consumed either way")
 
 
 class TestWaitingForWork(RunnerHarness):

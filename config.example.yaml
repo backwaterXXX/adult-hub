@@ -14,6 +14,8 @@ sync:
   retention_days: 30                # Remove videos not seen for this many days
   retry_backoff_base_seconds: 30    # Initial retry delay after an error
   retry_backoff_max_seconds: 1800   # Maximum retry delay
+  shutdown_grace_seconds: 180       # How long a restart waits for the running sync to reach its
+                                    # next channel boundary (compose stop_grace_period must exceed it)
   stream_mode_default: redirect     # Default playback mode: redirect or proxy
   category_fetch_delay_seconds: 2.5  # Pause between upstream category requests
   pbc_backfill_per_run: 50

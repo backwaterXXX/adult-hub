@@ -3,6 +3,9 @@ sync:
   interval_minutes: 60
   retention_days: 30
   stream_mode_default: redirect
+  # Process tests that stop a sync child use a short drain window: a child that
+  # never reaches its checkpoint must be forced well inside the test timeout.
+  shutdown_grace_seconds: 10
 
 sources:
   - provider: telegram
