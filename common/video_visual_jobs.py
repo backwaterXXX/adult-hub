@@ -13,6 +13,9 @@ ALGORITHM_VERSION = "visual-sequence-v1"
 CONFIRMATION_POLICY_VERSION = "strict-5-of-8-v2"
 MAX_ATTEMPTS = 3
 LEASE_SECONDS = 1800
+# The worker renews its lease every 15 seconds, so a processing job whose row has
+# not been touched for this long belongs to a process that is gone.
+LEASE_STALE_SECONDS = 90
 
 
 def _identity(kind: str, values: tuple[str, ...], algorithm_version: str) -> str:
@@ -159,6 +162,12 @@ def claim_next(db_url: str | None) -> dict | None:
             )
         conn.commit()
         return dict(claimed)
+    except db.IntegrityError:
+        # video_visual_jobs_single_active_idx keeps the whole hub on one active
+        # job, so a peer worker that committed its claim first leaves nothing
+        # here: skip this cycle instead of failing the worker.
+        conn.rollback()
+        return None
     except Exception:
         conn.rollback()
         raise
@@ -273,26 +282,44 @@ def finish_failure(db_url: str | None, job: dict, error_code: str, *, retryable:
 
 
 def recover_expired(db_url: str | None, *, force: bool = False) -> int:
+    """Return abandoned jobs to the queue.
+
+    ``force`` is what a restarting worker uses to reclaim the job it died with.
+    It may not reset a lease another worker is still renewing: that would hand
+    the same work to two workers, waste the in-flight run and void the first
+    worker's lease token. A crashed worker is identified instead by its heartbeat
+    going stale, which is far sooner than the lease itself expires.
+    """
     conn = db.connect(db_url)
     try:
         now = int(time.time())
         if force:
-            count = conn.execute(
+            recovered = conn.execute(
                 """UPDATE video_visual_jobs SET state='queued',lease_token=NULL,lease_until=NULL,
-                   available_at=%s,updated_at=%s WHERE state='processing'""",
-                (now, now),
-            ).rowcount
+                   available_at=%s,updated_at=%s
+                   WHERE state='processing' AND updated_at < %s
+                   RETURNING id""",
+                (now, now, now - LEASE_STALE_SECONDS),
+            ).fetchall()
         else:
-            count = conn.execute(
+            recovered = conn.execute(
                 """UPDATE video_visual_jobs SET state='queued',lease_token=NULL,lease_until=NULL,
-                   available_at=%s,updated_at=%s WHERE state='processing' AND lease_until < %s""",
+                   available_at=%s,updated_at=%s
+                   WHERE state='processing' AND lease_until < %s
+                   RETURNING id""",
                 (now, now, now),
-            ).rowcount
-        conn.execute(
-            "UPDATE video_visual_comparisons SET state='queued',updated_at=%s WHERE state='processing'",
-            (now,),
-        )
+            ).fetchall()
+        ids = [str(row[0]) for row in recovered]
+        if ids:
+            conn.execute(
+                """UPDATE video_visual_comparisons SET state='queued',updated_at=%s
+                   WHERE id = ANY(%s) AND state='processing'""",
+                (now, ids),
+            )
         conn.commit()
-        return count
+        return len(ids)
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
