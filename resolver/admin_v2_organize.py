@@ -92,12 +92,8 @@ def build_router(admin):
                     "jsonb_array_elements_text(COALESCE(pb.aliases, '[]'::jsonb)) AS alias_values(alias_value) "
                     "WHERE pb.name = p.performer_name AND alias_values.alias_value ILIKE %s)"
                 )
-            mapped_aliases_expr = "'[]'::jsonb"
-            if "performer_aliases" in tables:
-                mapped_aliases_expr = (
-                    "COALESCE((SELECT jsonb_agg(pa.alias ORDER BY lower(pa.alias), pa.alias) "
-                    "FROM performer_aliases pa WHERE lower(pa.canonical) = lower(p.performer_name)), '[]'::jsonb)"
-                )
+            mapped_aliases_available = "performer_aliases" in tables
+            if mapped_aliases_available:
                 alias_search.append(
                     "EXISTS (SELECT 1 FROM performer_aliases pa "
                     "WHERE lower(pa.canonical) = lower(p.performer_name) AND pa.alias ILIKE %s)"
@@ -118,20 +114,35 @@ def build_router(admin):
             ).fetchone()[0]
             rows = conn.execute(
                 "SELECT p.performer_name, count(DISTINCT p.video_id), "
-                f"{bio_flag}, {photo_flag}, {aliases_expr}, {mapped_aliases_expr} "
+                f"{bio_flag}, {photo_flag}, {aliases_expr} "
                 f"FROM video_performers p {join_sql} {where} "
                 f"GROUP BY {', '.join(group_fields)} "
                 "ORDER BY lower(p.performer_name), p.performer_name LIMIT %s OFFSET %s",
                 [*params, limit, offset],
             ).fetchall()
+            # Aliases of the mapped table are collected for the returned page alone. In
+            # the grouped query PostgreSQL evaluates them per skipped row, which made
+            # offset 2000 cost 2.8s where offset 0 cost 0.2s. Matching stays in SQL so
+            # the page's names are compared with the same lower() the old subquery used.
+            mapped_by_name = {}
+            if mapped_aliases_available and rows:
+                for page_name, mapped in conn.execute(
+                    "SELECT n.name, jsonb_agg(pa.alias ORDER BY lower(pa.alias), pa.alias) "
+                    "FROM unnest(%s::text[]) AS n(name) "
+                    "JOIN performer_aliases pa ON lower(pa.canonical) = lower(n.name) "
+                    "GROUP BY n.name",
+                    ([str(row[0]) for row in rows],),
+                ).fetchall():
+                    mapped_by_name[page_name] = mapped
             items = []
-            for name, count, has_bio, has_photo, aliases, mapped_aliases in rows:
+            for name, count, has_bio, has_photo, aliases in rows:
                 if isinstance(aliases, str):
                     try:
                         import json
                         aliases = json.loads(aliases)
                     except ValueError:
                         aliases = []
+                mapped_aliases = mapped_by_name.get(name) or []
                 if isinstance(mapped_aliases, str):
                     try:
                         import json

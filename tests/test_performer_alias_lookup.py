@@ -1,8 +1,8 @@
 """The people catalog looks aliases up by canonical name, and that lookup is indexed.
 
 Production measured 124 ms for one 50-row page of `/admin/api/v2/organize/people`
-before migration 0056: the per-row alias subquery filtered all 3,628 alias rows
-each time, so a page read the whole table once per row it returned.
+before migration 0056: the per-row alias filter read all 3,628 alias rows every
+time, and searching by alias repeated that for every candidate row.
 """
 
 import sys
@@ -14,12 +14,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(ROOT))
 from pg_helper import PgTestCase
 
-# Written the way resolver/admin_v2_organize.py writes it; the second test in
-# this module fails if that route stops matching this expression.
-ALIAS_LOOKUP = (
-    "EXPLAIN SELECT COALESCE((SELECT jsonb_agg(pa.alias ORDER BY lower(pa.alias), pa.alias) "
-    "FROM performer_aliases pa WHERE lower(pa.canonical) = lower(%s)), '[]'::jsonb)"
-)
+# The per-row shape of resolver/admin_v2_organize.py's alias search; the second
+# test fails if that route stops matching the indexed expression.
+ALIAS_PROBE = ("EXPLAIN SELECT EXISTS (SELECT 1 FROM performer_aliases pa "
+               "WHERE lower(pa.canonical) = lower(%s) AND pa.alias ILIKE %s)")
 ALIAS_ROWS = 5_000
 
 
@@ -30,7 +28,7 @@ class TestPerformerAliasLookup(PgTestCase):
                               "SELECT 'alias ' || g, 'canonical ' || floor(g / 10.0)::int "
                               "FROM generate_series(1, %s) g", (ALIAS_ROWS,))
             self.conn.execute("ANALYZE performer_aliases")
-        return "\n".join(row[0] for row in self.conn.execute(ALIAS_LOOKUP, ("canonical 7",)))
+        return "\n".join(row[0] for row in self.conn.execute(ALIAS_PROBE, ("canonical 7", "alias 7%")))
 
     def test_lookup_by_canonical_name_uses_the_index(self):
         plan = self.plan()

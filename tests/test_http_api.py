@@ -977,6 +977,61 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(quarantine.json()["items"][0]["mode"], "quarantine")
         self.assertNotIn("private/path", quarantine.text)
 
+    def test_v2_people_catalog_loads_mapped_aliases_once_per_page(self):
+        """Aggregating aliases inside the grouped page query makes cost grow with OFFSET."""
+        with tempfile.TemporaryDirectory(), self.admin_config():
+            conn = db.connect(TEST_URL)
+            with conn:
+                for index in range(3):
+                    name = f"Paginated Actor {index}"
+                    conn.execute(
+                        "INSERT INTO videos (id,provider,title,performers,categories,tags,studio) "
+                        "VALUES (%s,'telegram','Scene','[]','[]','[]','Studio')",
+                        (f"telegram:99:page-{index}",),
+                    )
+                    conn.execute(
+                        "INSERT INTO video_performers (video_id,performer_name,position) VALUES (%s,%s,0)",
+                        (f"telegram:99:page-{index}", name),
+                    )
+                    conn.execute("INSERT INTO performer_aliases (alias,canonical) VALUES (%s,%s)",
+                                 (f"{name} alias", name))
+            conn.close()
+
+            executed = []
+            real_connect = admin_module.admin_v2_organize.db.connect
+
+            class RecordingConnection:
+                def __init__(self, inner):
+                    self._inner = inner
+
+                def execute(self, sql, params=None):
+                    executed.append(" ".join(str(sql).split()))
+                    return self._inner.execute(sql, params)
+
+                def close(self):
+                    self._inner.close()
+
+                def __getattr__(self, item):
+                    return getattr(self._inner, item)
+
+            with patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
+                 patch.object(admin_module.admin_v2_organize.db, "connect",
+                              lambda url: RecordingConnection(real_connect(url))):
+                page = self.request("GET", "/admin/api/v2/organize/people?limit=2&offset=1",
+                                    base_url="http://localhost")
+
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertEqual([item["name"] for item in page.json()["items"]],
+                         ["Paginated Actor 1", "Paginated Actor 2"])
+        self.assertEqual(page.json()["items"][1]["aliases"], ["Paginated Actor 2 alias"],
+                         "a later page carries its aliases like the first one")
+        listing = [sql for sql in executed if "FROM video_performers p" in sql and "GROUP BY" in sql]
+        self.assertEqual(len(listing), 1)
+        self.assertNotIn("performer_aliases", listing[0],
+                         "the page query must not aggregate aliases per row")
+        self.assertEqual(len([sql for sql in executed if "jsonb_agg(pa.alias" in sql]), 1,
+                         "one alias lookup covers the whole page")
+
     def test_v2_person_filmography_paginates_large_catalog_with_stable_order(self):
         with tempfile.TemporaryDirectory(), self.admin_config():
             with db.connect(TEST_URL) as conn:
