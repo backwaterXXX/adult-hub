@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timezone
 
 from common import db
+from common.admin_job_health import timestamp_seconds
 from common.telegram_transfer_budget import (
     current_local_day_start_timestamp,
     next_daily_reset_timestamp,
@@ -72,10 +72,13 @@ def enqueue(db_url: str | None, *, video_id: str, duration_us: int,
 
         retry_after_budget_reset = False
         if row is not None and row["state"] == "failed" and row["error_code"] == "daily_transfer_budget_exhausted":
-            updated_at = row["updated_at"]
-            if updated_at.tzinfo is None:
-                updated_at = updated_at.replace(tzinfo=timezone.utc)
-            retry_after_budget_reset = updated_at.timestamp() < current_local_day_start_timestamp()
+            # The shared adapter reports timestamptz columns as epoch seconds,
+            # so normalize the persisted failure time before comparing it with
+            # the local budget-day boundary.
+            failed_at = timestamp_seconds(row["updated_at"])
+            retry_after_budget_reset = (
+                failed_at is not None and failed_at < current_local_day_start_timestamp()
+            )
 
         if row is not None and (row["state"] == "done" or retry_after_budget_reset):
             row = conn.execute(
