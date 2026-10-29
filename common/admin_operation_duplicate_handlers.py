@@ -53,6 +53,8 @@ def handle_hide(conn, db_url, plan_id, row, config, scope, revisions, now):
         if not reused:
             job_id = _core.uuid.uuid4().hex
             payload = {'keeper_id': keeper_id, 'loser_ids': list(map(str, loser_ids)), 'expected_revisions': revisions}
+            if scope.get('operator_review') is True:
+                payload['operator_review'] = True
             rules_version = scope.get('rules_version') if isinstance(scope, dict) else None
             if type(rules_version) is int and rules_version > 0:
                 payload['rules_version'] = rules_version

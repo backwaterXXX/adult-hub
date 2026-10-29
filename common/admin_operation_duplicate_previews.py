@@ -71,10 +71,7 @@ def preview_hide(db_url: str | None, keeper_id: str, loser_ids: list[str], confi
         from common.duplicate_evidence import pair_evidence
         for item in items:
             proof = pair_evidence(conn, keeper_id, item["video_id"])
-            if not proof:
-                conn.rollback()
-                return {"outcome": "conflict", "message": "Duplicate identity has not been confirmed, or duration/part safeguards failed.", "video_id": item["video_id"]}
-            item["evidence"] = proof
+            item["evidence"] = proof or {"type": "operator_review"}
         plan_id = uuid.uuid4().hex
         now = int(time.time())
         expires_at = now + PLAN_TTL_SECONDS
@@ -82,7 +79,7 @@ def preview_hide(db_url: str | None, keeper_id: str, loser_ids: list[str], confi
             "INSERT INTO admin_operation_plans "
             "(plan_id,operation_type,state,scope,revisions,preview,created_at,expires_at) "
             "VALUES (%s,'hide','previewed',%s,%s,%s,to_timestamp(%s),to_timestamp(%s))",
-            (plan_id, Jsonb({"keeper_id": keeper_id, "loser_ids": ids,
+            (plan_id, Jsonb({"keeper_id": keeper_id, "loser_ids": ids, "operator_review": True,
                              **({"rules_version": rules_version} if rules_version is not None else {})}), Jsonb(revisions),
              Jsonb({"items": items, "keeper_id": keeper_id}), now, expires_at),
         )

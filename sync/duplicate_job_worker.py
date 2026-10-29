@@ -167,8 +167,9 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                 if not losers or keeper in losers or len(set(losers)) != len(losers):
                     raise ValueError('Invalid item list.')
                 from common.duplicate_evidence import pair_evidence
+                manual_review = payload.get('operator_review') is True and bool(payload.get('expected_revisions'))
                 for loser in losers:
-                    if not pair_evidence(conn, keeper, loser):
+                    if not manual_review and not pair_evidence(conn, keeper, loser):
                         raise ValueError('Duplicate identity has not been confirmed, or duration/part safeguards failed.')
                 fingerprints = payload.get('fingerprints') or {}
                 expected_revisions = payload.get('expected_revisions') or {}

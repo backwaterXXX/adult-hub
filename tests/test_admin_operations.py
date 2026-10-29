@@ -249,10 +249,12 @@ class TestAdminOperations(PgTestCase):
         self.assertEqual(plan["outcome"], "previewed")
         self.assertEqual(plan["operation_type"], "hide")
         self.assertEqual(plan["items"][0]["title"], "Hide me")
+        self.assertEqual(plan["items"][0]["evidence"], {"type": "operator_review"})
         queued = execute_operation(self.db_url, plan["plan_id"])
         job = self.conn.execute("SELECT action,payload FROM video_duplicate_jobs WHERE id=%s",
                                 (queued["jobs"][0]["job_id"],)).fetchone()
         self.assertEqual(job[0], "hide")
+        self.assertTrue(json.loads(job[1])["operator_review"])
         self.assertEqual(json.loads(job[1])["expected_revisions"].keys(),
                          {"telegram:10:keeper", "telegram:10:hide"})
 

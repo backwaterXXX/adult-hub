@@ -15,8 +15,8 @@ def _source(row):
 
 def _part(row):
     text = ' '.join(str(row.get(k) or '') for k in ('source_filename', 'source_text', 'title'))
-    match = re.search(r'(?i)(?<![A-Za-z0-9])(?:part[\s_.-]*|pt\.?[\s_.-]*|s[\s_.-]*)(\d{1,2})(?!\d)', text)
-    number = int(match.group(1)) if match and 1 <= int(match.group(1)) <= 12 else None
+    match = re.search(r'(?i)(?<![A-Za-z0-9])(?:(?:vol(?:ume)?\.?|part|pt\.?|ep(?:isode)?\.?|sc(?:ene)?\.?|ch(?:apter)?\.?|cd)[\s_.-]*(\d{1,5})|s[\s_.-]*(\d{1,2}))(?!\d)', text)
+    number = int(match.group(1) or match.group(2)) if match else None
     return bool(number or str(row.get('scene_match_source') or '').casefold().endswith('split_title_duration_v1')), number
 
 

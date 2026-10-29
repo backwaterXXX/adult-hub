@@ -18,7 +18,7 @@
 
   const ACTION_LABELS = {
     phash_generation: 'pHash and thumbnail',
-    hide: 'Hide duplicates', dismiss: 'Dismiss pair', undo: 'Undo hide', undismiss: 'Undo dismissal',
+    duplicate_reconcile: 'Duplicate reconciliation', hide: 'Hide duplicates', dismiss: 'Dismiss pair', undo: 'Undo hide', undismiss: 'Undo dismissal',
     performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Telegram fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Catalog health audit schedule', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', sync: 'Sync'
   };
   const HISTORICAL_ACTION_LABELS = { lukayan_fingerprint: 'Telegram scene lookup', telegram_fingerprint: 'Telegram scene lookup' };

@@ -6,7 +6,7 @@ import re
 
 from common import db
 
-RULES_VERSION = 10
+RULES_VERSION = 11
 PHASH_ALGORITHM_VERSION = "stash-phash-689a6b400625d6da2afb58a7f908c88bcdb6f8ab-v2"
 PHASH_DECODER_PROFILE = "resolver-ffmpeg-stash-v2"
 VISUAL_ALGORITHM_VERSION = "visual-sequence-v1"
@@ -32,8 +32,8 @@ def _part_identity(row: dict) -> tuple[bool, int | None]:
         "split_title_duration_v1")
     text = " ".join(str(row.get(key) or "") for key in
                     ("source_filename", "source_text", "title"))
-    marker = re.search(r"(?i)(?<![A-Za-z0-9])(?:part[\s_.-]*|pt\.?[\s_.-]*|s[\s_.-]*)(\d{1,2})(?!\d)", text)
-    part = int(marker.group(1)) if marker and 1 <= int(marker.group(1)) <= 12 else None
+    marker = re.search(r"(?i)(?<![A-Za-z0-9])(?:(?:vol(?:ume)?\.?|part|pt\.?|ep(?:isode)?\.?|sc(?:ene)?\.?|ch(?:apter)?\.?|cd)[\s_.-]*(\d{1,5})|s[\s_.-]*(\d{1,2}))(?!\d)", text)
+    part = int(marker.group(1) or marker.group(2)) if marker else None
     return split_source or part is not None, part
 
 

@@ -366,8 +366,8 @@ def _collect_duplicate_candidates(db_url: str | None, category: str = "") -> tup
                 "split_title_duration_v1")
             text = " ".join(str(row.get(key) or "") for key in
                             ("source_filename", "source_text", "title"))
-            match = re.search(r"(?i)(?<![A-Za-z0-9])(?:part[\s_.-]*|pt\.?[\s_.-]*|s[\s_.-]*)(\d{1,2})(?!\d)", text)
-            number = int(match.group(1)) if match and 1 <= int(match.group(1)) <= 12 else None
+            match = re.search(r"(?i)(?<![A-Za-z0-9])(?:(?:vol(?:ume)?\.?|part|pt\.?|ep(?:isode)?\.?|sc(?:ene)?\.?|ch(?:apter)?\.?|cd)[\s_.-]*(\d{1,5})|s[\s_.-]*(\d{1,2}))(?!\d)", text)
+            number = int(match.group(1) or match.group(2)) if match else None
             return split_source or number is not None, number
 
         near_count = 0

@@ -2252,6 +2252,10 @@
         feedback.hidden = true;
         feedback.setAttribute('role', 'status');
         card.append(feedback);
+        const different = create('button', 'button button-quiet', 'Different videos');
+        different.type = 'button';
+        different.addEventListener('click', () => dismissDuplicateSuggestion({ left, right }, different, feedback));
+        actions.append(different);
         const sheet = document.createElement('img');
         sheet.className = 'visual-comparison-sheet';
         sheet.alt = `25-frame comparison: ${item.left_title || item.left_id} and ${item.right_title || item.right_id}`;
@@ -2852,9 +2856,7 @@
         if (feedback) {
           feedback.hidden = false;
           feedback.className = 'duplicate-action-feedback is-error';
-          feedback.textContent = error.status === 409
-            ? 'This duplicate suggestion changed before the action was queued. Refresh the list and review the pair again.'
-            : `Could not queue this duplicate action: ${error.message}`;
+          feedback.textContent = `Could not queue this duplicate action: ${error.message}`;
         }
         announce(feedback?.textContent || `Could not queue this duplicate action. ${error.message}`);
       }
@@ -2876,7 +2878,7 @@
       });
       if (state.duplicatePending !== pending) return;
       const jobId = typeof result.job_id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(result.job_id) ? result.job_id : '';
-      const message = `Duplicate suggestion dismissed.${jobId ? ` Task ${jobId}.` : ''}`;
+      const message = `Decision queued: different videos.${jobId ? ` Task ${jobId}.` : ''}`;
       feedback.hidden = false;
       feedback.className = 'duplicate-action-feedback is-success';
       feedback.textContent = message;

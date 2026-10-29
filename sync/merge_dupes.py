@@ -93,6 +93,14 @@ def load_groups(csv_path: Path, title_overlap_min: float):
             ok = t_overlap >= title_overlap_min and (unk or abs(durs[0] - durs[1]) <= 180)
 
         if ok:
+            try:
+                from resolver.video_duplicate_scoring import _has_different_season_markers
+            except ImportError:
+                from video_duplicate_scoring import _has_different_season_markers
+            if _has_different_season_markers(t0, t1):
+                ok = False
+
+        if ok:
             union(members[0]["video_id"], members[1]["video_id"])
     clusters = defaultdict(list)
     for vid in parent:

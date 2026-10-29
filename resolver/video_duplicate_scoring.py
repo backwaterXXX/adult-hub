@@ -12,13 +12,23 @@ from typing import Any
 
 from common.performers import TITLE_STOPWORDS
 
-RULES_VERSION = 10
+RULES_VERSION = 11
 MIN_SCORE = 70.0
 EPISODE_PART_SCORE_PENALTY = 20.0
 MAX_HEURISTIC_CANDIDATES = 100_000
 PHASH_NEAR_MAX_DISTANCE = 10
 PHASH_NEAR_SOLO_TITLE_SIMILARITY = 0.90
 PHASH_NEAR_SOLO_MAX_DURATION_DELTA = 1
+
+PART_MARKER_PATTERNS = [
+    ("vol", re.compile(r"(?i)(?<![a-z0-9])(?:vol(?:ume)?|vol\.)[\s_.-]*#?(\d+(?:[-.]\d+)?)(?![a-z0-9])")),
+    ("part", re.compile(r"(?i)(?<![a-z0-9])(?:part|pt|prt)\.?[\s_.-]*#?(\d+(?:[-.]\d+)?)(?![a-z0-9])")),
+    ("episode", re.compile(r"(?i)(?<![a-z0-9])(?:episode|ep)\.?[\s_.-]*#?(\d+(?:[-.]\d+)?)(?![a-z0-9])")),
+    ("season", re.compile(r"(?i)(?<![a-z0-9])(?:season[\s_.-]*|s)(\d{1,2})(?![a-z0-9])")),
+    ("scene", re.compile(r"(?i)(?<![a-z0-9])(?:scene|sc)\.?[\s_.-]*#?(\d+(?:[-.]\d+)?)(?![a-z0-9])")),
+    ("chapter", re.compile(r"(?i)(?<![a-z0-9])(?:chapter|ch)\.?[\s_.-]*#?(\d+(?:[-.]\d+)?)(?![a-z0-9])")),
+    ("cd", re.compile(r"(?i)(?<![a-z0-9])cd[\s_.-]*#?(\d+)(?![a-z0-9])")),
+]
 
 
 def _normalize_name(value: str) -> str:
@@ -82,19 +92,18 @@ def _score(left: dict, right: dict, shared: set[str]) -> dict | None:
     k = min(len(shared) / 3.0, 1.0)
     cast_points, duration_points, count_points = 55 * jaccard, 30 * d_score, 10 * k
     raw_total = cast_points + duration_points + count_points
-    penalty = EPISODE_PART_SCORE_PENALTY if _has_different_season_markers(
-        left.get("title", ""), right.get("title", "")) else 0.0
-    total = raw_total - penalty
-    category = "Strong suggestion" if total >= 85 else "Needs review"
+    if _has_different_season_markers(left.get("title", ""), right.get("title", "")):
+        return None
+    category = "Strong suggestion" if raw_total >= 85 else "Needs review"
     return {
-        "score": total, "score_max": 95, "category": category,
+        "score": raw_total, "score_max": 95, "category": category,
         "rules_version": RULES_VERSION,
         "components": {
             "cast_jaccard": jaccard, "duration_delta": delta,
             "duration_tolerance": tolerance, "shared_performers": len(shared),
             "cast_points": cast_points, "duration_points": duration_points,
             "performer_count_points": count_points,
-            "episode_part_penalty": penalty,
+            "episode_part_penalty": 0.0,
         },
     }
 
@@ -103,7 +112,7 @@ def _clean_title_for_solo(title: str) -> str:
         return ""
     t = unicodedata.normalize("NFKD", str(title).casefold())
     t = "".join(ch for ch in t if not unicodedata.combining(ch))
-    t = re.sub(r"[^\w\s]", " ", t)
+    t = re.sub(r"[^\w\s]|_", " ", t)
     return " ".join(t.split())
 
 def _title_similarity(t1: str, t2: str) -> float:
@@ -114,23 +123,45 @@ def _title_similarity(t1: str, t2: str) -> float:
         return 1.0
     return difflib.SequenceMatcher(None, c1, c2).ratio()
 
-def _has_different_season_markers(t1: str, t2: str) -> bool:
-    """Detect a matching title whose different S<number> markers identify distinct parts."""
-    def split_marker(title: str) -> tuple[str, int] | None:
-        clean = _clean_title_for_solo(title)
-        match = re.search(r"(?<!\w)s(\d{1,2})(?!\w)", clean)
-        if not match:
-            return None
-        base = " ".join((clean[:match.start()] + " " + clean[match.end():]).split())
-        return base, int(match.group(1))
+def _parse_marker_number(raw: str) -> tuple[int, ...]:
+    return tuple(int(p) for p in re.split(r"[-.]", raw) if p.isdigit())
 
-    left, right = split_marker(t1), split_marker(t2)
-    return bool(
-        left and right
-        and left[1] != right[1]
-        and left[0] and right[0]
-        and _title_similarity(left[0], right[0]) >= 0.8
-    )
+def _extract_markers(title: str) -> tuple[dict[str, set[tuple[int, ...]]], list[tuple[int, int]]]:
+    markers: dict[str, set[tuple[int, ...]]] = {}
+    spans: list[tuple[int, int]] = []
+    for kind, pat in PART_MARKER_PATTERNS:
+        for match in pat.finditer(title):
+            num = _parse_marker_number(match.group(1))
+            if num:
+                markers.setdefault(kind, set()).add(num)
+                spans.append(match.span())
+    return markers, spans
+
+def _has_different_season_markers(t1: str, t2: str) -> bool:
+    """Detect whether matching titles have conflicting volume, season, or part markers."""
+    m1, spans1 = _extract_markers(t1)
+    m2, spans2 = _extract_markers(t2)
+    shared_kinds = set(m1) & set(m2)
+    for kind in shared_kinds:
+        if m1[kind] != m2[kind]:
+            def strip_spans(t: str, spans: list[tuple[int, int]]) -> str:
+                chars = list(t)
+                for start, end in spans:
+                    for i in range(start, end):
+                        chars[i] = " "
+                return "".join(chars)
+            b1 = strip_spans(t1, spans1)
+            b2 = strip_spans(t2, spans2)
+            cb1, cb2 = _clean_title_for_solo(b1), _clean_title_for_solo(b2)
+            if not cb1 and not cb2:
+                return True
+            words1 = {w for w in cb1.split() if len(w) >= 3 and w not in TITLE_STOPWORDS}
+            words2 = {w for w in cb2.split() if len(w) >= 3 and w not in TITLE_STOPWORDS}
+            sim = _title_similarity(b1, b2)
+            overlap = len(words1 & words2)
+            if sim >= 0.55 or overlap >= 2:
+                return True
+    return False
 
 def _score_solo(left: dict, right: dict) -> dict | None:
     a, b = _duration_values(left), _duration_values(right)
@@ -143,6 +174,9 @@ def _score_solo(left: dict, right: dict) -> dict | None:
     delta = abs(a - b)
     tolerance = min(15.0, max(5.0, 0.01 * max(a, b)))
     if delta > tolerance:
+        return None
+
+    if _has_different_season_markers(left.get("title", ""), right.get("title", "")):
         return None
 
     clean1 = _clean_title_for_solo(left.get("title", ""))
@@ -161,22 +195,17 @@ def _score_solo(left: dict, right: dict) -> dict | None:
     duration_points = 30.0 * d_score
     actor_points = 10.0
     raw_total = title_points + duration_points + actor_points
-    penalty = EPISODE_PART_SCORE_PENALTY if _has_different_season_markers(
-        left.get("title", ""), right.get("title", "")) else 0.0
-    total = raw_total - penalty
 
-    category = "Strong suggestion" if total >= 85 else "Needs review"
+    category = "Strong suggestion" if raw_total >= 85 else "Needs review"
     actor_name = next(iter(left["performer_display"].values()), next(iter(a_cast)))
     reasons = [
         f"Matching solo performer ({actor_name}) and similar duration",
         f"Title similarity: {sim:.0%}",
         f"Duration differs by {delta} s",
     ]
-    if penalty:
-        reasons.append("Different S-number parts may be different episodes; match confidence reduced")
 
     return {
-        "score": round(total, 1),
+        "score": round(raw_total, 1),
         "score_max": 95,
         "category": category,
         "rules_version": RULES_VERSION,
@@ -190,7 +219,7 @@ def _score_solo(left: dict, right: dict) -> dict | None:
             "title_points": round(title_points, 1),
             "duration_points": round(duration_points, 1),
             "performer_count_points": actor_points,
-            "episode_part_penalty": penalty,
+            "episode_part_penalty": 0.0,
         },
     }
 

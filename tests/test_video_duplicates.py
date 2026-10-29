@@ -599,6 +599,45 @@ class TestVideoDuplicateCandidates(PgTestCase):
 
         self.assertEqual(find_duplicate_candidates(TEST_URL)["total"], 0)
 
+    def test_different_volume_numbers_are_not_duplicates(self):
+        self.add_video("a:1", "British Boys Fetish Club Discipline Tales Vol 12",
+                       duration=2910, performers=["Discipline"])
+        self.add_video("b:2", "British Boys Fetish Club Discipline Tales Vol 131",
+                       duration=2905, performers=["Discipline"])
+
+        result = find_duplicate_candidates(TEST_URL)
+        self.assertEqual(result["total"], 0)
+
+    def test_discipline_tales_different_volumes_are_not_duplicates(self):
+        self.add_video("telegram:-1001618765010:18190:5388927107315301064",
+                       "🔥  #SPANKING British Boys Fetish Club Discipline Tales Vol 247",
+                       provider="telegram", duration=2913, performers=["Discipline"])
+        self.add_video("telegram:-1001618765010:18991:5238030749994623110",
+                       "British Boys Fetish Club Discipline Tales Vol 273",
+                       provider="telegram", duration=2898, performers=["Discipline"])
+
+        result = find_duplicate_candidates(TEST_URL)
+        self.assertEqual(result["total"], 0)
+
+    def test_same_volume_scenes_are_duplicates(self):
+        self.add_video("a:1", "🔥  #SPANKING British Boys Fetish Club Discipline Tales Vol 247",
+                       duration=2913, performers=["Discipline"])
+        self.add_video("b:2", "British Boys Fetish Club Discipline Tales Vol 247 HD",
+                       duration=2915, performers=["Discipline"])
+
+        result = find_duplicate_candidates(TEST_URL)
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["pairs"][0]["evidence"], "solo_title_duration")
+
+    def test_multi_performer_different_parts_are_not_duplicates(self):
+        self.add_video("a:1", "Next Stop Vegas - Part 2-1", duration=1200,
+                       performers=["Drew Dixon", "Roman Todd"])
+        self.add_video("b:2", "Next Stop Vegas - Part 2-2", duration=1205,
+                       performers=["Drew Dixon", "Roman Todd"])
+
+        result = find_duplicate_candidates(TEST_URL)
+        self.assertEqual(result["total"], 0)
+
     def test_same_telegram_file_id_groups_different_titles(self):
         self.add_video("telegram:-1001000:1389:5000000000000000001", "#OnlyFans",
                        provider="telegram", slug="5000000000000000001", duration=1220,

@@ -84,6 +84,7 @@ const context = vm.createContext({
   operationRequestIsCurrent: (sequence, route = state.route) => sequence === state.operationRequestSeq && route === state.route,
   create: (_tag, _className, text) => ({ textContent: text, href: '' }),
   announce: () => {},
+  loadVisualDuplicateResults: () => {},
   window: {
     AdminV2: {
       postJson: async (url, body) => {
@@ -177,8 +178,9 @@ vm.runInContext(`${source.slice(start, end)}\n${source.slice(actionStart, action
   const card = {
     isConnected: true,
     querySelector: sel => sel === '.duplicate-action-feedback' ? cardFeedback : null,
+    querySelectorAll: () => [],
   };
-  const trigger = { isConnected: true, disabled: false, textContent: 'Keep this item', closest: sel => sel === '.duplicate-candidate' ? card : null };
+  const trigger = { isConnected: true, disabled: false, textContent: 'Keep this item', closest: () => card };
   currentTrigger = trigger;
   await context.previewDuplicate({ left: { id: 'v1' }, right: { id: 'v2' } }, 'left', trigger);
   assert.equal(state.duplicateOffset, 50, 'opening a duplicate preview on page 2+ must preserve the current page offset');
@@ -197,6 +199,16 @@ vm.runInContext(`${source.slice(start, end)}\n${source.slice(actionStart, action
   assert.equal(cardFeedback.appended[0]?.textContent, ' Open task');
   assert.equal(cardFeedback.appended[0]?.href, '/admin/v2/?job_id=job-1#jobs');
   assert.equal(state.duplicatePending, null, 'duplicate action lock is released after the request completes');
+
+  context.window.AdminV2.postJson = async () => {
+    const error = new Error('Duplicate identity has not been confirmed, or duration/part safeguards failed.');
+    error.status = 409;
+    throw error;
+  };
+  await context.previewDuplicate({ left: { id: 'v1' }, right: { id: 'v2' } }, 'left', trigger);
+  assert.match(cardFeedback.textContent, /Duplicate identity has not been confirmed/);
+  assert.doesNotMatch(cardFeedback.textContent, /suggestion changed/);
+  context.window.AdminV2.postJson = async () => ({ job_id: 'job-1' });
 
   state.duplicateOffset = 50;
   const dismissButton = { isConnected: true, disabled: false };

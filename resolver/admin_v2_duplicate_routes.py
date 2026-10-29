@@ -21,12 +21,19 @@ def register_duplicate_routes(router: APIRouter, admin) -> None:
                 rows = conn.execute("""SELECT c.id,c.left_id,c.right_id,c.state,c.evidence,c.updated_at,
                     l.title AS left_title,l.duration AS left_duration,r.title AS right_title,r.duration AS right_duration
                     FROM video_visual_comparisons c JOIN videos l ON l.id=c.left_id
-                    JOIN videos r ON r.id=c.right_id ORDER BY c.updated_at DESC LIMIT %s""", (limit,)).fetchall()
-                total = conn.execute("SELECT count(*) FROM video_visual_comparisons").fetchone()[0]
+                    JOIN videos r ON r.id=c.right_id
+                    WHERE NOT EXISTS (SELECT 1 FROM video_duplicate_dismissals d
+                        WHERE d.left_id=c.left_id AND d.right_id=c.right_id AND d.active=1)
+                    ORDER BY c.updated_at DESC LIMIT %s""", (limit,)).fetchall()
+                total = conn.execute("""SELECT count(*) FROM video_visual_comparisons c WHERE NOT EXISTS
+                    (SELECT 1 FROM video_duplicate_dismissals d WHERE d.left_id=c.left_id
+                     AND d.right_id=c.right_id AND d.active=1)""").fetchone()[0]
                 stats = conn.execute("""SELECT count(*) FILTER (WHERE state='queued') queued,
                     count(*) FILTER (WHERE state='processing') processing,
                     count(*) FILTER (WHERE state='review') review,
-                    count(*) FILTER (WHERE state='confirmed') confirmed FROM video_visual_comparisons""").fetchone()
+                    count(*) FILTER (WHERE state='confirmed') confirmed FROM video_visual_comparisons c
+                    WHERE NOT EXISTS (SELECT 1 FROM video_duplicate_dismissals d
+                        WHERE d.left_id=c.left_id AND d.right_id=c.right_id AND d.active=1)""").fetchone()
                 pending_signatures = conn.execute("""SELECT count(*) FROM video_visual_jobs
                     WHERE kind='signature' AND state IN ('queued','processing')""").fetchone()[0]
                 ready_signatures = conn.execute("SELECT count(*) FROM video_visual_signatures WHERE algorithm_version='visual-sequence-v1'").fetchone()[0]
@@ -180,6 +187,16 @@ def register_duplicate_routes(router: APIRouter, admin) -> None:
                         found = ids == sorted((pair["left"]["id"], pair["right"]["id"]))
                     if found:
                         break
+                if not found:
+                    from common import db
+                    conn = db.connect(admin.HUB_DB_URL)
+                    try:
+                        found = bool(conn.execute("""SELECT 1 FROM video_visual_comparisons c
+                            WHERE c.left_id=%s AND c.right_id=%s AND NOT EXISTS
+                            (SELECT 1 FROM video_duplicate_dismissals d WHERE d.left_id=c.left_id
+                             AND d.right_id=c.right_id AND d.active=1)""", ids).fetchone())
+                    finally:
+                        conn.close()
                 if not found:
                     return admin.JSONResponse({"error": "This pair is no longer an active suggestion."}, status_code=409)
                 job_id = enqueue_job(admin.HUB_DB_URL, "dismiss", {"left_id": ids[0], "right_id": ids[1]})

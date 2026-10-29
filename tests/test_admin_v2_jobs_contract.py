@@ -7,7 +7,7 @@ import unittest
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
@@ -373,6 +373,21 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
               + '","right_id":"b"}').encode()),
         ))
         self.assertEqual(long_id.status_code, 400)
+
+    async def test_visual_pair_can_be_marked_different_without_scan_candidate(self):
+        routes = {route.path: route.endpoint for route in admin_v2_jobs.build_router(make_admin()).routes}
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = (1,)
+        with patch('video_duplicates.scan_duplicate_index', return_value={'pairs': []}), \
+             patch('video_duplicates.enqueue_job', return_value='job-1') as enqueue, \
+             patch('common.db.connect', return_value=conn):
+            response = await routes['/api/v2/duplicates/actions'](request(
+                '/api/v2/duplicates/actions', 'POST',
+                b'{"action":"dismiss","left_id":"b","right_id":"a"}'))
+        self.assertEqual(response['job_id'], 'job-1')
+        enqueue.assert_called_once_with('postgresql://test.invalid/catalog', 'dismiss',
+                                        {'left_id': 'a', 'right_id': 'b'})
+        conn.close.assert_called_once()
 
 
 class TestArtworkResultSummary(unittest.TestCase):

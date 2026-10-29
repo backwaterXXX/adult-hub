@@ -1398,6 +1398,20 @@ class TestVideoDuplicateJobs(PgTestCase):
         self.assertIsNotNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
         self.assertTrue((self.media / (sync.stable_media_basename(self.loser) + ".strm")).exists())
 
+    def test_manual_hide_without_automatic_evidence(self):
+        from common.admin_operations import execute_operation, preview_hide
+        plan = preview_hide(self.db_path, self.keeper, [self.loser])
+        self.assertEqual(plan['items'][0]['evidence']['type'], 'operator_review')
+        queued = execute_operation(self.db_path, plan['plan_id'])
+        with patch.object(sync, 'trigger_jellyfin_refresh', return_value=False):
+            sync.process_video_duplicate_jobs(self.conn, self.media)
+        state = self.conn.execute('SELECT state FROM video_duplicate_jobs WHERE id=%s',
+                                  (queued['jobs'][0]['job_id'],)).fetchone()[0]
+        self.assertEqual(state, 'done')
+        self.assertIsNotNone(self.conn.execute(
+            "SELECT 1 FROM video_duplicate_decisions WHERE loser_id=%s AND state='active'", (self.loser,)
+        ).fetchone())
+
     def test_hide_worker_rejects_catalog_changes_after_plan_execution(self):
         self._confirm_duplicate(self.keeper, self.loser)
         from common.admin_operations import execute_operation, preview_hide

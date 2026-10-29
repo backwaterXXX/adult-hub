@@ -4,7 +4,7 @@
 # version always comes from VERSION, never from this tag.
 services:
   jellyfin:
-    image: jellyfin/jellyfin:12.1
+    image: jellyfin/jellyfin:12.4
     container_name: jellyfin
     restart: unless-stopped
     # Compose's service_healthy dependency below needs an explicit condition
