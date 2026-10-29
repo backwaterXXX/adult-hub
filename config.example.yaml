@@ -10,7 +10,9 @@
 sync:
   interval_minutes: 60              # Minutes between sync runs (used if daily_at is omitted)
   daily_at: "03:30"                 # Optional: daily sync time in HH:MM format (local time)
-  run_on_startup: true              # Whether to run a sync immediately when the container starts
+  run_on_startup: true              # Whether to run a sync immediately when the container starts.
+                                    # With daily_at set, a slot that passed while the stack was down
+                                    # runs at startup even when this is false.
   retention_days: 30                # Remove videos not seen for this many days
   retry_backoff_base_seconds: 30    # Initial retry delay after an error
   retry_backoff_max_seconds: 1800   # Maximum retry delay

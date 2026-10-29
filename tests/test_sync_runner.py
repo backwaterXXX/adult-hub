@@ -1175,6 +1175,62 @@ class TestDurableSyncJobs(RunnerHarness):
         self.assertTrue(cleared.called, "the wake signal is consumed either way")
 
 
+class TestMissedDailySlot(RunnerHarness):
+    """What the sync history says about a start that landed past the configured slot."""
+
+    def ago(self, seconds):
+        return self.module.time.time() - int(seconds)
+
+    def entry(self, *, started_at, mode="scheduled", source=None, success=True):
+        return {"started_at": started_at, "sync_mode": mode, "source_filter": source, "success": success}
+
+    def test_the_newest_completed_whole_library_pass_is_the_one_that_counts(self):
+        module = self.load(daily_at="03:30")
+        self.history(self.entry(started_at=self.ago(200_000)),
+                     self.entry(started_at=self.ago(93_600)),
+                     self.entry(started_at=self.ago(72_000), mode="backfill"),
+                     self.entry(started_at=self.ago(36_000), source="Chan"),
+                     self.entry(started_at=self.ago(7_200), success=False),
+                     {"started_at": "long ago", "sync_mode": "scheduled", "success": True})
+
+        self.assertEqual(module._latest_scheduled_sync_start(), self.ago(93_600))
+
+    def test_a_history_the_daemon_cannot_read_is_no_history(self):
+        module = self.load(daily_at="03:30")
+
+        self.assertIsNone(module._latest_scheduled_sync_start(), "no history file at all")
+
+        Path(module.SYNC_HISTORY_FILE).write_text("{ truncated", encoding="utf-8")
+        self.assertIsNone(module._latest_scheduled_sync_start())
+
+        self.history({"runs": "not a list"})
+        self.assertIsNone(module._latest_scheduled_sync_start())
+
+    def test_a_restart_that_missed_the_slot_is_owed_that_slot(self):
+        # The 03:30 pass ran yesterday; this start waits 19h40m for tomorrow's.
+        module = self.load(daily_at="03:30")
+        self.history(self.entry(started_at=self.ago(102_000)))
+
+        self.assertTrue(module._scheduled_sync_was_missed(70_800.0))
+
+    def test_a_restart_after_the_day_s_pass_waits_for_the_next_slot(self):
+        module = self.load(daily_at="03:30")
+        self.history(self.entry(started_at=self.ago(15_600)))
+
+        self.assertFalse(module._scheduled_sync_was_missed(70_800.0))
+
+    def test_a_first_start_with_no_history_honours_run_on_startup(self):
+        module = self.load(daily_at="03:30")
+
+        self.assertFalse(module._scheduled_sync_was_missed(70_800.0))
+
+    def test_a_daemon_on_an_interval_has_no_slot_to_miss(self):
+        module = self.load()
+        self.history(self.entry(started_at=self.ago(102_000)))
+
+        self.assertFalse(module._scheduled_sync_was_missed(900.0))
+
+
 class TestWaitingForWork(RunnerHarness):
     """The periodic wait: what wakes the daemon early, and what it refuses to repeat."""
 
@@ -1462,6 +1518,53 @@ class TestRunLoop(RunnerHarness):
         self.assertEqual(self.pending.call_count, 3, "the queue is drained again after the wake")
         self.assertEqual(self.full_sync.call_count, 0)
         self.assertEqual(self.dispatch.call_count, 2)
+
+    def test_a_restart_that_missed_the_daily_slot_syncs_instead_of_waiting_a_day(self):
+        module = self.looping(daily_at="03:30", run_on_startup=False)
+        self.sleep.result = 70_800.0
+        self.history({"started_at": module.time.time() - 102_000,
+                      "sync_mode": "scheduled", "success": True})
+
+        module.run_loop()
+
+        self.assertTrue(self.logs.has(
+            "The scheduled sync at 03:30 never completed before this start; running it now", "info"))
+        self.assertFalse(self.logs.has("Skipping initial run", "info"))
+        self.assertEqual(self.full_sync.call_count, 1, "the missed slot is made up, then the day resumes")
+
+    def test_a_restart_after_the_daily_slot_ran_waits_for_the_next_one(self):
+        module = self.looping(daily_at="03:30", run_on_startup=False)
+        self.sleep.result = 70_800.0
+        self.history({"started_at": module.time.time() - 15_600,
+                      "sync_mode": "scheduled", "success": True})
+
+        module.run_loop()
+
+        self.assertTrue(self.logs.has("Skipping initial run on startup (run_on_startup=false)", "info"))
+        self.assertFalse(self.full_sync.called)
+
+    def test_a_pass_cut_short_by_the_previous_shutdown_does_not_count_as_the_slot(self):
+        module = self.looping(daily_at="03:30", run_on_startup=False)
+        self.sleep.result = 70_800.0
+        self.history({"started_at": module.time.time() - 15_600,
+                      "sync_mode": "scheduled", "success": False},
+                     {"started_at": module.time.time() - 102_000,
+                      "sync_mode": "scheduled", "success": True})
+
+        module.run_loop()
+
+        self.assertEqual(self.full_sync.call_count, 1)
+
+    def test_a_daemon_that_has_never_finished_a_pass_waits_for_its_slot(self):
+        module = self.looping(daily_at="03:30", run_on_startup=False)
+        self.sleep.result = 70_800.0
+        self.history({"started_at": module.time.time() - 15_600,
+                      "sync_mode": "scheduled", "success": False})
+
+        module.run_loop()
+
+        self.assertFalse(self.full_sync.called,
+                         "an unproven daemon is not started outside its slot by a failed history")
 
     def test_a_daily_slot_promises_the_next_run_instead_of_a_sleep_length(self):
         module = self.looping(daily_at="03:30")

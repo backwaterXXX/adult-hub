@@ -387,6 +387,37 @@ def _clear_sync_trigger() -> None:
         pass
 
 
+def _latest_scheduled_sync_start() -> int | None:
+    """Start time of the last successful whole-library scheduled pass, if recorded."""
+    try:
+        with open(SYNC_HISTORY_FILE, encoding="utf-8") as history_file:
+            runs = json.load(history_file).get("runs", [])
+    except (OSError, ValueError, AttributeError):
+        return None
+    candidates = [run["started_at"] for run in runs if isinstance(run, dict)
+                  and run.get("sync_mode") == "scheduled"
+                  and run.get("source_filter") in (None, "")
+                  and run.get("success") is True
+                  and type(run.get("started_at")) is int]
+    return max(candidates) if candidates else None
+
+
+def _scheduled_sync_was_missed(seconds_to_next_slot: float) -> bool:
+    """True when the daily slot has already passed without a completed pass.
+
+    Restarting after the scheduled time used to wait for the next slot, so one
+    deploy cost the catalogue a whole day of syncing.
+    """
+    if not daily_at:
+        return False
+    last_success = _latest_scheduled_sync_start()
+    if last_success is None:
+        # Nothing completed to compare against (fresh or never-successful daemon):
+        # honour run_on_startup and wait for the slot.
+        return False
+    return last_success < int(time.time()) + int(seconds_to_next_slot) - 86400
+
+
 def run_pending_sync_jobs() -> bool:
     """Claim and run one durable on-demand sync job. Returns True if one ran.
 
@@ -501,15 +532,19 @@ def run_loop():
         if first_run and not run_on_startup:
             first_run = False
             sleep_sec = calculate_next_sleep_seconds(daily_at, interval)
-            import datetime
-            target_str = (datetime.datetime.now() + datetime.timedelta(seconds=sleep_sec)).strftime("%Y-%m-%d %H:%M:%S")
-            LOGGER.info(f"[sync-daemon] Skipping initial run on startup (run_on_startup=false). Next scheduled sync at {target_str} (in {format_duration(sleep_sec)})...")
-            triggered = wait_with_trigger(sleep_sec)
-            if not triggered and stop_event.is_set():
-                break
-            if triggered:
-                # Re-check durable requests before falling back to the schedule.
-                continue
+            if _scheduled_sync_was_missed(sleep_sec):
+                LOGGER.info(f"[sync-daemon] The scheduled sync at {daily_at} never completed before "
+                            "this start; running it now instead of waiting for the next slot.")
+            else:
+                import datetime
+                target_str = (datetime.datetime.now() + datetime.timedelta(seconds=sleep_sec)).strftime("%Y-%m-%d %H:%M:%S")
+                LOGGER.info(f"[sync-daemon] Skipping initial run on startup (run_on_startup=false). Next scheduled sync at {target_str} (in {format_duration(sleep_sec)})...")
+                triggered = wait_with_trigger(sleep_sec)
+                if not triggered and stop_event.is_set():
+                    break
+                if triggered:
+                    # Re-check durable requests before falling back to the schedule.
+                    continue
 
         if ran_jobs:
             success, exit_code = True, 0
