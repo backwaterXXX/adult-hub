@@ -125,7 +125,7 @@ services:
         APP_VERSION: ${APP_VERSION:-dev}
     container_name: adult-sync
     restart: unless-stopped
-    # The sync child answers SIGTERM at its next channel boundary and the runner
+    # The sync child answers SIGTERM at its next channel or stage boundary and the runner
     # waits sync.shutdown_grace_seconds (180s by default) for that drain. Docker's
     # 10s default would SIGKILL first and put us back to interrupted batches.
     stop_grace_period: 4m
