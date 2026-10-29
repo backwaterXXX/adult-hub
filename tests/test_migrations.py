@@ -371,6 +371,7 @@ class TestMigrationsEngine(PgTestCase):
             (53, "0053_visual_history"),
             (54, "0054_telegram_latest_cursor"),
             (55, "0055_duplicate_reconcile_opt_in"),
+            (56, "0056_performer_alias_canonical_index"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):

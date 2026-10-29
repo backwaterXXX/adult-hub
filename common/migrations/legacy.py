@@ -67,6 +67,9 @@ from common.migrations.m0052_video_visual_timestamps import migration as video_v
 from common.migrations.m0053_visual_history import migration as video_visual_history
 from common.migrations.m0054_telegram_latest_cursor import migration as telegram_latest_cursor
 from common.migrations.m0055_duplicate_reconcile_opt_in import migration as duplicate_reconcile_opt_in
+from common.migrations.m0056_performer_alias_canonical_index import (
+    migration as performer_alias_canonical_index,
+)
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -126,4 +129,5 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     video_visual_history,
     telegram_latest_cursor,
     duplicate_reconcile_opt_in,
+    performer_alias_canonical_index,
 )

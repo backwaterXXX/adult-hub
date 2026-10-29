@@ -938,6 +938,8 @@ CREATE INDEX idx_metadata_review_video ON public.metadata_review_proposals USING
 
 CREATE INDEX idx_performer_alias_normalized ON public.performer_catalog_aliases USING btree (normalized);
 
+CREATE INDEX idx_performer_aliases_canonical_lower ON public.performer_aliases USING btree (lower(canonical));
+
 CREATE INDEX idx_sf_video_id ON public.synced_files USING btree (video_id);
 
 CREATE INDEX idx_stream_cache_expire ON public.stream_cache USING btree (expire_at);

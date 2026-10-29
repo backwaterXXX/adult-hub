@@ -29,6 +29,9 @@ from common.migrations.m0054_telegram_latest_cursor import current_migration as 
 from common.migrations.m0055_duplicate_reconcile_opt_in import (
     current_migration as current_duplicate_reconcile_opt_in,
 )
+from common.migrations.m0056_performer_alias_canonical_index import (
+    current_migration as current_performer_alias_canonical_index,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +44,18 @@ MIGRATION_LOCK_ID = 0xAD01780B
 CURRENT_MIGRATIONS: tuple[Migration, ...] = (
     current_duplicate_reconcile_schedule, current_video_visual_duplicates,
     current_video_visual_timestamps, current_video_visual_history, current_telegram_latest_cursor,
-    current_duplicate_reconcile_opt_in,
+    current_duplicate_reconcile_opt_in, current_performer_alias_canonical_index,
 )
 MIGRATIONS: tuple[Migration, ...] = (baseline, *CURRENT_MIGRATIONS)
+
+# Names a post-baseline database is allowed to record at versions below the
+# interim baseline: its own forward chain, plus the two pre-squash rows an old
+# dump can still carry. A different name there means the legacy chain ran.
+CURRENT_MIGRATION_NAMES: frozenset[str] = frozenset({
+    baseline.name, admin_operation_plans.name, video_metadata_overrides.name,
+    "0002_admin_operation_plans",
+    *(migration.name for migration in CURRENT_MIGRATIONS),
+})
 
 
 def _validate_active_migrations(migrations: tuple[Migration, ...]) -> None:
@@ -191,13 +203,7 @@ def _migration_plan(
     )
     has_legacy_history = any(
         version < INTERIM_BASELINE_VERSION
-        and names_by_version[version] not in {
-            baseline.name, admin_operation_plans.name, video_metadata_overrides.name,
-            "0002_admin_operation_plans", current_duplicate_reconcile_schedule.name,
-            current_video_visual_duplicates.name,
-            current_video_visual_timestamps.name, current_video_visual_history.name,
-            current_telegram_latest_cursor.name, current_duplicate_reconcile_opt_in.name,
-        }
+        and names_by_version[version] not in CURRENT_MIGRATION_NAMES
         for version in applied_versions
     )
     # Any recorded version above the interim baseline proves this database
