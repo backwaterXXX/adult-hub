@@ -79,7 +79,8 @@ lint:
 # part of a release, so it stays out of a deploy.
 deploy:
 	@printf 'Deploying Adult Hub %s\n' '$(APP_VERSION)'
-	docker compose up -d --build resolver sync backup
+	docker compose build resolver sync
+	docker compose up -d --no-build resolver sync backup
 
 dev:
 	docker compose -f docker-compose.dev.yml -p adult-hub-dev up --build -d
