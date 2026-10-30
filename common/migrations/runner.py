@@ -223,7 +223,9 @@ def _migration_plan(
         has_legacy_history
         or has_interim_baseline
         or pre_squash_schema
-        or any(record.version > INTERIM_BASELINE_VERSION and record.name not in CURRENT_MIGRATION_NAMES
+        or any(record.version > INTERIM_BASELINE_VERSION
+               and record.name != next((migration.name for migration in CURRENT_MIGRATIONS
+                                        if migration.version == record.version), None)
                for record in applied)
     )
 

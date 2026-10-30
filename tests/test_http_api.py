@@ -52,6 +52,8 @@ class TestResolverHttpApi(unittest.TestCase):
 
     def setUp(self):
         reset_db()
+        with db.connect(TEST_URL) as conn:
+            conn.execute("ALTER TABLE videos ALTER COLUMN duration SET DEFAULT 600")
 
     def _job_count(self):
         conn = db.connect(TEST_URL)
@@ -650,7 +652,7 @@ class TestResolverHttpApi(unittest.TestCase):
         with tempfile.TemporaryDirectory(), self.admin_config():
             conn = db.connect(TEST_URL)
             with conn:
-                conn.execute("INSERT INTO videos (id,provider,title,performers,categories,tags) VALUES ('telegram:99:plan','telegram','Plan video','[]','[]','[]')")
+                conn.execute("INSERT INTO videos (id,provider,title,performers,categories,tags,duration) VALUES ('telegram:99:plan','telegram','Plan video','[]','[]','[]',600)")
             conn.close()
             with patch.object(admin_module, "HUB_DB_URL", TEST_URL):
                 base_headers = {"Origin": "http://localhost"}
@@ -798,8 +800,8 @@ class TestResolverHttpApi(unittest.TestCase):
         with self.admin_config():
             with db.connect(TEST_URL) as conn:
                 conn.execute(
-                    "INSERT INTO videos (id,provider,title,performers,categories,tags) "
-                    "VALUES ('telegram:99:metadata-plan','telegram','Source title','[]','[]','[]')"
+                    "INSERT INTO videos (id,provider,title,performers,categories,tags,duration) "
+                    "VALUES ('telegram:99:metadata-plan','telegram','Source title','[]','[]','[]',600)"
                 )
             headers = {"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}
             with patch.object(admin_module, "HUB_DB_URL", TEST_URL):
@@ -1085,7 +1087,7 @@ class TestResolverHttpApi(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, self.admin_config():
             root = Path(directory)
             with db.connect(TEST_URL) as conn:
-                conn.execute("INSERT INTO videos (id,provider,title,performers,categories,tags) VALUES ('v-check','test','Check me','[]','[]','[]')")
+                conn.execute("INSERT INTO videos (id,provider,title,performers,categories,tags,duration) VALUES ('v-check','test','Check me','[]','[]','[]',600)")
                 conn.execute("INSERT INTO dead_streams (video_id,reason,detected_at) VALUES ('v-check','old failure',1)")
             with patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
                  patch.object(admin_module, "_wake_worker") as wake:
@@ -1515,8 +1517,9 @@ class TestResolverHttpApi(unittest.TestCase):
             "stashdb_actors_per_run": 50,
         })
         self.assertEqual(response.json()["sync_schedule"], {
-            "mode": "interval", "daily_at": None, "interval_minutes": 60,
-            "run_on_startup": True,
+            "mode": "cron", "cron_expression": "*/60 * * * *",
+            "legacy_daily_at": None, "legacy_interval_minutes": None,
+            "needs_conversion": False, "run_on_startup": True,
         })
         self.assertNotIn("entity_key", response.text)
         self.assertEqual(public.status_code, 403)
