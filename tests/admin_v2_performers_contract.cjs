@@ -218,10 +218,8 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   assert.match(elements.performersFeedback.textContent, /Choose a catalogue performer/);
   await elements.fuzzyScan.listeners.click();
   assert.equal(calls.find(call => call.path.includes('/performers/fuzzy?')).path, '/admin/api/v2/performers/fuzzy?threshold=0.88');
-  const review = find(elements.fuzzyRows, item => item.tagName === 'button' && item.textContent === 'Review merge');
-  assert.ok(review, 'scan renders a review action for a name variant');
-  const directMerge = find(elements.fuzzyRows, item => item.tagName === 'button' && item.textContent === 'Merge');
-  assert.equal(directMerge, null, 'a candidate must never have a one-click merge action');
+  const review = find(elements.fuzzyRows, item => item.tagName === 'button' && item.textContent === 'Merge');
+  assert.ok(review, 'scan renders a direct merge action for a name variant');
   assert.match(find(elements.fuzzyRows, item => item.textContent.includes('similarity score'))?.textContent || '', /similarity score 0\.95/,
     'the fuzzy score is labeled as similarity, not probability or confidence');
   const swap = find(elements.fuzzyRows, item => item.tagName === 'button' && item.textContent === '⇄ Swap');
@@ -239,57 +237,35 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   };
   selectVariant('Alpha'); selectVariant('Alphaa');
   await elements.fuzzyReviewSelected.listeners.click();
-  assert.match(find(elements.fuzzyMergeContent, item => item.className === 'state-banner state-error')?.textContent || '', /Selection conflict/,
-    'overlapping performer identities must be detected before any merge preview is queued');
-  assert.equal(calls.filter(call => call.method === 'POST' && call.path.endsWith('/operations/preview')).length, 0,
-    'a conflicting selection must not create merge plans');
-  elements.fuzzyMergeDialog.close();
+  assert.match(elements.fuzzyFeedback.textContent, /Selection conflict/);
+  assert.equal(calls.filter(call => call.path.endsWith('/operations/preview')).length, 0,
+    'overlapping identities are rejected before queuing');
   selectVariant('Alpha', false); selectVariant('Alphaa', false);
   selectVariant('Alpha'); selectVariant('Jamie Nort');
-  const batchPreviewsBefore = calls.filter(call => call.method === 'POST' && call.path.endsWith('/operations/preview')).length;
+  assert.match(elements.fuzzyReviewSelected.textContent, /Merge selected \(2\)/);
+  const batchBefore = calls.length;
   await elements.fuzzyReviewSelected.listeners.click();
-  assert.equal(calls.filter(call => call.method === 'POST' && call.path.endsWith('/operations/preview')).length, batchPreviewsBefore + 2,
-    'each explicitly selected pair gets its own current server preview');
-  const batchAliases = calls.filter(call => call.method === 'POST' && call.path.endsWith('/operations/preview'))
-    .slice(batchPreviewsBefore).map(call => call.payload.alias);
-  assert.deepEqual(batchAliases, ['Alpha', 'Jamie Nort'], 'unchecked candidates cannot enter the selected preview batch');
-  assert.ok(find(elements.fuzzyMergeContent, item => item.tagName === 'dt' && item.textContent === 'Canonical target'));
-  assert.ok(find(elements.fuzzyMergeContent, item => item.textContent === 'One data warning'));
-  const batchQueue = find(elements.fuzzyMergeActions, item => item.tagName === 'button' && item.textContent === 'Queue selected merges');
-  assert.ok(batchQueue.disabled, 'selected merges require explicit confirmation after all previews');
-  const batchConsent = find(elements.fuzzyMergeContent, item => item.tagName === 'input');
-  batchConsent.checked = true; batchConsent.listeners.change();
-  await batchQueue.listeners.click();
-  const batchResults = find(elements.fuzzyMergeContent, item => item.className === 'fuzzy-merge-results');
-  assert.equal(batchResults.children.length, 2, 'batch review records a separate outcome for every selected pair');
-  assert.ok(batchResults.children.every(item => /queued/.test(item.textContent)));
-  elements.fuzzyMergeDialog.close();
+  const batchCalls = calls.slice(batchBefore).filter(call => call.method === 'POST');
+  assert.deepEqual(batchCalls.map(call => call.path.split('/').at(-1)), ['preview', 'execute', 'preview', 'execute'],
+    'each selected merge is prepared and queued immediately');
+  assert.deepEqual(batchCalls.filter(call => call.path.endsWith('/preview')).map(call => call.payload.alias), ['Alpha', 'Jamie Nort']);
+  assert.match(elements.fuzzyFeedback.textContent, /2 of 2 selected merges queued/);
+  assert.equal(elements.fuzzyMergeDialog.open, undefined, 'batch merge does not open a dialog');
 
+  const executeBefore = calls.filter(call => call.path.endsWith('/operations/execute')).length;
   await review.listeners.click();
-  const previewCall = calls.find(call => call.method === 'POST' && call.path === '/admin/api/v2/operations/preview');
-  assert.equal(previewCall.path, '/admin/api/v2/operations/preview');
+  const previewCall = calls.filter(call => call.path.endsWith('/operations/preview')).at(-1);
   assert.equal(JSON.stringify(previewCall.payload), JSON.stringify({ type: 'performer_merge', alias: 'Alpha', canonical: 'Álpha' }));
-  const consent = find(elements.fuzzyMergeContent, item => item.tagName === 'input');
-  assert.ok(find(elements.fuzzyMergeContent, item => item.tagName === 'label' && item.children.includes(consent)),
-    'the irreversible merge confirmation checkbox has a wrapping label');
-  const queue = find(elements.fuzzyMergeActions, item => item.tagName === 'button' && item.textContent === 'Queue merge');
-  assert.ok(queue.disabled, 'merge cannot be queued before explicit confirmation');
-  consent.checked = true;
-  consent.listeners.change();
-  await queue.listeners.click();
-  const executeCall = calls.find(call => call.method === 'POST' && call.path === '/admin/api/v2/operations/execute');
-  assert.equal(executeCall.path, '/admin/api/v2/operations/execute');
-  assert.equal(JSON.stringify(executeCall.payload), JSON.stringify({ plan_id: 'plan-1' }));
+  const executions = calls.filter(call => call.path.endsWith('/operations/execute'));
+  assert.equal(executions.length, executeBefore + 1, 'one click queues the merge after preparing a plan');
+  assert.equal(JSON.stringify(executions.at(-1).payload), JSON.stringify({ plan_id: 'plan-1' }));
+  assert.notEqual(elements.fuzzyMergeDialog.open, true, 'single merge does not open a confirmation dialog');
   assert.match(elements.fuzzyFeedback.textContent, /job-7/);
-  assert.ok(elements.fuzzyMergeContent.children.some(child => /no one-click undo/i.test(child.textContent)));
-  elements.fuzzyMergeDialog.close();
   window.AdminV2.postJson = async () => { throw new Error('Preview service unavailable.'); };
-  await review.listeners.click();
-  const failedPreviewTitle = find(elements.fuzzyMergeContent, item => item.tagName === 'h2');
-  assert.equal(failedPreviewTitle.id, 'fuzzyMergeTitle',
-    'a failed merge preview must keep the dialog accessible name target in the DOM');
-  assert.ok(find(elements.fuzzyMergeContent, item => item.tagName === 'p' && /Could not create a current merge preview/.test(item.textContent)),
-    'the preview failure must remain visible in the dialog');
+  const failedButton = find(elements.fuzzyRows, item => item.tagName === 'button' && item.textContent === 'Merge' && !item.disabled);
+  await failedButton.listeners.click();
+  assert.match(elements.fuzzyFeedback.textContent, /Could not prepare merge/);
+  assert.equal(failedButton.disabled, false, 'a failed preview can be retried');
   const oldCatalog = deferred(), newCatalog = deferred();
   const catalogSelectInput = find(elements.performerProposalRows, item => item.tagName === 'input' && item.type === 'search');
   let catalogRequest = 0;
@@ -310,36 +286,6 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
     'a stale performer catalog search must not replace results for the current query');
   window.AdminV2.getJson = originalGetJson;
 
-  elements.fuzzyMergeDialog.close();
-  const stalePreview = deferred(), currentPreview = deferred();
-  const pendingPreviews = [stalePreview, currentPreview];
-  const executedPlans = [];
-  window.AdminV2.postJson = (path, payload) => {
-    if (path.endsWith('/operations/preview')) return pendingPreviews.shift().promise;
-    if (path.endsWith('/operations/execute')) {
-      executedPlans.push(payload.plan_id);
-      return Promise.resolve({ job_id: 'fresh-job' });
-    }
-    throw new Error(`Unexpected performer write: ${path}`);
-  };
-  const staleMerge = review.listeners.click();
-  elements.fuzzyMergeDialog.close();
-  const currentMerge = review.listeners.click();
-  currentPreview.resolve({ plan_id: 'plan-B', items: [{ alias: 'Current variant', canonical: 'Current canonical', alias_videos: 1, canonical_videos: 2 }] });
-  await currentMerge;
-  stalePreview.resolve({ plan_id: 'plan-A', items: [{ alias: 'Stale variant', canonical: 'Stale canonical', alias_videos: 9, canonical_videos: 8 }] });
-  await staleMerge;
-  const textOf = element => `${element.textContent || ''} ${(element.children || []).map(textOf).join(' ')}`;
-  const fuzzyDialogText = () => textOf(elements.fuzzyMergeContent);
-  assert.match(fuzzyDialogText(), /Current variant/);
-  assert.doesNotMatch(fuzzyDialogText(), /Stale variant/,
-    'a delayed preview must not replace a newer open merge dialog');
-  const currentConsent = find(elements.fuzzyMergeContent, item => item.tagName === 'input');
-  currentConsent.checked = true; currentConsent.listeners.change();
-  const currentQueue = find(elements.fuzzyMergeActions, item => item.tagName === 'button' && item.textContent === 'Queue merge');
-  await currentQueue.listeners.click();
-  assert.deepEqual(executedPlans, ['plan-B'], 'only the preview belonging to the current dialog can be queued');
-
   window.AdminV2.postJson = (path, payload) => {
     if (path.endsWith('/operations/preview')) return Promise.resolve({ ok: true, plan_id: 'plan-direct', items: [{ alias: payload.alias, canonical: payload.canonical }] });
     if (path.endsWith('/operations/execute')) return Promise.resolve({ ok: true, job_id: 'job-direct' });
@@ -354,11 +300,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   const selectedCheckbox = find(elements.fuzzyRows.children[0], item => item.tagName === 'input' && item.attributes['aria-label']?.startsWith('Select merge'));
   selectedCheckbox.checked = true; selectedCheckbox.listeners.change();
   await elements.fuzzyReviewSelected.listeners.click();
-  const singleBatchConsent = find(elements.fuzzyMergeContent, item => item.tagName === 'input');
-  singleBatchConsent.checked = true; singleBatchConsent.listeners.change();
-  const mergeBtn = find(elements.fuzzyMergeActions, item => item.tagName === 'button' && item.textContent === 'Queue selected merges');
-  await mergeBtn.listeners.click();
-  assert.match(elements.fuzzyFeedback.textContent, /1 of 1 selected performer merges queued/);
+  assert.match(elements.fuzzyFeedback.textContent, /1 of 1 selected merges queued/);
   const queuedBadge = find(elements.fuzzyRows, item => item.className.includes('pill-good'));
   assert.ok(queuedBadge, 'a reviewed selection renders a queued status badge');
   assert.match(queuedBadge.textContent, /job-direct/);
@@ -392,5 +334,5 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
     'a late proposal load from before navigation cannot overwrite the refreshed queue');
   assert.match(elements.performersFeedback.textContent, /proposals grouped by repeated name/,
     'the stale load cannot replace feedback from the latest queue request');
-  process.stdout.write('PASS: performer search and paging reject stale responses; review focus and explicit fuzzy-merge consent remain verified\n');
+  process.stdout.write('PASS: performer search and paging reject stale responses; review focus and direct fuzzy merges remain verified\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

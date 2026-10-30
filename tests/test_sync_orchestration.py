@@ -349,6 +349,19 @@ class TestPassOpeningAndClosing(SyncPassHarness):
                        f"Retention Days: {self.core.RETENTION_DAYS}"):
             self.assertTrue(self.core.logger.has(needle, "info"), needle)
 
+    def test_resumable_history_warning_is_recorded_and_excluded_from_cleanup(self):
+        from telegram_pipeline import TelegramSyncResult
+        original = self.sink("sync_telegram_channel_pipeline").side_effect
+        def scan(channel, *args, **kwargs):
+            result = original(channel, *args, **kwargs)
+            return TelegramSyncResult(result, ["history batch: TimeoutError: timed out"]) if channel == "chan-one" else result
+        self.sink("sync_telegram_channel_pipeline").side_effect = scan
+        self.assertTrue(self.sync())
+        self.assertIn("history batch:", self.rows()["telegram:chan-one"]["warnings"][0])
+        retention_sources = self.sink("cleanup_retention").args()[3]
+        self.assertNotIn("telegram:chan-one", retention_sources)
+        self.assertIn("telegram:chan-two", retention_sources)
+
     def test_the_history_records_the_window_the_pass_ran_in(self):
         self.core.time.wall_values = [1_000, 1_060]
 

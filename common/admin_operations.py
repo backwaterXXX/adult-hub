@@ -364,7 +364,7 @@ def preview_performer_merge_plan(db_url: str | None, alias: str, canonical: str)
                 "Reset manual performer profile overrides before merging these identities.",
                 "manual_overrides": preview["manual_overrides"]}
     revision = preview.get("revision")
-    if not isinstance(revision, str) or len(revision) != 64:
+    if not isinstance(revision, str) or not (revision.startswith("v2:") and len(revision) == 67):
         return {"outcome": "conflict", "message": "Could not fingerprint the current performer records."}
     resolved = str(preview.get("resolved_canonical") or canonical.strip()).strip()
     if not resolved or resolved.lower() == alias.strip().lower():

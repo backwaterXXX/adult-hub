@@ -17,6 +17,8 @@ click==8.5.0
     # via
     #   stash-phash
     #   uvicorn
+cryptg==0.6.0
+    # via -r resolver/requirements.txt
 fastapi==0.142.2
     # via -r resolver/requirements.txt
 h11==0.16.0

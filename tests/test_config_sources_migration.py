@@ -273,10 +273,10 @@ class TestConfigSourcesMigration(PgTestCase):
             return []
 
         with patch.object(sync_module, "fetch_json_with_retry", side_effect=fail_history):
-            with self.assertRaisesRegex(RuntimeError, "fetch/history operations failed"):
-                sync_module.sync_telegram_channel_pipeline(
-                    chan_id, cfg, self.conn, self.media_dir, {}
-                )
+            result = sync_module.sync_telegram_channel_pipeline(
+                chan_id, cfg, self.conn, self.media_dir, {}
+            )
+        self.assertRegex(result.warnings[0], "history batch:.*temporary resolver failure")
 
         state = self.conn.execute("""SELECT backfill_in_progress, backfill_cursor
             FROM telegram_channel_state WHERE channel_id = %s""", (chan_id,)).fetchone()

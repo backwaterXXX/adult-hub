@@ -57,6 +57,11 @@ services:
       - PYTHONUNBUFFERED=1
       - APP_VERSION=${APP_VERSION:-dev}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ADMIN_V2_MONITOR_BACKUPS=${ADMIN_V2_MONITOR_BACKUPS:-false}
+      - RESOLVER_WATCHDOG_INTERVAL_SECONDS=${RESOLVER_WATCHDOG_INTERVAL_SECONDS:-10}
+      - RESOLVER_WATCHDOG_TIMEOUT_SECONDS=${RESOLVER_WATCHDOG_TIMEOUT_SECONDS:-4}
+      - RESOLVER_WATCHDOG_FAILURES=${RESOLVER_WATCHDOG_FAILURES:-12}
+      - RESOLVER_WATCHDOG_STARTUP_GRACE_SECONDS=${RESOLVER_WATCHDOG_STARTUP_GRACE_SECONDS:-45}
       - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
       - ADMIN_SOURCE_OVERRIDES_PATH=${ADMIN_SOURCE_OVERRIDES_PATH:-/data/admin-source-overrides.json}
       - DATA_DIR=${DATA_DIR:-/data}
@@ -195,30 +200,6 @@ services:
       # cleanup_old_transcodes() uses /transcodes.
       - ./jf-cache/transcodes:/transcodes
 
-  # Daily PostgreSQL backup and monthly history cleanup. The scheduler waits
-  # for BACKUP_DAILY_AT (local time) and prunes archives older than
-  # BACKUP_KEEP_DAYS; `docker compose exec -T sync python backup_scheduler.py
-  # --once` still runs a single backup on demand.
-  backup:
-    image: ${SYNC_IMAGE:-adult-hub-sync:${APP_VERSION:-dev}}
-    container_name: adult-backup
-    restart: unless-stopped
-    networks:
-      - default
-      - selfhost
-    command: ["python", "backup_scheduler.py"]
-    environment:
-      - TZ=${TZ:-Europe/Warsaw}
-      - PYTHONUNBUFFERED=1
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - DATABASE_URL=${DATABASE_URL:-}
-      - DATA_DIR=${DATA_DIR:-/data}
-      - BACKUP_DIR=/data/backups
-      - BACKUP_KEEP_DAYS=${BACKUP_KEEP_DAYS:-7}
-      - BACKUP_DAILY_AT=${BACKUP_DAILY_AT:-04:30}
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - ./data:/data
 
 networks:
   selfhost:

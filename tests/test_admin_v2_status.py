@@ -536,7 +536,8 @@ class TestAdminV2Status(unittest.IsolatedAsyncioTestCase):
                              "success": False, "added": 2, "removed": 1, "videos": 12,
                              "duration_seconds": 4.25, "error": "Sync failed (TimeoutError).",
                              "detail": "history write incomplete; token=private https://private.invalid/a?key=secret /srv/media/private",
-                             "exception": "secret https://private.invalid"}],
+                             "exception": "secret https://private.invalid",
+                             "warnings": ["history batch: TimeoutError: https://private.invalid secret"]}],
                 "stages": {"telegram_history": {"calls": 2, "total_seconds": 4.25,
                                                   "host": "sync.internal"}},
                 "http": {"failed_attempts": 1, "retries": 1, "rate_limited": 1,
@@ -554,6 +555,8 @@ class TestAdminV2Status(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(run["success"])
         self.assertEqual(run["sources"][0]["source"], "telegram:-100123")
         self.assertEqual(run["sources"][0]["videos"], 12)
+        self.assertTrue(run["sources"][0]["history_deferred"])
+        self.assertNotIn("warnings", run["sources"][0])
         self.assertEqual(run["duration_seconds"], 10)
         self.assertEqual(run["sources"][0]["error"], "Sync failed (TimeoutError).")
         self.assertEqual(run["sources"][0]["detail"],

@@ -264,8 +264,8 @@ def preview_performer_merge(db_url: Optional[str], alias: str, canonical: str) -
     )
 
 
-def performer_merge_revision(conn: Connection, alias: str, canonical: str) -> str:
-    return _fuzzy_merge_implementation().performer_merge_revision(conn, alias, canonical, _core=globals())
+def performer_merge_revision(conn: Connection, alias: str, canonical: str, *, legacy: bool = False) -> str:
+    return _fuzzy_merge_implementation().performer_merge_revision(conn, alias, canonical, _core=globals(), legacy=legacy)
 
 
 def _name_exists(conn: Connection, table: str, name: str) -> bool:

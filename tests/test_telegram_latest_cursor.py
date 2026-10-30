@@ -70,6 +70,31 @@ class LatestCursorTests(PgTestCase):
                         "next_offset_id": None, "has_more": False}])
         self.assertEqual(self.state(), (None, None, None))
 
+    def test_history_fetch_failure_is_resumable_without_advancing_cursor(self):
+        self.conn.execute("UPDATE telegram_channel_state SET backfill_in_progress=1, backfill_cursor=90 WHERE channel_id=%s", (self.channel,))
+        self.conn.commit()
+        def fail_fetch(*args, **kwargs):
+            raise TimeoutError("history timed out")
+        services = TelegramSyncServices("http://r", "http://r", lambda x: None,
+            lambda *x: None, lambda *x, **k: 0, fail_fetch,
+            lambda *x, **k: None, logging.getLogger(__name__), time)
+        result = sync_telegram_channel_pipeline(self.channel, self.cfg, self.conn, Path(self.tmp.name), {}, services=services, sync_mode="backfill")
+        self.assertIn("history batch:", result.warnings[0])
+        self.assertEqual(self.conn.execute("SELECT backfill_cursor FROM telegram_channel_state WHERE channel_id=%s", (self.channel,)).fetchone()[0], 90)
+
+    def test_history_persist_failure_still_fails_channel(self):
+        self.conn.execute("UPDATE telegram_channel_state SET backfill_in_progress=1, backfill_cursor=90 WHERE channel_id=%s", (self.channel,))
+        self.conn.commit()
+        batch = {"videos": [], "message_count": 1, "highest_id": 89, "next_offset_id": 89, "has_more": True}
+        def fail_flush(*args, **kwargs):
+            raise RuntimeError("write failed")
+        services = TelegramSyncServices("http://r", "http://r", lambda x: None,
+            lambda *x: None, lambda *x, **k: 0, lambda *x, **k: batch,
+            fail_flush, logging.getLogger(__name__), time)
+        with self.assertRaisesRegex(RuntimeError, "write failed"):
+            sync_telegram_channel_pipeline(self.channel, self.cfg, self.conn, Path(self.tmp.name), {}, services=services, sync_mode="backfill")
+        self.assertEqual(self.conn.execute("SELECT backfill_cursor FROM telegram_channel_state WHERE channel_id=%s", (self.channel,)).fetchone()[0], 90)
+
     def test_current_migrations_are_idempotent(self):
         from common.migrations import apply_migrations
         self.assertEqual(apply_migrations(self.db_url), [])

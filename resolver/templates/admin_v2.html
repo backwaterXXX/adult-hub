@@ -207,13 +207,12 @@
             <div class="filter-bar">
               <div class="filter-field"><label for="fuzzyThreshold">Similarity threshold</label><input id="fuzzyThreshold" type="number" min="0.80" max="0.99" step="0.01" value="0.88"></div>
               <div class="filter-field"><label for="fuzzyCategory">Category</label><select id="fuzzyCategory"><option value="">All categories</option><option value="diacritics">Diacritics</option><option value="spacing_case_punct">Case / spacing</option><option value="suffix_nickname">Suffix / nickname</option><option value="similarity">Similarity / typo</option></select></div>
-              <div class="jobs-filter-actions"><button class="button button-primary" type="button" id="fuzzyScan">Scan database</button><button class="button button-quiet" type="button" id="fuzzyReviewSelected" disabled>Review selected merges (0)</button><span id="fuzzySelectionStatus" class="catalog-feedback">Select up to 10 suggestions for a batch review.</span></div>
+              <div class="jobs-filter-actions"><button class="button button-primary" type="button" id="fuzzyScan">Scan database</button><button class="button button-quiet" type="button" id="fuzzyReviewSelected" disabled>Merge selected (0)</button><span id="fuzzySelectionStatus" class="catalog-feedback">Select up to 10 pairs. Merges are queued immediately; there is no one-click undo.</span></div>
             </div>
             <div id="fuzzyFeedback" class="catalog-feedback" role="status" aria-live="polite">Run a scan to review possible name variants.</div>
             <div id="fuzzyRows" class="operation-history-list" aria-live="polite"></div>
             <div id="fuzzyPagination" class="pagination" hidden><button class="button button-quiet" type="button" id="fuzzyPrev">← Previous</button><span id="fuzzyPageInfo">Page 1</span><button class="button button-quiet" type="button" id="fuzzyNext">Next →</button></div>
           </section>
-          <dialog id="fuzzyMergeDialog" class="operation-dialog" aria-labelledby="fuzzyMergeTitle"><section class="operation-dialog-panel"><button class="drawer-close" type="button" id="fuzzyMergeClose" aria-label="Close merge review">×</button><div id="fuzzyMergeContent"></div><div id="fuzzyMergeActions" class="operation-dialog-actions"></div></section></dialog>
         </section>
 
         <section class="view" data-view="operational" hidden aria-labelledby="operationalTitle">
@@ -273,17 +272,25 @@
             </details>
             <div id="qualityEnrichmentPane" hidden>
               <section class="panel operation-history-panel" aria-labelledby="enrichmentTitle">
-                <div class="panel-heading"><div><p class="eyebrow">AUTOMATED CATALOG</p><h2 id="enrichmentTitle">External metadata progress</h2><p class="page-intro">Track catalog lookups across actor and video sources. One scan processes one bounded batch per provider. The configured sync cadence is shown below; when the sync runner is active, later runs continue the queues automatically. Remaining counts are estimates because provider eligibility and retries vary. Progress refreshes every 15 seconds while this view is active. Entity names and source error details are not shown.</p></div><div class="diagnostics-actions"><button class="button button-primary" type="button" id="enrichmentScan">Run bounded scan</button><button class="button button-quiet" type="button" id="enrichmentRefresh">Refresh progress</button></div></div>
+                <div class="panel-heading"><div><p class="eyebrow">AUTOMATED CATALOG</p><h2 id="enrichmentTitle">External metadata progress</h2><p class="page-intro">Find missing information about videos and performers, then review suggested changes to existing video metadata.</p></div><div class="diagnostics-actions"><button class="button button-primary" type="button" id="enrichmentScan">Run bounded scan</button><button class="button button-quiet" type="button" id="enrichmentRefresh">Refresh progress</button></div></div>
+                <div class="enrichment-guide" aria-label="How enrichment works">
+                  <div><strong>1. Check progress</strong><span>See how much of the catalog each source has checked and whether any lookups need attention.</span></div>
+                  <div><strong>2. Run a scan</strong><span>Start a scan now, or let the active sync runner continue automatically on its configured schedule.</span></div>
+                  <div><strong>3. Review suggestions</strong><span>Compare proposed video metadata below, edit it, preview the changes, and approve or reject each suggestion.</span></div>
+                </div>
                 <div id="enrichmentFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading metadata progress…</div>
                 <p id="enrichmentFreshness" class="page-intro enrichment-freshness" role="note" data-state="unknown">Waiting for first progress refresh.</p>
                 <p id="enrichmentFreshnessAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
                 <div id="enrichmentSummary" class="quality-summary" aria-label="External metadata queue totals"></div>
-                <p id="enrichmentSchedule" class="page-intro" role="note"></p>
+                <div class="enrichment-schedule"><p id="enrichmentSchedule" class="page-intro" role="note"></p>
                 <p id="enrichmentBatchLimits" class="page-intro" role="note"></p>
+                </div>
+                <div class="enrichment-list-heading"><h3>Progress by source</h3><p>Checked counts are per source, so the same item can appear in more than one row.</p></div>
                 <div id="enrichmentRows" class="enrichment-source-list" aria-live="polite"></div>
+                <details class="enrichment-help"><summary>How to read these numbers</summary><p>One scan processes one bounded batch per provider. The configured sync cadence is shown below; when the sync runner is active, later runs continue the queues automatically. Remaining counts are estimates because provider eligibility and retries vary.</p><p><strong>Found</strong> means a match was returned; <strong>no match</strong> means none was found; <strong>errors</strong> are current failed outcomes. <strong>Due</strong> counts source attempts ready for retry or refresh. Checked includes attempts regardless of outcome. Progress refreshes every 15 seconds while this view is active. Entity names and source error details are not shown.</p></details>
               </section>
               <section class="metadata-proposals" aria-labelledby="metadataProposalsTitle">
-                <div class="quality-history-heading"><div><h2 id="metadataProposalsTitle">Metadata suggestions to review</h2><p class="catalog-feedback">External matches that differ from existing catalog values. Review the whole suggested set for each video.</p></div><button class="button button-quiet" type="button" id="metadataProposalsRefresh">Refresh suggestions</button></div>
+                <div class="quality-history-heading"><div><h2 id="metadataProposalsTitle">Metadata suggestions to review</h2><p class="catalog-feedback">External matches that differ from existing catalog values. Edit the suggested fields, preview the whole set, then queue the update or reject the suggestion.</p></div><button class="button button-quiet" type="button" id="metadataProposalsRefresh">Refresh suggestions</button></div>
                 <div id="metadataProposalsFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading metadata suggestions…</div>
                 <div id="metadataProposalsRows" class="operation-history-list" aria-live="polite"></div>
                 <nav id="metadataProposalsPagination" class="pagination" aria-label="Metadata suggestion pages" hidden></nav>

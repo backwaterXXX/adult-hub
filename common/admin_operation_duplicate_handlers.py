@@ -161,7 +161,7 @@ def handle_performer_merge(conn, db_url, plan_id, row, config, scope, revisions,
             from common.fuzzy_performers import performer_merge_revision
         except ImportError:
             from fuzzy_performers import performer_merge_revision
-        if performer_merge_revision(conn, alias, canonical) != expected:
+        if performer_merge_revision(conn, alias, canonical, legacy=not expected.startswith("v2:")) != expected:
             conn.commit()
             return {'outcome': 'stale', 'stale_ids': [alias], 'message': 'Performer records changed after this preview. Create a new preview.'}
         conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', ('enqueue_job:performer_merge',))

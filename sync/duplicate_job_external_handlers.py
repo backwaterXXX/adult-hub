@@ -220,7 +220,7 @@ def execute_external_operation(action, conn, job_id, payload, media_dir, service
             if len(pairs) != 1 or not isinstance(expected_revision, str):
                 raise ValueError("Invalid revision-bound performer merge plan.")
             if not resume.get("merge_started"):
-                current_revision = fuzzy_performers.performer_merge_revision(conn, *pairs[0])
+                current_revision = fuzzy_performers.performer_merge_revision(conn, *pairs[0], legacy=not expected_revision.startswith("v2:"))
                 if current_revision != expected_revision:
                     raise ValueError("Performer records changed after this preview. Create a new preview.")
         _core._record_job_progress(conn, job_id, "merging_performers")

@@ -214,7 +214,7 @@ async def api_thumb(provider: str = Query(...), ref: str = Query(...)):
     raw = bytes(data)
     try:
         from common.image_utils import is_black_image
-        if is_black_image(raw):
+        if await asyncio.to_thread(is_black_image, raw):
             raise HTTPException(status_code=404, detail="Empty or black preview image")
     except HTTPException:
         raise

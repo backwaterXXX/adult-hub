@@ -733,3 +733,40 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
 .visual-duplicate-heading { margin-top: 2rem; }
 .visual-duplicate-section { margin-bottom: 1.25rem; }
 .visual-duplicate-section .visual-duplicate-heading { margin-top: 0; }
+
+/* Enrichment: keep progress, explanation and review actions easy to scan. */
+#qualityEnrichmentPane .operation-history-panel { padding-bottom: 18px; }
+#qualityEnrichmentPane .panel-heading .page-intro { max-width: 70ch; line-height: 1.55; }
+.enrichment-guide { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 18px 17px; }
+.enrichment-guide > div { display: grid; align-content: start; gap: 6px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); }
+.enrichment-guide strong { font-size: 13px; }
+.enrichment-guide span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+#qualityEnrichmentPane .enrichment-freshness { margin: 0 17px; font-size: 12px; }
+#qualityEnrichmentPane .quality-summary { margin: 16px 17px; }
+#qualityEnrichmentPane .enrichment-summary-card { min-height: 100px; padding: 15px; }
+#qualityEnrichmentPane .enrichment-summary-card strong { font-size: 24px; }
+#qualityEnrichmentPane .enrichment-summary-card span, #qualityEnrichmentPane .enrichment-summary-card small { font-size: 12px; line-height: 1.4; }
+.enrichment-schedule { margin: 0 17px 20px; padding: 12px 15px; border-left: 3px solid var(--border-strong); background: var(--surface-raised); }
+.enrichment-schedule p { margin: 0; line-height: 1.5; }
+.enrichment-schedule p + p { margin-top: 5px; }
+.enrichment-list-heading { margin: 0 17px 12px; }
+.enrichment-list-heading h3 { margin: 0; font-size: 15px; }
+.enrichment-list-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+#qualityEnrichmentPane .enrichment-source-list { margin: 0 17px; gap: 10px; }
+#qualityEnrichmentPane .enrichment-source-row { gap: 10px; padding: 15px; }
+#qualityEnrichmentPane .enrichment-source-heading { flex-wrap: wrap; font-size: 14px; }
+#qualityEnrichmentPane .enrichment-source-heading span, #qualityEnrichmentPane .enrichment-source-detail { font-size: 12px; line-height: 1.6; }
+.enrichment-help { margin: 16px 17px 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.enrichment-help summary { color: var(--text); cursor: pointer; font-weight: 700; }
+.enrichment-help p { max-width: 85ch; }
+#qualityEnrichmentPane .metadata-proposals { padding: 20px 17px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+#qualityEnrichmentPane .metadata-proposals .catalog-feedback { font-size: 12px; line-height: 1.5; }
+#qualityEnrichmentPane .metadata-proposals .operation-history-list { padding: 0; }
+#qualityEnrichmentPane .metadata-proposal { padding: 16px; }
+@media (max-width: 700px) { .enrichment-guide { grid-template-columns: 1fr; } }
+
+/* Keep the selection control next to the names it selects. */
+.fuzzy-row { display: grid; grid-template-columns: auto minmax(180px, 1fr) minmax(140px, 1fr) auto; align-items: start; }
+.fuzzy-row .fuzzy-select { margin: 0; padding: 2px 4px; }
+.fuzzy-row .performer-proposal-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 900px) { .fuzzy-row { grid-template-columns: auto minmax(0, 1fr); } .fuzzy-row > :nth-child(n+3) { grid-column: 2; } }

@@ -29,6 +29,13 @@ def safe_error_detail(error: BaseException, limit: int = 600) -> str:
     return f"{type(error).__name__}: {message}"
 
 
+class TelegramSyncResult(set):
+    """Synced IDs and resumable warnings; incomplete sources are excluded from cleanup."""
+    def __init__(self, values, warnings=()):
+        super().__init__(values)
+        self.warnings = list(warnings)
+
+
 @dataclass(frozen=True)
 class TelegramSyncServices:
     """Runtime dependencies supplied by the sync facade.
@@ -124,6 +131,7 @@ def sync_telegram_channel_pipeline(
     whitelist = telegram_tag_set(getattr(channel_cfg, "tags_whitelist", []))
     blacklist = telegram_tag_set(getattr(channel_cfg, "tags_blacklist", []))
     failures = []
+    resumable_warnings = []
     wl_json, bl_json = json.dumps(sorted(whitelist)), json.dumps(sorted(blacklist))
     row = conn.execute("""SELECT last_min_duration, last_tags_whitelist,
         last_tags_blacklist, backfill_in_progress, backfill_cursor,
@@ -286,16 +294,18 @@ def sync_telegram_channel_pipeline(
                f"?limit={batch_size}")
         if cursor is not None:
             url += f"&offset_id={cursor}"
+        fetching_history = True
         try:
             history_started = monotonic()
             try:
                 batch = services.fetch_json_with_retry(
-                    url, timeout=30.0, desc=f"backfill/telegram/{channel_id}"
+                    url, timeout=120.0, desc=f"backfill/telegram/{channel_id}"
                 )
             except Exception:
                 if services.observe_stage:
                     services.observe_stage("telegram_history_fetch", monotonic() - history_started, True)
                 raise
+            fetching_history = False
             if services.observe_stage:
                 services.observe_stage("telegram_history_fetch", monotonic() - history_started)
             count = batch["message_count"]
@@ -331,7 +341,7 @@ def sync_telegram_channel_pipeline(
             )
         except Exception as exc:
             detail = safe_error_detail(exc)
-            failures.append(f"history batch: {detail}")
+            (resumable_warnings if fetching_history else failures).append(f"history batch: {detail}")
             services.logger.warning(
                 "Telegram history batch failed for %s: %s; will resume", channel_id, detail
             )
@@ -356,20 +366,20 @@ def sync_telegram_channel_pipeline(
             "One or more Telegram fetch/history operations failed: "
             + "; ".join(failures[:8])
         )
-    if filter_changed and to_purge:
+    if filter_changed and to_purge and not resumable_warnings:
         removed = services.purge_videos(
             conn, media_dir, to_purge, "Telegram filter changed",
             providers_succeeded={f"telegram:{channel_id}"},
         )
-    if filter_changed:
+    if filter_changed and not resumable_warnings:
         conn.execute("""UPDATE telegram_channel_state SET last_min_duration = %s,
             last_tags_whitelist = %s, last_tags_blacklist = %s, updated_at = %s
             WHERE channel_id = %s""",
             (min_dur, wl_json, bl_json, int(services.time.time()), channel_id))
         conn.commit()
-    if filter_changed and to_purge:
+    if filter_changed and to_purge and not resumable_warnings:
         services.logger.info(
             "Telegram %s: reevaluated stored entries: kept=%d removed=%d",
             channel_id, kept, removed,
         )
-    return synced_ids
+    return TelegramSyncResult(synced_ids, resumable_warnings)

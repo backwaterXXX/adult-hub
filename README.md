@@ -91,7 +91,7 @@ make deploy
 ```
 
 `make deploy` reads the release number from `VERSION`, exports it as
-`APP_VERSION`, and recreates the resolver, sync, and backup services from
+`APP_VERSION`, and recreates the resolver and sync services from
 images tagged with that release. Running `docker compose build resolver sync`
 and `docker compose up -d resolver sync` directly still works, but tags and
 labels the images `dev` unless you export `APP_VERSION` yourself.
@@ -326,17 +326,11 @@ The performer evaluation workflow as a whole is described in `docs/telegram-perf
   # Recreate schema from scratch (wipes tables and reapplies all migrations)
   python3 migrate_db.py recreate --yes
   ```
-- **Backup & Restore**:
-  ```sh
-  # Create and verify a PostgreSQL backup, then apply monthly history retention
-  docker compose exec -T sync python backup_scheduler.py --once
-  ```
-  The Compose stack also runs the `backup` service, which starts
-  `backup_scheduler.py` as a daemon and performs the daily backup at
-  `BACKUP_DAILY_AT` (default `04:30`, container local time) plus the monthly
-  history cleanup. `BACKUP_KEEP_DAYS` (default `7`) sets the archive pruning
-  window for both the daemon and the `--once` run. The scheduler supports
-  checksum verification, archive dry-run, and restore verification.
+- **Backup & Restore**: Backups are managed by the host system. The Compose
+  stack does not run a backup scheduler. Existing backup files remain in place;
+  the optional manual database backup and restore tools are still available.
+  Automatic history pruning previously run by the backup scheduler is no
+  longer scheduled by this stack.
 
 ### Architecture Highlights
 - `common/`: Shared configuration loader and validation logic used across both containers, the PostgreSQL layer (`db.py`, a psycopg 3 wrapper over `DATABASE_URL`), versioned database migrations (`common/migrations/`, `migrate_db.py`, `restore_db.py`), plus `job_queue.py` (durable task queue) and `managed_collections.py`.

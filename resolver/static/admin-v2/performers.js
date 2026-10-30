@@ -4,7 +4,7 @@
   const API = '/admin/api/v2/performers';
   const $ = (selector, root = document) => root.querySelector(selector);
   const PROPOSAL_PAGE_SIZE = 50;
-  const state = { loading: false, loadSeq: 0, rows: [], proposalOffset: 0, proposalTotal: 0, proposalSeq: 0, busy: new Set(), fuzzyGroups: [], fuzzyOffset: 0, fuzzyLoading: false, fuzzyScanned: false, fuzzyMergeSeq: 0, fuzzyQueued: new Map(), fuzzyDismissed: new Set(), fuzzySwapped: new Map(), fuzzySelected: new Map() };
+  const state = { loading: false, loadSeq: 0, rows: [], proposalOffset: 0, proposalTotal: 0, proposalSeq: 0, busy: new Set(), fuzzyGroups: [], fuzzyOffset: 0, fuzzyLoading: false, fuzzyScanned: false, fuzzyBatchRunning: false, fuzzyMerging: new Set(), fuzzyQueued: new Map(), fuzzyDismissed: new Set(), fuzzySwapped: new Map(), fuzzySelected: new Map() };
   const MAX_SELECTED_MERGES = 10;
 
   // Shared helpers live in admin-v2.js and are published through window.AdminV2.
@@ -255,119 +255,71 @@
     const button = $('#fuzzyReviewSelected');
     const status = $('#fuzzySelectionStatus');
     if (!button) return;
-    button.disabled = state.fuzzySelected.size === 0 || state.fuzzySelected.size > MAX_SELECTED_MERGES;
-    button.textContent = `Review selected merges (${state.fuzzySelected.size})`;
-    if (status) status.textContent = `Select up to ${MAX_SELECTED_MERGES} suggestions. Every merge needs a current preview and explicit confirmation.`;
+    button.disabled = state.fuzzyBatchRunning || state.fuzzySelected.size === 0 || state.fuzzySelected.size > MAX_SELECTED_MERGES;
+    button.textContent = `Merge selected (${state.fuzzySelected.size})`;
+    if (status) status.textContent = `Select up to ${MAX_SELECTED_MERGES} pairs. Merges are queued immediately; there is no one-click undo.`;
   }
   function normalizedPerformerName(value) {
     return String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
   }
-  function renderMergeImpact(target, item) {
-    const impact = document.createElement('dl'); impact.className = 'performer-proposal-details';
-    for (const [label, value] of [
-      ['Variant', item.alias], ['Canonical target', item.canonical], ['Videos using variant', item.alias_videos],
-      ['Videos using canonical name', item.canonical_videos], ['Other aliases affected', item.aliases_affected],
-      ['Variant profile', [item.has_photo ? 'photo' : '', item.has_bio ? 'biography' : ''].filter(Boolean).join(' and ') || 'none'],
-      ['Canonical profile', [item.canonical_has_photo ? 'photo' : '', item.canonical_has_bio ? 'biography' : ''].filter(Boolean).join(' and ') || 'none'],
-    ]) {
-      const field = node('div'); field.append(node('dt', '', label), node('dd', '', value)); impact.append(field);
-    }
-    target.append(impact);
-  }
-  async function reviewSelectedMerges() {
-    if (!state.fuzzySelected.size || state.fuzzySelected.size > MAX_SELECTED_MERGES) return;
+  async function mergeSelected() {
+    if (state.fuzzyBatchRunning || !state.fuzzySelected.size || state.fuzzySelected.size > MAX_SELECTED_MERGES) return;
     const selected = [...state.fuzzySelected.entries()];
+    if (selected.some(([key, pair]) => state.fuzzyMerging.has(key) || state.fuzzyMerging.has(`${pair.canonical}::${pair.alias}`))) {
+      window.AdminV2.setFeedback($('#fuzzyFeedback'), 'A selected merge is already in progress. Check Jobs before retrying.', 'error');
+      return;
+    }
     const seenNames = new Map();
     const conflicts = [];
     selected.forEach(([, pair], index) => {
-      const pairNames = new Map();
+      const names = new Map();
       for (const name of [pair.alias, pair.canonical]) {
         const key = normalizedPerformerName(name);
-        if (key) pairNames.set(key, name);
+        if (key) names.set(key, name);
       }
-      for (const [key, name] of pairNames) {
+      for (const [key, name] of names) {
         if (seenNames.has(key) && seenNames.get(key) !== index) conflicts.push(name);
+        seenNames.set(key, index);
       }
-      for (const key of pairNames.keys()) seenNames.set(key, index);
     });
-    const requestSeq = ++state.fuzzyMergeSeq;
-    const dialog = $('#fuzzyMergeDialog');
-    const content = $('#fuzzyMergeContent');
-    const actions = $('#fuzzyMergeActions');
-    dialog.addEventListener('close', () => { state.fuzzyMergeSeq += 1; }, { once: true });
-    const heading = node('h2', '', 'Review selected merges'); heading.id = 'fuzzyMergeTitle';
-    const outcomes = node('div', 'fuzzy-merge-outcomes');
-    content.replaceChildren(node('p', 'eyebrow', 'SELECTED IDENTITY REVIEW'), heading,
-      node('p', '', `${selected.length} explicit pair${selected.length === 1 ? '' : 's'} selected. Review each current identity, relationship impact, and warning before queueing.`), outcomes);
-    actions.replaceChildren();
-    const close = node('button', 'button button-quiet', 'Close'); close.type = 'button';
-    close.addEventListener('click', () => window.AdminV2.closeDialog(dialog));
-    actions.append(close);
-    window.AdminV2.openDialog(dialog);
     if (conflicts.length) {
-      outcomes.append(node('p', 'state-banner state-error',
-        `Selection conflict: more than one selected merge uses the same performer identity (${[...new Set(conflicts)].join(', ')}). Deselect overlapping pairs and review again.`));
+      window.AdminV2.setFeedback($('#fuzzyFeedback'), `Selection conflict: multiple merges use the same performer (${[...new Set(conflicts)].join(', ')}). Deselect overlapping pairs.`, 'error');
       return;
     }
-    const prepared = [];
-    for (const [pairKey, pair] of selected) {
-      if (requestSeq !== state.fuzzyMergeSeq || !dialog.open) return;
-      const card = node('section', 'operation-history-row fuzzy-merge-review-item');
-      card.append(node('strong', '', `${pair.alias} → ${pair.canonical}`),
-        node('p', '', `${pair.category} · similarity score ${pair.similarity} · ${pair.variantVideos} variant videos / ${pair.canonicalVideos} canonical videos`));
-      if (pair.variantExamples.length) addFilmExamples(card, pair.alias, pair.variantExamples);
-      if (pair.canonicalExamples.length) addFilmExamples(card, pair.canonical, pair.canonicalExamples);
-      const status = node('p', 'catalog-feedback', 'Refreshing impact preview…'); card.append(status); outcomes.append(card);
-      try {
-        const preview = await post('/admin/api/v2/operations/preview', {
-          type: 'performer_merge', alias: pair.alias, canonical: pair.canonical,
-        });
-        if (requestSeq !== state.fuzzyMergeSeq || !dialog.open) return;
-        if (!Array.isArray(preview.items) || preview.items.length !== 1 || typeof preview.plan_id !== 'string') {
-          throw new Error('The server did not return one current merge preview.');
-        }
-        renderMergeImpact(card, preview.items[0]);
-        (Array.isArray(preview.warnings) ? preview.warnings : []).forEach(warning => card.append(node('p', 'state-banner state-warning', warning)));
-        status.textContent = 'Current impact preview ready.';
-        prepared.push({ pairKey, pair, planId: preview.plan_id, status: 'pending' });
-      } catch (error) {
-        status.className = 'state-banner state-error';
-        status.textContent = `Preview failed: ${errorText(error)} This pair will not be queued.`;
-      }
-    }
-    const ready = prepared.length === selected.length;
-    const consentLabel = node('label', 'performer-proposal-controls');
-    const consent = document.createElement('input'); consent.type = 'checkbox'; consent.disabled = !ready;
-    consentLabel.append(consent, node('span', '', 'I reviewed every identity and impact preview. I understand performer merges cannot be undone from Jobs.'));
-    content.append(consentLabel);
-    const queue = node('button', 'button button-primary', 'Queue selected merges'); queue.type = 'button'; queue.disabled = true;
-    consent.addEventListener('change', () => { queue.disabled = !consent.checked || !ready; });
-    queue.addEventListener('click', async () => {
-      if (!consent.checked || queue.disabled || requestSeq !== state.fuzzyMergeSeq || !dialog.open) return;
-      queue.disabled = true;
-      close.disabled = true;
-      const resultList = node('ol', 'fuzzy-merge-results'); outcomes.append(resultList);
-      for (const entry of prepared) {
-        const result = node('li', '', `${entry.pair.alias} → ${entry.pair.canonical}: queueing…`); resultList.append(result);
+    state.fuzzyBatchRunning = true;
+    $('#fuzzyScan').disabled = true;
+    updateSelectedMergeButton();
+    renderFuzzy();
+    const failures = [];
+    let queuedCount = 0;
+    try {
+      for (const [pairKey, pair] of selected) {
+        window.AdminV2.setFeedback($('#fuzzyFeedback'), `Queueing ${queuedCount + failures.length + 1} of ${selected.length}: ${pair.alias} → ${pair.canonical}…`);
+        let executing = false;
         try {
-          const queued = await post('/admin/api/v2/operations/execute', { plan_id: entry.planId });
-          entry.status = 'queued';
-          const jobId = /^[A-Za-z0-9_-]{1,128}$/.test(String(queued?.job_id || '')) ? queued.job_id : '';
-          state.fuzzyQueued.set(entry.pairKey, jobId);
-          result.textContent = `${entry.pair.alias} → ${entry.pair.canonical}: queued${jobId ? ` · task ${jobId}` : ''}`;
+          const preview = await post('/admin/api/v2/operations/preview', { type: 'performer_merge', alias: pair.alias, canonical: pair.canonical });
+          if (!Array.isArray(preview.items) || preview.items.length !== 1 || typeof preview.plan_id !== 'string' || !preview.plan_id) throw new Error('Invalid merge preview.');
+          executing = true;
+          const result = await post('/admin/api/v2/operations/execute', { plan_id: preview.plan_id });
+          const jobId = /^[A-Za-z0-9_-]{1,128}$/.test(String(result?.job_id || '')) ? result.job_id : '';
+          state.fuzzyQueued.set(pairKey, jobId);
+          state.fuzzySelected.delete(pairKey);
+          queuedCount += 1;
         } catch (error) {
-          entry.status = 'failed';
-          result.textContent = `${entry.pair.alias} → ${entry.pair.canonical}: outcome could not be confirmed. Check Tasks before retrying. ${errorText(error)}`;
+          const uncertain = executing && error.status !== 409;
+          if (uncertain) {
+            state.fuzzyMerging.add(pairKey);
+            state.fuzzySelected.delete(pairKey);
+          }
+          failures.push(`${pair.alias} → ${pair.canonical}: ${uncertain ? 'outcome unconfirmed; check Jobs before retrying' : (executing ? 'records changed; scan again before retrying' : 'could not prepare merge')} (${errorText(error)})`);
         }
-        state.fuzzySelected.delete(entry.pairKey);
       }
+    } finally {
+      state.fuzzyBatchRunning = false;
+      $('#fuzzyScan').disabled = false;
       renderFuzzy();
-      updateSelectedMergeButton();
-      const queuedCount = prepared.filter(entry => entry.status === 'queued').length;
-      window.AdminV2.setFeedback($('#fuzzyFeedback'), `${queuedCount} of ${prepared.length} selected performer merges queued. Review individual outcomes and follow them in Tasks.`);
-      close.disabled = false;
-    });
-    actions.append(queue);
+      window.AdminV2.setFeedback($('#fuzzyFeedback'), `${queuedCount} of ${selected.length} selected merges queued.${failures.length ? ` ${failures.join(' · ')}` : ' Follow their progress in Jobs.'}`, failures.length ? 'error' : 'status');
+    }
   }
   function renderFuzzy() {
     const host = $('#fuzzyRows');
@@ -392,11 +344,13 @@
       let currentAlias = isSwapped ? defaultCanonical : defaultAlias;
       let currentCanonical = isSwapped ? defaultAlias : defaultCanonical;
 
+      const isMerging = state.fuzzyMerging.has(pairKey) || state.fuzzyMerging.has(`${defaultCanonical}::${defaultAlias}`);
       const isQueued = state.fuzzyQueued.has(pairKey) || state.fuzzyQueued.has(`${defaultCanonical}::${defaultAlias}`);
       const jobId = state.fuzzyQueued.get(pairKey) || state.fuzzyQueued.get(`${defaultCanonical}::${defaultAlias}`);
 
       const row = node('article', isQueued ? 'operation-history-row is-completed' : 'operation-history-row');
       row.dataset.fuzzyPair = pairKey;
+      row.className += ' fuzzy-row';
 
       const copy = node('div');
       const titleNode = node('strong', '', `${currentAlias} → ${currentCanonical}`);
@@ -413,10 +367,10 @@
 
       const actions = node('div', 'performer-proposal-actions');
 
-      const selectionLabel = node('label', 'quality-select');
+      const selectionLabel = node('label', 'quality-select fuzzy-select');
       const selection = document.createElement('input'); selection.type = 'checkbox';
       selection.checked = state.fuzzySelected.has(pairKey);
-      selection.disabled = isQueued || (!selection.checked && state.fuzzySelected.size >= MAX_SELECTED_MERGES);
+      selection.disabled = state.fuzzyBatchRunning || isQueued || isMerging || (!selection.checked && state.fuzzySelected.size >= MAX_SELECTED_MERGES);
       selection.setAttribute('aria-label', `Select merge ${currentAlias} into ${currentCanonical}`);
       selection.addEventListener('change', () => {
         if (selection.checked) {
@@ -431,18 +385,20 @@
         updateSelectedMergeButton();
         renderFuzzy();
       });
-      selectionLabel.append(selection, node('span', '', 'Select for merge review'));
-      actions.append(selectionLabel);
+      selectionLabel.append(selection, node('span', 'sr-only', 'Select for merge'));
+      row.append(selectionLabel);
 
-      const review = node('button', 'button button-quiet', 'Review merge');
+      const review = node('button', 'button button-primary', 'Merge');
       review.type = 'button';
-      review.addEventListener('click', () => reviewFuzzyMerge(currentAlias, currentCanonical));
+      review.disabled = state.fuzzyBatchRunning || isMerging || isQueued;
+      review.addEventListener('click', () => mergeFuzzy(currentAlias, currentCanonical, review));
 
       if (isQueued) {
         actions.append(review, node('span', 'status-pill pill-good', `✓ Queued (${jobId || 'job'})`));
       } else {
         const swap = node('button', 'button button-quiet', '⇄ Swap');
         swap.type = 'button';
+        swap.disabled = state.fuzzyBatchRunning || isMerging;
         swap.title = 'Swap merge direction';
         if (isSwapped) swap.className = 'button button-quiet is-selected';
         swap.addEventListener('click', () => {
@@ -451,6 +407,7 @@
           currentAlias = newSwapped ? defaultCanonical : defaultAlias;
           currentCanonical = newSwapped ? defaultAlias : defaultCanonical;
           titleNode.textContent = `${currentAlias} → ${currentCanonical}`;
+          selection.setAttribute('aria-label', `Select merge ${currentAlias} into ${currentCanonical}`);
           if (selection.checked) state.fuzzySelected.set(pairKey, {
             alias: currentAlias, canonical: currentCanonical, category: group.category_label,
             similarity: similarityScore, variantVideos: variant.video_count || 0,
@@ -463,6 +420,7 @@
 
         const dismiss = node('button', 'button button-quiet', 'Dismiss');
         dismiss.type = 'button';
+        dismiss.disabled = state.fuzzyBatchRunning || isMerging;
         dismiss.title = 'Dismiss suggestion';
         dismiss.addEventListener('click', () => {
           state.fuzzyDismissed.add(pairKey);
@@ -519,78 +477,42 @@
       window.AdminV2.setFeedback($('#fuzzyFeedback'), `Could not scan performer names. ${errorText(error)}`, 'error');
     } finally { state.fuzzyLoading = false; button.disabled = false; }
   }
-  async function reviewFuzzyMerge(alias, canonical) {
-    const requestSeq = ++state.fuzzyMergeSeq;
-    const dialog = $('#fuzzyMergeDialog');
-    const content = $('#fuzzyMergeContent');
-    const actions = $('#fuzzyMergeActions');
-    dialog.addEventListener('close', () => { state.fuzzyMergeSeq += 1; }, { once: true });
-    const heading = node('h2', '', 'Review name merge'); heading.id = 'fuzzyMergeTitle';
-    content.replaceChildren(node('p', 'eyebrow', 'MERGE PREVIEW'), heading, node('p', '', `${alias} will be merged into ${canonical}.`), node('p', 'catalog-feedback', 'Preparing a current impact preview…'));
-    actions.replaceChildren();
-    const close = node('button', 'button button-quiet', 'Close'); close.type = 'button'; close.addEventListener('click', () => window.AdminV2.closeDialog(dialog));
-    actions.append(close);
-    window.AdminV2.openDialog(dialog);
+  async function mergeFuzzy(alias, canonical, button) {
+    const key = `${alias}::${canonical}`;
+    if (button.disabled || state.fuzzyMerging.has(key) || state.fuzzyMerging.has(`${canonical}::${alias}`)) return;
+    state.fuzzyMerging.add(key);
+    button.disabled = true;
+    window.AdminV2.setFeedback($('#fuzzyFeedback'), `Preparing merge: ${alias} → ${canonical}…`);
+    let executing = false;
     try {
       const preview = await post('/admin/api/v2/operations/preview', { type: 'performer_merge', alias, canonical });
-      if (requestSeq !== state.fuzzyMergeSeq || !dialog.open) return;
-      if (!Array.isArray(preview.items) || !preview.items.length || typeof preview.plan_id !== 'string') throw new Error('The server returned an invalid merge preview.');
-      const item = preview.items[0];
-      const previewHeading = node('h2', '', 'Review name merge'); previewHeading.id = 'fuzzyMergeTitle';
-      content.replaceChildren(node('p', 'eyebrow', 'MERGE PREVIEW'), previewHeading);
-      const impact = document.createElement('dl'); impact.className = 'performer-proposal-details';
-      for (const [label, value] of [
-        ['Variant', item.alias], ['Canonical name', item.canonical], ['Videos using variant', item.alias_videos],
-        ['Videos using canonical name', item.canonical_videos], ['Other aliases affected', item.aliases_affected],
-        ['Variant profile', [item.has_photo ? 'photo' : '', item.has_bio ? 'biography' : ''].filter(Boolean).join(' and ') || 'none'],
-        ['Canonical profile', [item.canonical_has_photo ? 'photo' : '', item.canonical_has_bio ? 'biography' : ''].filter(Boolean).join(' and ') || 'none'],
-      ]) {
-        const field = node('div'); field.append(node('dt', '', label), node('dd', '', value)); impact.append(field);
+      if (!Array.isArray(preview.items) || preview.items.length !== 1 || typeof preview.plan_id !== 'string' || !preview.plan_id) {
+        throw new Error('The server returned an invalid merge preview.');
       }
-      content.append(impact);
-      (preview.warnings || []).forEach(warning => content.append(node('p', 'state-banner state-warning', warning)));
-      content.append(node('p', 'catalog-feedback', 'The merge runs as a background job. There is no one-click undo for performer merges. Review the current backup and impact before queueing.'));
-      const consentLabel = node('label', 'performer-proposal-controls');
-      const consent = document.createElement('input'); consent.type = 'checkbox';
-      consentLabel.append(consent, node('span', '', 'I reviewed the impact and understand the merge cannot be undone from Jobs.'));
-      content.append(consentLabel);
-      const queue = node('button', 'button button-primary', 'Queue merge'); queue.type = 'button'; queue.disabled = true;
-      consent.addEventListener('change', () => { queue.disabled = !consent.checked; });
-      queue.addEventListener('click', async () => {
-        if (!consent.checked || queue.disabled || requestSeq !== state.fuzzyMergeSeq || !dialog.open) return;
-        queue.disabled = true;
-        try {
-          const result = await post('/admin/api/v2/operations/execute', { plan_id: preview.plan_id });
-          if (requestSeq !== state.fuzzyMergeSeq || !dialog.open) return;
-          state.fuzzyQueued.set(`${alias}::${canonical}`, result.job_id);
-          state.fuzzySelected.delete(`${alias}::${canonical}`);
-          state.fuzzySelected.delete(`${canonical}::${alias}`);
-          renderFuzzy();
-          updateSelectedMergeButton();
-          content.append(node('p', 'catalog-feedback', `Merge queued as job ${result.job_id}. The candidate remains listed until the job completes; check Jobs, then scan again.`));
-          const jobs = node('a', 'button button-quiet', 'Open Jobs'); jobs.href = '#jobs';
-          actions.replaceChildren(close, jobs);
-          window.AdminV2.setFeedback($('#fuzzyFeedback'), `Merge queued as job ${result.job_id}.`);
-        } catch (error) {
-          if (requestSeq !== state.fuzzyMergeSeq || !dialog.open) return;
-          content.append(node('p', 'state-banner state-error', `Could not queue merge. ${errorText(error)}`));
-          queue.disabled = false;
-        }
-      });
-      actions.append(queue);
+      executing = true;
+      const result = await post('/admin/api/v2/operations/execute', { plan_id: preview.plan_id });
+      const jobId = /^[A-Za-z0-9_-]{1,128}$/.test(String(result?.job_id || '')) ? result.job_id : '';
+      state.fuzzyQueued.set(key, jobId);
+      state.fuzzyMerging.delete(key);
+      state.fuzzySelected.delete(`${alias}::${canonical}`);
+      state.fuzzySelected.delete(`${canonical}::${alias}`);
+      renderFuzzy();
+      window.AdminV2.setFeedback($('#fuzzyFeedback'), `Merge queued${jobId ? ` as job ${jobId}` : ''}. Follow its progress in Jobs.`);
     } catch (error) {
-      if (requestSeq !== state.fuzzyMergeSeq || !dialog.open) return;
-      const errorHeading = node('h2', '', 'Review name merge'); errorHeading.id = 'fuzzyMergeTitle';
-      content.replaceChildren(node('p', 'eyebrow', 'MERGE PREVIEW'), errorHeading, node('p', 'state-banner state-error', `Could not create a current merge preview. ${errorText(error)}`));
+      const uncertain = executing && error.status !== 409;
+      window.AdminV2.setFeedback($('#fuzzyFeedback'), uncertain
+        ? `Merge outcome could not be confirmed. Check Jobs before retrying. ${errorText(error)}`
+        : executing ? `Merge was not queued. Scan again before retrying. ${errorText(error)}`
+          : `Could not prepare merge. ${errorText(error)}`, 'error');
+      if (!uncertain) { state.fuzzyMerging.delete(key); button.disabled = false; renderFuzzy(); }
     }
   }
   $('#performersRefresh')?.addEventListener('click', load);
   $('#performersReconcile')?.addEventListener('click', reconcileClearMatches);
   $('#fuzzyScan')?.addEventListener('click', scanFuzzy);
-  $('#fuzzyReviewSelected')?.addEventListener('click', reviewSelectedMerges);
+  $('#fuzzyReviewSelected')?.addEventListener('click', mergeSelected);
   $('#fuzzyCategory')?.addEventListener('change', () => { state.fuzzyOffset = 0; renderFuzzy(); });
   $('#fuzzyPrev')?.addEventListener('click', () => { state.fuzzyOffset = Math.max(0, state.fuzzyOffset - 50); renderFuzzy(); });
   $('#fuzzyNext')?.addEventListener('click', () => { state.fuzzyOffset += 50; renderFuzzy(); });
-  $('#fuzzyMergeClose')?.addEventListener('click', () => window.AdminV2.closeDialog($('#fuzzyMergeDialog')));
   document.addEventListener('adminv2:navigate', event => { if (event.detail?.route === 'performers') load(); });
 })();

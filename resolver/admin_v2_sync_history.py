@@ -57,6 +57,10 @@ def safe_sync_history(report):
                     safe_source[key] = value
             if type(source.get("success")) is bool:
                 safe_source["success"] = source["success"]
+            if (isinstance(source.get("source"), str) and source["source"].startswith("telegram:")
+                    and isinstance(source.get("warnings"), list)
+                    and any(isinstance(warning, str) and warning.startswith("history batch: ") for warning in source["warnings"])):
+                safe_source["history_deferred"] = True
             for key in ("added", "removed", "videos"):
                 value = count(source.get(key))
                 if value is not None:

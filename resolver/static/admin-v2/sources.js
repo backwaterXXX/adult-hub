@@ -561,7 +561,8 @@
       const channels = Array.isArray(run.sources) ? run.sources : [];
       const added = channels.reduce((sum, source) => sum + (isCount(source.added) ? Number(source.added) : 0), 0);
       const removed = channels.reduce((sum, source) => sum + (isCount(source.removed) ? Number(source.removed) : 0), 0);
-      const failed = channels.filter(source => source.success === false);
+      const failed = channels.filter(source => source.success === false && !source.history_deferred);
+      const deferred = channels.filter(source => source.history_deferred === true);
       const facts = [
         `${channels.length} source${channels.length === 1 ? '' : 's'}`,
         `${added.toLocaleString('en-US')} added · ${removed.toLocaleString('en-US')} removed`,
@@ -579,6 +580,10 @@
           return `${label}${error ? ` · ${error}` : ''}${detail ? ` — ${detail}` : ''}`;
         }).join('; ');
         copy.append(create('p', 'source-sync-run-failures', `Failed sources: ${failureText}`));
+      }
+      if (deferred.length) {
+        const labels = deferred.map(source => scrub(source.label) || scrub(source.source) || 'Source').join(', ');
+        copy.append(create('p', 'source-sync-run-details', `History deferred; will resume: ${labels}. Cleanup skipped for these sources.`));
       }
       const stages = run.stages && typeof run.stages === 'object'
         ? Object.entries(run.stages).filter(([, value]) => isCount(value && value.calls) || isCount(value && value.total_seconds))

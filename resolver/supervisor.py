@@ -18,6 +18,7 @@ from common.logging_setup import configure_logging
 
 UVICORN_COMMAND = [
     "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8090",
+    "--timeout-graceful-shutdown", "5",
 ]
 PHASH_WORKER_COMMAND = ["python3", "phash_worker.py"]
 VISUAL_WORKER_COMMAND = ["python3", "video_visual_worker.py"]
@@ -133,7 +134,7 @@ def main() -> int:
                     failures += 1
                     _log(f"healthcheck failed ({failures}/{FAILURES_TO_RESTART})", logging.WARNING)
                     if failures >= FAILURES_TO_RESTART:
-                        reason = "health endpoint stayed unavailable"
+                        reason = "process is alive but health endpoint stayed unresponsive (event loop may be busy)"
                         _stop_child(child)
                         break
 

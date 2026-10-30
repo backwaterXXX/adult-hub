@@ -809,5 +809,32 @@ class TestHashtags(unittest.TestCase):
                          {"Morgan Black", "Heath Jordan", "Conner Habib"})
 
 
+
+class PerformerSnapshotTests(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_requests_share_off_loop_snapshot_and_refresh_after_ttl(self):
+        import threading
+        started = threading.Event()
+        release = threading.Event()
+        def load():
+            started.set()
+            release.wait(3)
+            return ['Actor']
+        with patch.object(tg_module, '_performer_snapshot', None), \
+             patch.object(tg_module, '_performer_snapshot_at', 0), \
+             patch.object(tg_module, 'load_known_performers', side_effect=load) as known, \
+             patch.object(tg_module, 'load_alias_map', return_value={}) as aliases, \
+             patch.object(tg_module, '_prepare_external_performer_catalog', return_value={}) as catalog:
+            first = asyncio.create_task(asyncio.to_thread(tg_module._load_performer_snapshot))
+            self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            second = asyncio.create_task(asyncio.to_thread(tg_module._load_performer_snapshot))
+            await asyncio.sleep(0)
+            release.set()
+            one, two = await asyncio.gather(first, second)
+            self.assertIs(one, two)
+            self.assertEqual((known.call_count, aliases.call_count, catalog.call_count), (1, 1, 1))
+            tg_module._performer_snapshot_at -= tg_module._PERFORMER_SNAPSHOT_TTL + 1
+            await asyncio.to_thread(tg_module._load_performer_snapshot)
+            self.assertEqual(known.call_count, 2)
+
 if __name__ == "__main__":
     unittest.main()

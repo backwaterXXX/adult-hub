@@ -89,7 +89,7 @@ def preview_performer_merge(db_url, alias, canonical, *, _core):
         result["warnings"].append("The alias biography will become the canonical biography.")
     return result
 
-def performer_merge_revision(conn, alias, canonical, *, _core):
+def performer_merge_revision(conn, alias, canonical, *, _core, legacy=False):
     """Fingerprint the catalog, people metadata, alias map and file registry a merge may change."""
     tables = _core["table_names"](conn)
     alias_key, canonical_key = alias.strip().lower(), canonical.strip().lower()
@@ -102,7 +102,13 @@ def performer_merge_revision(conn, alias, canonical, *, _core):
     mapping = []
     if "performer_aliases" in tables:
         mapping = conn.execute("SELECT alias,canonical FROM performer_aliases ORDER BY lower(alias),alias").fetchall()
-        payload["aliases"] = mapping
+        if legacy:
+            payload["aliases"] = mapping
+        else:
+            # Only mappings that the merge reads or rewrites affect this pair.
+            payload["aliases"] = [tuple(row) for row in mapping
+                                  if str(row[0] or "").strip().lower() in {alias_key, canonical_key}
+                                  or str(row[1] or "").strip().lower() == alias_key]
     impacted_ids = []
     video_rows = []
     if "videos" in tables:
@@ -133,7 +139,8 @@ def performer_merge_revision(conn, alias, canonical, *, _core):
             (impacted_ids,),
         ).fetchall()
     canonical = _core["json"].dumps(payload, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return digest if legacy else "v2:" + digest
 
 def _name_exists(conn, table, name, *, _core):
     return conn.execute(

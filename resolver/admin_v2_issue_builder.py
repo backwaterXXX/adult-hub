@@ -74,6 +74,10 @@ def _latest_source_failures(history):
     for source_id, (source, run_time) in latest.items():
         if source.get("success") is True:
             continue
+        warnings = source.get("warnings")
+        if isinstance(warnings, list) and any(
+                isinstance(item, str) and item.startswith("history batch: ") for item in warnings):
+            continue
         # Old history formats may not carry a success flag. Treat it as failed
         # only when a failure marker is present, never by assuming falsy means bad.
         if source.get("success") is not False and not source.get("error"):
@@ -174,7 +178,9 @@ def _build_issues(admin, now):
     collect_source_issues(admin, now, health, issues)
     db_available = collect_database_issues(admin, now, health, issues)
     collect_quality_issues(admin, now, health, issues, db_available)
-    collect_backup_issues(admin, now, health, issues)
+    monitor_backups = os.environ.get("ADMIN_V2_MONITOR_BACKUPS", "true").strip().lower() in {"1", "true", "yes", "on"}
+    if monitor_backups:
+        collect_backup_issues(admin, now, health, issues)
 
     # Missing configuration or database state is one explicit warning. Avoid
     # presenting failed reads as an empty issue list.
@@ -197,7 +203,7 @@ def _build_issues(admin, now):
         or health["truncated"]["done_jobs"]
         or health["truncated"].get("processing_jobs", False)
         or not health["available"]["sync_history"]
-        or not health["available"]["backup_inventory"]
+        or (monitor_backups and not health["available"]["backup_inventory"])
         or (health["available"]["database"] and not health["available"]["quality_audit"])
         or health["truncated"].get("sync_history", False)
     )

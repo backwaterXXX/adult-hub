@@ -75,11 +75,11 @@ proxy-origin:
 lint:
 	$(RUFF) check .
 
-# Only the three application services: Jellyfin is defined in the same file and
+# Only the two application services: Jellyfin is defined in the same file and
 # is not part of a release, so it stays out of a deploy.
 deploy:
 	@printf 'Deploying Adult Hub %s\n' '$(APP_VERSION)'
-	docker compose up -d --build resolver sync backup
+	docker compose up -d --build resolver sync
 
 dev:
 	docker compose -f docker-compose.dev.yml -p adult-hub-dev up --build -d

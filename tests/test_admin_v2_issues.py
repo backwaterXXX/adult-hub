@@ -178,6 +178,14 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
         self.assertFalse(unavailable_health["available"]["backup_inventory"])
         self.assertTrue(unavailable_health["incomplete"])
 
+    def test_system_managed_backups_do_not_generate_inventory_alerts(self):
+        with patch.dict("os.environ", {"ADMIN_V2_MONITOR_BACKUPS": "false"}):
+            issues, health = admin_v2_issues._build_issues(make_admin(backup={
+                "inventory_available": False, "available": False, "latest": None,
+            }), NOW)
+        self.assertFalse(any(issue["kind"] == "backup" for issue in issues))
+        self.assertFalse(health["available"]["backup_inventory"])
+
     def test_latest_source_failure_and_never_run_are_distinct_and_disabled_sources_are_ignored(self):
         admin = make_admin()
         with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \

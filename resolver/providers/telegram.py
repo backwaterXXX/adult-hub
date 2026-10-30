@@ -47,6 +47,8 @@ Ref format (stable, built by extract_file_ref):
 
 import asyncio
 import logging
+import threading
+import time
 from collections import OrderedDict
 from typing import Any, List, Optional, Tuple
 
@@ -172,6 +174,26 @@ def _prepare_external_performer_catalog():
         ("stashdb:", "theporndb:", "fansdb:")
     )]
     return prepare_catalog(external)
+
+
+# Build one shared snapshot off the event loop. The lock coalesces concurrent
+# misses, including an empty catalogue, and the TTL bounds staleness.
+_PERFORMER_SNAPSHOT_TTL = 300.0
+_performer_snapshot = None
+_performer_snapshot_at = 0.0
+_performer_snapshot_lock = threading.Lock()
+
+
+def _load_performer_snapshot():
+    global _performer_snapshot, _performer_snapshot_at
+    with _performer_snapshot_lock:
+        now = time.monotonic()
+        if _performer_snapshot is not None and now - _performer_snapshot_at < _PERFORMER_SNAPSHOT_TTL:
+            return _performer_snapshot
+        snapshot = (load_known_performers(), load_alias_map(), _prepare_external_performer_catalog())
+        _performer_snapshot = snapshot
+        _performer_snapshot_at = time.monotonic()
+        return snapshot
 
 
 def message_to_video(msg: dict, channel_title: str,
@@ -355,9 +377,7 @@ class TelegramProvider(BaseProvider):
             offset_id=offset_id, limit=limit
         )
         videos: List[VideoItem] = []
-        kp = load_known_performers()
-        am = load_alias_map()
-        prepared_catalog = _prepare_external_performer_catalog()
+        kp, am, prepared_catalog = await asyncio.to_thread(_load_performer_snapshot)
         for msg in messages:
             item = message_to_video(
                 _message_to_dict(msg, category_id), title,
@@ -381,9 +401,7 @@ class TelegramProvider(BaseProvider):
         ch_cfg = cfg.get_telegram_channel(category_id) if cfg else None
         messages = await _fetch_history(client, entity, offset_id=offset_id, limit=limit)
         videos = []
-        kp = load_known_performers()
-        am = load_alias_map()
-        prepared_catalog = _prepare_external_performer_catalog()
+        kp, am, prepared_catalog = await asyncio.to_thread(_load_performer_snapshot)
         for msg in messages:
             item = message_to_video(
                 _message_to_dict(msg, category_id), title,
@@ -412,9 +430,7 @@ class TelegramProvider(BaseProvider):
             )
         client = await _require_client()
         matched: List[VideoItem] = []
-        known_performers = load_known_performers()
-        aliases = load_alias_map()
-        prepared_catalog = _prepare_external_performer_catalog()
+        known_performers, aliases, prepared_catalog = await asyncio.to_thread(_load_performer_snapshot)
         for channel_ref in channels:
             try:
                 entity = await client.get_entity(_entity_ref(channel_ref))

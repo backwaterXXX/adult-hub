@@ -97,6 +97,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
     # are also registered and enabled. A provider with any failed page/fetch
     # stays out: its historical rows, files and .strm URLs are preserved.
     providers_succeeded: Set[str] = set()
+    source_warnings: Dict[str, list] = {}
     source_errors: Dict[str, str] = {}
     source_error_details: Dict[str, str] = {}
     source_durations: Dict[str, float] = {}
@@ -125,8 +126,12 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                 source_started = _core.time.monotonic()
                 try:
                     synced_ids = _core.sync_telegram_channel_pipeline(ch.id, ch, conn, _core.MEDIA_DIR, collected, sync_mode=sync_mode)
-                    providers_succeeded.add(f"telegram:{ch.id}")
-                    if sync_mode == "scheduled":
+                    warnings = getattr(synced_ids, "warnings", [])
+                    if warnings:
+                        source_warnings[f"telegram:{ch.id}"] = warnings
+                    else:
+                        providers_succeeded.add(f"telegram:{ch.id}")
+                    if sync_mode == "scheduled" and not warnings:
                         try:
                             outcome = _core.reconcile_telegram_channel(
                                 conn, ch.id, _core.MEDIA_DIR,
@@ -165,9 +170,13 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                     history_batch_size = 100
                 source_started = _core.time.monotonic()
                 try:
-                    _core.sync_telegram_channel_pipeline(channel_name, _SimpleCh(), conn, _core.MEDIA_DIR, collected,
+                    synced_ids = _core.sync_telegram_channel_pipeline(channel_name, _SimpleCh(), conn, _core.MEDIA_DIR, collected,
                                                    sync_mode=sync_mode)
-                    providers_succeeded.add(f"telegram:{channel_name}")
+                    warnings = getattr(synced_ids, "warnings", [])
+                    if warnings:
+                        source_warnings[f"telegram:{channel_name}"] = warnings
+                    else:
+                        providers_succeeded.add(f"telegram:{channel_name}")
                 except Exception as e:
                     detail = _core._safe_error_detail(e)
                     _core.logger.error("Telegram sync failed for %s: %s", channel_name, detail)
@@ -314,7 +323,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
             expected_sources = {f"telegram:{source_filter}"}
         else:
             expected_sources = {source_filter}
-    failed_sources = sorted(expected_sources - providers_succeeded)
+    failed_sources = sorted(expected_sources - providers_succeeded - source_warnings.keys())
     after_ids = _core._video_id_snapshot(conn)
     source_rows = []
     for source in sorted(expected_sources | providers_succeeded):
@@ -334,7 +343,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                 source_label = f"tg:[{channel_name[:24].rstrip() + '…' if len(channel_name) > 25 else channel_name}]"
         source_rows.append({
             "source": source, "label": source_label, "success": source in providers_succeeded,
-            "error": source_errors.get(source), "added": len(after - before),
+            "error": source_errors.get(source), **({"warnings": source_warnings[source]} if source in source_warnings else {}), "added": len(after - before),
             "detail": source_error_details.get(source),
             "removed": len(before - after), "videos": len(after),
             "duration_seconds": source_durations.get(source),

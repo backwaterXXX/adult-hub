@@ -356,7 +356,8 @@ class TestAdminOperations(PgTestCase):
                                 (first["jobs"][0]["job_id"],)).fetchone()
         payload = json.loads(job[1])
         self.assertEqual(job[0], "performer_merge")
-        self.assertEqual(len(payload["expected_revision"]), 64)
+        self.assertTrue(payload["expected_revision"].startswith("v2:"))
+        self.assertEqual(len(payload["expected_revision"]), 67)
         self.assertEqual(payload["merges"], [{"alias": "Alias Name", "canonical": "Canonical Name"}])
 
     def test_performer_merge_plan_rejects_catalog_changes_before_enqueue(self):
