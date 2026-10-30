@@ -17,19 +17,6 @@ def build_router(admin):
             return admin.JSONResponse({"ok": False, "error": "Admin is only available locally."}, status_code=403)
         try:
             items = await admin.asyncio.to_thread(admin_schedules.list_schedules, admin.HUB_DB_URL)
-            from common.config_loader import load_config
-            try:
-                config = await admin.asyncio.to_thread(load_config, str(admin.CONFIG_PATH))
-                sync_daily_at, sync_interval_minutes = config.sync.daily_at, config.sync.interval_minutes
-            except Exception:
-                sync_daily_at, sync_interval_minutes = None, 60
-            import os
-            backup_daily_at = os.getenv("BACKUP_DAILY_AT", "04:30")
-            await admin.asyncio.to_thread(
-                system_schedules.ensure_system_schedules, admin.HUB_DB_URL,
-                sync_daily_at=sync_daily_at, sync_interval_minutes=sync_interval_minutes,
-                backup_daily_at=backup_daily_at,
-            )
             configured = await admin.asyncio.to_thread(system_schedules.list_system_schedules, admin.HUB_DB_URL)
             system = []
             for item in configured:

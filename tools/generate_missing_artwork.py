@@ -17,6 +17,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# These imports require the repository root when the tool is run as a script.
+from common import db  # noqa: E402
+from common.image_utils import extract_video_frame, is_black_image  # noqa: E402
+from common.video_variants import fetch_and_select_best_variant  # noqa: E402
+from sync.jellyfin_db import trigger_library_refresh  # noqa: E402
+
+
 def _load_all_env() -> None:
     env_file = REPO_ROOT / ".env"
     if not env_file.exists():
@@ -27,10 +34,6 @@ def _load_all_env() -> None:
             continue
         key, _, value = line.partition("=")
         os.environ.setdefault(key.strip(), value.strip())
-from common import db
-from common.image_utils import extract_video_frame, is_black_image
-from common.video_variants import fetch_and_select_best_variant
-from sync.jellyfin_db import trigger_library_refresh
 
 logger = logging.getLogger(__name__)
 
@@ -232,13 +235,12 @@ def update_job_jellyfin_result(conn, job_id: str, *, item_status: str | None = N
     events = payload.setdefault("events", [])
     if item_status is not None:
         payload["jellyfin_refresh"] = item_status
-        events.append({"stage": "refreshing_jellyfin", "updated_at": now})
     if library_status is not None:
         payload["jellyfin_library_refresh"] = library_status
-        events.append({"stage": "refreshing_jellyfin", "updated_at": now})
     if error:
         payload["jellyfin_refresh_error"] = error[:100]
     if item_status is not None or library_status is not None:
+        events.append({"stage": "refreshing_jellyfin", "updated_at": now})
         pending = payload.get("jellyfin_refresh") == "pending" or payload.get("jellyfin_library_refresh") == "pending"
         payload["progress"] = {"stage": "refreshing_jellyfin" if pending else "completed", "updated_at": now}
     conn.execute(
@@ -410,8 +412,7 @@ def main():
                 "unavailable" if not outcomes or "unavailable" in outcomes else "updated"
             )
             for job_id in job_ids:
-                update_job_jellyfin_result(conn, job_id, item_status=status, error=refresh_error)
-                update_job_jellyfin_result(conn, job_id, library_status=library_status, error=refresh_error)
+                update_job_jellyfin_result(conn, job_id, item_status=status, library_status=library_status, error=refresh_error)
 
     conn.close()
 

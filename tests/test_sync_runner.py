@@ -270,6 +270,10 @@ class RunnerHarness(unittest.TestCase):
         module.WORKER_CAPABILITIES_FILE = str(root / "worker-capabilities.json")
         # Nothing in this suite talks to a database: every queue call is recorded.
         module.DB_URL = "postgresql://runner.invalid/adulthub"
+        module.ensure_system_schedules = lambda *_args, **_kwargs: None
+        module.claim_due_system_schedule = lambda *_args, **_kwargs: False
+        module.finish_system_schedule = lambda *_args, **_kwargs: None
+        module.list_system_schedules = lambda *_args: [{"id": "library-sync", "enabled": True, "next_run_at": "2026-01-01T03:30:00+00:00", "timezone": "Europe/Warsaw"}]
         module.time = FakeClock()
         module.stop_event.clear()
         return module
@@ -1278,7 +1282,8 @@ class TestWaitingForWork(RunnerHarness):
         self.assertEqual(self.worker.call_count, 0)
         self.assertEqual(self.sync_jobs.call_count, 0)
         self.assertEqual(self.full_sync.call_count, 0)
-        self.assertEqual([round(woke, 2) for woke in self.stop.waits], [1.0, 0.9])
+        self.assertTrue(all(0 < delay <= 1 for delay in self.stop.waits))
+        self.assertLessEqual(sum(self.stop.waits), 2)
         self.assertEqual(self.logs.text(), [])
 
     def test_a_shutdown_ends_the_wait_before_the_first_look_at_the_queue(self):
@@ -1449,6 +1454,13 @@ class TestRunLoop(RunnerHarness):
         self.logs.entries.clear()  # the startup announcement has its own suite
         return module
 
+    def test_unavailable_system_schedule_refuses_to_start(self):
+        module = self.looping()
+        module.ensure_system_schedules = Recorder("ensure_system_schedules", raises=OSError("database unavailable"))
+        with self.assertRaisesRegex(RuntimeError, "initialize system cron"):
+            module.run_loop()
+        self.assertFalse(self.full_sync.called)
+
     def test_the_daemon_reclaims_jobs_left_running_by_a_dead_worker(self):
         module = self.looping(requeue=Recorder("requeue_processing", result=2))
 
@@ -1479,8 +1491,8 @@ class TestRunLoop(RunnerHarness):
 
         self.assertEqual(self.full_sync.args(), (None, "scheduled"))
         self.assertEqual(self.dispatch.args(), (module.DB_URL,))
-        self.assertEqual(self.waited.args(), (3_600.0,))
-        self.assertTrue(self.logs.has("Sleeping for 15 minutes...", "info"))
+        self.assertEqual(self.waited.args(), (float("inf"),))
+        self.assertTrue(self.logs.has("Next scheduled sync at", "info"))
         self.assertTrue(self.logs.has("Sync runner exited.", "info"))
 
     def test_due_admin_work_is_queued_before_the_daemon_sleeps(self):
@@ -1509,7 +1521,7 @@ class TestRunLoop(RunnerHarness):
 
         self.assertFalse(self.full_sync.called, "the claimed request already synced")
         self.assertEqual(self.pending.call_count, 2)
-        self.assertEqual(self.sleep.call_count, 1)
+        self.assertEqual(self.waited.call_count, 1)
 
     def test_a_shutdown_during_the_drain_ends_the_pass_before_the_dispatch(self):
         module = self.looping()
@@ -1528,10 +1540,9 @@ class TestRunLoop(RunnerHarness):
 
         module.run_loop()
 
-        self.assertTrue(self.logs.has(
-            "Skipping initial run on startup (run_on_startup=false). Next scheduled sync at", "info"))
-        self.assertEqual(self.waited.every_args(), [(3_600.0,), (3_600.0,)])
-        self.assertEqual(self.full_sync.call_count, 1, "the expired wait still syncs")
+        self.assertTrue(self.logs.has("Skipping initial run on startup (run_on_startup=false)", "info"))
+        self.assertEqual(self.waited.every_args(), [(float("inf"),), (float("inf"),)])
+        self.assertEqual(self.full_sync.call_count, 1)
 
     def test_a_wake_during_the_startup_wait_gives_the_durable_queue_another_look(self):
         module = self.looping(run_on_startup=False, wake_results=[True, False], stop_after=2)
@@ -1544,17 +1555,16 @@ class TestRunLoop(RunnerHarness):
         self.assertEqual(self.dispatch.call_count, 2)
 
     def test_a_restart_that_missed_the_daily_slot_syncs_instead_of_waiting_a_day(self):
-        module = self.looping(daily_at="03:30", run_on_startup=False)
-        self.sleep.result = 70_800.0
-        self.history({"started_at": module.time.time() - 102_000,
-                      "sync_mode": "scheduled", "success": True})
-
+        module = self.looping(daily_at="03:30", run_on_startup=False, stop_after=2)
+        def wake_due(*_args, **_kwargs):
+            if self.waited.call_count == 1:
+                module.system_sync_due = True
+            else:
+                self.stop.set()
+        self.waited.side_effect = wake_due
         module.run_loop()
-
-        self.assertTrue(self.logs.has(
-            "The scheduled sync at 03:30 never completed before this start; running it now", "info"))
-        self.assertFalse(self.logs.has("Skipping initial run", "info"))
-        self.assertEqual(self.full_sync.call_count, 1, "the missed slot is made up, then the day resumes")
+        self.assertEqual(self.full_sync.call_count, 1)
+        self.assertEqual(self.full_sync.args(), (None, "scheduled"))
 
     def test_a_restart_after_the_daily_slot_ran_waits_for_the_next_one(self):
         module = self.looping(daily_at="03:30", run_on_startup=False)
@@ -1568,16 +1578,25 @@ class TestRunLoop(RunnerHarness):
         self.assertFalse(self.full_sync.called)
 
     def test_a_pass_cut_short_by_the_previous_shutdown_does_not_count_as_the_slot(self):
-        module = self.looping(daily_at="03:30", run_on_startup=False)
-        self.sleep.result = 70_800.0
-        self.history({"started_at": module.time.time() - 15_600,
-                      "sync_mode": "scheduled", "success": False},
-                     {"started_at": module.time.time() - 102_000,
-                      "sync_mode": "scheduled", "success": True})
-
+        module = self.looping(daily_at="03:30", run_on_startup=False, stop_after=2)
+        finish = self.record("finish_system_schedule")
+        def wake_due(*_args, **_kwargs):
+            if self.waited.call_count == 1:
+                module.system_sync_due = True
+            else:
+                self.stop.set()
+        self.waited.side_effect = wake_due
         module.run_loop()
-
         self.assertEqual(self.full_sync.call_count, 1)
+        self.assertEqual(finish.kwargs(), {"success": True, "interrupted": False})
+
+    def test_shutdown_during_scheduled_run_keeps_it_unfinished(self):
+        module = self.looping()
+        module.system_sync_due = True
+        finish = self.record("finish_system_schedule")
+        self.full_sync.side_effect = lambda *_args: self.stop.set()
+        module.run_loop()
+        self.assertEqual(finish.kwargs(), {"success": False, "interrupted": True})
 
     def test_a_daemon_that_has_never_finished_a_pass_waits_for_its_slot(self):
         module = self.looping(daily_at="03:30", run_on_startup=False)
@@ -1610,6 +1629,16 @@ class TestRunLoop(RunnerHarness):
             "Sync failed (attempt 1). Retrying with backoff in 30s...", "warning"))
         self.assertTrue(self.logs.has(
             "Sync failed (attempt 2). Retrying with backoff in 60s...", "warning"))
+
+    def test_failed_scheduled_run_waits_backoff_before_reclaiming_due_slot(self):
+        module = self.looping(stop_after=2)
+        module.system_sync_due = True
+        self.full_sync.result = (False, 1)
+        finish = self.record("finish_system_schedule")
+        module.run_loop()
+        self.assertEqual(self.waited.every_args(), [(30,), (float("inf"),)])
+        self.assertEqual(self.waited.kwargs(0), {"allow_schedule": False})
+        self.assertEqual(finish.kwargs(), {"success": False, "interrupted": False})
 
     def test_the_backoff_stops_growing_at_the_configured_ceiling(self):
         module = self.looping(stop_after=4, backoff_base=30, backoff_max=90)

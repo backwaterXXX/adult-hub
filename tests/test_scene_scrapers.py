@@ -123,6 +123,18 @@ class TestBackfillScenes(PgTestCase):
         rows = self.conn.execute("SELECT v.plot,p.status FROM videos v JOIN metadata_review_proposals p ON p.video_id=v.id ORDER BY v.id").fetchall()
         self.assertEqual([tuple(row) for row in rows], [('New plot', 'accepted'), ('Old plot', 'rejected')])
 
+    def test_pending_proposal_without_registered_media_is_deferred(self):
+        from common.metadata_review import store_metadata_review_proposal
+        from scene_scraper_backfill import apply_pending_fingerprint_proposals
+        video_id = 'telegram:-1001:104:999'
+        self.conn.execute("INSERT INTO videos (id,provider,title,plot,first_seen,last_seen,scene_match_source,scene_match_external_id) VALUES (%s,'telegram','Old','Old plot',1,1,'stashdb:title_exact','scene-2')", (video_id,))
+        store_metadata_review_proposal(self.conn, video_id, {'plot': 'New plot'}, source='stashdb:title_exact', external_id='scene-2', source_url='', confidence=0.9)
+        self.conn.commit()
+        self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (0, 0))
+        proposal = self.conn.execute('SELECT status,attempt_count FROM metadata_review_proposals WHERE video_id=%s', (video_id,)).fetchone()
+        self.assertEqual(tuple(proposal), ('pending', 1))
+        self.assertEqual(self.conn.execute('SELECT plot FROM videos WHERE id=%s', (video_id,)).fetchone()[0], 'Old plot')
+
     def test_pending_proposal_updates_every_registered_nfo_and_retries_missing(self):
         from common.metadata_review import store_metadata_review_proposal
         from scene_scraper_backfill import apply_pending_fingerprint_proposals
@@ -136,6 +148,10 @@ class TestBackfillScenes(PgTestCase):
         self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (0, 0))
         self.assertEqual(self.conn.execute('SELECT status FROM metadata_review_proposals WHERE video_id=%s', (video_id,)).fetchone()[0], 'pending')
         (self.media_dir / 'second.nfo').write_text('<movie><plot>Old plot</plot></movie>')
+        self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (0, 0),
+                         'failed proposals wait until their retry time')
+        self.conn.execute("UPDATE metadata_review_proposals SET next_attempt_at=CURRENT_TIMESTAMP WHERE video_id=%s", (video_id,))
+        self.conn.commit()
         self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (1, 1))
         for name in ('first', 'second'):
             self.assertIn('<plot>New plot</plot>', (self.media_dir / (name + '.nfo')).read_text())
@@ -277,6 +293,8 @@ class TestBackfillScenes(PgTestCase):
                VALUES (%s,'telegram','Provider Caption #42',600,'[]','Example Studio',1000,1000)""",
             (vid_id,),
         )
+        self.conn.commit()
+        self.conn.execute("INSERT INTO synced_files (file_path,video_id) VALUES (%s,%s)", ("Example 42.strm", vid_id))
         self.conn.commit()
         nfo_path = self.media_dir / "Example 42.nfo"
         nfo_path.write_text(

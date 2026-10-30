@@ -26,6 +26,8 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("backup.scheduler")
 STOP = threading.Event()
+BACKUP_OVERLAP = 75
+BACKUP_RETRY_SECONDS = 300
 
 
 def _parse_daily_at(value: str) -> tuple[int, int]:
@@ -54,7 +56,7 @@ def _run_backup() -> int:
             fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             LOGGER.warning("Another backup is already running; scheduled backup skipped")
-            return 1
+            return BACKUP_OVERLAP
 
         keep_days = str(max(1, int(os.getenv("BACKUP_KEEP_DAYS", "7"))))
         dest_dir = os.getenv("BACKUP_DIR", "/data/backups")
@@ -103,7 +105,8 @@ def main() -> int:
     args = parser.parse_args()
     db_url = (os.getenv("DATABASE_URL") or "").strip() or None
     if args.force:
-        return _run_backup()
+        code = _run_backup()
+        return 0 if code == BACKUP_OVERLAP else code
     if not db_url:
         LOGGER.error("DATABASE_URL is required to read the saved backup cron schedule")
         return 1
@@ -124,26 +127,29 @@ def main() -> int:
             return 0
         code = _run_backup()
         try:
-            finish_system_schedule(db_url, "database-backup", success=code == 0)
+            finish_system_schedule(db_url, "database-backup", success=code == 0,
+                                   skipped_overlap=code == BACKUP_OVERLAP)
         except Exception:
             LOGGER.exception("Could not record the database backup result")
-        return code
+        return 0 if code == BACKUP_OVERLAP else code
 
     LOGGER.info("Database backup scheduler is polling the saved cron schedule")
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
     while not STOP.is_set():
+        code = 0
         try:
             if claim_due_system_schedule(db_url, "database-backup"):
                 code = _run_backup()
                 try:
-                    finish_system_schedule(db_url, "database-backup", success=code == 0)
+                    finish_system_schedule(db_url, "database-backup", success=code == 0,
+                                   skipped_overlap=code == BACKUP_OVERLAP)
                 except Exception:
                     LOGGER.exception("Could not record the database backup result")
         except Exception:
             LOGGER.exception("Could not check the database backup schedule")
-        STOP.wait(30.0)
+        STOP.wait(BACKUP_RETRY_SECONDS if code else 30.0)
 
     return 0
 

@@ -37,10 +37,10 @@ except Exception:  # pragma: no cover - older deployments may not have migration
 
 try:
     from common.system_schedules import (
-        claim_due_system_schedule, ensure_system_schedules, finish_system_schedule,
+        claim_due_system_schedule, ensure_system_schedules, finish_system_schedule, list_system_schedules,
     )
 except Exception:  # pragma: no cover - older deployments may not have migrations yet
-    claim_due_system_schedule = ensure_system_schedules = finish_system_schedule = None
+    claim_due_system_schedule = ensure_system_schedules = finish_system_schedule = list_system_schedules = None
 
 try:
     from db_schema import init_db
@@ -243,7 +243,22 @@ def run_jobs_worker() -> int:
         current_process = None
 
 
-def wait_with_trigger(duration: float):
+def log_next_sync_schedule():
+    try:
+        schedule = next(item for item in list_system_schedules(DB_URL) if item["id"] == "library-sync")
+        if schedule.get("enabled") and schedule.get("next_run_at"):
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            zone = schedule.get("timezone", "UTC")
+            upcoming = datetime.fromisoformat(schedule["next_run_at"]).astimezone(ZoneInfo(zone))
+            LOGGER.info(f"[sync-daemon] Next scheduled sync at {upcoming.isoformat()} ({zone}).")
+        else:
+            LOGGER.info("[sync-daemon] Library sync schedule is disabled or has no next run.")
+    except Exception as exc:
+        LOGGER.warning(f"[sync-daemon] Could not read next sync schedule: {exc}")
+
+
+def wait_with_trigger(duration: float, *, allow_schedule: bool = True):
     global requested_source, requested_sync_mode, system_sync_due
     from pathlib import Path
     trig = Path(TRIGGER_FILE)
@@ -258,7 +273,7 @@ def wait_with_trigger(duration: float):
     while not stop_event.is_set():
         actions = set()
         worker_wake = False
-        if claim_due_system_schedule and time.monotonic() >= next_system_schedule_check:
+        if allow_schedule and claim_due_system_schedule and time.monotonic() >= next_system_schedule_check:
             try:
                 if claim_due_system_schedule(DB_URL, "library-sync"):
                     system_sync_due = True
@@ -522,12 +537,14 @@ def run_pending_sync_jobs() -> bool:
 
 def run_loop():
     global current_process, consecutive_errors, requested_source, requested_sync_mode, system_sync_due
-    if ensure_system_schedules:
-        try:
-            ensure_system_schedules(DB_URL, sync_daily_at=daily_at, sync_interval_minutes=interval // 60,
-                                    backup_daily_at=os.getenv("BACKUP_DAILY_AT", "04:30"))
-        except Exception as e:
-            LOGGER.warning(f"[sync-daemon] Could not load system cron settings: {e}")
+    if not ensure_system_schedules or not claim_due_system_schedule or not finish_system_schedule:
+        raise RuntimeError("System schedule support is unavailable; refusing to start sync runner.")
+    try:
+        ensure_system_schedules(DB_URL, sync_daily_at=daily_at, sync_interval_minutes=interval // 60,
+                                backup_daily_at=os.getenv("BACKUP_DAILY_AT", "04:30"))
+    except Exception as e:
+        LOGGER.error(f"[sync-daemon] Could not initialize system cron settings: {e}")
+        raise RuntimeError("Could not initialize system cron settings.") from e
     if requeue_processing:
         try:
             recovered = requeue_processing(DB_URL, "sync")
@@ -564,6 +581,7 @@ def run_loop():
         if first_run and not run_on_startup:
             first_run = False
             LOGGER.info("[sync-daemon] Skipping initial run on startup (run_on_startup=false); waiting for the configured cron schedule.")
+            log_next_sync_schedule()
             triggered = wait_with_trigger(float("inf"))
             if not triggered and stop_event.is_set():
                 break
@@ -580,9 +598,11 @@ def run_loop():
             success, exit_code = run_full_sync(source, mode)
             requested_source = None
             requested_sync_mode = "scheduled"
+        was_schedule_run = system_sync_due
         if system_sync_due and finish_system_schedule:
             try:
-                finish_system_schedule(DB_URL, "library-sync", success=success)
+                finish_system_schedule(DB_URL, "library-sync", success=success and not stop_event.is_set(),
+                                       interrupted=stop_event.is_set())
             except Exception as e:
                 LOGGER.warning(f"[sync-daemon] Could not record Library sync result: {e}")
             system_sync_due = False
@@ -596,6 +616,7 @@ def run_loop():
                 LOGGER.info(f"[sync-daemon] Sync succeeded after {consecutive_errors} failed attempts.")
             consecutive_errors = 0
             LOGGER.info("[sync-daemon] Waiting for the next cron run or an on-demand request...")
+            log_next_sync_schedule()
             wait_with_trigger(float("inf"))
         else:
             consecutive_errors += 1
@@ -605,7 +626,9 @@ def run_loop():
             else:
                 # Suppress noisy repetitive logs on persistent errors
                 LOGGER.warning(f"[sync-daemon] Consecutive sync failures ({consecutive_errors}). Suppressed repetitive logs. Retrying with backoff in {backoff}s...")
-            wait_with_trigger(backoff)
+            triggered = wait_with_trigger(backoff, allow_schedule=False)
+            if was_schedule_run and not triggered and not stop_event.is_set():
+                wait_with_trigger(float("inf"))
 
     LOGGER.info("[sync-daemon] Sync runner exited.")
 

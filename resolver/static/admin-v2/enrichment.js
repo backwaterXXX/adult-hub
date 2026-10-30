@@ -69,7 +69,7 @@
     const target = $('#enrichmentSchedule');
     let cadence = '';
     if (schedule?.mode === 'cron' && typeof schedule.cron_expression === 'string') {
-      cadence = `${schedule.cron_expression} Europe/Warsaw`;
+      cadence = `${schedule.cron_expression} ${schedule.timezone || 'Europe/Warsaw'}`;
     } else if (schedule?.needs_conversion && Number.isSafeInteger(schedule.legacy_interval_minutes)) {
       cadence = `Every ${schedule.legacy_interval_minutes.toLocaleString('en-US')} minutes · cron conversion required`;
     } else if (schedule?.needs_conversion && typeof schedule.legacy_daily_at === 'string') {

@@ -44,6 +44,7 @@ class InlineAsyncio:
 
 def admin(blocked=False):
     return SimpleNamespace(
+        HUB_DB_URL=None,
         _admin_blocked=lambda _request: blocked,
         JSONResponse=JSONResponse,
         asyncio=InlineAsyncio,

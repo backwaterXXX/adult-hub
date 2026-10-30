@@ -37,7 +37,7 @@ function descendants(root, predicate) {
     'sourcesStatusFilter',
     'sourcesRows', 'sourcesPagination', 'sourceDetailDialog', 'sourcesNotice', 'sourcesFeedback',
     'sourceDetailContent',
-    'sourcesHistoryFeedback', 'sourcesHistoryRows',
+    'sourcesHistoryFeedback', 'sourcesHistoryRows', 'sourcesHistoryPagination',
     'sourcesRevision', 'sourcesState', 'sourcesTableWrap', 'sourcesQuery', 'liveMessage', 'crumbCurrent',
     'operationalEyebrow', 'operationalTitle', 'operationalIntro',
   ];
@@ -87,6 +87,11 @@ function descendants(root, predicate) {
       }
       if (path.includes('/sync-history')) {
         if (historyFails) throw new Error('history unavailable');
+        if (historyPayload.runs.length > 10 && path.includes('limit=10')) {
+          const query = new URLSearchParams(path.split('?')[1]);
+          const offset = Number(query.get('offset') || 0);
+          return { ...historyPayload, offset, runs: historyPayload.runs.slice(offset, offset + 10) };
+        }
         return historyPayload;
       }
       if (path.endsWith('/sources/settings')) return { revision: 1, overrides: {} };
@@ -334,5 +339,20 @@ function descendants(root, predicate) {
       node => node.tagName === 'label' && node.children.includes(input))[0];
     return label?.children[0]?.textContent;
   }), ['Telegram channel ID', 'Studio label'], 'each dynamically rendered channel input has a visible wrapping label');
+  historyPayload = { available: true, total: 65, runs: Array.from({ length: 65 }, (_, index) => ({
+    started_at: 1700000000 - index, success: true, sources: []
+  })) };
+  elements.sourcesRefresh.listeners.click();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.match(elements.sourcesHistoryFeedback.textContent, /Showing 1–10 of 65/);
+  for (let page = 0; page < 6; page++) {
+    elements.sourcesHistoryPagination.children[2].listeners.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  assert.match(elements.sourcesHistoryFeedback.textContent, /Showing 61–65 of 65/);
+  assert.equal(elements.sourcesHistoryPagination.children[2].disabled, true);
+  elements.sourcesHistoryPagination.children[0].listeners.click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(elements.sourcesHistoryFeedback.textContent, /Showing 51–60 of 65/);
   process.stdout.write('PASS: Sources URL state, redacted sync history, and persistent access-check outcomes\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -303,5 +303,22 @@ const context = {
   context.location.hash = '#jobs?tab=tasks';
   documentListeners['adminv2:navigate']({ detail: { route: 'jobs' } });
   assert.equal(intervals.has(hiddenPollId), false);
+  context.window.AdminV2.getJson = async () => ({ items: [], system_items: [
+    { id: 'library-sync', name: 'Library sync', group: 'system', enabled: false,
+      cron_expression: '0 * * * *', revision: 1 },
+    { name: 'Scene identification', group: 'dependent', parent_id: 'library-sync', source: 'Library sync' }
+  ] });
+  await elements.schedulesRefresh.listeners.click();
+  const grouped = currentBody();
+  assert.equal(grouped.children[0].children[0].children[0].textContent, 'Library sync');
+  assert.equal(grouped.children[2].className, 'schedule-dependent-row', 'dependent tasks follow their parent');
+  assert.equal(grouped.children[2].children[0].children[0].children[0].children[0].children[0].textContent,
+    'Scene identification');
+  const runButton = grouped.children[0].children[5].children[2];
+  assert.equal(runButton.textContent, 'Run');
+  await runButton.listeners.click();
+  assert.deepEqual(calls.filter(call => call.method === 'POST').at(-1), {
+    method: 'POST', path: '/admin/api/v2/schedules/system/library-sync/run', payload: {}
+  });
   process.stdout.write('PASS: schedule history links, visible-tab polling, safe stale errors, form validation, and retry\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

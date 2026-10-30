@@ -50,6 +50,17 @@ def make_admin(denied=None):
 
 
 class TestAdminV2Schedules(unittest.IsolatedAsyncioTestCase):
+    async def test_schedule_list_does_not_seed_or_write(self):
+        admin = make_admin()
+        endpoint = next(route.endpoint for route in admin_v2_schedules.build_router(admin).routes
+                        if route.path == "/api/v2/schedules" and "GET" in route.methods)
+        with patch("common.admin_schedules.list_schedules", return_value=[]), \
+             patch("common.system_schedules.list_system_schedules", return_value=[]), \
+             patch("common.system_schedules.ensure_system_schedules") as seed:
+            result = await endpoint(request("/admin/api/v2/schedules", method="GET"))
+        self.assertTrue(result["ok"])
+        seed.assert_not_called()
+
     async def test_create_schedule_rejects_irrelevant_ids_and_non_warsaw_timezone(self):
         admin = make_admin()
         endpoint = next(route.endpoint for route in admin_v2_schedules.build_router(admin).routes

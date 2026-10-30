@@ -52,8 +52,12 @@ class TestResolverHttpApi(unittest.TestCase):
 
     def setUp(self):
         reset_db()
-        with db.connect(TEST_URL) as conn:
+        conn = db.connect(TEST_URL)
+        try:
             conn.execute("ALTER TABLE videos ALTER COLUMN duration SET DEFAULT 600")
+            conn.commit()
+        finally:
+            conn.close()
 
     def _job_count(self):
         conn = db.connect(TEST_URL)
@@ -1498,6 +1502,8 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(wake.call_count, 3)
 
     def test_v2_metadata_enrichment_status_exposes_configured_batch_limits(self):
+        from common import system_schedules
+        system_schedules.ensure_system_schedules(TEST_URL)
         config = ROOT / "tests/fixtures/config_telegram_only.yaml"
         with self.admin_config(), \
              patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
@@ -1517,7 +1523,7 @@ class TestResolverHttpApi(unittest.TestCase):
             "stashdb_actors_per_run": 50,
         })
         self.assertEqual(response.json()["sync_schedule"], {
-            "mode": "cron", "cron_expression": "*/60 * * * *",
+            "mode": "cron", "cron_expression": "0 * * * *", "timezone": "Europe/Warsaw",
             "legacy_daily_at": None, "legacy_interval_minutes": None,
             "needs_conversion": False, "run_on_startup": True,
         })

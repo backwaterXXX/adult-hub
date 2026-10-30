@@ -14,7 +14,7 @@
     backup_create: 'Database backup', duplicate_reconcile: 'Duplicate reconciliation'
   };
   const resultNames = {
-    queued: 'Queued', processing: 'Running', done: 'Completed', failed: 'Failed',
+    queued: 'Queued', processing: 'Running', processing_manual: 'Running', done: 'Completed', failed: 'Failed',
     cancelled: 'Cancelled', skipped_overlap: 'Previous run still active',
     inherited: 'Inherited cadence', unknown: 'Unknown', fresh: 'Fresh', stale: 'Stale'
   };
@@ -70,7 +70,7 @@
     if (item.enabled === false) return 'is-disabled';
     const value = item.status === 'running' ? item.status : (item.last_result || item.status);
     if (value === 'failed' || item.problem) return 'is-failed';
-    if (value === 'processing' || value === 'queued' || value === 'running') return 'is-running';
+    if (value === 'processing' || value === 'processing_manual' || value === 'queued' || value === 'running') return 'is-running';
     if (value === 'done' || value === 'fresh') return 'is-ok';
     return 'is-unknown';
   }
@@ -119,7 +119,7 @@
     let match;
     if (initial === '*/15 * * * *') frequency.value = '15';
     else if (initial === '*/30 * * * *') frequency.value = '30';
-    else if (initial === '0 * * * *') frequency.value = 'hourly';
+    else if (initial === '0 * * * *' || initial === '*/60 * * * *') frequency.value = 'hourly';
     else if ((match = /^(\d{1,2}) (\d{1,2}) \* \* (\*|[0-6])$/.exec(initial))) {
       time.value = `${match[2].padStart(2, '0')}:${match[1].padStart(2, '0')}`;
       frequency.value = match[3] === '*' ? 'daily' : 'weekly';
@@ -377,7 +377,8 @@
           }
         } else selectedMessage = ' The schedule from this audit record is no longer available.';
       } else focusedScheduleId = '';
-      feedback.textContent = `${visibleCount} schedule entr${visibleCount === 1 ? 'y' : 'ies'} shown · ${admin.length} admin · ${system.length} independent · ${dependent.length} dependent.${selectedMessage}`;
+      if (!silent || feedback.textContent.startsWith("Schedules may be out of date."))
+        feedback.textContent = `${visibleCount} schedule entr${visibleCount === 1 ? 'y' : 'ies'} shown · ${admin.length} admin · ${system.length} independent · ${dependent.length} dependent.${selectedMessage}`;
       return true;
     } catch (error) {
       if (sequence !== loadSeq) return null;

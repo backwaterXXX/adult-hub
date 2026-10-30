@@ -90,6 +90,8 @@ Advanced environment variables and fallback behavior are documented in the examp
 make deploy
 ```
 
+The optional `tools/generate_latest_artwork.py` command requires `JELLYFIN_API_KEY`, `JELLYFIN_USER_ID`, and `JELLYFIN_ADULT_LIBRARY_ID` in the environment or local `.env`; set `JELLYFIN_URL` to the server URL when it differs from the tool default.
+
 `make deploy` reads the release number from `VERSION`, exports it as
 `APP_VERSION`, and recreates the resolver, sync, and backup services from
 images tagged with that release. Running `docker compose build resolver sync`

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 
 from fastapi import APIRouter, Request
 from admin_v2_errors import V2ErrorRoute
@@ -25,31 +24,25 @@ def build_router(admin):
             config = await admin.asyncio.to_thread(load_config, str(admin.CONFIG_PATH))
             result = await admin.asyncio.to_thread(enrichment_status, admin.HUB_DB_URL)
             from common import system_schedules
-            await admin.asyncio.to_thread(
-                system_schedules.ensure_system_schedules, admin.HUB_DB_URL,
-                sync_daily_at=config.sync.daily_at,
-                sync_interval_minutes=config.sync.interval_minutes,
-                backup_daily_at=os.getenv("BACKUP_DAILY_AT", "04:30"),
+            schedules = await admin.asyncio.to_thread(
+                system_schedules.list_system_schedules, admin.HUB_DB_URL
             )
-            sync_schedule = next(
-                item for item in await admin.asyncio.to_thread(
-                    system_schedules.list_system_schedules, admin.HUB_DB_URL
-                ) if item["id"] == "library-sync"
-            )
+            sync_schedule = next((item for item in schedules if item["id"] == "library-sync"), None)
             result["batch_limits"] = {
                 "videos_per_run": int(config.sync.scene_backfill_per_run),
                 "pbc_actors_per_run": int(config.sync.pbc_backfill_per_run),
                 "theporndb_actors_per_run": int(config.sync.tpdb_backfill_per_run),
                 "stashdb_actors_per_run": int(config.sync.tpdb_backfill_per_run),
             }
-            result["sync_schedule"] = {
+            result["sync_schedule"] = ({
                 "mode": "cron" if sync_schedule["cron_expression"] else "legacy",
                 "cron_expression": sync_schedule["cron_expression"],
+                "timezone": sync_schedule["timezone"],
                 "needs_conversion": sync_schedule["needs_conversion"],
                 "legacy_daily_at": sync_schedule["legacy_daily_at"],
                 "legacy_interval_minutes": sync_schedule["legacy_interval_minutes"],
                 "run_on_startup": bool(config.sync.run_on_startup),
-            }
+            } if sync_schedule else None)
             return {"ok": True, **result}
         except Exception:
             return admin.JSONResponse({"error": "External metadata status is unavailable."}, status_code=503)

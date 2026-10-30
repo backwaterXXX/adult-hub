@@ -17,7 +17,7 @@ def _cron_for_interval(minutes: int) -> str | None:
     if type(minutes) is not int or minutes < 15:
         return None
     if minutes <= 60 and 60 % minutes == 0:
-        return f"*/{minutes} * * * *"
+        return "0 * * * *" if minutes == 60 else f"*/{minutes} * * * *"
     if minutes == 1440:
         return "0 0 * * *"
     if minutes % 60 == 0 and 24 % (minutes // 60) == 0:
@@ -192,7 +192,7 @@ def request_system_run(db_url, schedule_id: str, *, now=None) -> dict:
 
 
 def claim_due_system_schedule(db_url, schedule_id: str, *, now=None) -> bool:
-    """Claim one due run and advance its next occurrence in the same transaction."""
+    """Claim a manual or due run; keep a scheduled slot owed until success."""
     if schedule_id not in _RUN_LOCKS:
         return False
     instant = admin_schedules._utc(now)
@@ -204,32 +204,23 @@ def claim_due_system_schedule(db_url, schedule_id: str, *, now=None) -> bool:
             conn.rollback()
             return False
         row = conn.execute(
-            "SELECT cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,enabled,next_run_at,last_result "
-            "FROM system_schedules WHERE id=%s FOR UPDATE", (schedule_id,),
+            "SELECT enabled,next_run_at,last_result,revision FROM system_schedules WHERE id=%s FOR UPDATE",
+            (schedule_id,),
         ).fetchone()
         if not row:
             conn.rollback()
             return False
-        if row[6] != "queued" and (not row[4] or row[5] is None or admin_schedules._utc(row[5]) > instant):
-            if row[6] == "processing":
-                conn.execute("UPDATE system_schedules SET last_result='failed',updated_at=%s WHERE id=%s", (instant.timestamp(), schedule_id))
-                conn.commit()
-            else:
-                conn.rollback()
+        manual = row[2] in {"queued", "processing_manual"}
+        abandoned = row[2] == "processing"
+        due = bool(row[0] and (abandoned or (row[1] is not None and admin_schedules._utc(row[1]) <= instant)))
+        if not manual and not due:
+            conn.rollback()
             return False
-        if row[6] == "queued":
-            upcoming = admin_schedules._utc(row[5]) if row[5] is not None else None
-        elif row[3]:
-            schedule_type = "daily" if row[2] else "interval"
-            upcoming = admin_schedules.next_run(schedule_type, row[1], row[2], after=instant)
-        else:
-            upcoming = admin_schedules.next_cron(row[0], after=instant)
-        conn.execute(
-            "UPDATE system_schedules SET next_run_at=%s,last_run_at=%s,last_result='processing',updated_at=%s WHERE id=%s",
-            (upcoming, instant.timestamp(), instant.timestamp(), schedule_id),
-        )
+        result = "processing_manual" if manual else "processing"
+        conn.execute("UPDATE system_schedules SET last_run_at=%s,last_result=%s,updated_at=%s WHERE id=%s",
+                     (instant.timestamp(), result, instant.timestamp(), schedule_id))
         conn.commit()
-        _ACTIVE_RUNS[schedule_id] = conn
+        _ACTIVE_RUNS[schedule_id] = (conn, manual, int(row[3]))
         retained = True
         return True
     except Exception:
@@ -240,16 +231,35 @@ def claim_due_system_schedule(db_url, schedule_id: str, *, now=None) -> bool:
             conn.close()
 
 
-def finish_system_schedule(db_url, schedule_id: str, *, success: bool, now=None) -> None:
-    if type(success) is not bool:
-        raise ValueError("success must be boolean")
+def finish_system_schedule(db_url, schedule_id: str, *, success: bool, now=None,
+                           skipped_overlap: bool = False, interrupted: bool = False) -> None:
+    if any(type(value) is not bool for value in (success, skipped_overlap, interrupted)):
+        raise ValueError("success, skipped_overlap and interrupted must be boolean")
     instant = admin_schedules._utc(now)
-    conn = _ACTIVE_RUNS.pop(schedule_id, None)
-    if conn is None:
+    active = _ACTIVE_RUNS.pop(schedule_id, None)
+    if active is None:
         return
+    conn, manual, revision = active
     try:
-        conn.execute("UPDATE system_schedules SET last_result=%s,updated_at=%s WHERE id=%s",
-                     ("done" if success else "failed", instant.timestamp(), schedule_id))
+        conn.execute("BEGIN")
+        row = conn.execute(
+            "SELECT cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,enabled,revision "
+            "FROM system_schedules WHERE id=%s FOR UPDATE", (schedule_id,),
+        ).fetchone()
+        if row:
+            result = ("queued" if manual and interrupted else "skipped_overlap" if skipped_overlap
+                      else "done" if success else "failed")
+            if success and not manual and row[4] and int(row[5]) == revision:
+                upcoming = (admin_schedules.next_run("daily" if row[2] else "interval", row[1], row[2], after=instant)
+                            if row[3] else admin_schedules.next_cron(row[0], after=instant))
+                conn.execute("UPDATE system_schedules SET last_result=%s,next_run_at=%s,updated_at=%s WHERE id=%s",
+                             (result, upcoming, instant.timestamp(), schedule_id))
+            else:
+                conn.execute("UPDATE system_schedules SET last_result=%s,updated_at=%s WHERE id=%s",
+                             (result, instant.timestamp(), schedule_id))
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()

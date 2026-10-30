@@ -70,6 +70,8 @@ class TestAdminV2Enrichment(PgTestCase):
             interval_minutes=60,
             run_on_startup=False,
         ))
+        from common import system_schedules
+        system_schedules.ensure_system_schedules(self.db_url, sync_daily_at="03:30")
         with patch("common.config_loader.load_config", return_value=config):
             payload = self.asyncio_run(endpoint(request()))
         self.assertTrue(payload["ok"])
@@ -80,7 +82,8 @@ class TestAdminV2Enrichment(PgTestCase):
             "stashdb_actors_per_run": 9,
         })
         self.assertEqual(payload["sync_schedule"], {
-            "mode": "daily", "daily_at": "03:30", "interval_minutes": None,
+            "mode": "cron", "cron_expression": "30 3 * * *", "timezone": "Europe/Warsaw",
+            "needs_conversion": False, "legacy_daily_at": None, "legacy_interval_minutes": None,
             "run_on_startup": False,
         })
         self.assertEqual(payload["catalog"], {"videos": 2, "performers": 4})
