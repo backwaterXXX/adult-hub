@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase, TEST_URL
+from test_support import flat_sync_binding
 
 # Sciezki do resolver i sync
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -204,6 +205,11 @@ class TestFuzzyPerformersDatabase(PgTestCase):
             )
 
         merges = [("BostonJock", "Boston Jock")]
+        # The NFO step of the merge needs the flat facade bound to `sync`;
+        # see test_support.flat_sync_binding.
+        binding = flat_sync_binding()
+        binding.start()
+        self.addCleanup(binding.stop)
         try:
             res = execute_performer_merges(TEST_URL, self.media_dir, merges, skip_backup=True)
         except ImportError as exc:

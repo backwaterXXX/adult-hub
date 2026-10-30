@@ -19,7 +19,9 @@ from common.fuzzy_performers import find_fuzzy_performer_candidates
 from common.admin_operations import execute_operation, preview_performer_merge_plan
 from common.job_queue import read_job
 from pg_helper import PgTestCase
-import sync
+from test_support import flat_sync_binding, load_flat_sync_module
+
+sync = load_flat_sync_module()
 
 
 class TestPerformerProposalIntegration(PgTestCase):
@@ -181,7 +183,8 @@ class TestPerformerProposalIntegration(PgTestCase):
             root = Path(directory)
             media = root / "library"
             media.mkdir()
-            with patch.object(sync, "DATA_DIR", root / "data"), \
+            with flat_sync_binding(), \
+                 patch.object(sync, "DATA_DIR", root / "data"), \
                  patch("common.fuzzy_performers.trigger_jellyfin_refresh", return_value=True) as refresh:
                 self.assertEqual(sync.process_video_duplicate_jobs(self.conn, media), 1)
             refresh.assert_called_once_with()
@@ -245,7 +248,8 @@ class TestPerformerProposalIntegration(PgTestCase):
             root = Path(directory)
             media = root / "library"
             media.mkdir()
-            with patch.object(sync, "DATA_DIR", root / "data"), \
+            with flat_sync_binding(), \
+                 patch.object(sync, "DATA_DIR", root / "data"), \
                  patch.object(sync, "create_nfo_file") as create_nfo, \
                  patch.object(sync, "trigger_jellyfin_refresh", return_value=True) as refresh:
                 self.assertEqual(sync.process_video_duplicate_jobs(self.conn, media), 1)

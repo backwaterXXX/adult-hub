@@ -19,7 +19,8 @@ from pg_helper import PgTestCase
 # root, otherwise ``merge_performer_dupes`` resolves to the re-export stub.
 sys.path.insert(0, str(ROOT / "sync"))
 import merge_performer_dupes as merger
-import sync as sync_facade
+from test_support import flat_sync_binding, load_flat_sync_module
+sync_facade = load_flat_sync_module()
 
 RAW = "Adam Snow (AdamSnowXXX)"
 BASE = "Adam Snow"
@@ -137,6 +138,11 @@ class MergeHarness(PgTestCase):
             patcher = patch.object(sync_facade, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # ``import sync as S`` in the NFO pass needs the flat facade bound to the
+        # name it uses; see test_support.flat_sync_binding.
+        binding = flat_sync_binding()
+        binding.start()
+        self.addCleanup(binding.stop)
         return SimpleNamespace(**stubs)
 
     def run_cli(self, *flags, jf_url="", jf_key="", env_file=None):
