@@ -43,6 +43,8 @@ def _update_media_files(
                     "SELECT file_path FROM synced_files WHERE video_id=%s ORDER BY file_path", (video_id,)
                 ).fetchall()
                 registered_files = bool(file_rows)
+                if strict and not registered_files:
+                    raise FileNotFoundError(f"No registered media file for {video_id}")
                 nfo_paths = []
                 for (file_path,) in file_rows:
                     stream_path = resolve_media_path(str(file_path), media_dir)

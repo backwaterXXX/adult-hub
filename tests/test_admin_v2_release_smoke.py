@@ -1,5 +1,6 @@
 import json
 import unittest
+from pathlib import Path
 from email.message import Message
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
@@ -165,8 +166,8 @@ def ready_quality_summary(*, checked=13565, catalog_total=13565, inventory="part
 class AdminV2ReleaseSmokeTests(unittest.TestCase):
     def test_enrichment_asset_release_gate_requires_no_store_and_safe_label(self):
         metadata = json.loads(METADATA_STATUS[2])
-        body = (b"const source = String(row.source || '').trim().toLowerCase(); "
-                b"return 'Telegram scene lookup';")
+        body = (Path(__file__).resolve().parents[1]
+                / "resolver/static/admin-v2/enrichment.js").read_bytes()
 
         def asset_fetcher(path, cache_control="no-store", asset_body=body):
             self.assertEqual(path, "/admin/assets-v2/enrichment.js")

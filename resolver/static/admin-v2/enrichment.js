@@ -11,7 +11,7 @@
   let preserveScanFeedback = false;
   let lastLoadedAt = null;
   let freshnessState = 'unknown';
-  const POLL_INTERVAL_MS = 15_000;
+  const POLL_INTERVAL_MS = 30_000;
 
   // Shared helpers live in admin-v2.js and are published through window.AdminV2.
   const helpers = () => window.AdminV2 || {};
@@ -68,12 +68,12 @@
   function renderSyncSchedule(schedule) {
     const target = $('#enrichmentSchedule');
     let cadence = '';
-    if (schedule?.mode === 'daily' && typeof schedule.daily_at === 'string' &&
-        /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(schedule.daily_at)) {
-      cadence = `Daily at ${schedule.daily_at} runner local time`;
-    } else if (schedule?.mode === 'interval' &&
-        Number.isSafeInteger(schedule.interval_minutes) && schedule.interval_minutes > 0) {
-      cadence = `Every ${schedule.interval_minutes.toLocaleString('en-US')} minutes`;
+    if (schedule?.mode === 'cron' && typeof schedule.cron_expression === 'string') {
+      cadence = `${schedule.cron_expression} Europe/Warsaw`;
+    } else if (schedule?.needs_conversion && Number.isSafeInteger(schedule.legacy_interval_minutes)) {
+      cadence = `Every ${schedule.legacy_interval_minutes.toLocaleString('en-US')} minutes · cron conversion required`;
+    } else if (schedule?.needs_conversion && typeof schedule.legacy_daily_at === 'string') {
+      cadence = `Daily at ${schedule.legacy_daily_at} · cron conversion required`;
     }
     if (!cadence || typeof schedule?.run_on_startup !== 'boolean') {
       target.textContent = 'Configured sync schedule is unavailable.';

@@ -187,18 +187,22 @@ def record_operation_queued(conn, *, plan_id: str, operation_type: str,
 
 def record_schedule_created(conn, *, schedule_id: str, action: str, schedule_type: str,
                             interval_minutes: int | None, daily_at: str | None,
+                            cron_expression: str | None = None,
                             timezone: str, enabled: bool, video_count: int) -> bool:
     """Record allowlisted effective schedule fields; never store its arbitrary name or IDs."""
     if (not isinstance(schedule_id, str) or not schedule_id or action not in {
-            "availability_check", "consistency_audit", "backup_create"}
-            or schedule_type not in {"interval", "daily"} or timezone != "Europe/Warsaw"
+            "availability_check", "consistency_audit", "metadata_quality_audit",
+            "catalog_full_audit", "backup_create", "duplicate_reconcile"}
+            or schedule_type not in {"interval", "daily", "cron"} or timezone != "Europe/Warsaw"
             or type(enabled) is not bool or type(video_count) is not int or not 0 <= video_count <= 20
             or (interval_minutes is not None and type(interval_minutes) is not int)
-            or (daily_at is not None and not isinstance(daily_at, str))):
+            or (daily_at is not None and not isinstance(daily_at, str))
+            or (cron_expression is not None and (not isinstance(cron_expression, str) or len(cron_expression) > 100))):
         return False
     after = {"action": action, "schedule_type": schedule_type,
              "interval_minutes": interval_minutes, "daily_at": daily_at,
-             "timezone": timezone, "enabled": enabled, "video_count": video_count}
+             "cron_expression": cron_expression, "timezone": timezone,
+             "enabled": enabled, "video_count": video_count}
     return _insert_change(conn, event_key=f"schedule:{schedule_id}:created",
                           event_type="schedule_created", object_type="schedule",
                           object_id=schedule_id,

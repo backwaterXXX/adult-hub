@@ -20,6 +20,7 @@ from tools.generate_missing_artwork import (
     _load_all_env,
     process_single_video,
     record_job_entry,
+    update_job_jellyfin_result,
 )
 from common import db
 from common.image_utils import is_black_image
@@ -39,13 +40,17 @@ def main():
 
     jf_url = (os.getenv("JELLYFIN_URL") or "http://192.168.1.111:8096").rstrip("/")
     jf_token = os.getenv("JELLYFIN_API_KEY")
-    user_id = os.getenv("JELLYFIN_USER_ID", "9f03cfc3b3564495ac3afbd9ccb5dffa")
-    parent_id = os.getenv("JELLYFIN_ADULT_LIBRARY_ID", "0a7fd8175719d8f7ebfb93874e55a2d5")
+    user_id = os.getenv("JELLYFIN_USER_ID")
+    parent_id = os.getenv("JELLYFIN_ADULT_LIBRARY_ID")
     api_base = os.getenv("RESOLVER_LOCAL_API_URL", "http://127.0.0.1:8090/admin")
     media_dir = Path(os.getenv("MEDIA_DIR", "/app/adult-hub/media/adult"))
 
-    if not jf_token:
-        print("Error: JELLYFIN_API_KEY is not set in environment.")
+    missing_config = [key for key, value in (
+        ("JELLYFIN_API_KEY", jf_token), ("JELLYFIN_USER_ID", user_id),
+        ("JELLYFIN_ADULT_LIBRARY_ID", parent_id),
+    ) if not value]
+    if missing_config:
+        print("Error: required Jellyfin settings are missing: " + ", ".join(missing_config))
         sys.exit(1)
 
     print(f"Connecting to Jellyfin at {jf_url}...")
@@ -116,6 +121,7 @@ def main():
     start_time = time.time()
     succeeded_items = []
     failed_count = 0
+    jobs_by_video: dict[str, list[str]] = {}
 
     with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         future_to_item = {
@@ -132,10 +138,11 @@ def main():
         for idx, fut in enumerate(as_completed(future_to_item), 1):
             item = future_to_item[fut]
             res = fut.result()
-            record_job_entry(conn, res, offset_seconds=args.offset_seconds)
+            job_id = record_job_entry(conn, res, offset_seconds=args.offset_seconds)
 
             if res["success"]:
                 succeeded_items.append(item)
+                jobs_by_video.setdefault(str(res["video_id"]), []).append(job_id)
                 status_str = f"OK ({res['size']} B, {res['elapsed']:.1f}s)"
             else:
                 failed_count += 1
@@ -153,24 +160,48 @@ def main():
             "Authorization": f'MediaBrowser Client="adult-hub", Device="sync", DeviceId="adult-hub-sync", Version="1.0.0", Token="{jf_token}"',
             "X-Emby-Token": jf_token,
         }
-        with httpx.Client(headers=jf_headers, timeout=15.0) as client:
+        refresh_results: dict[str, list[str]] = {}
+        library_status = "unavailable"
+        try:
+            with httpx.Client(headers=jf_headers, timeout=15.0) as client:
+                for item in succeeded_items:
+                    try:
+                        response = client.post(
+                            f"{jf_url}/Items/{item['jf_id']}/Refresh",
+                            params={
+                                "MetadataRefreshMode": "Default",
+                                "ImageRefreshMode": "FullRefresh",
+                                "ReplaceAllMetadata": "false",
+                                "ReplaceAllImages": "true",
+                            },
+                        )
+                        response.raise_for_status()
+                        refresh_results.setdefault(str(item["video_id"]), []).append("updated")
+                    except Exception as err:
+                        refresh_results.setdefault(str(item["video_id"]), []).append("failed")
+                        print(f"Error refreshing item {item['jf_id']}: {type(err).__name__}")
+        except Exception as err:
+            print(f"Item refresh client failed: {type(err).__name__}")
             for item in succeeded_items:
-                try:
-                    client.post(
-                        f"{jf_url}/Items/{item['jf_id']}/Refresh",
-                        params={
-                            "MetadataRefreshMode": "Default",
-                            "ImageRefreshMode": "FullRefresh",
-                            "ReplaceAllMetadata": "false",
-                            "ReplaceAllImages": "true",
-                        },
-                    )
-                except Exception as err:
-                    print(f"Error refreshing item {item['jf_id']}: {err}")
+                refresh_results.setdefault(str(item["video_id"]), []).append("failed")
 
         print("Triggering global Jellyfin library scan...")
-        refreshed = trigger_library_refresh(jf_url, jf_token, http_client_factory=httpx.Client)
-        print("Global refresh triggered:", "Success" if refreshed else "Failed")
+        try:
+            refreshed = trigger_library_refresh(jf_url, jf_token, http_client_factory=httpx.Client)
+            library_status = "updated" if refreshed else "failed"
+        except Exception as err:
+            library_status = "failed"
+            print(f"Global refresh failed: {type(err).__name__}")
+        print("Global refresh triggered:", "Success" if library_status == "updated" else "Failed")
+        for video_id, job_ids in jobs_by_video.items():
+            outcomes = refresh_results.get(video_id, [])
+            status = (
+                "failed" if "failed" in outcomes else
+                "unavailable" if not outcomes or "unavailable" in outcomes else "updated"
+            )
+            for job_id in job_ids:
+                update_job_jellyfin_result(conn, job_id, item_status=status)
+                update_job_jellyfin_result(conn, job_id, library_status=library_status)
 
     conn.close()
 

@@ -5,9 +5,9 @@ verifies the dump by listing its table of contents, and prunes snapshots
 older than --keep days.
 
 Scheduling:
-    The host cron invokes ``backup_scheduler.py --once`` inside the existing
-    ``sync`` container, which calls this command with the container's
-    ``DATABASE_URL`` and installed PostgreSQL client binaries.
+    The ``backup`` compose service polls the saved Admin cron setting. Legacy
+    host cron calls to ``backup_scheduler.py --once`` remain safe: they run only
+    when the saved setting is due. ``--force`` runs an immediate backup.
 
 Direct invocation requires ``DATABASE_URL`` (or --db-url) and the
 ``pg_dump``/``pg_restore`` client binaries on PATH.

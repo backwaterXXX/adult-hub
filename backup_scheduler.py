@@ -1,4 +1,4 @@
-"""Run the verified PostgreSQL backup once per local calendar day."""
+"""Run the verified PostgreSQL backup from its saved Europe/Warsaw cron setting."""
 
 from __future__ import annotations
 
@@ -14,6 +14,9 @@ from pathlib import Path
 
 import backup_db
 from common.history_retention import prune_history
+from common.system_schedules import (
+    claim_due_system_schedule, ensure_system_schedules, finish_system_schedule,
+)
 
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -94,25 +97,53 @@ def main() -> int:
     parser.add_argument(
         "--once",
         action="store_true",
-        help="run one backup and monthly history cleanup, then exit",
+        help="check the saved schedule once and run if due, then exit",
     )
+    parser.add_argument("--force", action="store_true", help="run a backup immediately")
     args = parser.parse_args()
-    if args.once:
+    db_url = (os.getenv("DATABASE_URL") or "").strip() or None
+    if args.force:
         return _run_backup()
+    if not db_url:
+        LOGGER.error("DATABASE_URL is required to read the saved backup cron schedule")
+        return 1
+    try:
+        ensure_system_schedules(db_url, backup_daily_at=os.getenv("BACKUP_DAILY_AT", "04:30"),
+                                include_sync=False)
+    except Exception:
+        LOGGER.exception("Could not initialize the database backup schedule")
+        return 1
+    if args.once:
+        try:
+            due = claim_due_system_schedule(db_url, "database-backup")
+        except Exception:
+            LOGGER.exception("Could not check the database backup schedule")
+            return 1
+        if not due:
+            LOGGER.info("Saved database backup schedule is not due; skipping")
+            return 0
+        code = _run_backup()
+        try:
+            finish_system_schedule(db_url, "database-backup", success=code == 0)
+        except Exception:
+            LOGGER.exception("Could not record the database backup result")
+        return code
 
-    hour, minute = _parse_daily_at(os.getenv("BACKUP_DAILY_AT", "04:30"))
-    LOGGER.info("Daily PostgreSQL backup scheduled at %02d:%02d local time", hour, minute)
+    LOGGER.info("Database backup scheduler is polling the saved cron schedule")
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
     while not STOP.is_set():
-        now = dt.datetime.now().astimezone()
-        next_run = _next_run(now, hour, minute)
-        wait_seconds = max(1.0, (next_run - now).total_seconds())
-        if STOP.wait(min(wait_seconds, 60.0)):
-            break
-        if dt.datetime.now().astimezone() >= next_run:
-            _run_backup()
+        try:
+            if claim_due_system_schedule(db_url, "database-backup"):
+                code = _run_backup()
+                try:
+                    finish_system_schedule(db_url, "database-backup", success=code == 0)
+                except Exception:
+                    LOGGER.exception("Could not record the database backup result")
+        except Exception:
+            LOGGER.exception("Could not check the database backup schedule")
+        STOP.wait(30.0)
 
     return 0
 

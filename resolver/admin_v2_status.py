@@ -13,8 +13,27 @@ from fastapi import APIRouter, Request
 from admin_v2_errors import V2ErrorRoute
 
 
-def _sync_stale_after_seconds(config_path):
-    """Allow two configured sync intervals before calling the status stale."""
+def _sync_stale_after_seconds(config_path, db_url=None):
+    """Allow two configured cron periods before calling the sync status stale."""
+    if db_url:
+        try:
+            from common import admin_schedules, system_schedules
+            item = next((row for row in system_schedules.list_system_schedules(db_url)
+                         if row["id"] == "library-sync"), None)
+            if item and item["enabled"]:
+                if item["cron_expression"]:
+                    first = admin_schedules.next_cron(item["cron_expression"])
+                    second = admin_schedules.next_cron(item["cron_expression"], after=first)
+                    return max(300, int((second - first).total_seconds()) * 2)
+                if item["needs_conversion"]:
+                    if item["legacy_daily_at"]:
+                        return 48 * 60 * 60
+                    if item["legacy_interval_minutes"]:
+                        return max(300, int(item["legacy_interval_minutes"]) * 120)
+            elif item:
+                return None
+        except Exception:
+            pass
     try:
         from common.config_loader import load_config
 
@@ -108,7 +127,7 @@ def build_router(admin):
             return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
         sync, stale_after = await asyncio.gather(
             asyncio.to_thread(admin._sync_status),
-            asyncio.to_thread(_sync_stale_after_seconds, admin.CONFIG_PATH),
+            asyncio.to_thread(_sync_stale_after_seconds, admin.CONFIG_PATH, admin.HUB_DB_URL),
         )
         return {"ok": True, "sync": _sanitized_sync_status(sync, stale_after)}
 
@@ -320,7 +339,7 @@ def build_router(admin):
         db, sync, sync_stale_after = await asyncio.gather(
             asyncio.to_thread(admin._db_stats),
             asyncio.to_thread(admin._sync_status),
-            asyncio.to_thread(_sync_stale_after_seconds, admin.CONFIG_PATH),
+            asyncio.to_thread(_sync_stale_after_seconds, admin.CONFIG_PATH, admin.HUB_DB_URL),
         )
         runtime = {}
         app = request.scope.get("app")

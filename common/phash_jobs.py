@@ -37,7 +37,9 @@ def enqueue(db_url: str | None, *, video_id: str, duration_us: int,
         # Jobs already running at upgrade retain their original combined behavior.
         if row is not None:
             conn.commit()
-            return {"outcome": "existing", "job": dict(row)}
+            legacy_job = dict(row)
+            return {"outcome": "existing", "job": legacy_job,
+                    "phash_job": legacy_job, "thumbnail_job": legacy_job}
         current = conn.execute(
             """SELECT p.fingerprint, f.fingerprint, t.video_id
                FROM video_phash_provenance p
@@ -76,7 +78,9 @@ def enqueue(db_url: str | None, *, video_id: str, duration_us: int,
                 if row['state'] != 'done':
                     row = conn.execute(
                         """UPDATE video_phash_jobs SET state='done',fingerprint=%s,error_code=NULL,error_detail='',
-                           lease_token=NULL,lease_until=NULL,processing_started_at=NULL,
+                           processing_duration_ms=processing_duration_ms + CASE WHEN processing_started_at IS NOT NULL
+                               THEN GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP-processing_started_at))*1000)::BIGINT)
+                               ELSE 0 END,lease_token=NULL,lease_until=NULL,processing_started_at=NULL,
                            finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=%s RETURNING *""",
                         (current[0] if kind == 'phash' else None, row['id']),
                     ).fetchone()

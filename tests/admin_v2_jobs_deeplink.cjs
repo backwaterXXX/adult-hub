@@ -213,7 +213,7 @@ function walk(root, output = []) {
   assert.equal(detailsButton.getAttribute('aria-expanded'), 'true', 'the linked task details open automatically');
   assert.equal(detailsButton.type, 'button', 'task details must use a keyboard-activatable button');
   const actionLabels = walk(elements.jobsRows).filter(item => item.className === 'job-action').map(item => item.textContent);
-  assert(actionLabels.includes('Telegram scene lookup'), 'legacy Telegram actions must use a readable generic label');
+  assert(actionLabels.includes('Scene fingerprint · legacy'), 'legacy Telegram actions must use the shared scene label');
   assert(!actionLabels.some(label => label.includes('lukayan_fingerprint')),
     'the channel-specific implementation name must not leak into Admin V2');
   assert.equal(detailsButton.getAttribute('aria-controls'), 'job-detail-1');

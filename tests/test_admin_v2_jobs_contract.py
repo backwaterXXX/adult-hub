@@ -207,9 +207,9 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
 
     def test_historical_telegram_worker_actions_have_operator_facing_labels(self):
         source = (ROOT / "resolver/static/admin-v2/jobs.js").read_text(encoding="utf-8")
-        self.assertIn("lukayan_fingerprint: 'Telegram scene lookup'", source)
-        self.assertIn("telegram_fingerprint: 'Telegram scene lookup'", source)
-        self.assertIn("key.startsWith('lukayan_') ? 'Telegram scene lookup'", source)
+        self.assertIn("lukayan_fingerprint: 'Scene fingerprint · legacy'", source)
+        self.assertIn("telegram_fingerprint: 'Scene fingerprint'", source)
+        self.assertIn("key.startsWith('lukayan_') ? 'Scene fingerprint · legacy'", source)
 
     async def test_unified_tasks_routes_project_both_queues_and_validate_filters(self):
         admin = make_admin()

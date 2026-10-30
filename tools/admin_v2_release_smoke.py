@@ -635,13 +635,13 @@ def run_smoke(base_url: str, token: str | None = None, timeout: float = 10.0,
                 and len(body) <= 2_000_000
                 and "no-store" in {part.strip().lower() for part in cache_control.split(",")}
                 and b".trim().toLowerCase()" in body
-                and b"Telegram scene lookup" in body
+                and b"Scene fingerprint" in body
             )
             results.append(CheckResult(
                 "enrichment_asset_uncached", valid_asset,
-                "HTTP 200; no-store and Telegram label mapping verified" if valid_asset
+                "HTTP 200; no-store and scene fingerprint label verified" if valid_asset
                 else (f"HTTP {status}" if status != 200 else
-                      "Enrichment asset cache policy or Telegram label mapping is invalid"),
+                      "Enrichment asset cache policy or scene fingerprint label is invalid"),
             ))
         except (HTTPError, URLError, TimeoutError, OSError, ValueError, TypeError) as exc:
             status = getattr(exc, "code", None)

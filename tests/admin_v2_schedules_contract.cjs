@@ -30,9 +30,7 @@ class Element {
   reset() {
     this.context.elements.scheduleName.value = '';
     this.context.elements.scheduleAction.value = 'availability_check';
-    this.context.elements.scheduleType.value = 'daily';
-    this.context.elements.scheduleDailyAt.value = '03:00';
-    this.context.elements.scheduleInterval.value = '1440';
+    this.context.elements.scheduleCron.value = '0 3 * * *';
     this.context.elements.scheduleVideoIds.value = '';
   }
 }
@@ -40,9 +38,8 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
 
 const template = fs.readFileSync('resolver/templates/admin_v2.html', 'utf8');
 const ids = ['schedulesFeedback', 'schedulesRows', 'scheduleCreateForm', 'scheduleCreate',
-  'scheduleName', 'scheduleAction', 'scheduleType', 'scheduleDailyField', 'scheduleDailyAt',
-  'scheduleIntervalField', 'scheduleInterval', 'scheduleVideosField', 'scheduleVideoIds',
-  'schedulesRefresh'];
+  'scheduleCreatePanel', 'scheduleCreatePreview', 'scheduleName', 'scheduleAction', 'scheduleCron',
+  'scheduleVideosField', 'scheduleVideoIds', 'scheduleFilter', 'schedulesRefresh'];
 const elements = Object.fromEntries(ids.map(id => [id, new Element(id === 'scheduleCreateForm' ? 'form' : 'div')]));
 const documentListeners = {};
 const document = {
@@ -55,12 +52,10 @@ const document = {
 document.activeElement = document.body;
 for (const element of Object.values(elements)) element.context = { elements, document };
 elements.scheduleAction.value = 'availability_check';
-elements.scheduleType.value = 'daily';
-elements.scheduleDailyAt.value = '03:00';
-elements.scheduleInterval.value = '1440';
+elements.scheduleCron.value = '0 3 * * *';
 
 const labelRefs = [...template.matchAll(/<label\b[^>]*for="([^"]+)"/g)].map(([, id]) => id);
-for (const id of ['scheduleName', 'scheduleAction', 'scheduleType', 'scheduleDailyAt', 'scheduleInterval', 'scheduleVideoIds']) {
+for (const id of ['scheduleName', 'scheduleAction', 'scheduleCron', 'scheduleVideoIds']) {
   assert.ok(labelRefs.includes(id), `Schedule field ${id} must have an associated label`);
 }
 
@@ -79,6 +74,9 @@ const context = {
       async getJson(path) {
         calls.push({ method: 'GET', path });
         if (failNextGet) { failNextGet = false; throw new Error('The schedule service is unavailable.'); }
+        if (path.includes('cron-preview?')) return { next_runs: [
+          '2026-11-01T02:00:00Z', '2026-11-02T02:00:00Z', '2026-11-03T02:00:00Z',
+        ] };
         return { items: [] };
       },
       async postJson(path, payload) {
@@ -108,9 +106,8 @@ const context = {
   assert(calls.some(call => call.method === 'GET' && call.path === '/admin/api/v2/schedules'),
     'opening #jobs?tab=schedules directly loads the existing schedule API');
   assert.equal(intervals.size, 1, 'opening the Schedules tab directly starts its bounded polling timer');
-  assert.equal(elements.scheduleDailyField.hidden, false);
-  assert.equal(elements.scheduleIntervalField.hidden, true);
   assert.equal(elements.scheduleVideosField.hidden, false);
+  await new Promise(resolve => setTimeout(resolve, 20));
 
   const staleList = deferred(), currentList = deferred();
   let listCalls = 0;
@@ -127,36 +124,40 @@ const context = {
   await latestRefresh;
   staleList.resolve({ items: [{ id: 'stale', name: 'Stale schedule', action: 'backup_create', enabled: true }] });
   await oldRefresh;
-  assert.equal(elements.schedulesRows.children[0].children[0].children[0].textContent,
-    'Current schedule · Database backup', 'a stale schedule read must not replace the latest list');
-  const currentCopy = elements.schedulesRows.children[0].children[0];
-  assert.equal(currentCopy.children[1].children[1].tagName, 'TIME');
-  assert.equal(currentCopy.children[1].children[1].dateTime, '2026-10-11T01:30:00.000Z',
+  function currentBody() { return elements.schedulesRows.children[0].children[0].children[1]; }
+  assert.equal(currentBody().children[0].children[0].children[0].textContent, 'Current schedule',
+    'a stale schedule read must not replace the latest list');
+  assert.equal(currentBody().children[0].children[0].children[1].textContent, 'Database backup');
+  const currentCopy = currentBody().children[0];
+  assert.equal(currentCopy.children[3].children[0].tagName, 'TIME');
+  assert.equal(currentCopy.children[3].children[0].dateTime, '2026-10-11T01:30:00.000Z',
     'next run timestamps must use semantic, machine-readable time markup');
-  assert.equal(currentCopy.children[2].children[1].tagName, 'TIME');
-  assert.equal(currentCopy.children[2].children[1].dateTime, '2026-10-10T01:30:00.000Z',
+  assert.equal(currentCopy.children[4].children[0].tagName, 'TIME');
+  assert.equal(currentCopy.children[4].children[0].dateTime, '2026-10-10T01:30:00.000Z',
     'last run timestamps must use semantic, machine-readable time markup');
-  assert.match(currentCopy.children[2].children[2].textContent, /Result: Completed/,
+  assert.match(currentCopy.children[4].children[1].textContent, /Completed/,
     'schedule history must include the last run result');
-  assert.equal(currentCopy.children[3].tagName, 'A');
-  assert.equal(currentCopy.children[3].textContent, 'Open task');
-  assert.equal(currentCopy.children[3].href, '/admin/v2/?job_id=job_123#jobs');
-  assert.equal(currentCopy.children[3].attributes['aria-label'], 'Open task for Current schedule');
-  assert.equal(elements.schedulesRows.children[1].children[0].children.length, 3,
+  assert.equal(currentCopy.children[0].children[2].tagName, 'A');
+  assert.equal(currentCopy.children[0].children[2].textContent, 'Open latest task');
+  assert.equal(currentCopy.children[0].children[2].href, '/admin/v2/?job_id=job_123#jobs');
+  assert.equal(currentCopy.children[0].children[2].attributes['aria-label'], 'Open task for Current schedule');
+  assert.equal(currentBody().children[2].children[0].children.length, 2,
     'an invalid job ID must not produce a task link');
-  assert.equal(elements.schedulesRows.children[1].children[0].children[2].children[1].textContent, '—',
+  assert.equal(currentBody().children[2].children[4].children[0].textContent, '—',
     'an unavailable last-run timestamp must not render Invalid Date');
   context.window.AdminV2.getJson = async path => path.includes('cron-preview?')
-    ? { next_runs: ['2026-11-01T02:00:00Z'] }
+    ? { next_runs: ['2026-11-01T02:00:00Z', '2026-11-02T02:00:00Z', '2026-11-03T02:00:00Z'] }
     : ({ items: [{ id: 'duplicate-reconcile', name: 'Duplicate reconciliation',
       action: 'duplicate_reconcile', enabled: false, schedule_type: 'interval', interval_minutes: 15, revision: 4 },
     { id: 'catalog-health-full', name: 'Catalog health: daily full audit', action: 'catalog_full_audit',
       enabled: true, schedule_type: 'daily', daily_at: '03:00', revision: 2 }] });
   await elements.schedulesRefresh.listeners.click();
-  const wrap = elements.schedulesRows.children[0].children[0].children[3];
-  const editor = wrap.children[1];
+  const body = currentBody();
+  const currentRow = body.children[0];
+  const wrap = body.children[1];
+  const editor = wrap.children[0].children[0];
   assert.equal(editor.hidden, true, 'editor is compact until opened');
-  wrap.children[0].listeners.click();
+  currentRow.children[5].children[0].listeners.click();
   const frequency = editor.children[1].children[0].children[0];
   const cronInput = editor.children[1].children[3].children[0];
   assert.equal(cronInput.value, '*/15 * * * *');
@@ -165,12 +166,12 @@ const context = {
   cronInput.listeners.input();
   await new Promise(resolve => setTimeout(resolve, 20));
   await editor.children[4].children[0].listeners.click();
-  assert.deepEqual(calls.at(-1), { method: 'POST', path: '/admin/api/v2/schedules/duplicate-reconcile/cron',
+  assert.deepEqual(calls.filter(call => call.method === 'POST').at(-1), { method: 'POST', path: '/admin/api/v2/schedules/duplicate-reconcile/cron',
     payload: { cron_expression: '0 3 * * *', revision: 4 } });
-  calls.pop();
-  const auditWrap = elements.schedulesRows.children[1].children[0].children[3];
-  auditWrap.children[0].listeners.click();
-  const auditEditor = auditWrap.children[1];
+  const auditRow = currentBody().children[2];
+  const auditWrap = currentBody().children[3];
+  auditRow.children[5].children[0].listeners.click();
+  const auditEditor = auditWrap.children[0].children[0];
   assert.equal(auditEditor.children[1].children[0].children[0].value, 'daily');
   assert.equal(auditEditor.children[1].children[1].children[0].value, '03:00');
   auditEditor.children[4].children[1].listeners.click();
@@ -180,19 +181,17 @@ const context = {
     return { items: [] };
   };
 
-  elements.scheduleType.value = 'interval';
-  elements.scheduleType.listeners.change();
   elements.scheduleAction.value = 'consistency_audit';
   elements.scheduleAction.listeners.change();
-  assert.equal(elements.scheduleDailyField.hidden, true, 'interval frequency hides the daily time');
-  assert.equal(elements.scheduleIntervalField.hidden, false, 'interval frequency shows its numeric interval');
   assert.equal(elements.scheduleVideosField.hidden, true, 'non-availability actions hide the video-ID scope');
 
   elements.scheduleName.value = 'Nightly availability';
   elements.scheduleAction.value = 'availability_check';
   elements.scheduleAction.listeners.change();
   elements.scheduleVideoIds.value = 'video-1\n\nvideo-2 ';
-  elements.scheduleInterval.value = '60';
+  elements.scheduleCron.value = '0 3 * * *';
+  elements.scheduleCron.listeners.input();
+  await new Promise(resolve => setTimeout(resolve, 20));
   holdNextPost = true;
   const submit = elements.scheduleCreateForm.listeners.submit;
   let prevented = false;
@@ -202,10 +201,7 @@ const context = {
   elements.scheduleName.value = 'Weekly audit draft';
   elements.scheduleAction.value = 'consistency_audit';
   elements.scheduleAction.listeners.change();
-  elements.scheduleType.value = 'daily';
-  elements.scheduleType.listeners.change();
-  elements.scheduleDailyAt.value = '04:15';
-  elements.scheduleInterval.value = '120';
+  elements.scheduleCron.value = '15 4 * * 1';
   elements.scheduleVideoIds.value = 'draft-video';
   elements.scheduleAction.focus();
   releasePost();
@@ -213,37 +209,35 @@ const context = {
   assert.equal(elements.scheduleCreate.disabled, false);
   assert.equal(document.activeElement, elements.scheduleAction,
     'a completion must not steal focus if the operator moved to another field while the request was pending');
-  const createCalls = calls.filter(call => call.method === 'POST');
+  const createCalls = calls.filter(call => call.method === 'POST' && call.path === '/admin/api/v2/schedules');
   assert.deepEqual(createCalls[0], {
     method: 'POST',
     path: '/admin/api/v2/schedules',
     payload: {
-      name: 'Nightly availability', action: 'availability_check', schedule_type: 'interval',
-      timezone: 'Europe/Warsaw', interval_minutes: 60, video_ids: ['video-1', 'video-2'],
+      name: 'Nightly availability', action: 'availability_check', schedule_type: 'cron',
+      timezone: 'Europe/Warsaw', cron_expression: '0 3 * * *', video_ids: ['video-1', 'video-2'],
     },
   });
   assert.equal(elements.schedulesFeedback.textContent, 'Schedule created. Your newer draft was kept.');
   assert.equal(elements.scheduleCreateForm.context.elements.scheduleName.value, 'Weekly audit draft');
   assert.equal(elements.scheduleAction.value, 'consistency_audit');
-  assert.equal(elements.scheduleType.value, 'daily');
-  assert.equal(elements.scheduleDailyAt.value, '04:15');
-  assert.equal(elements.scheduleInterval.value, '120');
+  assert.equal(elements.scheduleCron.value, '15 4 * * 1');
   assert.equal(elements.scheduleVideoIds.value, 'draft-video');
   assert.equal(elements.scheduleVideosField.hidden, true, 'the conditional scope matches the newer action draft');
 
   elements.scheduleName.value = 'Retried backup';
   elements.scheduleAction.value = 'backup_create';
   elements.scheduleAction.listeners.change();
-  elements.scheduleType.value = 'daily';
-  elements.scheduleType.listeners.change();
-  elements.scheduleDailyAt.value = '02:30';
+  elements.scheduleCron.value = '30 2 * * *';
+  elements.scheduleCron.listeners.input();
+  await new Promise(resolve => setTimeout(resolve, 20));
   elements.scheduleCreate.focus();
   failNextPost = true;
   failNextGet = true;
   await submit({ preventDefault() {} });
   assert.equal(elements.scheduleCreate.disabled, false, 'a failed request must restore the submit button');
   assert.equal(elements.scheduleName.value, 'Retried backup', 'a failed request must preserve the entered name');
-  assert.equal(elements.scheduleDailyAt.value, '02:30', 'a failed request must preserve the entered time');
+  assert.equal(elements.scheduleCron.value, '30 2 * * *', 'a failed request must preserve the entered cron expression');
   assert.equal(document.activeElement, elements.scheduleCreate,
     'a keyboard submission must return focus to the re-enabled create button after an error');
   assert.match(elements.schedulesFeedback.textContent, /Could not create schedule\. The runner rejected this schedule\./);
@@ -251,8 +245,8 @@ const context = {
   await submit({ preventDefault() {} });
   const retry = calls.filter(call => call.method === 'POST').at(-1);
   assert.deepEqual(retry.payload, {
-    name: 'Retried backup', action: 'backup_create', schedule_type: 'daily',
-    timezone: 'Europe/Warsaw', daily_at: '02:30',
+    name: 'Retried backup', action: 'backup_create', schedule_type: 'cron',
+    timezone: 'Europe/Warsaw', cron_expression: '30 2 * * *',
   });
   assert.equal(elements.schedulesFeedback.textContent,
     'Schedule created, but the schedule list could not be refreshed.',

@@ -69,7 +69,7 @@ class AdminRouteTests(unittest.TestCase):
         response = self.request("/admin/assets-v2/enrichment.js")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers.get("cache-control"), "no-store")
-        self.assertIn("Telegram scene lookup", response.text)
+        self.assertIn("Scene fingerprint", response.text)
         self.assertIn(".trim().toLowerCase()", response.text)
 
     def test_admin_v2_api_responses_are_never_cached(self):

@@ -273,16 +273,20 @@ def apply_pending_fingerprint_proposals(conn: Any, media_dir: Path, *, limit: in
     sources = [f"{provider}:{method}" for provider in ("stashdb", "theporndb")
                for method in ("phash", "oshash", "title_exact", "linked_id", "split_title_duration_v1")]
     rows = conn.execute(
-        "SELECT id FROM metadata_review_proposals WHERE status='pending' AND lower(source)=ANY(%s) "
-        "ORDER BY id DESC LIMIT %s", (sources, max(1, min(int(limit), 1000))),
+        "SELECT id FROM metadata_review_proposals WHERE status='pending' "
+        "AND next_attempt_at<=CURRENT_TIMESTAMP AND lower(source)=ANY(%s) "
+        "ORDER BY next_attempt_at,id LIMIT %s", (sources, max(1, min(int(limit), 1000))),
     ).fetchall()
     processed = applied = 0
     for (proposal_id,) in rows:
         try:
+            did_process = False
+            did_apply = False
             with conn:
                 row = conn.execute(
                     "SELECT video_id,changes,source,external_id,source_url,confidence "
-                    "FROM metadata_review_proposals WHERE id=%s AND status='pending' FOR UPDATE SKIP LOCKED",
+                    "FROM metadata_review_proposals WHERE id=%s AND status='pending' "
+                    "AND next_attempt_at<=CURRENT_TIMESTAMP FOR UPDATE SKIP LOCKED",
                     (proposal_id,),
                 ).fetchone()
                 if not row:
@@ -307,18 +311,36 @@ def apply_pending_fingerprint_proposals(conn: Any, media_dir: Path, *, limit: in
                         source=source, external_id=external_id, url=url, confidence=confidence)
                     _apply_matched_scene(conn, media_dir, str(video_id), scene, http_client=http_client,
                                          strict_media=True)
-                    applied += 1
+                    did_apply = True
                     conn.execute(
                         "UPDATE metadata_review_proposals SET status='rejected',reviewed_at=CURRENT_TIMESTAMP "
                         "WHERE video_id=%s AND status='pending' AND id<%s AND lower(source)=ANY(%s)",
                         (video_id, proposal_id, sources),
                     )
-                conn.execute("UPDATE metadata_review_proposals SET status=%s,reviewed_at=CURRENT_TIMESTAMP WHERE id=%s",
+                conn.execute("""UPDATE metadata_review_proposals
+                    SET status=%s,reviewed_at=CURRENT_TIMESTAMP,attempt_count=attempt_count+1,
+                        last_attempt_at=CURRENT_TIMESTAMP,next_attempt_at=CURRENT_TIMESTAMP,last_error=''
+                    WHERE id=%s""",
                              ('accepted' if same_scene and not lower_priority else 'rejected', proposal_id))
-                processed += 1
-        except Exception:
+                did_process = True
+            processed += int(did_process)
+            applied += int(did_apply)
+        except Exception as exc:
             conn.rollback()
             _core.logger.exception("Could not automatically apply metadata proposal %s", proposal_id)
+            try:
+                with conn:
+                    conn.execute("""UPDATE metadata_review_proposals
+                        SET attempt_count=attempt_count+1,last_attempt_at=CURRENT_TIMESTAMP,
+                            next_attempt_at=CURRENT_TIMESTAMP + make_interval(secs =>
+                                LEAST(604800::double precision,
+                                      60::double precision * power(2::double precision,
+                                          LEAST(attempt_count,13)::double precision))),
+                            last_error=%s
+                        WHERE id=%s AND status='pending'""", (type(exc).__name__, proposal_id))
+            except Exception:
+                conn.rollback()
+                _core.logger.exception("Could not record retry state for metadata proposal %s", proposal_id)
     conn.commit()
     return processed, applied
 

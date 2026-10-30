@@ -20,9 +20,14 @@
     phash_generation: 'Generate pHash', thumbnail_generation: 'Generate thumbnail',
     phash_thumbnail_legacy: 'pHash and thumbnail (legacy)',
     duplicate_reconcile: 'Duplicate reconciliation', hide: 'Hide duplicates', dismiss: 'Dismiss pair', undo: 'Undo hide', undismiss: 'Undo dismissal',
-    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Telegram fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Catalog health audit schedule', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', sync: 'Sync'
+    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Catalog health audit schedule', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', sync: 'Sync'
   };
-  const HISTORICAL_ACTION_LABELS = { lukayan_fingerprint: 'Telegram scene lookup', telegram_fingerprint: 'Telegram scene lookup' };
+  const HISTORICAL_ACTION_LABELS = {
+    lukayan_fingerprint: 'Scene fingerprint · legacy',
+    telegram_fingerprint: 'Scene fingerprint',
+    lukayan_oshash: 'OSHASH fingerprint · legacy',
+    telegram_oshash: 'OSHASH fingerprint'
+  };
   const METADATA_PROGRESS_STAGES = new Set([
     'scanning_metadata', 'metadata_pbc', 'metadata_photos', 'metadata_tpdb', 'metadata_stashdb', 'metadata_scenes'
   ]);
@@ -43,7 +48,7 @@
     if (key === 'consistency_audit' && auditMode === 'file_consistency') return 'File consistency audit';
     if (key === 'consistency_audit' && auditMode === 'full') return 'Full catalog audit';
     return ACTION_LABELS[key] || HISTORICAL_ACTION_LABELS[key] ||
-      (key.startsWith('lukayan_') ? 'Telegram scene lookup' : (key ? titleCase(key) : 'Task'));
+      (key.startsWith('lukayan_') ? 'Scene fingerprint · legacy' : (key ? titleCase(key) : 'Task'));
   }
   function statePill(value) {
     const raw = safeId(value).toLowerCase();
@@ -84,8 +89,9 @@
   }
   function jellyfinResultLabel(value) {
     const labels = {
-      pending: 'Refresh request in progress', updated: 'Refresh request accepted',
-      failed: 'Refresh request failed'
+      pending: 'Waiting for refresh request', updated: 'Refresh request accepted',
+      failed: 'Refresh request failed', skipped: 'Refresh skipped',
+      unavailable: 'Refresh unavailable', not_required: 'Not required'
     };
     return labels[safeId(value).toLowerCase()] || 'Not recorded';
   }
@@ -382,12 +388,13 @@
     if (activityWarning) meta.append(create('p', 'detail-description job-stale-warning', activityWarning));
     wrap.append(meta);
 
-    if (job.local_state || job.jellyfin_refresh || job.jellyfin_import || safeId(job.state).toLowerCase() === 'processing') {
+    if (job.local_state || job.jellyfin_refresh || job.jellyfin_library_refresh || job.jellyfin_import || safeId(job.state).toLowerCase() === 'processing') {
       const progress = create('section', 'detail-section');
       const progressFields = create('dl', 'detail-fields job-detail-fields');
       progressFields.append(
         detailField('Local result', localResultLabel(job.local_state)),
         detailField('Jellyfin refresh', jellyfinResultLabel(job.jellyfin_refresh)),
+        detailField('Jellyfin library refresh', jellyfinResultLabel(job.jellyfin_library_refresh)),
         detailField('Jellyfin import', jellyfinImportLabel(job.jellyfin_import))
       );
       progress.append(create('h3', '', 'Progress and outcome'), progressFields);

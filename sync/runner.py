@@ -36,6 +36,13 @@ except Exception:  # pragma: no cover - older deployments may not have migration
     dispatch_due_schedules = None
 
 try:
+    from common.system_schedules import (
+        claim_due_system_schedule, ensure_system_schedules, finish_system_schedule,
+    )
+except Exception:  # pragma: no cover - older deployments may not have migrations yet
+    claim_due_system_schedule = ensure_system_schedules = finish_system_schedule = None
+
+try:
     from db_schema import init_db
 except ImportError:  # pragma: no cover - module is present in the sync image
     init_db = None
@@ -66,6 +73,7 @@ current_process = None
 consecutive_errors = 0
 requested_source = None
 requested_sync_mode = "scheduled"
+system_sync_due = False
 SYNC_JOB_HEARTBEAT_INTERVAL_SECONDS = 15
 
 def signal_handler(signum, frame):
@@ -236,7 +244,7 @@ def run_jobs_worker() -> int:
 
 
 def wait_with_trigger(duration: float):
-    global requested_source, requested_sync_mode
+    global requested_source, requested_sync_mode, system_sync_due
     from pathlib import Path
     trig = Path(TRIGGER_FILE)
     step = 1.0
@@ -245,9 +253,21 @@ def wait_with_trigger(duration: float):
     next_queue_error_log = 0.0
     next_schedule_dispatch = 0.0
     next_schedule_error_log = 0.0
+    next_system_schedule_check = 0.0
+    next_system_schedule_error_log = 0.0
     while not stop_event.is_set():
         actions = set()
         worker_wake = False
+        if claim_due_system_schedule and time.monotonic() >= next_system_schedule_check:
+            try:
+                if claim_due_system_schedule(DB_URL, "library-sync"):
+                    system_sync_due = True
+                    return False
+            except Exception as e:
+                if time.monotonic() >= next_system_schedule_error_log:
+                    LOGGER.warning(f"[sync-daemon] Could not check the Library sync cron schedule: {e}")
+                    next_system_schedule_error_log = time.monotonic() + 60.0
+            next_system_schedule_check = time.monotonic() + 10.0
         if dispatch_due_schedules and time.monotonic() >= next_schedule_dispatch:
             try:
                 worker_wake = dispatch_due_schedules(DB_URL) > 0
@@ -501,7 +521,13 @@ def run_pending_sync_jobs() -> bool:
 
 
 def run_loop():
-    global current_process, consecutive_errors, requested_source, requested_sync_mode
+    global current_process, consecutive_errors, requested_source, requested_sync_mode, system_sync_due
+    if ensure_system_schedules:
+        try:
+            ensure_system_schedules(DB_URL, sync_daily_at=daily_at, sync_interval_minutes=interval // 60,
+                                    backup_daily_at=os.getenv("BACKUP_DAILY_AT", "04:30"))
+        except Exception as e:
+            LOGGER.warning(f"[sync-daemon] Could not load system cron settings: {e}")
     if requeue_processing:
         try:
             recovered = requeue_processing(DB_URL, "sync")
@@ -537,28 +563,29 @@ def run_loop():
             first_run = False
         if first_run and not run_on_startup:
             first_run = False
-            sleep_sec = calculate_next_sleep_seconds(daily_at, interval)
-            if _scheduled_sync_was_missed(sleep_sec):
-                LOGGER.info(f"[sync-daemon] The scheduled sync at {daily_at} never completed before "
-                            "this start; running it now instead of waiting for the next slot.")
-            else:
-                import datetime
-                target_str = (datetime.datetime.now() + datetime.timedelta(seconds=sleep_sec)).strftime("%Y-%m-%d %H:%M:%S")
-                LOGGER.info(f"[sync-daemon] Skipping initial run on startup (run_on_startup=false). Next scheduled sync at {target_str} (in {format_duration(sleep_sec)})...")
-                triggered = wait_with_trigger(sleep_sec)
-                if not triggered and stop_event.is_set():
-                    break
-                if triggered:
-                    # Re-check durable requests before falling back to the schedule.
-                    continue
+            LOGGER.info("[sync-daemon] Skipping initial run on startup (run_on_startup=false); waiting for the configured cron schedule.")
+            triggered = wait_with_trigger(float("inf"))
+            if not triggered and stop_event.is_set():
+                break
+            if triggered:
+                # Re-check durable requests before falling back to the schedule.
+                continue
 
-        if ran_jobs:
+        if ran_jobs and not system_sync_due:
             success, exit_code = True, 0
             requested_source = None
         else:
-            success, exit_code = run_full_sync(requested_source, requested_sync_mode)
+            source = None if system_sync_due else requested_source
+            mode = "scheduled" if system_sync_due else requested_sync_mode
+            success, exit_code = run_full_sync(source, mode)
             requested_source = None
             requested_sync_mode = "scheduled"
+        if system_sync_due and finish_system_schedule:
+            try:
+                finish_system_schedule(DB_URL, "library-sync", success=success)
+            except Exception as e:
+                LOGGER.warning(f"[sync-daemon] Could not record Library sync result: {e}")
+            system_sync_due = False
 
         first_run = False
         if stop_event.is_set():
@@ -568,14 +595,8 @@ def run_loop():
             if consecutive_errors > 0:
                 LOGGER.info(f"[sync-daemon] Sync succeeded after {consecutive_errors} failed attempts.")
             consecutive_errors = 0
-            sleep_sec = calculate_next_sleep_seconds(daily_at, interval)
-            if daily_at:
-                import datetime
-                target_str = (datetime.datetime.now() + datetime.timedelta(seconds=sleep_sec)).strftime("%Y-%m-%d %H:%M:%S")
-                LOGGER.info(f"[sync-daemon] Next scheduled sync at {target_str} (in {format_duration(sleep_sec)})...")
-            else:
-                LOGGER.info(f"[sync-daemon] Sleeping for {interval//60} minutes...")
-            wait_with_trigger(sleep_sec)
+            LOGGER.info("[sync-daemon] Waiting for the next cron run or an on-demand request...")
+            wait_with_trigger(float("inf"))
         else:
             consecutive_errors += 1
             backoff = min(BASE_BACKOFF_SECONDS * (2 ** (consecutive_errors - 1)), MAX_BACKOFF_SECONDS)

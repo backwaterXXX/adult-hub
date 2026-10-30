@@ -158,9 +158,9 @@ vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/enrichment.js', 'ut
   assert.strictEqual(feedback.textContent, 'Metadata scan request accepted; current task state is unavailable. Open Tasks to follow provider progress.');
   assert.strictEqual(feedback.children.length, 0);
   await navigationListener({ detail: { route: 'system' } });
-  assert.strictEqual(pollInterval, 15000);
+  assert.strictEqual(pollInterval, 30000);
   await navigationListener({ detail: { route: 'quality', tab: 'enrichment' } });
-  assert.strictEqual(pollInterval, 15000, 'the Enrichment tab starts bounded progress polling');
+  assert.strictEqual(pollInterval, 30000, 'the Enrichment tab starts low-frequency progress polling');
   responseJobId = 'metadata-job-1'; responseJobState = 'queued';
   await elements.get('#enrichmentScan').listeners.click({ currentTarget: elements.get('#enrichmentScan') });
   const beforePoll = getCalls;

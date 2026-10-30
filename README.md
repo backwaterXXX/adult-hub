@@ -91,9 +91,9 @@ make deploy
 ```
 
 `make deploy` reads the release number from `VERSION`, exports it as
-`APP_VERSION`, and recreates the resolver and sync services from
+`APP_VERSION`, and recreates the resolver, sync, and backup services from
 images tagged with that release. Running `docker compose build resolver sync`
-and `docker compose up -d resolver sync` directly still works, but tags and
+and `docker compose up -d resolver sync backup` directly still works, but tags and
 labels the images `dev` unless you export `APP_VERSION` yourself.
 
 Resolver and sync source code is packaged into their Docker images; Compose mounts runtime data and configuration but does not overlay `/app`. Rebuild and recreate both services after code changes. This keeps each image self-contained so restoring a retained versioned image actually restores its application code.

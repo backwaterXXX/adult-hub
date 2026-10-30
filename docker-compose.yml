@@ -70,6 +70,7 @@ services:
       - MAX_CACHE_ENTRIES=${MAX_CACHE_ENTRIES:-2000}
       - DATABASE_URL=${DATABASE_URL:-}
       - BACKUP_DIR=/data/backups
+      - BACKUP_DAILY_AT=${BACKUP_DAILY_AT:-04:30}
       - BACKUP_RESTORE_DATABASE_URL=${BACKUP_RESTORE_DATABASE_URL:-}
       - ENABLE_ADMIN=${ENABLE_ADMIN:-true}
       - ADMIN_PUBLIC=${ADMIN_PUBLIC:-false}
@@ -199,6 +200,33 @@ services:
       - ./data:/data
       # cleanup_old_transcodes() uses /transcodes.
       - ./jf-cache/transcodes:/transcodes
+
+  backup:
+    image: ${SYNC_IMAGE:-adult-hub-sync:${APP_VERSION:-dev}}
+    build:
+      context: .
+      dockerfile: sync/Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    container_name: adult-backup
+    restart: unless-stopped
+    mem_limit: 256m
+    depends_on:
+      resolver:
+        condition: service_healthy
+    environment:
+      - TZ=${TZ:-Europe/Warsaw}
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DATABASE_URL=${DATABASE_URL:-}
+      - BACKUP_DIR=/data/backups
+      - BACKUP_KEEP_DAYS=${BACKUP_KEEP_DAYS:-7}
+      - BACKUP_DAILY_AT=${BACKUP_DAILY_AT:-04:30}
+      - BACKUP_LOCK_PATH=/data/cache/backup.lock
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./data:/data
+    command: ["python", "backup_scheduler.py"]
 
 
 networks:

@@ -73,10 +73,10 @@ def next_cron(expression: str, *, after=None) -> datetime:
     raise ValueError("Cron expression has no matching date within eight years.")
 
 
-def _schedule_next(schedule_type, interval_minutes, daily_at, payload, *, after):
-    expression = payload.get('_cron') if isinstance(payload, dict) else None
-    return (next_cron(expression, after=after) if expression else
-            next_run(schedule_type, interval_minutes, daily_at, after=after))
+def _schedule_next(schedule_type, interval_minutes, daily_at, cron_expression=None, *, after):
+    if schedule_type == "cron":
+        return next_cron(cron_expression, after=after)
+    return next_run(schedule_type, interval_minutes, daily_at, after=after)
 
 
 def _utc(value: datetime | int | float | None = None) -> datetime:
@@ -112,16 +112,27 @@ def next_run(schedule_type: str, interval_minutes: int | None, daily_at: str | N
     raise ValueError("Could not calculate the next local schedule time.")
 
 
-def _validate(name, action, schedule_type, interval_minutes, daily_at, payload):
+def _validate(name, action, schedule_type, interval_minutes, daily_at, payload, cron_expression=None):
     if not isinstance(name, str) or not 3 <= len(name.strip()) <= 100:
         raise ValueError("Schedule name must be between 3 and 100 characters.")
     if not isinstance(action, str) or action not in ALLOWED_ACTIONS:
         raise ValueError("Unsupported scheduled action.")
-    if schedule_type == "interval":
+    if schedule_type == "cron":
+        if interval_minutes is not None or daily_at is not None:
+            raise ValueError("Cron schedules cannot include interval or daily fields.")
+        if not isinstance(cron_expression, str):
+            raise ValueError("Provide a cron expression.")
+        cron_expression = " ".join(cron_expression.split())
+        next_cron(cron_expression)
+    elif schedule_type == "interval":
+        if cron_expression is not None:
+            raise ValueError("Interval schedules cannot include a cron expression.")
         next_run(schedule_type, interval_minutes, None)
         if daily_at is not None:
             raise ValueError("Daily time must be empty for an interval schedule.")
     elif schedule_type == "daily":
+        if cron_expression is not None:
+            raise ValueError("Daily schedules cannot include a cron expression.")
         next_run(schedule_type, None, daily_at)
         if interval_minutes is not None:
             raise ValueError("Interval must be empty for a daily schedule.")
@@ -133,37 +144,58 @@ def _validate(name, action, schedule_type, interval_minutes, daily_at, payload):
                 or any(not isinstance(item, str) or not item or len(item) > 1000 for item in ids)
                 or len(set(ids)) != len(ids)):
             raise ValueError("Availability schedules need 1 to 20 distinct video IDs.")
-        return {"video_ids": ids}
+        return {"video_ids": ids}, cron_expression if schedule_type == "cron" else None
     if payload not in ({}, None):
         raise ValueError("This scheduled action does not accept a payload.")
-    return {}
+    return {}, cron_expression if schedule_type == "cron" else None
 
 
 def create_schedule(db_url, *, name, action, schedule_type, interval_minutes=None,
-                    daily_at=None, payload=None, now=None) -> dict:
-    payload = _validate(name, action, schedule_type, interval_minutes, daily_at, payload or {})
+                    daily_at=None, cron_expression=None, payload=None, now=None) -> dict:
+    validated = _validate(name, action, schedule_type, interval_minutes, daily_at,
+                          payload or {}, cron_expression)
+    if isinstance(validated, tuple):
+        payload, cron_expression = validated
+    else:  # Preserve compatibility with callers that only consume the payload result.
+        payload, cron_expression = validated, None
+    if schedule_type == "daily":
+        hour, minute = map(int, daily_at.split(":"))
+        cron_expression = f"{minute} {hour} * * *"
+        schedule_type, daily_at = "cron", None
+    elif schedule_type == "interval":
+        if interval_minutes <= 60 and 60 % interval_minutes == 0:
+            cron_expression = "0 * * * *" if interval_minutes == 60 else f"*/{interval_minutes} * * * *"
+        elif interval_minutes == 1440:
+            cron_expression = "0 0 * * *"
+        elif interval_minutes % 60 == 0 and 1440 % interval_minutes == 0:
+            hours = interval_minutes // 60
+            cron_expression = f"0 */{hours} * * *"
+        if cron_expression:
+            schedule_type, interval_minutes = "cron", None
     instant = _utc(now)
     schedule_id = uuid.uuid4().hex
     conn = db.connect(db_url)
     try:
         with conn:
             conn.execute(
-                "INSERT INTO admin_schedules (id,name,action,payload,schedule_type,interval_minutes,daily_at,"
+                "INSERT INTO admin_schedules (id,name,action,payload,schedule_type,interval_minutes,daily_at,cron_expression,"
                 "timezone,enabled,revision,next_run_at,created_at,updated_at) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,'Europe/Warsaw',TRUE,1,%s,%s,%s)",
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'Europe/Warsaw',TRUE,1,%s,%s,%s)",
                 (schedule_id, name.strip(), action, json.dumps(payload, ensure_ascii=False), schedule_type,
-                 interval_minutes, daily_at, next_run(schedule_type, interval_minutes, daily_at, after=instant),
+                 interval_minutes, daily_at, cron_expression,
+                 _schedule_next(schedule_type, interval_minutes, daily_at, cron_expression, after=instant),
                  instant.timestamp(), instant.timestamp()),
             )
             from common.admin_audit_events import record_schedule_created
             recorded = record_schedule_created(
                 conn, schedule_id=schedule_id, action=action, schedule_type=schedule_type,
-                interval_minutes=interval_minutes, daily_at=daily_at, timezone="Europe/Warsaw",
+                interval_minutes=interval_minutes, daily_at=daily_at, cron_expression=cron_expression,
+                timezone="Europe/Warsaw",
                 enabled=True, video_count=len(payload.get("video_ids", [])),
             )
             if not recorded:
                 raise RuntimeError("Could not record the schedule audit event.")
-        return {"id": schedule_id, "revision": 1}
+        return {"id": schedule_id, "revision": 1, "cron_expression": cron_expression}
     finally:
         conn.close()
 
@@ -175,25 +207,24 @@ def set_enabled(db_url, schedule_id: str, *, enabled: bool, revision: int, now=N
     try:
         conn.execute("BEGIN")
         row = conn.execute(
-            "SELECT schedule_type,interval_minutes,daily_at,revision,enabled,payload FROM admin_schedules WHERE id=%s FOR UPDATE",
+            "SELECT schedule_type,interval_minutes,daily_at,cron_expression,revision,enabled FROM admin_schedules WHERE id=%s FOR UPDATE",
             (schedule_id,),
         ).fetchone()
         if row is None:
             conn.rollback()
             return {"outcome": "not_found"}
-        if int(row[3]) != revision:
+        if int(row[4]) != revision:
             conn.rollback()
-            return {"outcome": "conflict", "revision": int(row[3])}
+            return {"outcome": "conflict", "revision": int(row[4])}
         instant = _utc(now)
-        payload = json.loads(row[5]) if isinstance(row[5], str) else (row[5] or {})
-        upcoming = _schedule_next(row[0], row[1], row[2], payload, after=instant) if enabled else None
+        upcoming = _schedule_next(row[0], row[1], row[2], row[3], after=instant) if enabled else None
         changed = conn.execute(
             "UPDATE admin_schedules SET enabled=%s,revision=revision+1,next_run_at=%s,updated_at=%s WHERE id=%s",
             (enabled, upcoming, instant.timestamp(), schedule_id),
         ).rowcount
         from common.admin_audit_events import record_schedule_enabled
-        recorded = record_schedule_enabled(conn, schedule_id=schedule_id, before=bool(row[4]), after=enabled,
-                                           revision_before=int(row[3]), revision_after=revision + 1)
+        recorded = record_schedule_enabled(conn, schedule_id=schedule_id, before=bool(row[5]), after=enabled,
+                                           revision_before=int(row[4]), revision_after=revision + 1)
         if not recorded:
             raise RuntimeError("Could not record the schedule audit event.")
         conn.commit()
@@ -205,7 +236,7 @@ def set_enabled(db_url, schedule_id: str, *, enabled: bool, revision: int, now=N
         conn.close()
 
 
-def set_reconcile_cron(db_url, schedule_id: str, *, expression: str, revision: int, now=None) -> dict:
+def set_schedule_cron(db_url, schedule_id: str, *, expression: str, revision: int, now=None) -> dict:
     if not isinstance(expression, str) or type(revision) is not int or revision < 1:
         raise ValueError("Provide a cron expression and a valid revision.")
     expression = ' '.join(expression.split())
@@ -214,20 +245,17 @@ def set_reconcile_cron(db_url, schedule_id: str, *, expression: str, revision: i
     conn = db.connect(db_url)
     try:
         conn.execute('BEGIN')
-        row = conn.execute("SELECT action,payload,revision,enabled FROM admin_schedules WHERE id=%s FOR UPDATE", (schedule_id,)).fetchone()
+        row = conn.execute("SELECT cron_expression,revision,enabled FROM admin_schedules WHERE id=%s FOR UPDATE", (schedule_id,)).fetchone()
         if not row:
             conn.rollback()
             return {'outcome': 'not_found'}
-        if row[0] not in {'duplicate_reconcile', 'catalog_full_audit'}:
-            raise ValueError("Cron editing is not available for this schedule.")
-        if int(row[2]) != revision:
+        if int(row[1]) != revision:
             conn.rollback()
-            return {'outcome': 'conflict', 'revision': int(row[2])}
-        payload = json.loads(row[1]) if isinstance(row[1], str) else (row[1] or {})
-        before = payload.get('_cron')
-        payload['_cron'] = expression
-        conn.execute("UPDATE admin_schedules SET payload=%s,revision=revision+1,next_run_at=%s,updated_at=%s WHERE id=%s",
-                     (json.dumps(payload), upcoming if row[3] else None, instant.timestamp(), schedule_id))
+            return {'outcome': 'conflict', 'revision': int(row[1])}
+        before = row[0]
+        conn.execute("UPDATE admin_schedules SET schedule_type='cron',interval_minutes=NULL,daily_at=NULL,"
+                     "cron_expression=%s,revision=revision+1,next_run_at=%s,updated_at=%s WHERE id=%s",
+                     (expression, upcoming if row[2] else None, instant.timestamp(), schedule_id))
         from common.admin_audit_events import record_schedule_cron
         if not record_schedule_cron(conn, schedule_id=schedule_id, before=before, after=expression, revision_before=revision):
             raise RuntimeError('Could not record the schedule audit event.')
@@ -240,11 +268,15 @@ def set_reconcile_cron(db_url, schedule_id: str, *, expression: str, revision: i
         conn.close()
 
 
+# Kept for older internal callers; all schedule actions now support cron edits.
+set_reconcile_cron = set_schedule_cron
+
+
 def list_schedules(db_url) -> list[dict]:
     conn = db.connect(db_url)
     try:
         rows = conn.execute(
-            "SELECT s.id,s.name,s.action,s.payload,s.schedule_type,s.interval_minutes,s.daily_at,s.timezone,"
+            "SELECT s.id,s.name,s.action,s.payload,s.schedule_type,s.interval_minutes,s.daily_at,s.cron_expression,s.timezone,"
             "s.enabled,s.revision,s.next_run_at,s.last_run_at,s.last_job_id,s.last_result,j.state "
             "FROM admin_schedules s LEFT JOIN video_duplicate_jobs j ON j.id=s.last_job_id "
             "ORDER BY s.created_at DESC,s.id"
@@ -255,16 +287,16 @@ def list_schedules(db_url) -> list[dict]:
                 payload = json.loads(row[3]) if row[3] else {}
             except (ValueError, TypeError):
                 payload = {}
-            job_state = row[14] if row[14] in {"queued", "processing", "done", "failed", "cancelled"} else None
-            stored_result = row[13] if row[13] in {"queued", "processing", "done", "failed", "cancelled", "skipped_overlap"} else None
+            job_state = row[15] if row[15] in {"queued", "processing", "done", "failed", "cancelled"} else None
+            stored_result = row[14] if row[14] in {"queued", "processing", "done", "failed", "cancelled", "skipped_overlap"} else None
             result.append({"id": row[0], "name": row[1], "action": row[2],
                            "video_count": len(payload.get("video_ids", [])) if row[2] == "availability_check" else 0,
                            "schedule_type": row[4], "interval_minutes": row[5], "daily_at": row[6],
-                           "cron_expression": payload.get('_cron') if row[2] in {'duplicate_reconcile', 'catalog_full_audit'} else None,
-                           "timezone": row[7], "enabled": bool(row[8]), "revision": int(row[9]),
-                           "next_run_at": _utc(row[10]).isoformat() if row[10] else None,
-                           "last_run_at": _utc(row[11]).isoformat() if row[11] else None,
-                           "last_job_id": row[12],
+                           "cron_expression": row[7],
+                           "timezone": row[8], "enabled": bool(row[9]), "revision": int(row[10]),
+                           "next_run_at": _utc(row[11]).isoformat() if row[11] else None,
+                           "last_run_at": _utc(row[12]).isoformat() if row[12] else None,
+                           "last_job_id": row[13],
                            "last_result": stored_result if stored_result == "skipped_overlap" else (job_state or stored_result),
                            "last_job_state": job_state})
         return result
@@ -282,21 +314,21 @@ def dispatch_due_schedules(db_url, *, now=None, limit=20) -> int:
         # Provision the built-in daily audit once. Operator changes to this row
         # are respected on subsequent starts, including disabling the schedule.
         for schedule_id, name, action, payload, daily_at in (
-            ("catalog-health-full", "Catalog health: daily full audit", "catalog_full_audit", {}, "03:00"),
+            ("catalog-health-full", "Catalog health: daily full audit", "catalog_full_audit", {}, "0 3 * * *"),
         ):
             conn.execute(
-                "INSERT INTO admin_schedules (id,name,action,payload,schedule_type,daily_at,timezone,enabled,revision,next_run_at,created_at,updated_at) "
-                "VALUES (%s,%s,%s,%s,'daily',%s,'Europe/Warsaw',TRUE,1,%s,%s,%s) ON CONFLICT(id) DO NOTHING",
+                "INSERT INTO admin_schedules (id,name,action,payload,schedule_type,cron_expression,timezone,enabled,revision,next_run_at,created_at,updated_at) "
+                "VALUES (%s,%s,%s,%s,'cron',%s,'Europe/Warsaw',TRUE,1,%s,%s,%s) ON CONFLICT(id) DO NOTHING",
                 (schedule_id, name, action, json.dumps(payload), daily_at,
-                 next_run("daily", None, daily_at, after=instant), instant.timestamp(), instant.timestamp()),
+                 next_cron(daily_at, after=instant), instant.timestamp(), instant.timestamp()),
             )
         due = conn.execute(
-            "SELECT id,action,payload,schedule_type,interval_minutes,daily_at,last_job_id "
+            "SELECT id,action,payload,schedule_type,interval_minutes,daily_at,cron_expression,last_job_id "
             "FROM admin_schedules WHERE enabled=TRUE AND next_run_at<=%s "
             "ORDER BY next_run_at,id LIMIT %s FOR UPDATE SKIP LOCKED",
             (instant, max(1, min(int(limit), 100))),
         ).fetchall()
-        for schedule_id, action, payload_raw, schedule_type, interval_minutes, daily_at, last_job_id in due:
+        for schedule_id, action, payload_raw, schedule_type, interval_minutes, daily_at, cron_expression, last_job_id in due:
             try:
                 payload = json.loads(payload_raw) if payload_raw else {}
             except (ValueError, TypeError):
@@ -305,14 +337,13 @@ def dispatch_due_schedules(db_url, *, now=None, limit=20) -> int:
             if last_job_id:
                 job = conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (last_job_id,)).fetchone()
                 active = bool(job and job[0] in {"queued", "processing"})
-            upcoming = _schedule_next(schedule_type, interval_minutes, daily_at, payload, after=instant)
+            upcoming = _schedule_next(schedule_type, interval_minutes, daily_at, cron_expression, after=instant)
             if active:
                 conn.execute(
                     "UPDATE admin_schedules SET next_run_at=%s,last_result='skipped_overlap',updated_at=%s WHERE id=%s",
                     (upcoming, instant.timestamp(), schedule_id),
                 )
                 continue
-            payload.pop('_cron', None)
             payload["_schedule_id"] = schedule_id
             job_id = uuid.uuid4().hex
             epoch = int(instant.timestamp())

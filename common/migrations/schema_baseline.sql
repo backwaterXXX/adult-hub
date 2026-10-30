@@ -1,6 +1,6 @@
 -- Canonical baseline schema for Adult Hub (squashed from the historical
 -- chain: legacy v1-v8 plus post-baseline v10-v49, and the end state of the
--- forward upgrades v50-v54 that CURRENT_MIGRATIONS replay onto a fresh base).
+-- forward upgrades v50-v59 that CURRENT_MIGRATIONS replay onto a fresh base).
 --
 -- Applied by common/migrations/m0001_baseline.py to a fresh database; existing
 -- databases never re-run it. Generated with:
@@ -210,6 +210,7 @@ CREATE TABLE public.admin_schedules (
     schedule_type text NOT NULL,
     interval_minutes integer,
     daily_at text,
+    cron_expression text,
     timezone text DEFAULT 'Europe/Warsaw'::text NOT NULL,
     enabled boolean DEFAULT true NOT NULL,
     revision integer DEFAULT 1 NOT NULL,
@@ -220,9 +221,27 @@ CREATE TABLE public.admin_schedules (
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT admin_schedules_action_check CHECK ((action = ANY (ARRAY['availability_check'::text, 'consistency_audit'::text, 'metadata_quality_audit'::text, 'catalog_full_audit'::text, 'backup_create'::text, 'duplicate_reconcile'::text]))),
-    CONSTRAINT admin_schedules_check CHECK ((((schedule_type = 'interval'::text) AND ((interval_minutes >= 15) AND (interval_minutes <= 43200)) AND (daily_at IS NULL)) OR ((schedule_type = 'daily'::text) AND (interval_minutes IS NULL) AND (daily_at ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'::text)))),
-    CONSTRAINT admin_schedules_schedule_type_check CHECK ((schedule_type = ANY (ARRAY['interval'::text, 'daily'::text]))),
+    CONSTRAINT admin_schedules_check CHECK ((((schedule_type = 'interval'::text) AND (interval_minutes IS NOT NULL) AND (interval_minutes >= 15) AND (interval_minutes <= 43200) AND (daily_at IS NULL) AND (cron_expression IS NULL)) OR ((schedule_type = 'daily'::text) AND (interval_minutes IS NULL) AND (daily_at IS NOT NULL) AND (daily_at ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'::text) AND (cron_expression IS NULL)) OR ((schedule_type = 'cron'::text) AND (interval_minutes IS NULL) AND (daily_at IS NULL) AND (cron_expression IS NOT NULL) AND (length(cron_expression) >= 1) AND (length(cron_expression) <= 100)))),
+    CONSTRAINT admin_schedules_schedule_type_check CHECK ((schedule_type = ANY (ARRAY['interval'::text, 'daily'::text, 'cron'::text]))),
     CONSTRAINT admin_schedules_timezone_check CHECK ((timezone = 'Europe/Warsaw'::text))
+);
+
+CREATE TABLE public.system_schedules (
+    id text NOT NULL,
+    name text NOT NULL,
+    cron_expression text,
+    legacy_interval_minutes integer,
+    legacy_daily_at text,
+    needs_conversion boolean DEFAULT false NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    revision integer DEFAULT 1 NOT NULL,
+    next_run_at timestamp with time zone,
+    last_run_at timestamp with time zone,
+    last_result text,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT system_schedules_id_check CHECK ((id = ANY (ARRAY['library-sync'::text, 'database-backup'::text]))),
+    CONSTRAINT system_schedules_revision_check CHECK ((revision >= 1)),
+    CONSTRAINT system_schedules_check CHECK ((((cron_expression IS NOT NULL) AND (length(cron_expression) >= 1) AND (length(cron_expression) <= 100) AND (legacy_interval_minutes IS NULL) AND (legacy_daily_at IS NULL) AND (needs_conversion = false)) OR ((cron_expression IS NULL) AND (needs_conversion = true) AND (((legacy_interval_minutes IS NOT NULL) AND (legacy_interval_minutes >= 15) AND (legacy_interval_minutes <= 43200) AND (legacy_daily_at IS NULL)) OR ((legacy_interval_minutes IS NULL) AND (legacy_daily_at IS NOT NULL) AND (legacy_daily_at ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'::text)))))
 );
 
 CREATE TABLE public.dead_streams (
@@ -285,6 +304,10 @@ CREATE TABLE public.metadata_review_proposals (
     status text DEFAULT 'pending'::text NOT NULL,
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     reviewed_at timestamp with time zone,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    last_attempt_at timestamp with time zone,
+    next_attempt_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    last_error text DEFAULT ''::text NOT NULL,
     CONSTRAINT metadata_review_proposals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'accepted'::text, 'rejected'::text])))
 );
 
@@ -760,6 +783,9 @@ ALTER TABLE ONLY public.admin_quality_acknowledgements
 ALTER TABLE ONLY public.admin_schedules
     ADD CONSTRAINT admin_schedules_pkey PRIMARY KEY (id);
 
+ALTER TABLE ONLY public.system_schedules
+    ADD CONSTRAINT system_schedules_pkey PRIMARY KEY (id);
+
 ALTER TABLE ONLY public.dead_streams
     ADD CONSTRAINT dead_streams_pkey PRIMARY KEY (video_id);
 
@@ -927,6 +953,8 @@ CREATE INDEX idx_admin_quality_ack_video ON public.admin_quality_acknowledgement
 
 CREATE INDEX idx_admin_schedules_due ON public.admin_schedules USING btree (next_run_at) WHERE (enabled = true);
 
+CREATE INDEX idx_system_schedules_due ON public.system_schedules USING btree (next_run_at) WHERE (enabled = true);
+
 CREATE INDEX idx_diagnostic_reports_ended ON public.diagnostic_reports USING btree (ended_at DESC);
 
 CREATE INDEX idx_external_metadata_attempts_due ON public.external_metadata_attempts USING btree (entity_type, source, next_attempt_at, entity_key);
@@ -934,6 +962,7 @@ CREATE INDEX idx_external_metadata_attempts_due ON public.external_metadata_atte
 CREATE INDEX idx_external_metadata_attempts_history_retention ON public.external_metadata_attempts USING btree (updated_at, entity_type, entity_key, source);
 
 CREATE INDEX idx_metadata_review_pending ON public.metadata_review_proposals USING btree (created_at, id) WHERE (status = 'pending'::text);
+CREATE INDEX idx_metadata_review_retry ON public.metadata_review_proposals USING btree (next_attempt_at, id) WHERE (status = 'pending'::text);
 
 CREATE INDEX idx_metadata_review_video ON public.metadata_review_proposals USING btree (video_id, status, created_at DESC);
 

@@ -33,6 +33,8 @@ from common.migrations.m0056_performer_alias_canonical_index import (
     current_migration as current_performer_alias_canonical_index,
 )
 from common.migrations.m0057_split_phash_jobs import current_migration as current_split_phash_jobs
+from common.migrations.m0058_cron_schedules import current_migration as current_cron_schedules
+from common.migrations.m0059_metadata_proposal_retries import current_migration as current_metadata_proposal_retries
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +48,7 @@ CURRENT_MIGRATIONS: tuple[Migration, ...] = (
     current_duplicate_reconcile_schedule, current_video_visual_duplicates,
     current_video_visual_timestamps, current_video_visual_history, current_telegram_latest_cursor,
     current_duplicate_reconcile_opt_in, current_performer_alias_canonical_index,
-    current_split_phash_jobs,
+    current_split_phash_jobs, current_cron_schedules, current_metadata_proposal_retries,
 )
 MIGRATIONS: tuple[Migration, ...] = (baseline, *CURRENT_MIGRATIONS)
 
@@ -72,7 +74,10 @@ def _validate_active_migrations(migrations: tuple[Migration, ...]) -> None:
 _validate_active_migrations(MIGRATIONS)
 # Ordering carries meaning here (m0039 drops the table m0035 creates).
 _validate_active_migrations(POST_BASELINE_MIGRATIONS)
+# Identity of the temporary squash baseline used before the canonical v1 baseline.
+# It remains metadata only and is never included in an apply plan.
 INTERIM_BASELINE_VERSION = 9
+INTERIM_BASELINE_NAME = "0009_baseline"
 
 # Highest version of the pre-squash chain; also the ceiling for partial upgrades.
 POST_BASELINE_CEILING = max(migration.version for migration in POST_BASELINE_MIGRATIONS)
@@ -135,6 +140,7 @@ APPLICATION_TABLES: tuple[str, ...] = (
     "telegram_unavailable_quarantine",
     "admin_audit_items",
     "admin_schedules",
+    "system_schedules",
     "admin_action_events",
     "admin_audit_events",
     "admin_orphan_quarantine",
@@ -197,11 +203,11 @@ def _migration_plan(
     names_by_version = {record.version: record.name for record in applied}
     baseline_is_applied = (
         names_by_version.get(baseline.version) == baseline.name
-        and names_by_version.get(INTERIM_BASELINE_VERSION) != "0009_baseline"
+        and names_by_version.get(INTERIM_BASELINE_VERSION) != INTERIM_BASELINE_NAME
     )
     has_interim_baseline = (
         INTERIM_BASELINE_VERSION in applied_versions
-        and names_by_version[INTERIM_BASELINE_VERSION] == "0009_baseline"
+        and names_by_version[INTERIM_BASELINE_VERSION] == INTERIM_BASELINE_NAME
     )
     has_legacy_history = any(
         version < INTERIM_BASELINE_VERSION

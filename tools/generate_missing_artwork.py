@@ -3,11 +3,13 @@
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -29,6 +31,8 @@ from common import db
 from common.image_utils import extract_video_frame, is_black_image
 from common.video_variants import fetch_and_select_best_variant
 from sync.jellyfin_db import trigger_library_refresh
+
+logger = logging.getLogger(__name__)
 
 
 def find_missing_artwork_videos(
@@ -162,9 +166,10 @@ def process_single_video(
     return result
 
 
-def record_job_entry(conn, result: dict, offset_seconds: int = 60):
+def record_job_entry(conn, result: dict, offset_seconds: int = 60, *, jellyfin_refresh: str | None = None) -> str:
     """Record completed or failed artwork generation job in video_duplicate_jobs."""
     now = int(time.time())
+    stamp = datetime.now(timezone.utc)
     job_id = uuid.uuid4().hex
     state = "done" if result["success"] else "failed"
     payload = json.dumps({
@@ -173,17 +178,19 @@ def record_job_entry(conn, result: dict, offset_seconds: int = 60):
     })
 
     if result["success"]:
+        refresh_status = jellyfin_refresh or "pending"
         res_data = {
             "local_state": "artwork_generated",
-            "jellyfin_refresh": "updated",
+            "jellyfin_refresh": refresh_status,
+            "jellyfin_library_refresh": "pending" if refresh_status == "pending" else "not_required",
             "variant": result.get("variant", "original"),
             "events": [
                 {"stage": "starting", "updated_at": now},
                 {"stage": "generating_artwork", "updated_at": now},
-                {"stage": "refreshing_jellyfin", "updated_at": now},
-                {"stage": "completed", "updated_at": now},
+                {"stage": "artwork_generated", "updated_at": now},
             ],
-            "progress": {"stage": "completed", "updated_at": now},
+            "progress": {"stage": "waiting_for_jellyfin_refresh" if refresh_status == "pending" else "completed",
+                          "updated_at": now},
         }
     else:
         res_data = {
@@ -201,11 +208,44 @@ def record_job_entry(conn, result: dict, offset_seconds: int = 60):
             INSERT INTO video_duplicate_jobs (id, action, state, payload, result, created_at, updated_at)
             VALUES (%s, 'artwork_generate', %s, %s, %s, %s, %s)
             """,
-            (job_id, state, payload, json.dumps(res_data), now, now),
+            (job_id, state, payload, json.dumps(res_data), stamp, stamp),
         )
         conn.commit()
+        return job_id
     except Exception:
-        pass
+        conn.rollback()
+        logger.exception("Could not record artwork job %s", result.get("video_id", "unknown"))
+        raise
+
+
+def update_job_jellyfin_result(conn, job_id: str, *, item_status: str | None = None,
+                               library_status: str | None = None, error: str = "") -> None:
+    """Persist checked Jellyfin refresh outcomes on an artwork job."""
+    row = conn.execute(
+        "SELECT result FROM video_duplicate_jobs WHERE id=%s AND action='artwork_generate'", (job_id,),
+    ).fetchone()
+    if not row:
+        raise RuntimeError(f"Artwork job {job_id} is unavailable for refresh status update.")
+    payload = row[0] if isinstance(row[0], dict) else json.loads(row[0] or "{}")
+    now = int(time.time())
+    stamp = datetime.now(timezone.utc)
+    events = payload.setdefault("events", [])
+    if item_status is not None:
+        payload["jellyfin_refresh"] = item_status
+        events.append({"stage": "refreshing_jellyfin", "updated_at": now})
+    if library_status is not None:
+        payload["jellyfin_library_refresh"] = library_status
+        events.append({"stage": "refreshing_jellyfin", "updated_at": now})
+    if error:
+        payload["jellyfin_refresh_error"] = error[:100]
+    if item_status is not None or library_status is not None:
+        pending = payload.get("jellyfin_refresh") == "pending" or payload.get("jellyfin_library_refresh") == "pending"
+        payload["progress"] = {"stage": "refreshing_jellyfin" if pending else "completed", "updated_at": now}
+    conn.execute(
+        "UPDATE video_duplicate_jobs SET result=%s,updated_at=%s WHERE id=%s",
+        (json.dumps(payload), stamp, job_id),
+    )
+    conn.commit()
 
 
 def main():
@@ -255,6 +295,8 @@ def main():
     start_time = time.time()
     succeeded = 0
     failed = 0
+    succeeded_items = []
+    jobs_by_video: dict[str, list[str]] = {}
 
     with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         futures = {
@@ -270,10 +312,14 @@ def main():
 
         for idx, fut in enumerate(as_completed(futures), 1):
             res = fut.result()
-            record_job_entry(conn, res, offset_seconds=args.offset_seconds)
+            initial_refresh = "skipped" if args.skip_jellyfin else None
+            job_id = record_job_entry(conn, res, offset_seconds=args.offset_seconds,
+                                      jellyfin_refresh=initial_refresh)
 
             if res["success"]:
                 succeeded += 1
+                succeeded_items.append(futures[fut])
+                jobs_by_video.setdefault(str(res["video_id"]), []).append(job_id)
                 status_str = f"OK ({res['size']} B, {res['elapsed']:.1f}s)"
             else:
                 failed += 1
@@ -285,9 +331,14 @@ def main():
     print(f"\nCompleted {len(missing_items)} videos in {elapsed:.1f}s.")
     print(f"Success: {succeeded} | Failed: {failed}")
 
-    if not args.skip_jellyfin and succeeded > 0:
+    if args.skip_jellyfin:
+        print("Jellyfin refresh skipped.")
+    elif succeeded > 0:
         jf_url = (os.getenv("JELLYFIN_URL") or "").rstrip("/")
         jf_key = os.getenv("JELLYFIN_API_KEY")
+        refresh_results: dict[str, list[str]] = {}
+        library_status = "unavailable"
+        refresh_error = ""
         if jf_url and jf_key:
             import httpx
             headers = {
@@ -303,28 +354,64 @@ def main():
                     params={"IncludeItemTypes": "Movie", "recursive": "true", "fields": "Path"},
                     timeout=30.0,
                 )
-                if resp.status_code == 200:
-                    jf_items = resp.json().get("Items", [])
-                    processed_names = {item["dest_path"].with_suffix(".strm").name for item in missing_items}
-                    matched_items = [it for it in jf_items if Path(it.get("Path", "")).name in processed_names]
-                    print(f"Triggering image refresh for {len(matched_items)} matched Jellyfin item(s)...")
-                    with httpx.Client(headers=headers, timeout=15.0) as client:
-                        for it in matched_items:
-                            client.post(
-                                f"{jf_url}/Items/{it['Id']}/Refresh",
-                                params={
-                                    "MetadataRefreshMode": "Default",
-                                    "ImageRefreshMode": "FullRefresh",
-                                    "ReplaceAllMetadata": "false",
-                                    "ReplaceAllImages": "true",
-                                },
-                            )
-            except Exception as e:
-                print(f"Item-level Jellyfin refresh encountered error: {e}")
+                resp.raise_for_status()
+                jf_items = resp.json().get("Items", [])
+                by_name = {}
+                for jf_item in jf_items:
+                    by_name.setdefault(Path(jf_item.get("Path", "")).name, []).append(jf_item)
+                print(f"Refreshing {len(succeeded_items)} generated artwork item(s) in Jellyfin...")
+                with httpx.Client(headers=headers, timeout=15.0) as client:
+                    for item in succeeded_items:
+                        matches = by_name.get(item["dest_path"].with_suffix(".strm").name, [])
+                        if not matches:
+                            refresh_results.setdefault(str(item["video_id"]), []).append("unavailable")
+                            continue
+                        item_failed = False
+                        for jf_item in matches:
+                            try:
+                                response = client.post(
+                                    f"{jf_url}/Items/{jf_item['Id']}/Refresh",
+                                    params={
+                                        "MetadataRefreshMode": "Default",
+                                        "ImageRefreshMode": "FullRefresh",
+                                        "ReplaceAllMetadata": "false",
+                                        "ReplaceAllImages": "true",
+                                    },
+                                )
+                                response.raise_for_status()
+                            except Exception as exc:
+                                item_failed = True
+                                print(f"Item refresh failed for {jf_item.get('Id', 'unknown')}: {type(exc).__name__}")
+                        refresh_results.setdefault(str(item["video_id"]), []).append(
+                            "failed" if item_failed else "updated"
+                        )
+                print("Triggering global Jellyfin library refresh...")
+                try:
+                    refreshed = trigger_library_refresh(jf_url, jf_key, http_client_factory=httpx.Client)
+                    library_status = "updated" if refreshed else "failed"
+                except Exception as exc:
+                    library_status = "failed"
+                    refresh_error = type(exc).__name__
+                    logger.exception("Global Jellyfin library refresh failed")
+                print("Jellyfin refresh request status:", "Success" if library_status == "updated" else "Failed")
+            except Exception as exc:
+                logger.exception("Item-level Jellyfin refresh could not be completed")
+                refresh_error = type(exc).__name__
+                library_status = "failed"
+                for item in succeeded_items:
+                    refresh_results.setdefault(str(item["video_id"]), []).append("failed")
+        else:
+            print("Jellyfin refresh unavailable: JELLYFIN_URL or JELLYFIN_API_KEY is not configured.")
 
-            print("Triggering global Jellyfin library refresh...")
-            refreshed = trigger_library_refresh(jf_url, jf_key, http_client_factory=httpx.Client)
-            print("Jellyfin refresh request status:", "Success" if refreshed else "Failed")
+        for video_id, job_ids in jobs_by_video.items():
+            outcomes = refresh_results.get(video_id, [])
+            status = (
+                "failed" if "failed" in outcomes else
+                "unavailable" if not outcomes or "unavailable" in outcomes else "updated"
+            )
+            for job_id in job_ids:
+                update_job_jellyfin_result(conn, job_id, item_status=status, error=refresh_error)
+                update_job_jellyfin_result(conn, job_id, library_status=library_status, error=refresh_error)
 
     conn.close()
 

@@ -317,6 +317,7 @@ class TestResolverHttpApi(unittest.TestCase):
         ("POST", "/admin/api/v2/backups/restore-test"),
         ("POST", "/admin/api/v2/schedules"),
         ("POST", "/admin/api/v2/schedules/{schedule_id}/enabled"),
+        ("POST", "/admin/api/v2/schedules/{schedule_id}/cron"),
         ("POST", "/admin/api/v2/diagnostics/playback/enable"),
         ("POST", "/admin/api/v2/diagnostics/playback/disable"),
         ("DELETE", "/admin/api/v2/diagnostics/playback/reports"),
