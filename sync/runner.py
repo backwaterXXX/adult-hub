@@ -593,6 +593,12 @@ def run_loop():
             success, exit_code = True, 0
             requested_source = None
         else:
+            if first_run and not system_sync_due:
+                try:
+                    if claim_due_system_schedule(DB_URL, "library-sync"):
+                        system_sync_due = True
+                except Exception as e:
+                    LOGGER.warning(f"[sync-daemon] Could not claim a due Library sync slot: {e}")
             source = None if system_sync_due else requested_source
             mode = "scheduled" if system_sync_due else requested_sync_mode
             success, exit_code = run_full_sync(source, mode)

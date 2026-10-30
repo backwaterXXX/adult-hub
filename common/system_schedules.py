@@ -220,7 +220,7 @@ def claim_due_system_schedule(db_url, schedule_id: str, *, now=None) -> bool:
         conn.execute("UPDATE system_schedules SET last_run_at=%s,last_result=%s,updated_at=%s WHERE id=%s",
                      (instant.timestamp(), result, instant.timestamp(), schedule_id))
         conn.commit()
-        _ACTIVE_RUNS[schedule_id] = (conn, manual, int(row[3]))
+        _ACTIVE_RUNS[schedule_id] = (conn, manual, int(row[3]), due)
         retained = True
         return True
     except Exception:
@@ -239,7 +239,7 @@ def finish_system_schedule(db_url, schedule_id: str, *, success: bool, now=None,
     active = _ACTIVE_RUNS.pop(schedule_id, None)
     if active is None:
         return
-    conn, manual, revision = active
+    conn, manual, revision, slot_due = active
     try:
         conn.execute("BEGIN")
         row = conn.execute(
@@ -249,7 +249,7 @@ def finish_system_schedule(db_url, schedule_id: str, *, success: bool, now=None,
         if row:
             result = ("queued" if manual and interrupted else "skipped_overlap" if skipped_overlap
                       else "done" if success else "failed")
-            if success and not manual and row[4] and int(row[5]) == revision:
+            if success and row[4] and int(row[5]) == revision and (not manual or slot_due):
                 upcoming = (admin_schedules.next_run("daily" if row[2] else "interval", row[1], row[2], after=instant)
                             if row[3] else admin_schedules.next_cron(row[0], after=instant))
                 conn.execute("UPDATE system_schedules SET last_result=%s,next_run_at=%s,updated_at=%s WHERE id=%s",

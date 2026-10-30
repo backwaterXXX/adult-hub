@@ -125,7 +125,11 @@ def main() -> int:
         if not due:
             LOGGER.info("Saved database backup schedule is not due; skipping")
             return 0
-        code = _run_backup()
+        code = 1
+        try:
+            code = _run_backup()
+        except Exception:
+            LOGGER.exception("The scheduled database backup crashed")
         try:
             finish_system_schedule(db_url, "database-backup", success=code == 0,
                                    skipped_overlap=code == BACKUP_OVERLAP)
@@ -140,15 +144,21 @@ def main() -> int:
     while not STOP.is_set():
         code = 0
         try:
-            if claim_due_system_schedule(db_url, "database-backup"):
-                code = _run_backup()
-                try:
-                    finish_system_schedule(db_url, "database-backup", success=code == 0,
-                                   skipped_overlap=code == BACKUP_OVERLAP)
-                except Exception:
-                    LOGGER.exception("Could not record the database backup result")
+            due = claim_due_system_schedule(db_url, "database-backup")
         except Exception:
             LOGGER.exception("Could not check the database backup schedule")
+            due = False
+        if due:
+            code = 1
+            try:
+                code = _run_backup()
+            except Exception:
+                LOGGER.exception("The scheduled database backup crashed")
+            try:
+                finish_system_schedule(db_url, "database-backup", success=code == 0,
+                                       skipped_overlap=code == BACKUP_OVERLAP)
+            except Exception:
+                LOGGER.exception("Could not record the database backup result")
         STOP.wait(BACKUP_RETRY_SECONDS if code else 30.0)
 
     return 0

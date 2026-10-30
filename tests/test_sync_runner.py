@@ -1495,6 +1495,28 @@ class TestRunLoop(RunnerHarness):
         self.assertTrue(self.logs.has("Next scheduled sync at", "info"))
         self.assertTrue(self.logs.has("Sync runner exited.", "info"))
 
+    def test_startup_sync_claims_a_due_slot_instead_of_syncing_twice(self):
+        module = self.looping()
+        claim = self.record("claim_due_system_schedule", result=True)
+        finish = self.record("finish_system_schedule")
+
+        module.run_loop()
+
+        self.assertEqual(claim.call_count, 1)
+        self.assertEqual(self.full_sync.args(), (None, "scheduled"))
+        self.assertEqual(finish.kwargs(), {"success": True, "interrupted": False})
+
+    def test_a_failed_startup_claim_still_runs_the_startup_sync(self):
+        module = self.looping()
+        self.record("claim_due_system_schedule", raises=OSError("database busy"))
+        finish = self.record("finish_system_schedule")
+
+        module.run_loop()
+
+        self.assertTrue(self.logs.has("Could not claim a due Library sync slot: database busy", "warning"))
+        self.assertTrue(self.full_sync.called)
+        self.assertFalse(finish.called)
+
     def test_due_admin_work_is_queued_before_the_daemon_sleeps(self):
         module = self.looping()
         self.dispatch.result = 3

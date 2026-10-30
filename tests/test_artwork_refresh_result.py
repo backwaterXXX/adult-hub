@@ -1,4 +1,5 @@
 import json
+import unittest
 
 from tools.generate_missing_artwork import update_job_jellyfin_result
 
@@ -21,11 +22,16 @@ class FakeConnection:
         self.commits += 1
 
 
-def test_refresh_result_records_both_outcomes_once():
-    conn = FakeConnection()
-    update_job_jellyfin_result(conn, 'job-1', item_status='updated', library_status='failed')
-    payload = json.loads(conn.writes[0][1][0])
-    assert payload['jellyfin_refresh'] == 'updated'
-    assert payload['jellyfin_library_refresh'] == 'failed'
-    assert len(payload['events']) == 1
-    assert conn.commits == 1
+class ArtworkRefreshResultTests(unittest.TestCase):
+    def test_refresh_result_records_both_outcomes_once(self):
+        conn = FakeConnection()
+        update_job_jellyfin_result(conn, 'job-1', item_status='updated', library_status='failed')
+        payload = json.loads(conn.writes[0][1][0])
+        self.assertEqual(payload['jellyfin_refresh'], 'updated')
+        self.assertEqual(payload['jellyfin_library_refresh'], 'failed')
+        self.assertEqual(len(payload['events']), 1)
+        self.assertEqual(conn.commits, 1)
+
+
+if __name__ == '__main__':
+    unittest.main()

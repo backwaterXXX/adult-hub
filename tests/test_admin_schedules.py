@@ -150,6 +150,32 @@ class TestScheduleDispatch(PgTestCase):
         self.assertTrue(system_schedules.claim_due_system_schedule(self.db_url, "library-sync", now=now))
         system_schedules.finish_system_schedule(self.db_url, "library-sync", success=True, now=now)
 
+    def test_successful_manual_run_consumes_a_due_slot(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        system_schedules.ensure_system_schedules(self.db_url)
+        self.conn.execute("UPDATE system_schedules SET next_run_at=%s WHERE id='library-sync'", (now,))
+        self.conn.commit()
+        self.assertEqual(system_schedules.request_system_run(self.db_url, "library-sync", now=now)["outcome"], "queued")
+        self.assertTrue(system_schedules.claim_due_system_schedule(self.db_url, "library-sync", now=now))
+        system_schedules.finish_system_schedule(self.db_url, "library-sync", success=True, now=now)
+        item = next(x for x in system_schedules.list_system_schedules(self.db_url) if x["id"] == "library-sync")
+        self.assertGreater(datetime.fromisoformat(item["next_run_at"]), now)
+        self.assertEqual(item["last_result"], "done")
+        self.assertFalse(system_schedules.claim_due_system_schedule(self.db_url, "library-sync", now=now))
+
+    def test_successful_manual_run_keeps_an_upcoming_slot(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        upcoming = now + timedelta(hours=3)
+        system_schedules.ensure_system_schedules(self.db_url)
+        self.conn.execute("UPDATE system_schedules SET next_run_at=%s WHERE id='library-sync'", (upcoming,))
+        self.conn.commit()
+        self.assertEqual(system_schedules.request_system_run(self.db_url, "library-sync", now=now)["outcome"], "queued")
+        self.assertTrue(system_schedules.claim_due_system_schedule(self.db_url, "library-sync", now=now))
+        system_schedules.finish_system_schedule(self.db_url, "library-sync", success=True, now=now)
+        item = next(x for x in system_schedules.list_system_schedules(self.db_url) if x["id"] == "library-sync")
+        self.assertEqual(item["next_run_at"], upcoming.isoformat())
+        self.assertEqual(item["last_result"], "done")
+
     def test_seed_is_idempotent_and_unrepresentable_intervals_are_convertible(self):
         system_schedules.ensure_system_schedules(self.db_url, sync_interval_minutes=17)
         row = next(x for x in system_schedules.list_system_schedules(self.db_url) if x["id"] == "library-sync")
