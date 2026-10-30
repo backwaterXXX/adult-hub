@@ -1,9 +1,11 @@
 import logging
+import sys
 import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
+sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 from sync.telegram_pipeline import TelegramSyncServices, sync_telegram_channel_pipeline
 
@@ -85,6 +87,10 @@ class LatestCursorTests(PgTestCase):
             for migration in POST_BASELINE_MIGRATIONS:
                 if migration.version < 53:
                     self.conn.execute("INSERT INTO schema_migrations(version,name,applied_at) VALUES (%s,%s,CURRENT_TIMESTAMP)", (migration.version, migration.name))
-        self.assertEqual([item.version for item in apply_migrations(self.db_url)], [54, 55])
+        # Derived from the chain, not written out: a migration registered after
+        # version 53 belongs in this expectation without editing the test.
+        self.assertEqual([item.version for item in apply_migrations(self.db_url)],
+                         [migration.version for migration in POST_BASELINE_MIGRATIONS
+                          if migration.version > 53])
         rows = self.conn.execute("SELECT channel_id,backfill_in_progress,backfill_cursor FROM telegram_channel_state ORDER BY channel_id").fetchall()
         self.assertEqual(rows, [(self.channel, 1, None), ("other", 1, 42)])
