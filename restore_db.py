@@ -14,7 +14,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -76,12 +78,53 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def find_latest_dump(backup_dir: Path) -> Path | None:
     if not backup_dir.exists():
         return None
-    dumps = sorted(
-        backup_dir.glob("adulthub-*.dump*"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    # Checksum sidecars and in-progress temp files share the prefix; only real
+    # archives may be selected, whatever their timestamps say.
+    candidates = [
+        path
+        for pattern in ("adulthub-*.dump.gz", "adulthub-*.dump")
+        for path in backup_dir.glob(pattern)
+        if path.is_file() and not path.is_symlink()
+    ]
+    dumps = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
     return dumps[0] if dumps else None
+
+
+def verify_dump_checksum(dump: Path) -> bool:
+    """Check the .sha256 sidecar written by backup_db.py, when one exists.
+
+    A missing sidecar is allowed with a warning: older backups predate the
+    checksum and the pg_restore table-of-contents check still runs. A sidecar
+    that disagrees with the archive aborts the restore.
+    """
+    sidecar = dump.with_name(dump.name + ".sha256")
+    if not sidecar.is_file():
+        print(f"WARNING: {dump.name} has no SHA-256 sidecar; skipping the integrity check.",
+              file=sys.stderr)
+        return True
+    try:
+        checksum_line = sidecar.read_text(encoding="ascii").strip().split()
+        expected_hash, expected_name = checksum_line[0], checksum_line[1]
+    except (OSError, UnicodeError, IndexError):
+        print(f"Dump verification FAILED: {sidecar.name} is not a valid checksum.", file=sys.stderr)
+        return False
+    if expected_name != dump.name or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+        print(f"Dump verification FAILED: {sidecar.name} does not describe {dump.name}.",
+              file=sys.stderr)
+        return False
+    digest = hashlib.sha256()
+    try:
+        with dump.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        print(f"Dump verification FAILED: could not read {dump.name}: {exc}", file=sys.stderr)
+        return False
+    if digest.hexdigest() != expected_hash:
+        print(f"Dump verification FAILED: checksum mismatch for {dump.name}.", file=sys.stderr)
+        return False
+    print(f"Checksum verified for {dump.name}.")
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -109,6 +152,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"Selected dump file: {target_file} ({target_file.stat().st_size:,} bytes)")
+
+    if not verify_dump_checksum(target_file):
+        return 1
 
     if args.dry_run:
         import subprocess

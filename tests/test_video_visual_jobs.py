@@ -157,6 +157,45 @@ class VisualJobQueueTest(PgTestCase):
         self.assertEqual(video_visual_jobs.recover_expired(self.db_url), 1)
         self.assertEqual(self._row(job_id), ("queued", None))
 
+    def test_an_expired_job_out_of_attempts_is_failed_not_requeued(self):
+        job_id = self._job("verify_pair", state="processing", lease_seconds=-1)
+        with self.conn:
+            self.conn.execute("UPDATE video_visual_jobs SET attempts=%s WHERE id=%s",
+                              (video_visual_jobs.MAX_ATTEMPTS, job_id))
+
+        self.assertEqual(video_visual_jobs.recover_expired(self.db_url), 0)
+
+        row = self.conn.execute(
+            "SELECT state,lease_token,error_code,finished_at FROM video_visual_jobs WHERE id=%s",
+            (job_id,)).fetchone()
+        self.assertEqual(row[0], "failed")
+        self.assertIsNone(row[1])
+        self.assertEqual(row[2], "attempts_exhausted")
+        self.assertIsNotNone(row[3])
+        self.assertEqual(self._comparison_state(job_id), "failed")
+        self.assertIsNone(video_visual_jobs.claim_next(self.db_url))
+
+    def test_the_sweep_fails_queued_jobs_that_can_never_be_claimed(self):
+        job_id = self._job("signature")
+        with self.conn:
+            self.conn.execute("UPDATE video_visual_jobs SET attempts=%s WHERE id=%s",
+                              (video_visual_jobs.MAX_ATTEMPTS, job_id))
+
+        self.assertEqual(video_visual_jobs.recover_expired(self.db_url), 0)
+        self.assertEqual(self._row(job_id), ("failed", None))
+        self.assertIsNone(video_visual_jobs.claim_next(self.db_url))
+
+    def test_a_forced_sweep_fails_an_exhausted_job_whose_worker_stopped_beating(self):
+        job_id = self._job("signature", state="processing", lease_seconds=600)
+        with self.conn:
+            self.conn.execute(
+                "UPDATE video_visual_jobs SET attempts=%s,updated_at=%s WHERE id=%s",
+                (video_visual_jobs.MAX_ATTEMPTS,
+                 int(time.time()) - video_visual_jobs.LEASE_STALE_SECONDS - 1, job_id))
+
+        self.assertEqual(video_visual_jobs.recover_expired(self.db_url, force=True), 0)
+        self.assertEqual(self._row(job_id), ("failed", None))
+
     def test_the_sweep_only_reopens_comparisons_it_actually_recovered(self):
         # A comparison still marked processing while its job already finished is
         # not this sweep's business: it belongs to another stage of the pipeline.

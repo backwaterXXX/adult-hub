@@ -282,33 +282,53 @@ def finish_failure(db_url: str | None, job: dict, error_code: str, *, retryable:
 
 
 def recover_expired(db_url: str | None, *, force: bool = False) -> int:
-    """Return abandoned jobs to the queue.
+    """Return abandoned jobs to the queue, failing the ones out of attempts.
 
     ``force`` is what a restarting worker uses to reclaim the job it died with.
     It may not reset a lease another worker is still renewing: that would hand
     the same work to two workers, waste the in-flight run and void the first
     worker's lease token. A crashed worker is identified instead by its heartbeat
     going stale, which is far sooner than the lease itself expires.
+
+    A job with no attempts left is marked failed instead of requeued, because
+    ``claim_next`` never takes ``attempts >= MAX_ATTEMPTS``; requeueing it would
+    strand it in ``queued`` forever. Rows already stuck that way are healed too.
     """
     conn = db.connect(db_url)
     try:
         now = int(time.time())
         if force:
-            recovered = conn.execute(
-                """UPDATE video_visual_jobs SET state='queued',lease_token=NULL,lease_until=NULL,
-                   available_at=%s,updated_at=%s
-                   WHERE state='processing' AND updated_at < %s
-                   RETURNING id""",
-                (now, now, now - LEASE_STALE_SECONDS),
-            ).fetchall()
+            expired_sql, expired_at = "updated_at < %s", now - LEASE_STALE_SECONDS
         else:
-            recovered = conn.execute(
-                """UPDATE video_visual_jobs SET state='queued',lease_token=NULL,lease_until=NULL,
-                   available_at=%s,updated_at=%s
-                   WHERE state='processing' AND lease_until < %s
-                   RETURNING id""",
-                (now, now, now),
-            ).fetchall()
+            expired_sql, expired_at = "lease_until < %s", now
+        exhausted = conn.execute(
+            f"""UPDATE video_visual_jobs SET state='failed',lease_token=NULL,lease_until=NULL,
+               error_code='attempts_exhausted',finished_at=%s,updated_at=%s
+               WHERE state='processing' AND attempts >= %s AND {expired_sql}
+               RETURNING id""",
+            (now, now, MAX_ATTEMPTS, expired_at),
+        ).fetchall()
+        stuck = conn.execute(
+            """UPDATE video_visual_jobs SET state='failed',lease_token=NULL,lease_until=NULL,
+               error_code='attempts_exhausted',finished_at=%s,updated_at=%s
+               WHERE state='queued' AND attempts >= %s
+               RETURNING id""",
+            (now, now, MAX_ATTEMPTS),
+        ).fetchall()
+        failed_ids = [str(row[0]) for row in exhausted] + [str(row[0]) for row in stuck]
+        if failed_ids:
+            conn.execute(
+                """UPDATE video_visual_comparisons SET state='failed',updated_at=%s
+                   WHERE id = ANY(%s)""",
+                (now, failed_ids),
+            )
+        recovered = conn.execute(
+            f"""UPDATE video_visual_jobs SET state='queued',lease_token=NULL,lease_until=NULL,
+               available_at=%s,updated_at=%s
+               WHERE state='processing' AND attempts < %s AND {expired_sql}
+               RETURNING id""",
+            (now, now, MAX_ATTEMPTS, expired_at),
+        ).fetchall()
         ids = [str(row[0]) for row in recovered]
         if ids:
             conn.execute(

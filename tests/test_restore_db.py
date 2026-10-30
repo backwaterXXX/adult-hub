@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import os
 import subprocess
 import sys
@@ -123,6 +124,72 @@ class TestRestoreDb(unittest.TestCase):
 
             found = restore_db.find_latest_dump(backup_dir)
             self.assertEqual(found, new_dump)
+
+    def test_latest_dump_ignores_checksum_sidecars_and_temp_files(self):
+        with tempfile.TemporaryDirectory(prefix="adult_hub_restore_") as tmp:
+            backup_dir = Path(tmp)
+            dump = backup_dir / "adulthub-20260103-0000.dump.gz"
+            dump.write_bytes(b"NEW")
+            sidecar = dump.with_name(dump.name + ".sha256")
+            sidecar.write_text("0" * 64 + f"  {dump.name}\n")
+            temp_file = backup_dir / f".{dump.name}.deadbeef.dump"
+            temp_file.write_bytes(b"PARTIAL")
+            os.utime(dump, (1000, 1000))
+            os.utime(sidecar, (3000, 3000))
+            os.utime(temp_file, (4000, 4000))
+
+            found = restore_db.find_latest_dump(backup_dir)
+            self.assertEqual(found, dump)
+
+    def test_checksum_mismatch_aborts_before_restore(self):
+        with tempfile.TemporaryDirectory(prefix="adult_hub_restore_") as tmp:
+            dump_file = Path(tmp) / "adulthub-20261003-1200.dump.gz"
+            with gzip.open(dump_file, "wb") as gz:
+                gz.write(b"MOCK_PG_DUMP_BYTES")
+            digest = hashlib.sha256(dump_file.read_bytes()).hexdigest()
+            wrong = "0" * 64 if digest != "0" * 64 else "1" * 64
+            dump_file.with_name(dump_file.name + ".sha256").write_text(
+                f"{wrong}  {dump_file.name}\n")
+
+            argv = [
+                "restore_db.py",
+                "--db-url", "postgresql://u:p@127.0.0.1:5432/db",
+                "--file", str(dump_file),
+                "--yes",
+            ]
+
+            with mock.patch("shutil.which", return_value="/usr/bin/pg_restore"), \
+                 mock.patch("restore_db.db.pg_restore") as restore, \
+                 mock.patch.object(sys, "argv", argv):
+                rc = restore_db.main()
+
+            self.assertEqual(rc, 1)
+            restore.assert_not_called()
+
+    def test_matching_checksum_allows_restore(self):
+        with tempfile.TemporaryDirectory(prefix="adult_hub_restore_") as tmp:
+            dump_file = Path(tmp) / "adulthub-20261003-1200.dump.gz"
+            with gzip.open(dump_file, "wb") as gz:
+                gz.write(b"MOCK_PG_DUMP_BYTES")
+            digest = hashlib.sha256(dump_file.read_bytes()).hexdigest()
+            dump_file.with_name(dump_file.name + ".sha256").write_text(
+                f"{digest}  {dump_file.name}\n")
+
+            argv = [
+                "restore_db.py",
+                "--db-url", "postgresql://u:p@127.0.0.1:5432/db",
+                "--file", str(dump_file),
+                "--yes",
+            ]
+
+            with mock.patch("shutil.which", return_value="/usr/bin/pg_restore"), \
+                 mock.patch("restore_db.db.pg_restore", return_value=True) as restore, \
+                 mock.patch.object(sys, "argv", argv):
+                rc = restore_db.main()
+
+            self.assertEqual(rc, 0)
+            restore.assert_called_once()
+            self.assertEqual(Path(restore.call_args.kwargs["dump_path"]), dump_file)
 
 
 if __name__ == "__main__":
