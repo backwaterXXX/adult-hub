@@ -12,7 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 try:
-    import sync as sync_module
+    from test_support import load_flat_sync_module
+    sync_module = load_flat_sync_module()
     SYNC_AVAILABLE = True
 except ImportError as exc:
     from test_support import optional_import_failed

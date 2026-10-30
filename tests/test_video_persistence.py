@@ -353,7 +353,8 @@ class TestVideoPersistence(PgTestCase):
 
     def test_catalog_title_reaches_the_written_nfo(self):
         try:
-            import sync as sync_module
+            from test_support import load_flat_sync_module
+            sync_module = load_flat_sync_module()
         except ImportError:
             self.skipTest("sync module not available")
         video_id = "telegram:-1001:45:996"

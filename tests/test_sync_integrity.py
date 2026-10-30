@@ -13,7 +13,8 @@ from pg_helper import PgTestCase
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
 try:
-    import sync as sync_module
+    from test_support import load_flat_sync_module
+    sync_module = load_flat_sync_module()
 except ImportError as exc:
     from test_support import optional_import_failed
     optional_import_failed(exc)

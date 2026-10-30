@@ -20,7 +20,8 @@ from pg_helper import PgTestCase
 sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
 
-import sync
+from test_support import load_flat_sync_module
+sync = load_flat_sync_module()
 import duplicate_jobs
 from duplicate_jobs import _heartbeat_processing_job
 from video_duplicates import enqueue_job

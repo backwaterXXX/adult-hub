@@ -18,7 +18,8 @@ except ImportError as exc:
     APP_AVAILABLE = False
 
 try:
-    import sync as sync_module
+    from test_support import load_flat_sync_module
+    sync_module = load_flat_sync_module()
     SYNC_AVAILABLE = True
 except ImportError as exc:
     from test_support import optional_import_failed

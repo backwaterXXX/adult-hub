@@ -7,12 +7,15 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "sync"))
+sys.path.insert(0, str(Path(__file__).parent))
 
 import pbc
 import scene_scrapers
 import stashdb
-import sync
 import theporndb
+from test_support import load_flat_sync_module
+
+sync = load_flat_sync_module()
 
 
 class TestExternalMetadataScan(unittest.TestCase):

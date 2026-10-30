@@ -2,11 +2,13 @@ import sys
 from pathlib import Path
 import unittest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).parent))
 
 try:
-    from sync import sanitize_filename, format_category_name
+    from test_support import load_flat_sync_module
+    sync = load_flat_sync_module()
+    sanitize_filename = sync.sanitize_filename
+    format_category_name = sync.format_category_name
 except ImportError as exc:
     from test_support import optional_import_failed
     optional_import_failed(exc)

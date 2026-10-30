@@ -172,8 +172,8 @@ class TestTelegramImportStateAudit(unittest.TestCase):
 
 class TestTelegramMetadata(PgTestCase):
     def test_sync_wrapper_confirms_completed_job_after_jellyfin_refresh_and_hash_match(self):
-        sys.path.insert(0, str(Path(__file__).parents[1] / 'sync'))
-        import sync
+        from test_support import load_flat_sync_module
+        sync = load_flat_sync_module()
 
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

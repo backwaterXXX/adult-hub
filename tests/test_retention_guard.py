@@ -26,7 +26,8 @@ from pg_helper import PgTestCase
 sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
 
 try:
-    import sync as sync_module
+    from test_support import load_flat_sync_module
+    sync_module = load_flat_sync_module()
     from common.config_loader import AppConfig, SourceConfig, SyncConfig, TelegramChannelConfig
     SYNC_AVAILABLE = True
 except ImportError as exc:

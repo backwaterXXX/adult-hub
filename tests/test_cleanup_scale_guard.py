@@ -16,15 +16,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
+from test_support import load_flat_sync_module, optional_import_failed
 
 try:
-    import sync as sync_module
+    sync_module = load_flat_sync_module()
     from common.config_loader import AppConfig, SourceConfig, SyncConfig
     SYNC_AVAILABLE = True
 except ImportError as exc:
-    from test_support import optional_import_failed
     optional_import_failed(exc)
     SYNC_AVAILABLE = False
 

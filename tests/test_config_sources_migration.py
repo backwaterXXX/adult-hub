@@ -10,12 +10,11 @@ from pg_helper import PgTestCase
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.config_loader import AppConfig, SourceConfig, TelegramChannelConfig, SyncConfig
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
+sys.path.append(str(Path(__file__).resolve().parents[1] / "resolver"))
+from test_support import load_flat_sync_module, optional_import_failed
 try:
-    import sync as sync_module
+    sync_module = load_flat_sync_module()
 except ImportError as exc:
-    from test_support import optional_import_failed
     optional_import_failed(exc)
     sync_module = None
 
@@ -135,7 +134,7 @@ class TestConfigSourcesMigration(PgTestCase):
         collected = {}
         effective = AppConfig(sources={"telegram": SourceConfig(
             provider="telegram", enabled=True, channels=[chan_cfg])})
-        with patch.object(sync_module, "CONFIG", effective), patch("sync.fetch_json_with_retry", return_value=self._empty_latest()):
+        with patch.object(sync_module, "CONFIG", effective), patch.object(sync_module, "fetch_json_with_retry", return_value=self._empty_latest()):
             sync_module.sync_telegram_channel_pipeline(chan_id, chan_cfg, self.conn, self.media_dir, collected)
 
         remaining = {r[0] for r in self.conn.execute("SELECT id FROM videos").fetchall()}
@@ -176,7 +175,7 @@ class TestConfigSourcesMigration(PgTestCase):
             return []
 
         collected = {}
-        with patch("sync.fetch_json_with_retry", side_effect=fake_fetch):
+        with patch.object(sync_module, "fetch_json_with_retry", side_effect=fake_fetch):
             sync_module.sync_telegram_channel_pipeline(chan_id, chan_cfg, self.conn, self.media_dir, collected)
 
         # Backfill cursor should be saved as 50, and backfill_in_progress should be 1
@@ -186,7 +185,7 @@ class TestConfigSourcesMigration(PgTestCase):
         self.assertEqual(state[2], 50)
 
         # Next run: batch returns empty (end of channel)
-        with patch("sync.fetch_json_with_retry", return_value=self._empty_latest()):
+        with patch.object(sync_module, "fetch_json_with_retry", return_value=self._empty_latest()):
             sync_module.sync_telegram_channel_pipeline(chan_id, chan_cfg, self.conn, self.media_dir, collected)
 
         state2 = self.conn.execute("SELECT backfill_in_progress, backfill_cursor, backfill_completed_at FROM telegram_channel_state WHERE channel_id = %s", (chan_id,)).fetchone()
@@ -210,7 +209,7 @@ class TestConfigSourcesMigration(PgTestCase):
                 urls.append(url)
                 return responses.pop(0)
             return []
-        with patch("sync.fetch_json_with_retry", side_effect=fetch):
+        with patch.object(sync_module, "fetch_json_with_retry", side_effect=fetch):
             sync_module.sync_telegram_channel_pipeline(chan_id, cfg, self.conn,
                                                        self.media_dir, {})
             state = self.conn.execute("SELECT backfill_in_progress, backfill_cursor FROM telegram_channel_state").fetchone()
@@ -230,7 +229,7 @@ class TestConfigSourcesMigration(PgTestCase):
             (chan_id, int(time.time())))
         cfg = TelegramChannelConfig(id=chan_id, min_duration_seconds=420,
                                     tags_whitelist=["new"], tags_blacklist=["other"])
-        with patch("sync.fetch_json_with_retry", side_effect=lambda url, **kwargs:
+        with patch.object(sync_module, "fetch_json_with_retry", side_effect=lambda url, **kwargs:
                    self._empty_latest() if kwargs.get("desc", "").startswith("category/") else {"videos": [], "message_count": 1, "next_offset_id": 90,
                     "has_more": True} if "history/" in url else []):
             sync_module.sync_telegram_channel_pipeline(chan_id, cfg, self.conn,
@@ -252,7 +251,7 @@ class TestConfigSourcesMigration(PgTestCase):
                                     tags_whitelist=["wanted"])
         effective = AppConfig(sources={"telegram": SourceConfig(
             provider="telegram", enabled=True, channels=[cfg])})
-        with patch.object(sync_module, "CONFIG", effective), patch("sync.fetch_json_with_retry", return_value=self._empty_latest()):
+        with patch.object(sync_module, "CONFIG", effective), patch.object(sync_module, "fetch_json_with_retry", return_value=self._empty_latest()):
             sync_module.sync_telegram_channel_pipeline(chan_id, cfg, self.conn,
                                                        self.media_dir, {})
         self.assertEqual(self.conn.execute("SELECT count(*) FROM videos").fetchone()[0], 0)
@@ -273,7 +272,7 @@ class TestConfigSourcesMigration(PgTestCase):
                 raise OSError("temporary resolver failure")
             return []
 
-        with patch("sync.fetch_json_with_retry", side_effect=fail_history):
+        with patch.object(sync_module, "fetch_json_with_retry", side_effect=fail_history):
             with self.assertRaisesRegex(RuntimeError, "fetch/history operations failed"):
                 sync_module.sync_telegram_channel_pipeline(
                     chan_id, cfg, self.conn, self.media_dir, {}
@@ -309,7 +308,7 @@ class TestConfigSourcesMigration(PgTestCase):
                 return self._empty_latest()
             return batch if "history/" in url else []
 
-        with patch("sync.fetch_json_with_retry", side_effect=fetch):
+        with patch.object(sync_module, "fetch_json_with_retry", side_effect=fetch):
             sync_module.sync_telegram_channel_pipeline(
                 chan_id, cfg, self.conn, self.media_dir, {}
             )
@@ -330,7 +329,7 @@ class TestConfigSourcesMigration(PgTestCase):
             VALUES (%s,420,'[]','[]',1,75,%s)""", (chan_id, int(time.time())))
         cfg = TelegramChannelConfig(id=chan_id, max_pages=1, history_batch_size=2)
         urls = []
-        with patch("sync.fetch_json_with_retry", side_effect=lambda url, **kwargs: urls.append(url) or self._empty_latest()):
+        with patch.object(sync_module, "fetch_json_with_retry", side_effect=lambda url, **kwargs: urls.append(url) or self._empty_latest()):
             sync_module.sync_telegram_channel_pipeline(
                 chan_id, cfg, self.conn, self.media_dir, {}, sync_mode="new"
             )
@@ -355,7 +354,7 @@ class TestConfigSourcesMigration(PgTestCase):
             urls.append(url)
             return {"videos": [], "message_count": 2, "next_offset_id": 50, "has_more": True}
 
-        with patch("sync.fetch_json_with_retry", side_effect=fetch):
+        with patch.object(sync_module, "fetch_json_with_retry", side_effect=fetch):
             sync_module.sync_telegram_channel_pipeline(
                 chan_id, cfg, self.conn, self.media_dir, {}, sync_mode="backfill"
             )
@@ -376,7 +375,7 @@ class TestConfigSourcesMigration(PgTestCase):
             VALUES (%s,420,'[]','[]',0,75,%s)""", (chan_id, int(time.time())))
         cfg = TelegramChannelConfig(id=chan_id, history_batch_size=2)
         urls = []
-        with patch("sync.fetch_json_with_retry", side_effect=lambda url, **kwargs:
+        with patch.object(sync_module, "fetch_json_with_retry", side_effect=lambda url, **kwargs:
                    urls.append(url) or {"videos": [], "message_count": 0,
                                         "next_offset_id": None, "has_more": False}):
             sync_module.sync_telegram_channel_pipeline(
