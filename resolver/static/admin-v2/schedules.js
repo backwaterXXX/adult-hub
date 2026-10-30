@@ -8,7 +8,7 @@
     if (text !== undefined) item.textContent = String(text);
     return item;
   };
-  const actions = { availability_check: 'Availability check', consistency_audit: 'Consistency audit', backup_create: 'Database backup' };
+  const actions = { availability_check: 'Availability check', consistency_audit: 'Consistency audit', backup_create: 'Database backup', duplicate_reconcile: 'Duplicate reconciliation', catalog_full_audit: 'Full catalog audit', metadata_quality_audit: 'Metadata quality audit' };
   const POLL_INTERVAL_MS = 30_000;
   let loadSeq = 0;
   let schedulesActive = false;
@@ -30,16 +30,20 @@
       const result = await window.AdminV2.getJson(endpoint);
       if (sequence !== loadSeq) return null;
       const host = $('#schedulesRows'); host.replaceChildren();
-      if (!result.items.length) host.append(node('p', 'catalog-empty', 'No maintenance schedules have been created.'));
+      const filter = $('#scheduleFilter')?.value || 'all';
+      let visibleCount = 0;
       result.items.forEach(item => {
+        if (!['all', 'admin'].includes(filter) && !(filter === 'problems' && ['failed', 'skipped_overlap'].includes(item.last_result))) return;
+        visibleCount += 1;
         const row = node('article', 'operation-history-row');
-        const validId = typeof item.id === 'string' && /^[a-f0-9]{32}$/.test(item.id);
+        const validId = typeof item.id === 'string' && /^(?:[a-f0-9]{32}|catalog-health-full)$/.test(item.id);
         if (validId) {
           row.id = 'schedule-' + item.id;
           row.tabIndex = -1;
         }
         const copy = node('div');
         copy.append(node('strong', '', `${item.name} · ${actions[item.action] || item.action}`));
+        copy.append(node('small', '', 'Admin schedule'));
         const cadence = item.schedule_type === 'daily' ? `Daily at ${item.daily_at} Europe/Warsaw` : `Every ${item.interval_minutes} minutes`;
         const nextRun = node('p');
         nextRun.append(node('span', '', `${cadence} · Next run `), timeNode(item.next_run_at));
@@ -67,9 +71,22 @@
         });
         row.append(copy, toggle); host.append(row);
       });
+      (result.system_items || []).forEach(item => {
+        const dependent = item.group === 'dependent';
+        if (filter === 'admin' || (filter === 'problems' && !item.problem) || (filter === 'system' && dependent) || (filter === 'dependent' && !dependent)) return;
+        visibleCount += 1;
+        const row = node('article', 'operation-history-row');
+        const copy = node('div');
+        const groupLabel = dependent ? 'Runs during another schedule' : 'System schedule';
+        copy.append(node('strong', '', item.name), node('small', '', groupLabel),
+          node('p', '', item.cadence), node('small', '', `${item.source} · ${item.details}`));
+        row.append(copy); host.append(row);
+      });
+      if (!visibleCount) host.append(node('p', 'catalog-empty', filter === 'problems'
+        ? 'No schedule problems are currently reported.' : 'No entries match this filter.'));
       const selectedId = new URLSearchParams(location.hash.split('?')[1] || '').get('schedule_id') || '';
       let selectedMessage = '';
-      if (selectedId && /^[a-f0-9]{32}$/.test(selectedId)) {
+      if (selectedId && /^(?:[a-f0-9]{32}|catalog-health-full)$/.test(selectedId)) {
         const selected = document.getElementById?.('schedule-' + selectedId);
         if (selected) {
           if (focusedScheduleId !== selectedId) {
@@ -81,7 +98,7 @@
       } else {
         focusedScheduleId = '';
       }
-      feedback.textContent = `${result.items.length} maintenance schedule${result.items.length === 1 ? '' : 's'}.${selectedMessage}`;
+      feedback.textContent = `${visibleCount} recurring entr${visibleCount === 1 ? 'y' : 'ies'} shown · ${result.items.length} admin schedules · ${(result.system_items || []).length} system and dependent tasks.${selectedMessage}`;
       return true;
     } catch (error) {
       if (sequence !== loadSeq) return null;
@@ -132,6 +149,7 @@
   $('#scheduleType').addEventListener('change', updateForm);
   $('#scheduleAction').addEventListener('change', updateForm);
   $('#scheduleCreateForm').addEventListener('submit', create);
+  $('#scheduleFilter')?.addEventListener('change', () => load());
   $('#schedulesRefresh').addEventListener('click', load);
   function syncSchedules(route) {
     schedulesActive = route === 'jobs' && new URLSearchParams(location.hash.split('?')[1] || '').get('tab') === 'schedules';

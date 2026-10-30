@@ -381,7 +381,7 @@
               <div id="operationHistoryPagination" class="pagination" hidden><button class="button button-quiet" type="button" id="operationHistoryPrev">← Previous</button><span id="operationHistoryPageInfo">Page 1</span><button class="button button-quiet" type="button" id="operationHistoryNext">Next →</button></div>
             </section>
             <section id="systemSchedulesView" class="panel operation-history-panel" data-jobs-pane="schedules" hidden aria-labelledby="schedulesTitle">
-              <div class="panel-heading"><div><p class="eyebrow">AUTOMATION</p><h2 id="schedulesTitle">Maintenance schedules</h2><p class="page-intro">Schedule availability checks, consistency audits, or database backups. Times use Europe/Warsaw.</p></div><button class="button button-quiet" type="button" id="schedulesRefresh">Refresh schedules</button></div>
+              <div class="panel-heading"><div><p class="eyebrow">AUTOMATION</p><h2 id="schedulesTitle">Schedules and recurring tasks</h2><p class="page-intro">Admin schedules and recurring system tasks. System tasks are configured separately.</p></div><button class="button button-quiet" type="button" id="schedulesRefresh">Refresh schedules</button></div>
               <form id="scheduleCreateForm" class="filter-bar">
                 <div class="filter-field"><label for="scheduleName">Name</label><input id="scheduleName" name="name" required minlength="3" maxlength="100" placeholder="Weekly backup"></div>
                 <div class="filter-field"><label for="scheduleAction">Action</label><select id="scheduleAction" name="action"><option value="availability_check">Check availability</option><option value="consistency_audit">Consistency audit</option><option value="backup_create">Create backup</option></select></div>
@@ -391,6 +391,7 @@
                 <div class="filter-field" id="scheduleVideosField" hidden><label for="scheduleVideoIds">Video IDs (one per line, up to 20)</label><textarea id="scheduleVideoIds" name="video_ids" rows="2"></textarea></div>
                 <div class="jobs-filter-actions"><button class="button button-primary" type="submit" id="scheduleCreate">Create schedule</button></div>
               </form>
+              <label for="scheduleFilter">Show</label><select id="scheduleFilter"><option value="all">All</option><option value="admin">Admin schedules</option><option value="system">System schedules</option><option value="dependent">Dependent tasks</option><option value="problems">Problems</option></select>
               <div id="schedulesFeedback" class="catalog-feedback" role="status">Loading schedules…</div>
               <div id="schedulesRows" class="operation-history-list" aria-live="polite"></div>
             </section>
