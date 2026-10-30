@@ -211,6 +211,9 @@ services:
     container_name: adult-backup
     restart: unless-stopped
     mem_limit: 256m
+    networks:
+      - default
+      - selfhost
     depends_on:
       resolver:
         condition: service_healthy
