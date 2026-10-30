@@ -304,8 +304,9 @@ const context = {
   documentListeners['adminv2:navigate']({ detail: { route: 'jobs' } });
   assert.equal(intervals.has(hiddenPollId), false);
   context.window.AdminV2.getJson = async () => ({ items: [], system_items: [
-    { id: 'library-sync', name: 'Library sync', group: 'system', enabled: false,
-      cron_expression: '0 * * * *', revision: 1 },
+    { id: 'library-sync', name: 'Library sync', group: 'system', enabled: true,
+      cron_expression: '0 * * * *', revision: 1, last_result: 'done',
+      next_run_at: '2026-11-01T02:00:00Z', timezone: 'Europe/Warsaw' },
     { name: 'Scene identification', group: 'dependent', parent_id: 'library-sync', source: 'Library sync',
       details: 'Backfills scene fingerprints when work is available.' }
   ] });
@@ -317,10 +318,16 @@ const context = {
   const dependentLine = dependentRow.children[0].children[0].children[0].children[0];
   assert.equal(dependentLine.tagName, 'LI', 'dependent tasks render as plain lines, not cards');
   assert.equal(dependentLine.children[0].textContent, 'Scene identification');
-  assert.equal(dependentLine.children[1].textContent,
+  assert.equal(dependentLine.children[1].textContent, 'Inherited cadence',
+    'a dependent line states how it is scheduled');
+  const dependentNext = dependentLine.children[2];
+  assert.equal(dependentNext.children[0].textContent, 'Next run ');
+  assert.equal(dependentNext.children[1].dateTime, '2026-11-01T02:00:00.000Z',
+    'a dependent line shows when the parent will next run');
+  assert.equal(dependentLine.children[3].textContent,
     'Backfills scene fingerprints when work is available.');
-  assert.equal(dependentLine.children.length, 2,
-    'a dependent line carries only the task name and its details, not a copy of the parent cadence');
+  assert.equal(dependentLine.children.length, 4,
+    'a dependent line carries its name, inherited state, next run and details without repeating the parent cron');
   const runButton = grouped.children[0].children[5].children[2];
   assert.equal(runButton.textContent, 'Run');
   await runButton.listeners.click();

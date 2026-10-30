@@ -529,14 +529,6 @@
   function renderJobs(payload) {
     const jobs = Array.isArray(payload.tasks) ? payload.tasks : Array.isArray(payload.jobs) ? payload.jobs : [];
     state.workers = payload.workers || {};
-    const phashStatus = $('#phashWorkerStatus');
-    if (phashStatus) {
-      phashStatus.hidden = state.filter.queue === 'jobs';
-      const worker = state.workers.phash || {};
-      phashStatus.textContent = worker.available === true
-        ? `pHash worker online · ${safeId(worker.worker_version) || 'version unknown'} · heartbeat ${Number.isFinite(worker.age_seconds) ? `${worker.age_seconds}s ago` : 'age unavailable'}`
-        : 'pHash worker unavailable. pHash tasks remain queued until it returns.';
-    }
     state.list = jobs;
     const total = Number(payload.total);
     state.total = Number.isFinite(total) ? total : null;

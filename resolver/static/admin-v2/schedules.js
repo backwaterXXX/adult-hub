@@ -283,7 +283,7 @@
     return { row, editorRow, editor };
   }
 
-  function makeTable(items, feedback, dependentItems) {
+  function makeTable(items, feedback, dependentItems, parents) {
     const wrap = node('div', 'schedule-table-wrap');
     const table = node('table', 'schedule-table');
     const head = node('thead');
@@ -298,20 +298,30 @@
       if (children.length) {
         const childRow = node('tr', 'schedule-dependent-row');
         const cell = node('td'); cell.colSpan = 6;
-        cell.append(makeDependentList(children)); childRow.append(cell); body.append(childRow);
+        cell.append(makeDependentList(children, parents)); childRow.append(cell); body.append(childRow);
       }
     }
     table.append(head, body); wrap.append(table);
     return wrap;
   }
 
-  function makeDependentList(items) {
+  function makeDependentList(items, parents) {
     const section = node('section');
     section.setAttribute('aria-label', 'Dependent tasks');
     const list = node('ul', 'schedule-dependent-list');
     for (const item of items) {
+      const parent = parents.get(item.parent_id) || {};
+      const needsAttention = Boolean(parent.problem) || parent.status === 'stale' || parent.last_result === 'failed';
+      const [stateClass, stateText] = parent.enabled === false ? ['is-disabled', 'Parent disabled']
+        : needsAttention ? ['is-failed', 'Parent needs attention']
+        : parent.status === 'running' ? ['is-running', 'Parent running']
+        : parent.status === 'fresh' || parent.last_result === 'done' ? ['is-ok', 'Inherited cadence']
+        : ['is-unknown', 'Inherits parent schedule'];
+      const next = node('span', 'schedule-dependent-next');
+      next.append(node('span', '', 'Next run '), timeNode(parent.next_run_at, parent.timezone || 'Europe/Warsaw'));
       const line = node('li', 'schedule-dependent-item');
-      line.append(node('strong', '', item.name), node('span', 'schedule-dependent-detail', item.details));
+      line.append(node('strong', '', item.name), node('span', `schedule-status ${stateClass}`, stateText),
+        next, node('span', 'schedule-dependent-detail', item.details));
       list.append(line);
     }
     section.append(list);
@@ -347,7 +357,7 @@
         mainItems = [...mainItems, ...system.filter(item => dependentItems.some(child => child.parent_id === item.id) && !mainItems.includes(item))];
       }
       let visibleCount = mainItems.length + dependentItems.length;
-      if (mainItems.length) host.append(makeTable(mainItems, feedback, dependentItems));
+      if (mainItems.length) host.append(makeTable(mainItems, feedback, dependentItems, parents));
       if (!visibleCount) host.append(node('p', 'schedule-empty', filter === 'problems'
         ? 'No schedule problems are currently reported.' : 'No schedules match this filter.'));
       const selectedId = new URLSearchParams(location.hash.split('?')[1] || '').get('schedule_id') || '';
