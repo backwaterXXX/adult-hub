@@ -14,7 +14,7 @@
   const $ = (selector, root = document) => root.querySelector(selector);
 
   const state = {
-    entered: false, loading: false, seq: 0, abort: null, items: [], page: 0,
+    entered: false, loading: false, seq: 0, abort: null, items: [], page: 0, historyPage: 0, historySeq: 0,
     configAvailable: true, historyAvailable: true, settingsAvailable: false, auditPending: false, overrides: {},
     configRevision: null, appliedRevision: null,
     editorCandidate: null,
@@ -537,6 +537,8 @@
   function renderSyncRuns(payload) {
     const feedback = $('#sourcesHistoryFeedback');
     const host = $('#sourcesHistoryRows');
+    const pagination = $('#sourcesHistoryPagination');
+    if (pagination) { pagination.replaceChildren(); pagination.hidden = true; }
     host.replaceChildren();
     if (!payload || payload.available === false || payload.error) {
       feedback.textContent = 'Sync history is unavailable. Recent run details are unknown.';
@@ -548,7 +550,16 @@
       return;
     }
     const total = Number.isInteger(payload.total) && payload.total >= runs.length ? payload.total : runs.length;
-    feedback.textContent = `Showing ${runs.length} of ${total} recent sync runs${payload.truncated ? ' · history is truncated' : ''}.`;
+    const offset = Number(payload.offset) || 0;
+    feedback.textContent = `Showing ${offset + 1}–${offset + runs.length} of ${total} sync runs.`;
+    if (pagination && total > 10) {
+      pagination.hidden = false;
+      const prev = create('button', 'button button-quiet', '← Previous'); prev.type = 'button'; prev.disabled = offset === 0;
+      const next = create('button', 'button button-quiet', 'Next →'); next.type = 'button'; next.disabled = offset + runs.length >= total;
+      prev.addEventListener('click', () => { state.historyPage--; loadHistoryPage(); });
+      next.addEventListener('click', () => { state.historyPage++; loadHistoryPage(); });
+      pagination.append(prev, create('span', '', `Page ${state.historyPage + 1} of ${Math.ceil(total / 10)}`), next);
+    }
     for (const run of runs) {
       const row = create('article', 'operation-history-row source-sync-run');
       const copy = create('div', 'source-sync-run-copy');
@@ -1062,6 +1073,18 @@
     host.append(previous, info, next);
   }
 
+  async function loadHistoryPage() {
+    const sequence = ++state.historySeq;
+    try {
+      const payload = await window.AdminV2.getJson(`${V2_API}/sources/sync-history?limit=10&offset=${state.historyPage * 10}`);
+      if (sequence !== state.historySeq) return;
+      if (!payload.runs?.length && state.historyPage > 0 && payload.total >= 0) {
+        state.historyPage = Math.max(0, Math.ceil(payload.total / 10) - 1); return loadHistoryPage();
+      }
+      renderSyncRuns(payload);
+    } catch (error) { if (sequence === state.historySeq) renderSyncRuns(null); }
+  }
+
   async function loadSources() {
     if (!isSourcesRoute()) return;
     if (state.abort) state.abort.abort();
@@ -1080,7 +1103,7 @@
       ]);
       if (sequence !== state.seq) return;
       const historyPayload = historyResult.status === 'fulfilled' ? historyResult.value : null;
-      renderSyncRuns(historyPayload);
+      loadHistoryPage();
       if (sourcesResult.status === 'rejected') throw sourcesResult.reason;
       const sourcesPayload = sourcesResult.value;
       const settingsPayload = settingsResult.status === 'fulfilled' ? settingsResult.value : null;

@@ -318,6 +318,9 @@ class TestResolverHttpApi(unittest.TestCase):
         ("POST", "/admin/api/v2/schedules"),
         ("POST", "/admin/api/v2/schedules/{schedule_id}/enabled"),
         ("POST", "/admin/api/v2/schedules/{schedule_id}/cron"),
+        ("POST", "/admin/api/v2/schedules/{schedule_id}/run"),
+        ("POST", "/admin/api/v2/schedules/system/{schedule_id}/run"),
+        ("POST", "/admin/api/v2/schedules/system/{schedule_id}"),
         ("POST", "/admin/api/v2/diagnostics/playback/enable"),
         ("POST", "/admin/api/v2/diagnostics/playback/disable"),
         ("DELETE", "/admin/api/v2/diagnostics/playback/reports"),
@@ -1168,8 +1171,8 @@ class TestResolverHttpApi(unittest.TestCase):
         video_id = "telegram:10:http-repair"
         conn = db.connect(TEST_URL)
         try:
-            conn.execute("INSERT INTO videos (id,provider,title,performers,categories,tags) "
-                         "VALUES (%s,'telegram','Repair title','[]','[]','[]')", (video_id,))
+            conn.execute("INSERT INTO videos (id,provider,title,performers,categories,tags,duration) "
+                         "VALUES (%s,'telegram','Repair title','[]','[]','[]',600)", (video_id,))
             conn.execute("INSERT INTO synced_files (file_path,video_id,category) "
                          "VALUES ('Library/http-repair.strm',%s,'video')", (video_id,))
             conn.execute("INSERT INTO video_duplicate_jobs (id,action,state,payload,result,created_at,updated_at) "

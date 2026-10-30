@@ -223,7 +223,8 @@ def _migration_plan(
         has_legacy_history
         or has_interim_baseline
         or pre_squash_schema
-        or any(version > INTERIM_BASELINE_VERSION for version in applied_versions)
+        or any(record.version > INTERIM_BASELINE_VERSION and record.name not in CURRENT_MIGRATION_NAMES
+               for record in applied)
     )
 
     # Explicit requests for an old target are retained for migration fixtures

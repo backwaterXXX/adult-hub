@@ -79,14 +79,14 @@ const metadataDialog = elements.get('metadataDialog');
 const detailOverlay = elements.get('detailOverlay');
 const openDialogs = [operationDialog, metadataDialog, detailOverlay];
 let detailDrawer = null;
-const expectedRoutes = ['start', 'library', 'quality', 'sources', 'organize', 'performers', 'jobs', 'system'];
-const primaryRoutes = ['start', 'library', 'performers', 'quality', 'sources', 'jobs', 'system'];
+const expectedRoutes = ['start', 'library', 'quality', 'sources', 'organize', 'performers', 'jobs', 'schedules', 'system'];
+const primaryRoutes = ['start', 'library', 'performers', 'quality', 'sources', 'jobs', 'schedules', 'system'];
 assert.deepEqual(navLinks.map(link => link.dataset.route), primaryRoutes,
-  'the primary navigation must expose exactly the seven v3.1 destinations in order');
+  'the primary navigation must expose exactly the eight destinations in order');
 const primaryLabels = [...html.matchAll(/<a\b[^>]*data-route="[^"]+"[^>]*>([\s\S]*?)<\/a>/g)]
   .map(([, contents]) => contents.replace(/<span\b[^>]*aria-hidden="true"[^>]*>[\s\S]*?<\/span>/g, '')
     .replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').trim());
-assert.deepEqual(primaryLabels, ['Dashboard', 'Library', 'Performers', 'Catalog Health', 'Sources', 'Jobs & Automation', 'System'],
+assert.deepEqual(primaryLabels, ['Dashboard', 'Library', 'Performers', 'Catalog Health', 'Sources', 'Jobs & Automation', 'Schedules', 'System'],
   'the primary navigation uses the v3.1 section names');
 const routerSource = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
 const detailRenderer = routerSource.slice(routerSource.indexOf('async function loadAvailabilityHistory'), routerSource.indexOf('function duration(value)'));
@@ -442,7 +442,7 @@ const context = {
 
   const routeTitles = {
     start: 'Dashboard', library: 'Library', sources: 'Sources', organize: 'Catalog Health',
-    quality: 'Catalog Health', performers: 'Performers', jobs: 'Jobs & Automation', system: 'System',
+    quality: 'Catalog Health', performers: 'Performers', jobs: 'Jobs & Automation', schedules: 'Schedules', system: 'System',
   };
   const onHashChange = windowListeners.get('hashchange');
   assert.equal(typeof onHashChange, 'function', 'The router must listen for direct hash navigation');
@@ -457,7 +457,7 @@ const context = {
     assert.deepEqual(navLinks.filter(link => link.getAttribute('aria-current') === 'page').map(link => link.dataset.route), [expectedPrimaryRoute],
       `${route} must activate its primary v3.1 section or legacy-compatible parent`);
     assert.equal(elements.get('crumbCurrent').textContent, routeTitles[route], `${route} must update the breadcrumb`);
-    if (['quality', 'sources', 'jobs', 'system'].includes(route)) {
+    if (['quality', 'sources', 'jobs', 'schedules', 'system'].includes(route)) {
       assert.equal(elements.get('operationalTitle').textContent, routeTitles[route],
         `${route} must name the shared operational view after navigation`);
     }

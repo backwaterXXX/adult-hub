@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from common import admin_schedules, db
 
+_RUN_LOCKS = {"library-sync": 0x41485501, "database-backup": 0x41485502}
+_ACTIVE_RUNS = {}
+
 _NAMES = {
     "library-sync": "Library sync",
     "database-backup": "System database backup",
@@ -133,12 +136,12 @@ def set_system_schedule(db_url, schedule_id: str, *, expression: str, enabled: b
                 "UPDATE system_schedules SET cron_expression=%s,legacy_interval_minutes=NULL,"
                 "legacy_daily_at=NULL,needs_conversion=FALSE,enabled=%s,revision=revision+1,"
                 "next_run_at=%s,updated_at=%s WHERE id=%s",
-                (expression, enabled, upcoming, instant, schedule_id),
+                (expression, enabled, upcoming, instant.timestamp(), schedule_id),
             )
         else:
             conn.execute(
                 "UPDATE system_schedules SET enabled=%s,revision=revision+1,next_run_at=%s,updated_at=%s WHERE id=%s",
-                (enabled, upcoming, instant, schedule_id),
+                (enabled, upcoming, instant.timestamp(), schedule_id),
             )
         from common.admin_audit_events import record_schedule_cron, record_schedule_enabled
         if expression and row[0] != expression and not record_schedule_cron(
@@ -159,30 +162,28 @@ def set_system_schedule(db_url, schedule_id: str, *, expression: str, enabled: b
         conn.close()
 
 
-def claim_due_system_schedule(db_url, schedule_id: str, *, now=None) -> bool:
-    """Claim one due run and advance its next occurrence in the same transaction."""
+def request_system_run(db_url, schedule_id: str, *, now=None) -> dict:
+    """Request a run for the system worker, serialized with scheduled claims."""
+    if schedule_id not in _NAMES:
+        return {"outcome": "not_found"}
     instant = admin_schedules._utc(now)
     conn = db.connect(db_url)
     try:
         conn.execute("BEGIN")
-        row = conn.execute(
-            "SELECT cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,enabled,next_run_at "
-            "FROM system_schedules WHERE id=%s FOR UPDATE", (schedule_id,),
-        ).fetchone()
-        if not row or not row[4] or row[5] is None or admin_schedules._utc(row[5]) > instant:
+        locked = conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (_RUN_LOCKS[schedule_id],)).fetchone()[0]
+        if not locked:
             conn.rollback()
-            return False
-        if row[3]:
-            schedule_type = "daily" if row[2] else "interval"
-            upcoming = admin_schedules.next_run(schedule_type, row[1], row[2], after=instant)
-        else:
-            upcoming = admin_schedules.next_cron(row[0], after=instant)
-        conn.execute(
-            "UPDATE system_schedules SET next_run_at=%s,last_run_at=%s,last_result='processing',updated_at=%s WHERE id=%s",
-            (upcoming, instant, instant, schedule_id),
-        )
+            return {"outcome": "conflict"}
+        row = conn.execute("SELECT last_result FROM system_schedules WHERE id=%s FOR UPDATE", (schedule_id,)).fetchone()
+        if not row:
+            conn.rollback()
+            return {"outcome": "not_found"}
+        if row[0] == "queued":
+            conn.rollback()
+            return {"outcome": "conflict"}
+        conn.execute("UPDATE system_schedules SET last_result='queued',updated_at=%s WHERE id=%s", (instant.timestamp(), schedule_id))
         conn.commit()
-        return True
+        return {"outcome": "queued"}
     except Exception:
         conn.rollback()
         raise
@@ -190,26 +191,65 @@ def claim_due_system_schedule(db_url, schedule_id: str, *, now=None) -> bool:
         conn.close()
 
 
+def claim_due_system_schedule(db_url, schedule_id: str, *, now=None) -> bool:
+    """Claim one due run and advance its next occurrence in the same transaction."""
+    if schedule_id not in _RUN_LOCKS:
+        return False
+    instant = admin_schedules._utc(now)
+    conn = db.connect(db_url)
+    retained = False
+    try:
+        conn.execute("BEGIN")
+        if not conn.execute("SELECT pg_try_advisory_lock(%s)", (_RUN_LOCKS[schedule_id],)).fetchone()[0]:
+            conn.rollback()
+            return False
+        row = conn.execute(
+            "SELECT cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,enabled,next_run_at,last_result "
+            "FROM system_schedules WHERE id=%s FOR UPDATE", (schedule_id,),
+        ).fetchone()
+        if not row:
+            conn.rollback()
+            return False
+        if row[6] != "queued" and (not row[4] or row[5] is None or admin_schedules._utc(row[5]) > instant):
+            if row[6] == "processing":
+                conn.execute("UPDATE system_schedules SET last_result='failed',updated_at=%s WHERE id=%s", (instant.timestamp(), schedule_id))
+                conn.commit()
+            else:
+                conn.rollback()
+            return False
+        if row[6] == "queued":
+            upcoming = admin_schedules._utc(row[5]) if row[5] is not None else None
+        elif row[3]:
+            schedule_type = "daily" if row[2] else "interval"
+            upcoming = admin_schedules.next_run(schedule_type, row[1], row[2], after=instant)
+        else:
+            upcoming = admin_schedules.next_cron(row[0], after=instant)
+        conn.execute(
+            "UPDATE system_schedules SET next_run_at=%s,last_run_at=%s,last_result='processing',updated_at=%s WHERE id=%s",
+            (upcoming, instant.timestamp(), instant.timestamp(), schedule_id),
+        )
+        conn.commit()
+        _ACTIVE_RUNS[schedule_id] = conn
+        retained = True
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        if not retained:
+            conn.close()
+
+
 def finish_system_schedule(db_url, schedule_id: str, *, success: bool, now=None) -> None:
     if type(success) is not bool:
         raise ValueError("success must be boolean")
     instant = admin_schedules._utc(now)
-    conn = db.connect(db_url)
+    conn = _ACTIVE_RUNS.pop(schedule_id, None)
+    if conn is None:
+        return
     try:
-        row = conn.execute(
-            "SELECT cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,enabled "
-            "FROM system_schedules WHERE id=%s", (schedule_id,),
-        ).fetchone()
-        if not row:
-            return
-        if not row[4]:
-            upcoming = None
-        elif row[3]:
-            upcoming = admin_schedules.next_run("daily" if row[2] else "interval", row[1], row[2], after=instant)
-        else:
-            upcoming = admin_schedules.next_cron(row[0], after=instant)
-        conn.execute("UPDATE system_schedules SET last_result=%s,next_run_at=%s,updated_at=%s WHERE id=%s",
-                     ("done" if success else "failed", upcoming, instant, schedule_id))
+        conn.execute("UPDATE system_schedules SET last_result=%s,updated_at=%s WHERE id=%s",
+                     ("done" if success else "failed", instant.timestamp(), schedule_id))
         conn.commit()
     finally:
         conn.close()

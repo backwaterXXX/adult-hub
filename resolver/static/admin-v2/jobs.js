@@ -142,7 +142,7 @@
   function jobsTab() {
     const hashQuery = location.hash.includes('?') ? location.hash.slice(location.hash.indexOf('?') + 1) : '';
     const requested = new URLSearchParams(hashQuery).get('tab');
-    return ['tasks', 'bulk', 'schedules'].includes(requested) ? requested : 'tasks';
+    return ['tasks', 'bulk'].includes(requested) ? requested : 'tasks';
   }
   function readFiltersFromUrl() {
     const params = new URLSearchParams(location.search);
@@ -917,11 +917,10 @@
     }
     setText($('#crumbCurrent'), 'Jobs & Automation');
     setText($('#operationalEyebrow'), 'OPERATIONS');
-    setText($('#operationalTitle'), tab === 'bulk' ? 'Bulk Operations' : tab === 'schedules' ? 'Schedules' : 'Tasks');
+    setText($('#operationalTitle'), tab === 'bulk' ? 'Bulk Operations' : 'Tasks');
     setText($('#operationalIntro'), tab === 'bulk'
       ? 'Review saved bulk plans and per-item outcomes.'
-      : tab === 'schedules' ? 'Manage recurring checks and maintenance tasks.'
-        : 'Monitor queued, running, and completed work. Updates every 15 seconds while this tab is open.');
+      : 'Monitor queued, running, and completed work. Updates every 15 seconds while this tab is open.');
     clearTimeout(state.pollTimer);
     state.pollTimer = null;
     const changedTab = state.activeTab !== tab;

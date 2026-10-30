@@ -238,11 +238,11 @@ def sync_status(status_file: Path | str) -> dict:
     return runtime_files.sync_status(status_file)
 
 
-def sync_history(history_file: Path | str, config_path: Path | str, limit: int = 30) -> dict:
+def sync_history(history_file: Path | str, config_path: Path | str, limit: int = 30, offset: int = 0) -> dict:
     return runtime_files.sync_history(
         history_file,
         config_path,
-        limit,
+        limit, offset,
         channel_labels=channel_labels,
         trim_channel_name=trim_channel_name,
     )

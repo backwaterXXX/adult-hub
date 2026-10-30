@@ -55,7 +55,7 @@
     }
     if (item.object_type === 'source_configuration') return '#sources';
     if (item.object_type === 'schedule' && /^(?:[a-f0-9]{32}|catalog-health-full)$/.test(item.object_id || '')) {
-      return '#jobs?tab=schedules&schedule_id=' + encodeURIComponent(item.object_id);
+      return '#schedules?schedule_id=' + encodeURIComponent(item.object_id);
     }
     if (item.object_type === 'performer' && typeof item.object_id === 'string' && item.object_id.length <= 200) {
       return '#performers?tab=directory&person=' + encodeURIComponent(item.object_id);

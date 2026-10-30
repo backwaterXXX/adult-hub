@@ -36,6 +36,7 @@ def sync_history(
     history_file: Path | str,
     config_path: Path | str,
     limit: int = 30,
+    offset: int = 0,
     *,
     channel_labels: Callable[[Path | str], dict[str, str]],
     trim_channel_name: Callable[[str], str],
@@ -45,15 +46,16 @@ def sync_history(
         data = json.loads(path.read_text()) if path.exists() else {"runs": []}
         runs = data.get("runs", []) if isinstance(data, dict) else []
         safe_limit = max(1, min(limit, 100))
+        safe_offset = max(0, offset)
         channel_names = channel_labels(config_path)
-        for run in runs[:safe_limit]:
+        for run in runs[safe_offset:safe_offset + safe_limit]:
             for source in run.get("sources", []):
                 key = str(source.get("source", ""))
                 if key.startswith("telegram:") and not source.get("label"):
                     channel = key.split(":", 1)[1]
                     name = channel_names.get(channel, channel)
                     source["label"] = f"tg:[{trim_channel_name(name)}]"
-        return {"runs": runs[:safe_limit], "total": len(runs), "truncated": len(runs) > safe_limit}
+        return {"runs": runs[safe_offset:safe_offset + safe_limit], "total": len(runs), "truncated": len(runs) > safe_offset + safe_limit}
     except (OSError, ValueError, TypeError):
         return {"runs": [], "error": "Sync history is unavailable."}
 

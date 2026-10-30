@@ -260,14 +260,30 @@
         await load();
       } catch (error) { feedback.textContent = `Could not update the schedule. ${error.message}`; toggle.disabled = false; }
     });
-    actionCell.append(editButton, toggle);
+    const run = node('button', 'button button-quiet schedule-run', 'Run');
+    run.type = 'button';
+    run.addEventListener('click', async () => {
+      run.disabled = true;
+      try {
+        const url = group === 'system' ? `${endpoint}/system/${encodeURIComponent(item.id)}/run` : `${endpoint}/${encodeURIComponent(item.id)}/run`;
+        const result = await window.AdminV2.postJson(url, {});
+        await load();
+        feedback.textContent = 'Run queued.';
+        if (result.job_id) {
+          const link = node('a', '', ' Open task');
+          link.href = `/admin/v2/?job_id=${encodeURIComponent(result.job_id)}#jobs`;
+          feedback.append(link);
+        }
+      } catch (error) { feedback.textContent = `Could not run the schedule. ${error.message}`; run.disabled = false; }
+    });
+    actionCell.append(editButton, toggle, run);
     row.append(taskCell, cronCell, statusCell, nextCell, lastCell, actionCell);
     const editorRow = node('tr', 'schedule-editor-row'); editorRow.hidden = true;
     const editor = makeScheduleEditor({ ...item, group }, feedback, editorRow, editButton);
     return { row, editorRow, editor };
   }
 
-  function makeTable(items, feedback) {
+  function makeTable(items, feedback, dependentItems, parents) {
     const wrap = node('div', 'schedule-table-wrap');
     const table = node('table', 'schedule-table');
     const head = node('thead');
@@ -278,6 +294,12 @@
     for (const item of items) {
       const row = makeMainRow(item, item.group, feedback);
       body.append(row.row, row.editorRow);
+      const children = dependentItems.filter(child => child.parent_id === item.id);
+      if (children.length) {
+        const childRow = node('tr', 'schedule-dependent-row');
+        const cell = node('td'); cell.colSpan = 6;
+        cell.append(makeDependentList(children, parents)); childRow.append(cell); body.append(childRow);
+      }
     }
     table.append(head, body); wrap.append(table);
     return wrap;
@@ -285,7 +307,7 @@
 
   function makeDependentList(items, parents) {
     const section = node('section', 'schedule-dependent');
-    section.append(node('h3', '', 'Runs with a parent schedule'));
+    section.setAttribute('aria-label', 'Dependent tasks');
     const grid = node('div', 'schedule-dependent-list');
     for (const item of items) {
       const parent = parents.get(item.parent_id) || {};
@@ -334,17 +356,15 @@
       let mainItems = [...admin, ...system];
       let dependentItems = dependent;
       if (filter === 'admin') { mainItems = admin; dependentItems = []; }
-      else if (filter === 'system') { mainItems = system; dependentItems = []; }
-      else if (filter === 'dependent') { mainItems = []; }
+      else if (filter === 'system') { mainItems = system; }
+      else if (filter === 'dependent') { mainItems = system.filter(item => dependent.some(child => child.parent_id === item.id)); }
       else if (filter === 'problems') {
         mainItems = mainItems.filter(problems);
         dependentItems = dependentItems.filter(problems);
+        mainItems = [...mainItems, ...system.filter(item => dependentItems.some(child => child.parent_id === item.id) && !mainItems.includes(item))];
       }
       let visibleCount = mainItems.length + dependentItems.length;
-      if (mainItems.length) host.append(makeTable(mainItems, feedback));
-      if (dependentItems.length) {
-        host.append(makeDependentList(dependentItems, parents));
-      }
+      if (mainItems.length) host.append(makeTable(mainItems, feedback, dependentItems, parents));
       if (!visibleCount) host.append(node('p', 'schedule-empty', filter === 'problems'
         ? 'No schedule problems are currently reported.' : 'No schedules match this filter.'));
       const selectedId = new URLSearchParams(location.hash.split('?')[1] || '').get('schedule_id') || '';
@@ -438,7 +458,7 @@
   $('#schedulesRefresh')?.addEventListener('click', load);
 
   function syncSchedules(route) {
-    schedulesActive = route === 'jobs' && new URLSearchParams(location.hash.split('?')[1] || '').get('tab') === 'schedules';
+    schedulesActive = route === 'schedules';
     if (pollTimer !== null) clearInterval(pollTimer);
     pollTimer = null;
     if (schedulesActive) {

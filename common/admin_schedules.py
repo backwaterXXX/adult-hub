@@ -365,3 +365,38 @@ def dispatch_due_schedules(db_url, *, now=None, limit=20) -> int:
         raise
     finally:
         conn.close()
+
+
+def run_schedule_now(db_url, schedule_id: str, *, now=None) -> dict:
+    """Queue a schedule once without changing its enabled state or cron clock."""
+    instant = _utc(now)
+    conn = db.connect(db_url)
+    try:
+        conn.execute("BEGIN")
+        row = conn.execute("SELECT action,payload,last_job_id FROM admin_schedules WHERE id=%s FOR UPDATE", (schedule_id,)).fetchone()
+        if not row:
+            conn.rollback()
+            return {"outcome": "not_found"}
+        if row[2]:
+            job = conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (row[2],)).fetchone()
+            if job and job[0] in {"queued", "processing"}:
+                conn.rollback()
+                return {"outcome": "conflict"}
+        try:
+            payload = json.loads(row[1]) if row[1] else {}
+        except (ValueError, TypeError):
+            payload = {}
+        payload["_schedule_id"] = schedule_id
+        job_id = uuid.uuid4().hex
+        epoch = int(instant.timestamp())
+        conn.execute("INSERT INTO video_duplicate_jobs (id,action,state,payload,result,created_at,updated_at) VALUES (%s,%s,'queued',%s,NULL,%s,%s)",
+                     (job_id, row[0], json.dumps(payload, ensure_ascii=False), epoch, epoch))
+        conn.execute("UPDATE admin_schedules SET last_run_at=%s,last_job_id=%s,last_result='queued',updated_at=%s WHERE id=%s",
+                     (instant.timestamp(), job_id, instant.timestamp(), schedule_id))
+        conn.commit()
+        return {"outcome": "queued", "job_id": job_id}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()

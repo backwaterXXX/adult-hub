@@ -190,4 +190,29 @@ def build_router(admin):
         except Exception:
             return admin.JSONResponse({"ok": False, "error": "Could not update system schedule."}, status_code=503)
 
+    async def queue_run(request: Request, schedule_id: str, *, system: bool):
+        denied = admin._write_denied(request)
+        if denied is not None:
+            return denied
+        try:
+            run = system_schedules.request_system_run if system else admin_schedules.run_schedule_now
+            result = await admin.asyncio.to_thread(run, admin.HUB_DB_URL, schedule_id)
+            if result["outcome"] == "not_found":
+                return admin.JSONResponse({"ok": False, "error": "Schedule not found."}, status_code=404)
+            if result["outcome"] == "conflict":
+                return admin.JSONResponse({"ok": False, "error": "A run is already queued or processing."}, status_code=409)
+            if not system:
+                admin._wake_worker("jobs")
+            return admin.JSONResponse({"ok": True, **result}, status_code=202)
+        except Exception:
+            return admin.JSONResponse({"ok": False, "error": "Could not run schedule."}, status_code=503)
+
+    @router.post("/api/v2/schedules/{schedule_id}/run")
+    async def run_admin_schedule(request: Request, schedule_id: str):
+        return await queue_run(request, schedule_id, system=False)
+
+    @router.post("/api/v2/schedules/system/{schedule_id}/run")
+    async def run_system_schedule(request: Request, schedule_id: str):
+        return await queue_run(request, schedule_id, system=True)
+
     return router

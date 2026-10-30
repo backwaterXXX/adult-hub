@@ -68,7 +68,7 @@ let releasePost;
 let holdNextPost = false;
 const context = {
   document,
-  location: { hash: '#jobs?tab=schedules' },
+  location: { hash: '#schedules' },
   window: {
     AdminV2: {
       async getJson(path) {
@@ -104,7 +104,7 @@ const context = {
 (async () => {
   vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/schedules.js', 'utf8'), context);
   assert(calls.some(call => call.method === 'GET' && call.path === '/admin/api/v2/schedules'),
-    'opening #jobs?tab=schedules directly loads the existing schedule API');
+    'opening #schedules directly loads the existing schedule API');
   assert.equal(intervals.size, 1, 'opening the Schedules tab directly starts its bounded polling timer');
   assert.equal(elements.scheduleVideosField.hidden, false);
   await new Promise(resolve => setTimeout(resolve, 20));
@@ -156,7 +156,7 @@ const context = {
   const currentRow = body.children[0];
   const wrap = body.children[1];
   const editor = wrap.children[0].children[0];
-  assert.equal(editor.hidden, true, 'editor is compact until opened');
+  assert.equal(wrap.hidden, true, 'editor is compact until opened');
   currentRow.children[5].children[0].listeners.click();
   const frequency = editor.children[1].children[0].children[0];
   const cronInput = editor.children[1].children[3].children[0];
@@ -178,6 +178,7 @@ const context = {
   context.window.AdminV2.getJson = async path => {
     calls.push({ method: 'GET', path });
     if (failNextGet) { failNextGet = false; throw new Error('The schedule service is unavailable.'); }
+    if (path.includes('cron-preview?')) return { next_runs: ['2026-11-01T02:00:00Z', '2026-11-02T02:00:00Z', '2026-11-03T02:00:00Z'] };
     return { items: [] };
   };
 
@@ -202,10 +203,12 @@ const context = {
   elements.scheduleAction.value = 'consistency_audit';
   elements.scheduleAction.listeners.change();
   elements.scheduleCron.value = '15 4 * * 1';
+  elements.scheduleCron.listeners.input();
   elements.scheduleVideoIds.value = 'draft-video';
   elements.scheduleAction.focus();
   releasePost();
   await pending;
+  await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(elements.scheduleCreate.disabled, false);
   assert.equal(document.activeElement, elements.scheduleAction,
     'a completion must not steal focus if the operator moved to another field while the request was pending');
@@ -249,12 +252,13 @@ const context = {
     timezone: 'Europe/Warsaw', cron_expression: '30 2 * * *',
   });
   assert.equal(elements.schedulesFeedback.textContent,
-    'Schedule created, but the schedule list could not be refreshed.',
+    'Schedule created, but the list could not be refreshed.',
     'a successful create must not be reported as a failed create when its follow-up list read fails');
 
+  await new Promise(resolve => setTimeout(resolve, 20));
   let refreshCalls = 0;
   context.window.AdminV2.getJson = async () => { refreshCalls += 1; return { items: [] }; };
-  documentListeners['adminv2:navigate']({ detail: { route: 'jobs' } });
+  documentListeners['adminv2:navigate']({ detail: { route: 'schedules' } });
   assert.equal(refreshCalls, 1, 'entering System loads schedules immediately');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(intervals.size, 1, 'System starts one schedule poll');
@@ -286,8 +290,8 @@ const context = {
   assert.equal(refreshCalls, 3, 'a stale timer cannot poll after leaving System');
   document.hidden = true;
   context.window.AdminV2.getJson = async () => { refreshCalls += 1; return { items: [] }; };
-  context.location.hash = '#jobs?tab=schedules';
-  documentListeners['adminv2:navigate']({ detail: { route: 'jobs' } });
+  context.location.hash = '#schedules';
+  documentListeners['adminv2:navigate']({ detail: { route: 'schedules' } });
   assert.equal(refreshCalls, 3, 'entering System in a hidden tab waits for visibility');
   const [[hiddenPollId, hiddenPoll]] = intervals;
   hiddenPoll.callback();

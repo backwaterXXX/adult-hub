@@ -51,7 +51,7 @@ let checkedVideos = 50;
 let attemptTotal = 70;
 let batchLimits = { videos_per_run: 500, pbc_actors_per_run: 50,
   theporndb_actors_per_run: 40, stashdb_actors_per_run: 35 };
-let syncSchedule = { mode: 'interval', daily_at: null, interval_minutes: 60, run_on_startup: false };
+let syncSchedule = { mode: 'cron', cron_expression: '0 * * * *', run_on_startup: false };
 const calls = [];
 let responseJobId = 'metadata-job-1';
 let responseJobState = 'queued';
@@ -106,11 +106,11 @@ vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/enrichment.js', 'ut
   assert.match(elements.get('#enrichmentBatchLimits').textContent,
     /500 videos · PBC 50 actors · ThePornDB 40 actors · StashDB 35 actors\./);
   assert.strictEqual(elements.get('#enrichmentSchedule').textContent,
-    'Configured sync cadence: Every 60 minutes. Startup sync is disabled.');
-  syncSchedule = { mode: 'daily', daily_at: '03:30', interval_minutes: null, run_on_startup: true };
+    'Configured sync cadence: 0 * * * * Europe/Warsaw. Startup sync is disabled.');
+  syncSchedule = { mode: 'cron', cron_expression: '30 3 * * *', run_on_startup: true };
   await elements.get('#enrichmentRefresh').listeners.click();
   assert.strictEqual(elements.get('#enrichmentSchedule').textContent,
-    'Configured sync cadence: Daily at 03:30 runner local time. A sync is configured to run on startup.');
+    'Configured sync cadence: 30 3 * * * Europe/Warsaw. A sync is configured to run on startup.');
   assert.match(elements.get('#enrichmentSummary').children.map(card => card.children.map(child => child.textContent).join(' ')).join(' '), /1,000/);
   const row = elements.get('#enrichmentRows').children[0];
   assert.match(row.children[0].children[0].textContent, /Videos · Studio catalogs \+ ThePornDB/);

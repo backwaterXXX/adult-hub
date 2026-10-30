@@ -373,6 +373,8 @@ class TestMigrationsEngine(PgTestCase):
             (55, "0055_duplicate_reconcile_opt_in"),
             (56, "0056_performer_alias_canonical_index"),
             (57, "0057_split_phash_jobs"),
+            (58, "0058_cron_schedules"),
+            (59, "0059_metadata_proposal_retries"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):

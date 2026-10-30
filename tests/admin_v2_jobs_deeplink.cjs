@@ -35,7 +35,7 @@ function walk(root, output = []) {
 
 (async () => {
   const template = fs.readFileSync('resolver/templates/admin_v2.html', 'utf8');
-  for (const tab of ['tasks', 'bulk', 'schedules']) {
+  for (const tab of ['tasks', 'bulk']) {
     assert.match(template, new RegExp(`href="#jobs\\?tab=${tab}"`), `${tab} must have a bookmarkable navigation target`);
     assert.match(template, new RegExp(`data-jobs-pane="${tab}"`), `${tab} must have a content pane`);
   }
@@ -47,8 +47,8 @@ function walk(root, output = []) {
     'operationHistoryState', 'operationHistoryTableWrap', 'operationHistoryPagination', 'operationHistoryPageInfo', 'jobQueueFilter',
   ];
   const elements = Object.fromEntries(ids.map(id => [id, new Element(id === 'jobsFilters' ? 'form' : 'div')]));
-  const jobsTabs = ['tasks', 'bulk', 'schedules'].map(tab => { const item = new Element('a'); item.dataset.jobsTab = tab; return item; });
-  const jobsPanes = ['tasks', 'bulk', 'schedules'].map(tab => { const item = new Element('section'); item.dataset.jobsPane = tab; return item; });
+  const jobsTabs = ['tasks', 'bulk'].map(tab => { const item = new Element('a'); item.dataset.jobsTab = tab; return item; });
+  const jobsPanes = ['tasks', 'bulk'].map(tab => { const item = new Element('section'); item.dataset.jobsPane = tab; return item; });
   const filterValues = { queue: 'all', state: '', action: '' };
   elements.jobsFilters.elements = { namedItem: name => ({ get value() { return filterValues[name]; }, set value(value) { filterValues[name] = value; } }) };
   elements.jobsFilters.reset = () => { filterValues.queue = 'all'; filterValues.state = ''; filterValues.action = ''; };
@@ -376,9 +376,7 @@ function walk(root, output = []) {
   assert(calls.some(url => url.includes('/operations?')), 'Bulk Operations loads operation history on entry');
   assert.equal(calls.filter(url => url.includes('/tasks?queue=')).length, taskListRequestsBeforeBulk,
     'entering Bulk Operations does not refetch the task queue');
-  location.hash = '#jobs?tab=schedules';
-  documentListeners.get('adminv2:navigate')({ detail: { route: 'jobs' } });
-  assert.equal(jobsPanes[2].hidden, false, 'Schedules has its own bookmarkable pane');
+  assert.match(template, /href="#schedules" data-route="schedules"/, 'Schedules has a main-menu link');
   location.hash = '#jobs?tab=tasks';
   documentListeners.get('adminv2:navigate')({ detail: { route: 'jobs' } });
   await new Promise(resolve => setTimeout(resolve, 0));

@@ -39,6 +39,7 @@
     organize: { title: 'Organize', intro: 'Review duplicates and catalog quality.' },
     performers: { title: 'Performers', intro: 'Review performer names detected in Telegram titles.' },
     jobs: { title: 'Jobs & Automation', intro: 'The operation queue and history.' },
+    schedules: { title: 'Schedules', intro: 'Recurring tasks and their schedules.' },
     system: { title: 'System', intro: 'Run consistency audits and review service maintenance.' }
   };
 
@@ -83,6 +84,11 @@
     }
     const [route, query = ''] = hash.split('?', 2);
     const tab = new URLSearchParams(query).get('tab') || '';
+    if (route === 'jobs' && tab === 'schedules') {
+      const params = new URLSearchParams(query); params.delete('tab');
+      history.replaceState({}, '', '#schedules' + (params.toString() ? '?' + params : ''));
+      return { route: 'schedules', primaryRoute: 'schedules', detailId: null };
+    }
     if (route === 'system' && ['audit', 'audits', 'consistency'].includes(tab)) {
       return { route: 'quality', primaryRoute: 'quality', qualityTab: 'issues', detailId: null };
     }
@@ -290,6 +296,7 @@
     setText($('#operationalIntro'), routeInfo[route].intro);
     setText($('#operationalEyebrow'), routeInfo[route].title.toUpperCase());
     $('#qualityView').hidden = route !== 'quality';
+    $('#systemSchedulesView').hidden = route !== 'schedules';
     const systemTab = routeState.systemTab || 'maintenance';
     $('#systemBackupView').hidden = route !== 'system' || systemTab !== 'backups';
     $('#systemDiagnosticsView').hidden = route !== 'system' || systemTab !== 'diagnostics';

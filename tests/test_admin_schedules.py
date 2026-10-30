@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from threading import Barrier
 
-from common import admin_schedules
+from common import admin_schedules, system_schedules
 from common.admin_audit_events import list_change_events
 from common.migrations.m0055_duplicate_reconcile_opt_in import current_migration as reconcile_opt_in
 from tests.pg_helper import PgTestCase
@@ -80,6 +80,47 @@ class TestScheduleTimeRules(unittest.TestCase):
 
 
 class TestScheduleDispatch(PgTestCase):
+    def test_manual_admin_run_preserves_clock_and_rejects_overlap(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        created = admin_schedules.create_schedule(self.db_url, name="Manual audit", action="consistency_audit", schedule_type="interval", interval_minutes=15, now=now)
+        before = self._listed(created["id"])
+        barrier = Barrier(2)
+        def submit():
+            barrier.wait()
+            return admin_schedules.run_schedule_now(self.db_url, created["id"], now=now)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: submit(), range(2)))
+        self.assertEqual(sorted(item["outcome"] for item in results), ["conflict", "queued"])
+        after = self._listed(created["id"])
+        self.assertEqual(after["next_run_at"], before["next_run_at"])
+        self.assertEqual(after["enabled"], before["enabled"])
+
+    def test_manual_system_run_works_when_disabled_and_preserves_clock(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        system_schedules.ensure_system_schedules(self.db_url)
+        row = next(x for x in system_schedules.list_system_schedules(self.db_url) if x["id"] == "library-sync")
+        system_schedules.set_system_schedule(self.db_url, "library-sync", expression=row["cron_expression"], enabled=False, revision=row["revision"], now=now)
+        self.assertEqual(system_schedules.request_system_run(self.db_url, "library-sync", now=now)["outcome"], "queued")
+        self.assertEqual(system_schedules.request_system_run(self.db_url, "library-sync", now=now)["outcome"], "conflict")
+        self.assertTrue(system_schedules.claim_due_system_schedule(self.db_url, "library-sync", now=now))
+        self.assertFalse(system_schedules.claim_due_system_schedule(self.db_url, "library-sync", now=now))
+        system_schedules.finish_system_schedule(self.db_url, "library-sync", success=True, now=now)
+        row = next(x for x in system_schedules.list_system_schedules(self.db_url) if x["id"] == "library-sync")
+        self.assertFalse(row["enabled"])
+        self.assertIsNone(row["next_run_at"])
+        self.assertEqual(row["last_result"], "done")
+
+    def test_interrupted_system_run_can_be_requested_again(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        system_schedules.ensure_system_schedules(self.db_url)
+        self.assertEqual(system_schedules.request_system_run(self.db_url, "library-sync", now=now)["outcome"], "queued")
+        self.assertTrue(system_schedules.claim_due_system_schedule(self.db_url, "library-sync", now=now))
+        self.assertEqual(system_schedules.request_system_run(self.db_url, "library-sync", now=now)["outcome"], "conflict")
+        system_schedules._ACTIVE_RUNS.pop("library-sync").close()
+        self.assertEqual(system_schedules.request_system_run(self.db_url, "library-sync", now=now)["outcome"], "queued")
+        self.assertTrue(system_schedules.claim_due_system_schedule(self.db_url, "library-sync", now=now))
+        system_schedules.finish_system_schedule(self.db_url, "library-sync", success=True, now=now)
+
     def test_catalog_audit_cron_updates_without_enabling_or_resetting_history(self):
         now = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
         admin_schedules.dispatch_due_schedules(self.db_url, now=now)

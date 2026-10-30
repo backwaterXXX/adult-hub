@@ -867,3 +867,6 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
 .fuzzy-row .fuzzy-select { margin: 0; padding: 2px 4px; }
 .fuzzy-row .performer-proposal-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 @media (max-width: 900px) { .fuzzy-row { grid-template-columns: auto minmax(0, 1fr); } .fuzzy-row > :nth-child(n+3) { grid-column: 2; } }
+
+.schedule-dependent-row > td { padding: 0 12px 12px 32px; }
+.schedule-dependent-row .schedule-dependent { margin-top: 0; }

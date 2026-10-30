@@ -107,8 +107,8 @@ def _sync_status() -> dict:
     return admin_data.sync_status(SYNC_STATUS_FILE)
 
 
-def _sync_history(limit: int = 30) -> dict:
-    return admin_data.sync_history(SYNC_HISTORY_FILE, CONFIG_PATH, limit)
+def _sync_history(limit: int = 30, offset: int = 0) -> dict:
+    return admin_data.sync_history(SYNC_HISTORY_FILE, CONFIG_PATH, limit, offset)
 
 
 def _backup_status() -> dict:

@@ -241,7 +241,7 @@ CREATE TABLE public.system_schedules (
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT system_schedules_id_check CHECK ((id = ANY (ARRAY['library-sync'::text, 'database-backup'::text]))),
     CONSTRAINT system_schedules_revision_check CHECK ((revision >= 1)),
-    CONSTRAINT system_schedules_check CHECK ((((cron_expression IS NOT NULL) AND (length(cron_expression) >= 1) AND (length(cron_expression) <= 100) AND (legacy_interval_minutes IS NULL) AND (legacy_daily_at IS NULL) AND (needs_conversion = false)) OR ((cron_expression IS NULL) AND (needs_conversion = true) AND (((legacy_interval_minutes IS NOT NULL) AND (legacy_interval_minutes >= 15) AND (legacy_interval_minutes <= 43200) AND (legacy_daily_at IS NULL)) OR ((legacy_interval_minutes IS NULL) AND (legacy_daily_at IS NOT NULL) AND (legacy_daily_at ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'::text)))))
+    CONSTRAINT system_schedules_check CHECK ((((cron_expression IS NOT NULL) AND (length(cron_expression) >= 1) AND (length(cron_expression) <= 100) AND (legacy_interval_minutes IS NULL) AND (legacy_daily_at IS NULL) AND (needs_conversion = false)) OR ((cron_expression IS NULL) AND (needs_conversion = true) AND (((legacy_interval_minutes IS NOT NULL) AND (legacy_interval_minutes >= 15) AND (legacy_interval_minutes <= 43200) AND (legacy_daily_at IS NULL)) OR ((legacy_interval_minutes IS NULL) AND (legacy_daily_at IS NOT NULL) AND (legacy_daily_at ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'::text))))))
 );
 
 CREATE TABLE public.dead_streams (

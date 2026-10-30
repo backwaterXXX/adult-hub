@@ -81,13 +81,14 @@ def build_router(admin):
             return admin.JSONResponse({"error": "Could not search configured sources."}, status_code=503)
 
     @router.get("/api/v2/sources/sync-history")
-    async def source_sync_history(request: Request, limit: int = 30):
+    async def source_sync_history(request: Request, limit: int = 30, offset: int = 0):
         if admin._admin_blocked(request):
             return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
         try:
             safe_limit = max(1, min(limit, 100))
-            report = await admin.asyncio.to_thread(admin._sync_history, safe_limit)
-            return {"ok": True, **_safe_sync_history(report), "limit": safe_limit}
+            safe_offset = max(0, offset)
+            report = await admin.asyncio.to_thread(admin._sync_history, safe_limit, safe_offset) if safe_offset else await admin.asyncio.to_thread(admin._sync_history, safe_limit)
+            return {"ok": True, **_safe_sync_history(report), "limit": safe_limit, "offset": safe_offset}
         except Exception:
             return admin.JSONResponse({"error": "Sync history is unavailable."}, status_code=503)
 

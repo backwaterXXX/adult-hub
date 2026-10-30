@@ -252,7 +252,7 @@ function descendants(root, predicate) {
   assert.match(runText, /Failed sources: Channel 02 · Sync failed \(TimeoutError\)\./);
   assert.match(runText, /telegram history 4\.3 s \(2 calls\)/);
   assert.match(runText, /HTTP: 1 failed attempts · 1 retries · 1 rate limits/);
-  assert.match(elements.sourcesHistoryFeedback.textContent, /Showing 2 of 2 recent sync runs/);
+  assert.match(elements.sourcesHistoryFeedback.textContent, /Showing 1–2 of 2 sync runs/);
   const channelDetailButton = descendants(elements.sourcesRows,
     node => node.dataset.sourceDetail === 'telegram::2')[0];
   elements.sourcesRows.listeners.click({ target: { closest: selector =>

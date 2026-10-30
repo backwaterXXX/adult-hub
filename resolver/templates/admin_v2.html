@@ -19,7 +19,6 @@
   <script defer src="/admin/assets-v2/quarantine.js"></script>
   <script defer src="/admin/assets-v2/schedules.js"></script>
   <script defer src="/admin/assets-v2/activity.js"></script>
-  <script defer src="/admin/assets-v2/sync-activity.js"></script>
   <script defer src="/admin/assets-v2/linkcheck.js"></script>
   <script defer src="/admin/assets-v2/enrichment.js"></script>
   <script defer src="/admin/assets-v2/command-palette.js"></script>
@@ -40,6 +39,7 @@
         <a href="#quality" data-route="quality"><span class="nav-icon" aria-hidden="true">◈</span>Catalog Health</a>
         <a href="#sources" data-route="sources"><span class="nav-icon" aria-hidden="true">◉</span>Sources</a>
         <a href="#jobs" data-route="jobs"><span class="nav-icon" aria-hidden="true">◷</span>Jobs &amp; Automation</a>
+        <a href="#schedules" data-route="schedules"><span class="nav-icon" aria-hidden="true">◷</span>Schedules</a>
         <a href="#system" data-route="system"><span class="nav-icon" aria-hidden="true">⚙</span>System</a>
       </nav>
       <div class="sidebar-bottom">
@@ -315,7 +315,7 @@
             <div class="panel-heading"><div><p class="eyebrow">QUICK ACTIONS</p><h2 id="maintenanceTitle">Maintenance actions</h2><p class="page-intro">Clear resolver cache or request a Jellyfin refresh. A refresh request does not confirm that Jellyfin imported the changes.</p></div></div>
             <div class="diagnostics-actions">
               <a class="button button-quiet" href="#quality?tab=issues">Catalog Health audits</a>
-              <a class="button button-quiet" href="#jobs?tab=schedules">Manage schedules</a>
+              <a class="button button-quiet" href="#schedules">Manage schedules</a>
               <button class="button button-primary" type="button" id="triggerFullSync">Run full sync</button>
               <button class="button button-quiet" type="button" id="clearResolverCache">Clear resolver cache</button>
               <button class="button button-quiet" type="button" id="refreshJellyfinLibrary">Refresh Jellyfin library</button>
@@ -351,7 +351,6 @@
             <nav class="section-tabs" aria-label="Jobs &amp; Automation">
               <a href="#jobs?tab=tasks" data-jobs-tab="tasks">Tasks</a>
               <a href="#jobs?tab=bulk" data-jobs-tab="bulk">Bulk Operations</a>
-              <a href="#jobs?tab=schedules" data-jobs-tab="schedules">Schedules</a>
             </nav>
             <div data-jobs-pane="tasks">
             <section class="panel jobs-panel">
@@ -380,7 +379,8 @@
               <div id="operationHistoryTableWrap" class="table-wrap" hidden><table class="video-table operation-history-table"><thead><tr><th>Operation</th><th>Created</th><th>Items</th><th>State</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="operationHistoryRows"></tbody></table></div>
               <div id="operationHistoryPagination" class="pagination" hidden><button class="button button-quiet" type="button" id="operationHistoryPrev">← Previous</button><span id="operationHistoryPageInfo">Page 1</span><button class="button button-quiet" type="button" id="operationHistoryNext">Next →</button></div>
             </section>
-            <section id="systemSchedulesView" class="panel operation-history-panel" data-jobs-pane="schedules" hidden aria-labelledby="schedulesTitle">
+          </div>
+            <section id="systemSchedulesView" class="panel operation-history-panel" hidden aria-labelledby="schedulesTitle">
               <div class="panel-heading"><div><p class="eyebrow">AUTOMATION</p><h2 id="schedulesTitle">Schedules</h2><p class="page-intro">Cron uses Europe/Warsaw time. Dependent work follows its parent schedule.</p></div><button class="button button-quiet" type="button" id="schedulesRefresh">Refresh</button></div>
               <details class="schedule-create-panel" id="scheduleCreatePanel">
                 <summary class="button button-primary">Add schedule</summary>
@@ -396,7 +396,6 @@
               <div id="schedulesFeedback" class="catalog-feedback" role="status">Loading schedules…</div>
               <div id="schedulesRows" class="schedule-list" aria-live="polite"></div>
             </section>
-          </div>
 
           <div id="sourcesView" hidden>
             <div id="sourcesNotice" class="state-banner sources-notice" hidden role="status"></div>
@@ -428,12 +427,7 @@
               <div class="panel-heading"><div><p class="eyebrow">SYNCHRONIZATION</p><h2 id="sourceRunHistoryTitle">Recent sync runs</h2><p class="page-intro">Review recent outcomes, timing, source failures, and HTTP retry counts.</p></div></div>
               <div id="sourcesHistoryFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading sync history…</div>
               <div id="sourcesHistoryRows" class="operation-history-list" aria-live="polite"></div>
-              <details>
-                <summary>Worker progress summaries</summary>
-                <div class="panel-heading"><div><p class="eyebrow">SYNC WORKER</p><h3 id="syncActivityTitle" tabindex="-1">Sync activity</h3><p class="page-intro">Recent progress summaries. Detailed log text is hidden to protect source IDs, URLs, paths, and exception data.</p></div><button class="button button-quiet" type="button" id="syncActivityRefresh">Refresh activity</button></div>
-                <div id="syncActivityFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading sync activity…</div>
-                <div id="syncActivityRows" class="operation-history-list" aria-live="polite"></div>
-              </details>
+              <nav id="sourcesHistoryPagination" class="pagination" aria-label="Sync history pages" hidden></nav>
             </section>
             <dialog class="source-detail" id="sourceDetailDialog" aria-labelledby="sourceDetailTitle">
               <article class="source-detail-panel" tabindex="-1">

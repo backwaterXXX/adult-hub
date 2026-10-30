@@ -25,7 +25,7 @@
     { label: 'Sources', subtitle: 'Telegram channels and sync history', route: '#sources', words: 'channels telegram sync' },
     { label: 'Jobs & Automation · Tasks', subtitle: 'Queued, running, and completed work', route: '#jobs', words: 'jobs tasks queue processing' },
     { label: 'Jobs & Automation · Bulk Operations', subtitle: 'Plans and per-item outcomes', route: '#jobs?tab=bulk', words: 'bulk operation history' },
-    { label: 'Jobs & Automation · Schedules', subtitle: 'Recurring checks and scheduled tasks', route: '#jobs?tab=schedules', words: 'schedule automation recurring' },
+    { label: 'Schedules', subtitle: 'Recurring checks and scheduled tasks', route: '#schedules', words: 'schedule automation recurring' },
     { label: 'System', subtitle: 'Maintenance, diagnostics, backups, and audit log', route: '#system', words: 'settings maintenance diagnostics backup' },
     { label: 'Failed jobs', subtitle: 'Open Tasks filtered to failed work', route: '#jobs', params: { job_state: 'failed' }, words: 'failed error retry' },
     { label: 'Unavailable videos', subtitle: 'Open Library filtered by availability', route: '#library', params: { availability: 'unavailable' }, words: 'broken unavailable stream links' },
