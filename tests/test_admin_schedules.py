@@ -14,6 +14,23 @@ from tests.pg_helper import PgTestCase
 
 
 class TestScheduleTimeRules(unittest.TestCase):
+    def test_cron_supports_steps_ranges_and_sunday(self):
+        now = datetime(2026, 10, 30, 12, 1, tzinfo=timezone.utc)
+        self.assertEqual(admin_schedules.next_cron('*/15 * * * *', after=now),
+                         datetime(2026, 10, 30, 12, 15, tzinfo=timezone.utc))
+        self.assertEqual(admin_schedules.next_cron('0 3 * * 0,7', after=now),
+                         datetime(2026, 11, 1, 2, 0, tzinfo=timezone.utc))
+        with self.assertRaises(ValueError):
+            admin_schedules.next_cron('61 * * * *', after=now)
+        with self.assertRaises(ValueError):
+            admin_schedules.next_cron('* * * *', after=now)
+
+    def test_cron_dst_gap_and_fold_match_daily_rules(self):
+        self.assertEqual(admin_schedules.next_cron('30 2 * * *', after=datetime(2026, 3, 28, 12, tzinfo=timezone.utc)),
+                         datetime(2026, 3, 30, 0, 30, tzinfo=timezone.utc))
+        self.assertEqual(admin_schedules.next_cron('30 2 * * *', after=datetime(2026, 10, 25, 1, 0, tzinfo=timezone.utc)),
+                         datetime(2026, 10, 26, 1, 30, tzinfo=timezone.utc))
+
     def test_epoch_zero_is_a_valid_instant_not_missing_time(self):
         self.assertEqual(
             admin_schedules.next_run("interval", 15, None, after=0),
@@ -63,6 +80,19 @@ class TestScheduleTimeRules(unittest.TestCase):
 
 
 class TestScheduleDispatch(PgTestCase):
+    def test_catalog_audit_cron_updates_without_enabling_or_resetting_history(self):
+        now = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        admin_schedules.dispatch_due_schedules(self.db_url, now=now)
+        result = admin_schedules.set_reconcile_cron(self.db_url, 'catalog-health-full', expression='30 5 * * 1', revision=1, now=now)
+        self.assertEqual(result['outcome'], 'updated')
+        item = self._listed('catalog-health-full')
+        self.assertTrue(item['enabled'])
+        self.assertEqual(item['cron_expression'], '30 5 * * 1')
+        self.assertEqual(item['next_run_at'], '2026-01-05T04:30:00+00:00')
+        self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=datetime(2026, 1, 5, 4, 30, tzinfo=timezone.utc)), 1)
+        item = self._listed('catalog-health-full')
+        self.assertEqual(item['next_run_at'], '2026-01-12T04:30:00+00:00')
+
     def _make_due_schedule(self, now):
         created = admin_schedules.create_schedule(
             self.db_url, name="Concurrent audit", action="consistency_audit",
@@ -258,6 +288,24 @@ class TestReconcileScheduleOptIn(PgTestCase):
     """Automatic duplicate merges are an explicit operator choice."""
 
     SCHEDULE_ID = "duplicate-reconcile"
+
+    def test_cron_edit_preserves_enabled_state_and_dispatches_without_private_config(self):
+        now = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        with self.conn:
+            reconcile_opt_in.apply(self.conn)
+        result = admin_schedules.set_reconcile_cron(self.db_url, self.SCHEDULE_ID, expression='0 3 * * *', revision=1, now=now)
+        self.assertEqual(result['outcome'], 'updated')
+        row = next(item for item in admin_schedules.list_schedules(self.db_url) if item['id'] == self.SCHEDULE_ID)
+        self.assertEqual((row['enabled'], row['next_run_at'], row['cron_expression']), (False, None, '0 3 * * *'))
+        self.assertEqual(admin_schedules.set_reconcile_cron(self.db_url, self.SCHEDULE_ID, expression='*/15 * * * *', revision=1)['outcome'], 'conflict')
+        admin_schedules.set_enabled(self.db_url, self.SCHEDULE_ID, enabled=True, revision=2, now=now)
+        row = next(item for item in admin_schedules.list_schedules(self.db_url) if item['id'] == self.SCHEDULE_ID)
+        self.assertEqual(row['next_run_at'], '2026-01-01T02:00:00+00:00')
+        self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=datetime(2026, 1, 1, 2, tzinfo=timezone.utc)), 1)
+        payload = self.conn.execute("SELECT payload FROM video_duplicate_jobs WHERE action='duplicate_reconcile'").fetchone()[0]
+        self.assertNotIn('_cron', payload)
+        row = next(item for item in admin_schedules.list_schedules(self.db_url) if item['id'] == self.SCHEDULE_ID)
+        self.assertEqual(row['next_run_at'], '2026-01-02T02:00:00+00:00')
 
     def row(self):
         return self.conn.execute(

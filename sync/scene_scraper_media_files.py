@@ -24,13 +24,16 @@ def _update_media_files(
     performers: List[str],
     http_client: Optional[Any] = None,
     conn: Optional[Any] = None,
+    strict: bool = False,
+    _nfo_path: Optional[Path] = None,
 ) -> bool:
     """Update the NFO and report whether a valid external poster was saved."""
     poster_saved = False
     try:
-        nfo_path = None
+        nfo_path = _nfo_path
         poster_path = None
-        if conn is not None:
+        registered_files = False
+        if conn is not None and _nfo_path is None:
             try:
                 if __package__:
                     from .media_files import resolve_media_path
@@ -39,15 +42,29 @@ def _update_media_files(
                 file_rows = conn.execute(
                     "SELECT file_path FROM synced_files WHERE video_id=%s ORDER BY file_path", (video_id,)
                 ).fetchall()
+                registered_files = bool(file_rows)
+                nfo_paths = []
                 for (file_path,) in file_rows:
                     stream_path = resolve_media_path(str(file_path), media_dir)
                     if poster_path is None:
                         poster_path = stream_path.with_suffix(".jpg")
                     candidate = stream_path.with_suffix(".nfo")
                     if candidate.is_file() and not candidate.is_symlink():
-                        nfo_path = candidate
-                        break
+                        if candidate not in nfo_paths:
+                            nfo_paths.append(candidate)
+                    elif strict:
+                        raise FileNotFoundError(f"NFO missing or unsafe for {video_id}")
+                if len(nfo_paths) > 1:
+                    saved = False
+                    for path in nfo_paths:
+                        saved = _update_media_files(media_dir, video_id, matched, performers,
+                                                    http_client, conn, strict, path) or saved
+                    return saved
+                if nfo_paths:
+                    nfo_path = nfo_paths[0]
             except Exception:
+                if strict:
+                    raise
                 nfo_path = None
         if nfo_path is None:
             # Compatibility for legacy files that predate the synced_files index.
@@ -55,12 +72,16 @@ def _update_media_files(
             comp_tail = parts[-2] if len(parts) > 2 else parts[-1]
             matches = list(media_dir.glob(f"*{comp_tail}*.nfo"))
             if len(matches) != 1:
+                if strict and registered_files:
+                    raise FileNotFoundError(f"NFO not found for {video_id}")
                 if poster_path is not None and matched.poster_url:
                     poster_saved = _download_scene_poster(
                         matched.poster_url, poster_path, video_id, http_client=http_client,
                     )
                 return poster_saved
             nfo_path = matches[0]
+            if nfo_path.is_symlink():
+                raise ValueError(f"Unsafe NFO for {video_id}")
         if poster_path is None:
             poster_path = nfo_path.with_suffix(".jpg")
         # Read and patch NFO XML
@@ -80,6 +101,11 @@ def _update_media_files(
             except Exception:
                 overrides = {}
 
+        trusted = str(matched.source or '').casefold() in {
+            'stashdb:phash', 'stashdb:oshash', 'theporndb:phash', 'theporndb:oshash',
+            'stashdb:title_exact', 'stashdb:linked_id', 'stashdb:split_title_duration_v1',
+            'theporndb:title_exact', 'theporndb:linked_id', 'theporndb:split_title_duration_v1',
+        }
         # Exact hash identity can safely supply a better title. A confirmed
         # StashDB/ThePornDB scene match is the canonical title source, so it
         # also replaces the provider caption here: the NFO is what Jellyfin
@@ -98,7 +124,7 @@ def _update_media_files(
         # 1. Update <plot>
         if matched.plot and "plot" not in overrides:
             plot_elem = root.find("plot")
-            if plot_elem is not None and not str(plot_elem.text or "").strip():
+            if plot_elem is not None and (trusted or not str(plot_elem.text or "").strip()):
                 plot_elem.text = matched.plot
             elif plot_elem is None:
                 ET.SubElement(root, "plot").text = matched.plot
@@ -106,7 +132,7 @@ def _update_media_files(
         # 2. Update <premiered> and <year>
         if matched.date and "date_released" not in overrides:
             prem_elem = root.find("premiered")
-            if prem_elem is not None and not str(prem_elem.text or "").strip():
+            if prem_elem is not None and (trusted or not str(prem_elem.text or "").strip()):
                 prem_elem.text = matched.date
             elif prem_elem is None:
                 ET.SubElement(root, "premiered").text = matched.date
@@ -114,7 +140,7 @@ def _update_media_files(
             year = matched.date[:4]
             if year.isdigit():
                 yr_elem = root.find("year")
-                if yr_elem is not None and not str(yr_elem.text or "").strip():
+                if yr_elem is not None and (trusted or not str(yr_elem.text or "").strip()):
                     yr_elem.text = year
                 elif yr_elem is None:
                     ET.SubElement(root, "year").text = year
@@ -136,6 +162,13 @@ def _update_media_files(
                 actor_links = {}
 
         if matched.performers and "performers" not in overrides:
+            if trusted:
+                old_names = {str(actor.findtext('name') or '').strip().casefold() for actor in root.findall('actor')}
+                for actor in root.findall('actor'):
+                    root.remove(actor)
+                for item in root.findall('set'):
+                    if str(item.findtext('name') or '').strip().casefold() in old_names:
+                        root.remove(item)
             has_actor = any(str(actor.findtext("name") or "").strip() for actor in root.findall("actor"))
             if not has_actor:
                 for perf in matched.performers:
@@ -164,13 +197,19 @@ def _update_media_files(
 
         if matched.studio and "studio" not in overrides:
             studios = root.findall("studio")
-            if not any(str(studio.text or "").strip() for studio in studios):
+            if trusted or not any(str(studio.text or "").strip() for studio in studios):
                 if studios:
                     studios[0].text = matched.studio
+                    if trusted:
+                        for studio in studios[1:]:
+                            root.remove(studio)
                 else:
                     ET.SubElement(root, "studio").text = matched.studio
 
         if matched.tags and "tags" not in overrides:
+            if trusted:
+                for tag in root.findall('tag'):
+                    root.remove(tag)
             known_tags = {t.text for t in root.findall("tag") if t.text}
             for tag in matched.tags:
                 if tag and tag not in known_tags:
@@ -214,6 +253,8 @@ def _update_media_files(
                 matched.poster_url, poster_path, video_id, http_client=http_client,
             )
     except Exception as e:
+        if strict:
+            raise
         _core.logger.debug("Could not update media files for %s: %s", video_id, e)
     return poster_saved
 

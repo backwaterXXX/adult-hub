@@ -435,7 +435,7 @@
       sourceLink.href = proposal.source_url; sourceLink.target = '_blank'; sourceLink.rel = 'noopener noreferrer';
       card.append(sourceLink);
     }
-    if (proposal.stale) card.append(el('p', 'catalog-state', 'This suggestion is out of date because catalog metadata changed. Refresh or reject it.'));
+    if (proposal.stale) card.append(el('p', 'catalog-state', 'Catalog metadata changed since this suggestion was created. Refresh and preview it against current values before approving. The external source is not rechecked.'));
     const form = el('div', 'metadata-proposal-fields');
     for (const [field, suggested] of Object.entries(proposal.changes || {})) {
       const section = el('section', 'metadata-edit-field');
@@ -451,13 +451,18 @@
     card.append(form);
     const previewHost = el('div', 'metadata-proposal-preview');
     const actions = el('div', 'diagnostics-actions');
-    const previewButton = el('button', 'button button-primary', 'Preview suggestion');
-    previewButton.type = 'button'; previewButton.disabled = Boolean(proposal.stale);
+    const previewButton = el('button', 'button button-primary', proposal.stale ? 'Refresh and preview' : 'Preview suggestion');
+    previewButton.type = 'button';
     previewButton.addEventListener('click', async () => {
       previewButton.disabled = true;
       try {
+        let revision = proposal.revision;
+        if (proposal.stale) {
+          const refreshed = await window.AdminV2.postJson(`/admin/api/v2/quality/proposals/${proposal.id}/refresh`, {});
+          revision = refreshed.revision;
+        }
         const result = await window.AdminV2.postJson('/admin/api/v2/operations/preview', {
-          type: 'metadata_update', video_id: proposal.video_id, expected_revision: proposal.revision,
+          type: 'metadata_update', video_id: proposal.video_id, expected_revision: revision,
           changes: proposalChanges(card, proposal), reset_fields: [], proposal_id: proposal.id,
         });
         renderProposalPreview(previewHost, result, async () => {
@@ -511,7 +516,7 @@
     const host = $('#metadataProposalsRows');
     host.replaceChildren(el('p', 'catalog-feedback', 'Loading metadata suggestions…'));
     try {
-      const result = await window.AdminV2.getJson(`/admin/api/v2/quality/proposals?limit=30&offset=${state.proposalOffset}`);
+      const result = await window.AdminV2.getJson(`/admin/api/v2/quality/proposals?limit=10&offset=${state.proposalOffset}`);
       if (requestId !== state.proposalRequestId) return;
       state.proposalTotal = result.total;
       host.replaceChildren();

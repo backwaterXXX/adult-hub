@@ -84,17 +84,21 @@ def phash_transfer_rate():
             else payload['idle_bytes_per_second'])
 
 try:
-    fingerprint, bytes_read, thumbnail = telegram_phash(
+    kind = payload['job_kind']
+    output = telegram_phash(
         payload['video_id'], payload['duration_us'] / 1000000,
         byte_budget=payload['byte_budget'], timeout_seconds=payload['timeout_seconds'],
         resolver_url='http://127.0.0.1:8090/admin',
         max_bytes_per_second=phash_transfer_rate,
         allow_rate_above_configured=True,
-        cache_dir=payload['cache_dir'], cache_id=payload['cache_id'], include_thumbnail=True)
-    if not thumbnail:
+        cache_dir=payload['cache_dir'], cache_id=payload['cache_id'],
+        include_thumbnail=(kind != 'phash'), thumbnail_only=(kind == 'thumbnail'))
+    fingerprint, bytes_read = output[:2]
+    thumbnail = output[2] if kind != 'phash' else None
+    if kind != 'phash' and not thumbnail:
         raise ValueError('thumbnail_missing')
     print(json.dumps({'ok': True, 'fingerprint': fingerprint, 'bytes_read': bytes_read,
-                      'thumbnail': base64.b64encode(thumbnail).decode('ascii')}))
+                      'thumbnail': base64.b64encode(thumbnail).decode('ascii') if thumbnail else None}))
 except DailyTelegramTransferBudgetExceeded:
     print(json.dumps({'ok': False, 'error_code': 'daily_transfer_budget_exhausted', 'retryable': False}))
 except DailyTelegramTransferBudgetUnavailable:
@@ -123,7 +127,9 @@ except Exception as exc:
         "idle_bytes_per_second": max(64 * 1024, min(10_000_000,
             int(os.getenv("PHASH_SERVER_IDLE_BYTES_PER_SECOND", "10000000")))),
         "cache_dir": PHASH_RANGE_CACHE_DIR,
-        "cache_id": job["id"],
+        "cache_id": (job["id"] if job.get("job_kind", "combined") == "combined" else
+                     f"split:{job['video_id']}:{job['algorithm_version']}:{job['decoder_profile']}"),
+        "job_kind": job.get("job_kind", "combined"),
     }
     process = subprocess.Popen(
         [sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -152,7 +158,10 @@ except Exception as exc:
         if not isinstance(result, dict):
             raise ValueError
         if result.get("ok"):
-            result["thumbnail"] = base64.b64decode(result["thumbnail"], validate=True)
+            if result.get("thumbnail"):
+                result["thumbnail"] = base64.b64decode(result["thumbnail"], validate=True)
+            elif payload["job_kind"] != "phash":
+                raise ValueError("Missing thumbnail in worker result")
         elif result.get("error_detail"):
             result["error_detail"] = _safe_error_detail(result["error_detail"])
         return result
@@ -245,11 +254,19 @@ def _process(job: dict, leader) -> None:
             if not locked:
                 conn.rollback()
                 return
-            outcome = _store(
-                SimpleNamespace(HUB_DB_URL=DB_URL), job["video_id"], result["fingerprint"],
-                job["decoder_profile"], job["submitted_by_user_id"], result["thumbnail"],
-                connection=conn,
-            )
+            if job.get("job_kind", "combined") == "thumbnail":
+                conn.execute(
+                    """INSERT INTO video_phash_thumbnails(video_id,image_bytes) VALUES (%s,%s)
+                       ON CONFLICT(video_id) DO UPDATE SET image_bytes=EXCLUDED.image_bytes,
+                       updated_at=CURRENT_TIMESTAMP""", (job["video_id"], result["thumbnail"]),
+                )
+                outcome = "stored"
+            else:
+                outcome = _store(
+                    SimpleNamespace(HUB_DB_URL=DB_URL), job["video_id"], result["fingerprint"],
+                    job["decoder_profile"], job["submitted_by_user_id"], result.get("thumbnail"),
+                    connection=conn,
+                )
             if outcome == "conflict":
                 conn.rollback()
                 phash_jobs.finish_failure(DB_URL, job, "fingerprint_conflict", retryable=False)
@@ -263,7 +280,7 @@ def _process(job: dict, leader) -> None:
             raise
         finally:
             conn.close()
-        LOGGER.info("pHash job %s completed (thumbnail saved)", job["id"])
+        LOGGER.info("Video %s job %s completed", job.get("job_kind", "combined"), job["id"])
     except Exception as exc:
         error_detail = _safe_error_detail(f"{type(exc).__name__}: {exc}")
         LOGGER.error("pHash job %s failed (%s): %s", job["id"], type(exc).__name__, error_detail)

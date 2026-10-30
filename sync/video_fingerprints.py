@@ -274,6 +274,7 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
                    cache_dir: Optional[str] = None, cache_id: Optional[str] = None,
                    include_thumbnail: bool = False,
                    include_visual_signature: bool = False,
+                   thumbnail_only: bool = False,
                    size_sink: Optional[Callable[[int], None]] = None,
                    variant: Optional[str] = "auto"):
     """Generate the Stash video pHash using a strict cumulative range budget.
@@ -449,6 +450,8 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
                     thumbnail_bytes = candidate_bytes
                     break
 
+        if thumbnail_only:
+            return None, budget.bytes_read, thumbnail_bytes
         sprite = combine_images(frames)
         result = (_stash_phash(sprite), budget.bytes_read)
         if include_visual_signature:

@@ -8,6 +8,7 @@
   let pollTimer = null;
   let backgroundLoading = false;
   let foregroundLoading = false;
+  let preserveScanFeedback = false;
   let lastLoadedAt = null;
   let freshnessState = 'unknown';
   const POLL_INTERVAL_MS = 15_000;
@@ -22,10 +23,16 @@
     const names = {
       studio_scene: 'Studio catalogs + ThePornDB', pbc: 'PBC', theporndb: 'ThePornDB',
       stashdb: 'StashDB', photos: 'Portrait providers',
-      telegram_fingerprint: 'Telegram scene lookup', lukayan_fingerprint: 'Telegram scene lookup'
+      telegram_fingerprint: 'Scene fingerprint', telegram_oshash: 'OSHASH fingerprint',
+      telegram_phash_scan: 'Visual fingerprint', telegram_phash_scan_batch2: 'Visual fingerprint · batch 2',
+      telegram_caption_title_exact_v1: 'Caption title match',
+      telegram_split_title_duration_v1: 'Title and duration match',
+      telegram_linked_scene_artwork_by_id_v1: 'Artwork from linked scene',
+      telegram_linked_scene_artwork_v1: 'Artwork from matched scene',
+      lukayan_fingerprint: 'Scene fingerprint · legacy', lukayan_oshash: 'OSHASH fingerprint · legacy'
     };
     const sourceName = names[source] || (/^(?:telegram|lukayan)_/.test(source)
-      ? 'Telegram scene lookup' : (source || 'Unknown source'));
+      ? `Telegram ${source.replace(/^(?:telegram|lukayan)_/, '').replaceAll('_', ' ')}` : (source || 'Unknown source'));
     return `${row.entity_type === 'video' ? 'Videos' : 'Actors'} · ${sourceName}`;
   }
 
@@ -124,13 +131,17 @@
       const row = el('article', 'enrichment-source-row');
       const header = el('div', 'enrichment-source-heading');
       header.append(el('strong', '', label(item)));
-      header.append(el('span', '', `${item.attempts.toLocaleString('en-US')} / ${item.catalog_total.toLocaleString('en-US')} checked`));
+      const checked = Number.isSafeInteger(item.catalog_checked) ? item.catalog_checked : null;
+      header.append(el('span', '', checked === null
+        ? `${item.attempts.toLocaleString('en-US')} source records`
+        : `${checked.toLocaleString('en-US')} / ${item.catalog_total.toLocaleString('en-US')} catalog items checked`));
       const progress = el('progress', 'enrichment-progress');
       progress.max = Math.max(1, item.catalog_total);
-      progress.value = Math.min(item.attempts, progress.max);
+      if (checked !== null) progress.value = Math.min(checked, progress.max);
+      else progress.hidden = true;
       progress.setAttribute('aria-label', `${label(item)} checked`);
       const detail = el('p', 'enrichment-source-detail',
-        `${item.found.toLocaleString('en-US')} found · ${item.no_match.toLocaleString('en-US')} no match · ${item.errors.toLocaleString('en-US')} errors · ${item.due.toLocaleString('en-US')} due · ${item.remaining.toLocaleString('en-US')} remaining${estimatedBatches(item, payload.batch_limits)}`);
+        `${item.attempts.toLocaleString('en-US')} source records · ${item.found.toLocaleString('en-US')} found · ${item.no_match.toLocaleString('en-US')} no match · ${item.errors.toLocaleString('en-US')} errors · ${item.due.toLocaleString('en-US')} due${checked === null ? '' : ` · ${item.remaining.toLocaleString('en-US')} estimated remaining${estimatedBatches(item, payload.batch_limits)}`}`);
       row.append(header, progress, detail);
       rows.append(row);
     }
@@ -142,6 +153,7 @@
     else foregroundLoading = true;
     const sequence = ++requestSeq;
     if (!silent) {
+      preserveScanFeedback = false;
       $('#enrichmentRefresh').disabled = true;
       $('#enrichmentFeedback').textContent = 'Loading metadata progress…';
     }
@@ -151,7 +163,7 @@
         throw new Error('The metadata progress response is incomplete.');
       }
       if (sequence !== requestSeq) return;
-      render(payload, { preserveFeedback: silent });
+      render(payload, { preserveFeedback: silent && preserveScanFeedback });
       updateFreshness();
     } catch (error) {
       if (sequence === requestSeq) {
@@ -172,6 +184,7 @@
     const button = event.currentTarget;
     if (!window.confirm('Run one bounded metadata scan now? This contacts configured providers and may update catalog metadata, NFO files, or artwork.')) return;
     button.disabled = true;
+    preserveScanFeedback = true;
     $('#enrichmentFeedback').textContent = 'Queueing external metadata scan…';
     try {
       const result = await window.AdminV2.postJson(scanEndpoint, {});

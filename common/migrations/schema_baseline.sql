@@ -553,6 +553,8 @@ CREATE TABLE public.video_phash_jobs (
     finished_at timestamp with time zone,
     processing_started_at timestamp with time zone,
     processing_duration_ms bigint DEFAULT 0 NOT NULL,
+    job_kind text DEFAULT 'combined'::text NOT NULL,
+    CONSTRAINT video_phash_jobs_kind_check CHECK ((job_kind = ANY (ARRAY['combined'::text, 'phash'::text, 'thumbnail'::text]))),
     CONSTRAINT video_phash_jobs_attempts_check CHECK ((attempts >= 0)),
     CONSTRAINT video_phash_jobs_bytes_read_check CHECK (((bytes_read IS NULL) OR (bytes_read >= 0))),
     CONSTRAINT video_phash_jobs_check CHECK (((state = 'processing'::text) = ((lease_token IS NOT NULL) AND (lease_until IS NOT NULL)))),
@@ -866,8 +868,7 @@ ALTER TABLE ONLY public.video_performers
 ALTER TABLE ONLY public.video_phash_jobs
     ADD CONSTRAINT video_phash_jobs_pkey PRIMARY KEY (id);
 
-ALTER TABLE ONLY public.video_phash_jobs
-    ADD CONSTRAINT video_phash_jobs_video_id_algorithm_version_decoder_profile_key UNIQUE (video_id, algorithm_version, decoder_profile);
+CREATE UNIQUE INDEX video_phash_jobs_identity_kind_idx ON public.video_phash_jobs USING btree (video_id, algorithm_version, decoder_profile, job_kind);
 
 ALTER TABLE ONLY public.video_phash_provenance
     ADD CONSTRAINT video_phash_provenance_pkey PRIMARY KEY (video_id);

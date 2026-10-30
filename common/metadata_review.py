@@ -102,6 +102,44 @@ def list_metadata_review_proposals(db_url: str | None, *, limit: int = 30, offse
         conn.close()
 
 
+def refresh_metadata_review_proposal(db_url: str | None, proposal_id: int) -> dict:
+    """Rebase a pending candidate onto current metadata without applying it.
+
+    A later preview and execution still verify both the revision and source
+    fingerprint. Refreshing never changes the candidate or video metadata.
+    """
+    if type(proposal_id) is not int or proposal_id <= 0:
+        return {"outcome": "invalid"}
+    conn = db.connect(db_url)
+    try:
+        row = conn.execute(
+            "SELECT video_id,status FROM metadata_review_proposals WHERE id=%s FOR UPDATE", (proposal_id,),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return {"outcome": "not_found"}
+        if row[1] != "pending":
+            conn.rollback()
+            return {"outcome": "conflict"}
+        state = load_metadata_states(conn, [str(row[0])]).get(str(row[0]))
+        if state is None:
+            conn.rollback()
+            return {"outcome": "not_found"}
+        revision = state["revision"]
+        fingerprint = metadata_source_fingerprint(state["source"])
+        conn.execute(
+            "UPDATE metadata_review_proposals SET expected_revision=%s,expected_source_fingerprint=%s WHERE id=%s",
+            (revision, fingerprint, proposal_id),
+        )
+        conn.commit()
+        return {"outcome": "refreshed", "id": proposal_id, "revision": revision}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def reject_metadata_review_proposal(db_url: str | None, proposal_id: int) -> dict:
     if type(proposal_id) is not int or proposal_id <= 0:
         return {"outcome": "invalid"}

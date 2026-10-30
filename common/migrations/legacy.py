@@ -70,6 +70,7 @@ from common.migrations.m0055_duplicate_reconcile_opt_in import migration as dupl
 from common.migrations.m0056_performer_alias_canonical_index import (
     migration as performer_alias_canonical_index,
 )
+from common.migrations.m0057_split_phash_jobs import migration as split_phash_jobs
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -130,4 +131,5 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     telegram_latest_cursor,
     duplicate_reconcile_opt_in,
     performer_alias_canonical_index,
+    split_phash_jobs,
 )

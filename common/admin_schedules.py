@@ -15,6 +15,70 @@ ALLOWED_ACTIONS = {"availability_check", "consistency_audit", "metadata_quality_
 _TIME = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
 
 
+def _cron_fields(expression: str):
+    """Parse numeric five-field cron expressions, including lists, ranges and steps."""
+    if not isinstance(expression, str) or len(expression) > 100:
+        raise ValueError("Cron must have five numeric fields.")
+    parts = expression.split()
+    if len(parts) != 5:
+        raise ValueError("Cron must have five fields: minute hour day month weekday.")
+    fields = []
+    for part, (lower, upper) in zip(parts, ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))):
+        values = set()
+        for entry in part.split(','):
+            match = re.fullmatch(r'(\*|\d+|\d+-\d+)(?:/(\d+))?', entry)
+            if not match:
+                raise ValueError("Invalid cron field; use numbers, *, ranges, lists and steps.")
+            base, step_text = match.groups()
+            step = int(step_text or 1)
+            if step < 1 or step > upper - lower + 1:
+                raise ValueError("Invalid cron step.")
+            if base == '*':
+                start, end = lower, upper
+            elif '-' in base:
+                start, end = map(int, base.split('-'))
+            else:
+                start = int(base)
+                end = upper if step_text else start
+            if start < lower or end > upper or start > end:
+                raise ValueError("Cron value is outside the allowed range.")
+            values.update(range(start, end + 1, step))
+        if upper == 7 and 7 in values:
+            values.add(0)
+        fields.append(values)
+    return parts, fields
+
+
+def next_cron(expression: str, *, after=None) -> datetime:
+    """Find the next Warsaw wall time; skip DST gaps and the second fold."""
+    parts, (minutes, hours, days, months, weekdays) = _cron_fields(expression)
+    instant = _utc(after)
+    first_day = instant.astimezone(LOCAL_ZONE).date()
+    for offset in range(366 * 8):
+        date = first_day + timedelta(days=offset)
+        day_match = date.day in days
+        weekday_match = (date.weekday() + 1) % 7 in weekdays
+        if parts[2].startswith('*') or parts[4].startswith('*'):
+            date_matches = day_match and weekday_match
+        else:
+            date_matches = day_match or weekday_match
+        if date.month not in months or not date_matches:
+            continue
+        for hour in sorted(hours):
+            for minute in sorted(minutes):
+                wall = datetime.combine(date, day_time(hour, minute))
+                candidate = wall.replace(tzinfo=LOCAL_ZONE, fold=0).astimezone(timezone.utc)
+                if candidate > instant and candidate.astimezone(LOCAL_ZONE).replace(tzinfo=None) == wall:
+                    return candidate
+    raise ValueError("Cron expression has no matching date within eight years.")
+
+
+def _schedule_next(schedule_type, interval_minutes, daily_at, payload, *, after):
+    expression = payload.get('_cron') if isinstance(payload, dict) else None
+    return (next_cron(expression, after=after) if expression else
+            next_run(schedule_type, interval_minutes, daily_at, after=after))
+
+
 def _utc(value: datetime | int | float | None = None) -> datetime:
     if value is None:
         value = datetime.now(timezone.utc)
@@ -111,7 +175,7 @@ def set_enabled(db_url, schedule_id: str, *, enabled: bool, revision: int, now=N
     try:
         conn.execute("BEGIN")
         row = conn.execute(
-            "SELECT schedule_type,interval_minutes,daily_at,revision,enabled FROM admin_schedules WHERE id=%s FOR UPDATE",
+            "SELECT schedule_type,interval_minutes,daily_at,revision,enabled,payload FROM admin_schedules WHERE id=%s FOR UPDATE",
             (schedule_id,),
         ).fetchone()
         if row is None:
@@ -121,7 +185,8 @@ def set_enabled(db_url, schedule_id: str, *, enabled: bool, revision: int, now=N
             conn.rollback()
             return {"outcome": "conflict", "revision": int(row[3])}
         instant = _utc(now)
-        upcoming = next_run(row[0], row[1], row[2], after=instant) if enabled else None
+        payload = json.loads(row[5]) if isinstance(row[5], str) else (row[5] or {})
+        upcoming = _schedule_next(row[0], row[1], row[2], payload, after=instant) if enabled else None
         changed = conn.execute(
             "UPDATE admin_schedules SET enabled=%s,revision=revision+1,next_run_at=%s,updated_at=%s WHERE id=%s",
             (enabled, upcoming, instant.timestamp(), schedule_id),
@@ -133,6 +198,41 @@ def set_enabled(db_url, schedule_id: str, *, enabled: bool, revision: int, now=N
             raise RuntimeError("Could not record the schedule audit event.")
         conn.commit()
         return {"outcome": "updated", "revision": revision + 1, "enabled": enabled, "changed": changed == 1}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def set_reconcile_cron(db_url, schedule_id: str, *, expression: str, revision: int, now=None) -> dict:
+    if not isinstance(expression, str) or type(revision) is not int or revision < 1:
+        raise ValueError("Provide a cron expression and a valid revision.")
+    expression = ' '.join(expression.split())
+    instant = _utc(now)
+    upcoming = next_cron(expression, after=instant)
+    conn = db.connect(db_url)
+    try:
+        conn.execute('BEGIN')
+        row = conn.execute("SELECT action,payload,revision,enabled FROM admin_schedules WHERE id=%s FOR UPDATE", (schedule_id,)).fetchone()
+        if not row:
+            conn.rollback()
+            return {'outcome': 'not_found'}
+        if row[0] not in {'duplicate_reconcile', 'catalog_full_audit'}:
+            raise ValueError("Cron editing is not available for this schedule.")
+        if int(row[2]) != revision:
+            conn.rollback()
+            return {'outcome': 'conflict', 'revision': int(row[2])}
+        payload = json.loads(row[1]) if isinstance(row[1], str) else (row[1] or {})
+        before = payload.get('_cron')
+        payload['_cron'] = expression
+        conn.execute("UPDATE admin_schedules SET payload=%s,revision=revision+1,next_run_at=%s,updated_at=%s WHERE id=%s",
+                     (json.dumps(payload), upcoming if row[3] else None, instant.timestamp(), schedule_id))
+        from common.admin_audit_events import record_schedule_cron
+        if not record_schedule_cron(conn, schedule_id=schedule_id, before=before, after=expression, revision_before=revision):
+            raise RuntimeError('Could not record the schedule audit event.')
+        conn.commit()
+        return {'outcome': 'updated', 'revision': revision + 1, 'cron_expression': expression}
     except Exception:
         conn.rollback()
         raise
@@ -160,6 +260,7 @@ def list_schedules(db_url) -> list[dict]:
             result.append({"id": row[0], "name": row[1], "action": row[2],
                            "video_count": len(payload.get("video_ids", [])) if row[2] == "availability_check" else 0,
                            "schedule_type": row[4], "interval_minutes": row[5], "daily_at": row[6],
+                           "cron_expression": payload.get('_cron') if row[2] in {'duplicate_reconcile', 'catalog_full_audit'} else None,
                            "timezone": row[7], "enabled": bool(row[8]), "revision": int(row[9]),
                            "next_run_at": _utc(row[10]).isoformat() if row[10] else None,
                            "last_run_at": _utc(row[11]).isoformat() if row[11] else None,
@@ -196,21 +297,22 @@ def dispatch_due_schedules(db_url, *, now=None, limit=20) -> int:
             (instant, max(1, min(int(limit), 100))),
         ).fetchall()
         for schedule_id, action, payload_raw, schedule_type, interval_minutes, daily_at, last_job_id in due:
+            try:
+                payload = json.loads(payload_raw) if payload_raw else {}
+            except (ValueError, TypeError):
+                payload = {}
             active = False
             if last_job_id:
                 job = conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (last_job_id,)).fetchone()
                 active = bool(job and job[0] in {"queued", "processing"})
-            upcoming = next_run(schedule_type, interval_minutes, daily_at, after=instant)
+            upcoming = _schedule_next(schedule_type, interval_minutes, daily_at, payload, after=instant)
             if active:
                 conn.execute(
                     "UPDATE admin_schedules SET next_run_at=%s,last_result='skipped_overlap',updated_at=%s WHERE id=%s",
                     (upcoming, instant.timestamp(), schedule_id),
                 )
                 continue
-            try:
-                payload = json.loads(payload_raw) if payload_raw else {}
-            except (ValueError, TypeError):
-                payload = {}
+            payload.pop('_cron', None)
             payload["_schedule_id"] = schedule_id
             job_id = uuid.uuid4().hex
             epoch = int(instant.timestamp())

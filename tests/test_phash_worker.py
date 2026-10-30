@@ -462,6 +462,19 @@ class JobProcessingHarness(WorkerPatch):
 
 
 class TestJobProcessing(JobProcessingHarness):
+    def test_phash_result_does_not_require_thumbnail(self):
+        self.compute.return_value = {'ok': True, 'fingerprint': 'ff' * 8, 'bytes_read': 42, 'thumbnail': None}
+        phash_worker._process({**JOB, 'job_kind': 'phash'}, self.leader)
+        self.assertIsNone(self.store.call_args[0][5])
+        self.assertEqual(self.queue.successes, [(JOB['id'], 'ff' * 8, 42)])
+
+    def test_thumbnail_result_does_not_write_fingerprint(self):
+        self.compute.return_value = {'ok': True, 'fingerprint': None, 'bytes_read': 42, 'thumbnail': b'jpeg'}
+        phash_worker._process({**JOB, 'job_kind': 'thumbnail'}, self.leader)
+        self.store.assert_not_called()
+        self.assertEqual(self.queue.successes, [(JOB['id'], None, 42)])
+        self.assertEqual(self.connection.commits, 1)
+
     def test_a_healthy_lease_stores_the_fingerprint_and_commits(self):
         self.compute.return_value = {"ok": True, "fingerprint": "ff" * 8,
                                      "bytes_read": 2048, "thumbnail": b"jpeg"}

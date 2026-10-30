@@ -323,6 +323,7 @@ class TestResolverHttpApi(unittest.TestCase):
         ("POST", "/admin/api/v2/quality/acknowledge"),
         ("POST", "/admin/api/v2/quality/reopen"),
         ("POST", "/admin/api/v2/quality/proposals/{proposal_id}/reject"),
+        ("POST", "/admin/api/v2/quality/proposals/{proposal_id}/refresh"),
         ("POST", "/admin/api/v2/maintenance/cache/clear"),
         ("POST", "/admin/api/v2/maintenance/sync"),
         ("POST", "/admin/api/v2/maintenance/jellyfin/refresh"),

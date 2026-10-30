@@ -32,6 +32,7 @@ from common.migrations.m0055_duplicate_reconcile_opt_in import (
 from common.migrations.m0056_performer_alias_canonical_index import (
     current_migration as current_performer_alias_canonical_index,
 )
+from common.migrations.m0057_split_phash_jobs import current_migration as current_split_phash_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ CURRENT_MIGRATIONS: tuple[Migration, ...] = (
     current_duplicate_reconcile_schedule, current_video_visual_duplicates,
     current_video_visual_timestamps, current_video_visual_history, current_telegram_latest_cursor,
     current_duplicate_reconcile_opt_in, current_performer_alias_canonical_index,
+    current_split_phash_jobs,
 )
 MIGRATIONS: tuple[Migration, ...] = (baseline, *CURRENT_MIGRATIONS)
 
@@ -195,7 +197,7 @@ def _migration_plan(
     names_by_version = {record.version: record.name for record in applied}
     baseline_is_applied = (
         names_by_version.get(baseline.version) == baseline.name
-        and INTERIM_BASELINE_VERSION not in applied_versions
+        and names_by_version.get(INTERIM_BASELINE_VERSION) != "0009_baseline"
     )
     has_interim_baseline = (
         INTERIM_BASELINE_VERSION in applied_versions

@@ -12,6 +12,8 @@ assert.match(template, /Remaining counts are estimates because provider eligibil
   'the Enrichment tab must label remaining-work counts as estimates');
 assert.match(template, /href="#quality\?tab=enrichment"[^>]*data-section-tab="enrichment"/,
   'Enrichment must be a bookmarkable Catalog Health tab');
+assert.match(fs.readFileSync('resolver/static/admin-v2/admin-v2.css', 'utf8'), /#qualityEnrichmentPane \.metadata-proposal \{ display: grid;/, 'proposal cards must lay out their contents vertically');
+assert.match(fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8'), /\$\('#qualityAdvanced'\)\.hidden = next\.route === 'quality' && next\.qualityTab === 'enrichment'/, 'audit details must be hidden on the enrichment tab');
 assert.match(template, /id="qualityEnrichmentPane"/,
   'enrichment progress and proposals must share the Catalog Health Enrichment pane');
 assert.match(template, /id="enrichmentFreshnessAnnouncement"[^>]*role="status"[^>]*aria-live="polite"/,
@@ -46,6 +48,7 @@ const document = {
 let requested;
 let getCalls = 0;
 let checkedVideos = 50;
+let attemptTotal = 70;
 let batchLimits = { videos_per_run: 500, pbc_actors_per_run: 50,
   theporndb_actors_per_run: 40, stashdb_actors_per_run: 35 };
 let syncSchedule = { mode: 'interval', daily_at: null, interval_minutes: 60, run_on_startup: false };
@@ -63,11 +66,11 @@ const window = { confirm: () => true, AdminV2: { ...createAdminV2Helpers(documen
   return { ok: true, available: true, catalog: { videos: 10000, performers: 1000 },
     batch_limits: batchLimits,
     sync_schedule: syncSchedule,
-    totals: { attempts: 70, found: 30, no_match: 35, errors: 5, due: 8 },
+    totals: { attempts: attemptTotal, found: 30, no_match: 35, errors: 5, due: 8 },
     sources: [{ entity_type: 'video', source: 'studio_scene', catalog_total: 10000,
-      attempts: checkedVideos, found: 30, no_match: 18, errors: 2, due: 8, remaining: 9958 - (checkedVideos - 50) },
+      attempts: checkedVideos, catalog_checked: checkedVideos, found: 30, no_match: 18, errors: 2, due: 8, remaining: 9958 - (checkedVideos - 50) },
     { entity_type: 'performer', source: 'pbc', catalog_total: 1000,
-      attempts: 50, found: 30, no_match: 18, errors: 2, due: 0, remaining: 950 },
+      attempts: 50, catalog_checked: 50, found: 30, no_match: 18, errors: 2, due: 0, remaining: 950 },
     { entity_type: 'video', source: '  LUKAYAN_FINGERPRINT ', catalog_total: 10000,
       attempts: 12, found: 4, no_match: 7, errors: 1, due: 8, remaining: 9988 },
     { entity_type: 'video', source: 'telegram_fingerprint', catalog_total: 10000,
@@ -112,21 +115,25 @@ vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/enrichment.js', 'ut
   const row = elements.get('#enrichmentRows').children[0];
   assert.match(row.children[0].children[0].textContent, /Videos · Studio catalogs \+ ThePornDB/);
   assert.match(elements.get('#enrichmentRows').children[2].children[0].children[0].textContent,
-    /^Videos · Telegram scene lookup$/);
+    /^Videos · Scene fingerprint · legacy$/);
   assert.match(elements.get('#enrichmentRows').children[3].children[0].children[0].textContent,
-    /^Videos · Telegram scene lookup$/);
+    /^Videos · Scene fingerprint$/);
   assert.match(elements.get('#enrichmentRows').children[4].children[0].children[0].textContent,
-    /^Videos · Telegram scene lookup$/);
+    /^Videos · OSHASH fingerprint · legacy$/);
   assert.match(elements.get('#enrichmentRows').children[5].children[0].children[0].textContent,
-    /^Videos · Telegram scene lookup$/);
+    /^Videos · OSHASH fingerprint$/);
   for (const index of [2, 3, 4, 5]) {
     assert.doesNotMatch(elements.get('#enrichmentRows').children[index].children[0].children[0].textContent,
       /(?:lukayan|telegram)_/i);
   }
   assert.strictEqual(row.children[1].value, 50);
-  assert.match(row.children[2].textContent, /9,958 remaining · about 20 batches at configured limit/);
+  assert.match(row.children[2].textContent, /9,958 estimated remaining · about 20 batches at configured limit/);
   assert.match(elements.get('#enrichmentRows').children[1].children[2].textContent,
-    /950 remaining · about 19 batches at configured limit/);
+    /950 estimated remaining · about 19 batches at configured limit/);
+  attemptTotal = 71;
+  await pollCallback();
+  assert.match(elements.get('#enrichmentFeedback').textContent, /71 source records tracked/,
+    'background refresh updates summary counts before an action message is pinned');
   await elements.get('#enrichmentScan').listeners.click({ currentTarget: elements.get('#enrichmentScan') });
   assert.deepEqual(calls, [{ url: '/admin/api/v2/metadata/enrichment/scan', body: {} }]);
   const feedback = elements.get('#enrichmentFeedback');
@@ -154,9 +161,8 @@ vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/enrichment.js', 'ut
   assert.strictEqual(pollInterval, 15000);
   await navigationListener({ detail: { route: 'quality', tab: 'enrichment' } });
   assert.strictEqual(pollInterval, 15000, 'the Enrichment tab starts bounded progress polling');
-  feedback.replaceChildren(new Element('span'), new Element('a'));
-  feedback.children[0].textContent = 'Metadata scan is queued (job metadata-job-1). ';
-  feedback.children[1].textContent = 'Open task details';
+  responseJobId = 'metadata-job-1'; responseJobState = 'queued';
+  await elements.get('#enrichmentScan').listeners.click({ currentTarget: elements.get('#enrichmentScan') });
   const beforePoll = getCalls;
   checkedVideos = 51;
   await pollCallback();

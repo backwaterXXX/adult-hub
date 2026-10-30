@@ -143,7 +143,7 @@
       title: 'Title', plot: 'Description', studio: 'Studio', performers: 'Cast', tags: 'Tags',
       date_released: 'Release date', operation_type: 'Operation', requested_count: 'Selected items',
       job_count: 'Tasks created', reused: 'Existing task reused', state: 'Plan state',
-      action: 'Scheduled action', schedule_type: 'Schedule type', interval_minutes: 'Interval (minutes)',
+      action: 'Scheduled action', schedule_type: 'Schedule type', interval_minutes: 'Interval (minutes)', cron_expression: 'Cron expression',
       daily_at: 'Daily time', timezone: 'Time zone', enabled: 'Enabled', revision: 'Revision',
       video_count: 'Scheduled videos', bio: 'Biography', photo: 'Artwork', aliases: 'Aliases',
     };

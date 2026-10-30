@@ -11,6 +11,8 @@ from admin_v2_jobs import JOB_ACTIONS
 
 
 _STATES = {"", "active", "queued", "processing", "done", "failed", "cancelled"}
+_VIDEO_ACTIONS = {"phash_generation": "phash", "thumbnail_generation": "thumbnail",
+                  "phash_thumbnail_legacy": "combined"}
 _PHASH_ERRORS = {
     "attempts_exhausted", "worker_restarted", "video_missing", "file_missing",
     "unsupported_format", "decode_failed", "timeout", "storage_failed",
@@ -20,7 +22,8 @@ _PHASH_ERRORS = {
 }
 
 
-def _where(state: str, action: str | None = None, job_id: str | None = None):
+def _where(state: str, action: str | None = None, job_id: str | None = None,
+           action_column: str = "action"):
     clauses, params = [], []
     if state == "active":
         clauses.append("state IN ('queued','processing')")
@@ -28,7 +31,7 @@ def _where(state: str, action: str | None = None, job_id: str | None = None):
         clauses.append("state=%s")
         params.append(state)
     if action:
-        clauses.append("action=%s")
+        clauses.append(f"{action_column}=%s")
         params.append(action)
     if job_id:
         clauses.append("id=%s")
@@ -37,8 +40,8 @@ def _where(state: str, action: str | None = None, job_id: str | None = None):
 
 
 def _count(conn, table: str, state: str, action: str | None = None,
-           job_id: str | None = None) -> int:
-    where, params = _where(state, action, job_id)
+           job_id: str | None = None, action_column: str = "action") -> int:
+    where, params = _where(state, action, job_id, action_column)
     return int(conn.execute(f"SELECT count(*) FROM {table}{where}", params).fetchone()[0])
 
 
@@ -56,17 +59,17 @@ def _list_tasks(db_url: str | None, *, queue: str, state: str, action: str,
         if "video_phash_jobs" not in tables or "videos" not in tables:
             return {"available": False, "tasks": [], "total": None, "active_total": None}
 
-        include_jobs = queue in {"all", "jobs"} and action != "phash_generation"
-        include_phash = queue in {"all", "phash"} and action in {"", "phash_generation"}
-        jobs_action = action if include_jobs and action != "phash_generation" else None
-        phash_action = None
+        include_jobs = queue in {"all", "jobs"} and action not in _VIDEO_ACTIONS
+        include_phash = queue in {"all", "phash"} and action in {"", *_VIDEO_ACTIONS}
+        jobs_action = action if include_jobs else None
+        phash_action = _VIDEO_ACTIONS.get(action)
         job_where, job_params = _where(state, jobs_action, job_id) if include_jobs else (" WHERE false", [])
-        phash_where, phash_params = _where(state, phash_action, job_id) if include_phash else (" WHERE false", [])
+        phash_where, phash_params = _where(state, phash_action, job_id, "job_kind") if include_phash else (" WHERE false", [])
 
         jobs_total = _count(conn, "video_duplicate_jobs", state, jobs_action, job_id) if include_jobs else 0
-        phash_total = _count(conn, "video_phash_jobs", state, None, job_id) if include_phash else 0
+        phash_total = _count(conn, "video_phash_jobs", state, phash_action, job_id, "job_kind") if include_phash else 0
         jobs_active = _count(conn, "video_duplicate_jobs", "active", jobs_action, job_id) if include_jobs else 0
-        phash_active = _count(conn, "video_phash_jobs", "active", None, job_id) if include_phash else 0
+        phash_active = _count(conn, "video_phash_jobs", "active", phash_action, job_id, "job_kind") if include_phash else 0
 
         branches = []
         if include_jobs:
@@ -119,7 +122,7 @@ def _list_tasks(db_url: str | None, *, queue: str, state: str, action: str,
                 error_code = item.get("error_code")
                 phash[str(item["id"])] = {
                     "queue": "phash", "id": str(item["id"]),
-                    "action": "phash_generation", "state": str(item["state"]),
+                    "action": {value: key for key, value in _VIDEO_ACTIONS.items()}.get(item.get("job_kind"), "phash_thumbnail_legacy"), "state": str(item["state"]),
                     "created_at": item.get("created_at"), "updated_at": item.get("updated_at"),
                     "title": item.get("title"), "video_id": str(item["video_id"]),
                     "attempts": int(item.get("attempts") or 0),
@@ -160,9 +163,9 @@ def build_router(admin):
             return admin.JSONResponse({"error": "Invalid task queue filter."}, status_code=400)
         if state not in _STATES:
             return admin.JSONResponse({"error": "Invalid task state filter."}, status_code=400)
-        if action and action != "phash_generation" and action not in JOB_ACTIONS:
+        if action and action not in _VIDEO_ACTIONS and action not in JOB_ACTIONS:
             return admin.JSONResponse({"error": "Invalid task action filter."}, status_code=400)
-        if action == "phash_generation" and queue == "jobs":
+        if action in _VIDEO_ACTIONS and queue == "jobs":
             return {"ok": True, "available": True, "tasks": [], "total": 0,
                     "active_total": 0, "offset": offset, "limit": limit, "truncated": False}
         if job_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", job_id):

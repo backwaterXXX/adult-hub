@@ -370,6 +370,21 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
 .operation-history-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .operation-history-row p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
 .operation-history-row small { color: var(--subtle); }
+.schedule-edit-wrap { margin-top: 12px; }
+.schedule-edit-toggle { min-height: 30px; }
+.schedule-editor { display: grid; gap: 14px; margin-top: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); }
+.schedule-editor[hidden], .schedule-editor [hidden] { display: none; }
+.schedule-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.schedule-timezone { color: var(--muted); font-size: 11px; }
+.schedule-editor-fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.schedule-field { display: grid; gap: 6px; flex: 1 1 160px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.schedule-field input, .schedule-field select { width: 100%; min-width: 0; }
+.schedule-field-cron { flex-basis: 240px; }
+.schedule-expression { color: var(--subtle); font-family: monospace; font-size: 11px; overflow-wrap: anywhere; }
+.schedule-preview { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.schedule-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#schedulesRows .operation-history-row > div { min-width: 0; flex: 1 1 auto; }
+@media (max-width: 640px) { #schedulesRows .operation-history-row { align-items: stretch; flex-direction: column; } }
 .restore-test-reason { display: block; margin-top: 6px; color: var(--warning); }
 .linkcheck-samples { margin: 0 17px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .linkcheck-samples > summary { padding: 12px; cursor: pointer; color: var(--text); font-size: 12px; font-weight: 650; }
@@ -752,7 +767,7 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
 .enrichment-list-heading { margin: 0 17px 12px; }
 .enrichment-list-heading h3 { margin: 0; font-size: 15px; }
 .enrichment-list-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
-#qualityEnrichmentPane .enrichment-source-list { margin: 0 17px; gap: 10px; }
+#qualityEnrichmentPane .enrichment-source-list { grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); margin: 0 17px; gap: 10px; }
 #qualityEnrichmentPane .enrichment-source-row { gap: 10px; padding: 15px; }
 #qualityEnrichmentPane .enrichment-source-heading { flex-wrap: wrap; font-size: 14px; }
 #qualityEnrichmentPane .enrichment-source-heading span, #qualityEnrichmentPane .enrichment-source-detail { font-size: 12px; line-height: 1.6; }
@@ -762,7 +777,15 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
 #qualityEnrichmentPane .metadata-proposals { padding: 20px 17px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 #qualityEnrichmentPane .metadata-proposals .catalog-feedback { font-size: 12px; line-height: 1.5; }
 #qualityEnrichmentPane .metadata-proposals .operation-history-list { padding: 0; }
-#qualityEnrichmentPane .metadata-proposal { padding: 16px; }
+#qualityEnrichmentPane .metadata-proposal { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-items: start; padding: 16px; }
+#qualityEnrichmentPane .metadata-proposal > * { min-width: 0; }
+#qualityEnrichmentPane .metadata-proposal .catalog-feedback { padding: 0; margin: 0; }
+#qualityEnrichmentPane .metadata-proposal-fields { margin: 0; }
+#qualityEnrichmentPane .metadata-edit-field { margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-raised); }
+#qualityEnrichmentPane .metadata-edit-field > label:first-child { font-size: 13px; }
+#qualityEnrichmentPane .metadata-proposal .quality-inline-link { margin: 0; }
+#qualityEnrichmentPane .metadata-proposal .diagnostics-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#qualityEnrichmentPane .metadata-proposal .catalog-state { min-height: 0; align-items: flex-start; padding: 10px; text-align: left; }
 @media (max-width: 700px) { .enrichment-guide { grid-template-columns: 1fr; } }
 
 /* Keep the selection control next to the names it selects. */

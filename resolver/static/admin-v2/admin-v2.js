@@ -231,6 +231,7 @@
     $('#qualityIssuesPane').hidden = next.route === 'quality' && next.qualityTab !== 'issues';
     $('#qualityEnrichmentPane').hidden = next.route === 'quality' && next.qualityTab !== 'enrichment';
     $('#qualityOverview').hidden = next.route === 'quality' && next.qualityTab === 'enrichment';
+    $('#qualityAdvanced').hidden = next.route === 'quality' && next.qualityTab === 'enrichment';
     $$('.performer-section-tabs').forEach(nav => { nav.hidden = next.primaryRoute !== 'performers'; });
     // The legacy Organize tabs remain available on the legacy route only.
     // Canonical Performers and Catalog Health provide their own tab bars.

@@ -241,9 +241,9 @@ def backfill_telegram_fingerprints(conn: Any, media_dir: Path, limit: int=20, sl
     return implementation(conn, media_dir, **kwargs)
 
 
-def _update_media_files(media_dir: Path, video_id: str, matched: ScrapedScene, performers: List[str], http_client: Optional[Any]=None, conn: Optional[Any]=None) -> None:
+def _update_media_files(media_dir: Path, video_id: str, matched: ScrapedScene, performers: List[str], http_client: Optional[Any]=None, conn: Optional[Any]=None, strict: bool=False) -> None:
     try:
         from .scene_scraper_backfill import _update_media_files as implementation
     except ImportError:
         from scene_scraper_backfill import _update_media_files as implementation
-    return implementation(media_dir, video_id, matched, performers, http_client, conn)
+    return implementation(media_dir, video_id, matched, performers, http_client, conn, strict)

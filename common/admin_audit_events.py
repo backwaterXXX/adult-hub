@@ -15,7 +15,7 @@ SOURCE_FIELDS = {
 }
 GENERIC_SOURCE_FIELDS = {"enabled", "stream_mode", "max_pages", "sections"}
 OPERATION_FIELDS = {"operation_type", "requested_count", "job_count", "reused", "state"}
-SCHEDULE_FIELDS = {"action", "schedule_type", "interval_minutes", "daily_at", "timezone",
+SCHEDULE_FIELDS = {"action", "schedule_type", "interval_minutes", "daily_at", "timezone", "cron_expression",
                    "enabled", "revision", "video_count"}
 CHANGE_EVENT_TYPES = {"metadata_update", "source_settings_update", "admin_operation_queued",
                       "schedule_created", "schedule_enabled", "performer_profile_update"}
@@ -219,6 +219,14 @@ def record_schedule_enabled(conn, *, schedule_id: str, before: bool,
         changes={"enabled": {"before": before, "after": after},
                  "revision": {"before": revision_before, "after": revision_after}},
     )
+
+
+def record_schedule_cron(conn, *, schedule_id: str, before: str | None, after: str,
+                         revision_before: int) -> bool:
+    return _insert_change(conn, event_key=f"schedule:{schedule_id}:cron:{revision_before + 1}",
+                          event_type="schedule_enabled", object_type="schedule", object_id=schedule_id,
+                          changes={"cron_expression": {"before": before, "after": after},
+                                   "revision": {"before": revision_before, "after": revision_before + 1}})
 
 
 def _safe_source_path(path: list[str], channel_aliases: dict[str, str]) -> list[str] | None:

@@ -31,9 +31,13 @@ def enqueue(db_url: str | None, *, video_id: str, duration_us: int,
 
         row = conn.execute(
             "SELECT * FROM video_phash_jobs WHERE video_id=%s AND algorithm_version=%s "
-            "AND decoder_profile=%s FOR UPDATE",
+            "AND decoder_profile=%s AND job_kind='combined' AND state IN ('queued','processing') FOR UPDATE",
             (video_id, algorithm_version, decoder_profile),
         ).fetchone()
+        # Jobs already running at upgrade retain their original combined behavior.
+        if row is not None:
+            conn.commit()
+            return {"outcome": "existing", "job": dict(row)}
         current = conn.execute(
             """SELECT p.fingerprint, f.fingerprint, t.video_id
                FROM video_phash_provenance p
@@ -42,66 +46,65 @@ def enqueue(db_url: str | None, *, video_id: str, duration_us: int,
                WHERE p.video_id=%s AND p.generator_version=%s""",
             (video_id, algorithm_version + ":" + decoder_profile),
         ).fetchone()
-        complete = bool(current and current[0] == current[1] and current[2] is not None)
+        fingerprint_ready = bool(current and current[0] == current[1])
+        thumbnail_ready = conn.execute(
+            "SELECT 1 FROM video_phash_thumbnails WHERE video_id=%s", (video_id,),
+        ).fetchone() is not None
 
-        if row is not None and row["state"] in {"queued", "processing"} and not complete:
-            conn.commit()
-            return {"outcome": "existing", "job": dict(row)}
-        if complete:
+        rows = {}
+        outcomes = {}
+        for kind, complete in (("phash", fingerprint_ready), ("thumbnail", thumbnail_ready)):
+            row = conn.execute(
+                "SELECT * FROM video_phash_jobs WHERE video_id=%s AND algorithm_version=%s "
+                "AND decoder_profile=%s AND job_kind=%s FOR UPDATE",
+                (video_id, algorithm_version, decoder_profile, kind),
+            ).fetchone()
             if row is None:
-                job_id = "p-" + uuid.uuid4().hex
                 row = conn.execute(
                     """INSERT INTO video_phash_jobs
                        (id,video_id,algorithm_version,decoder_profile,duration_us,submitted_by_user_id,
-                        state,attempts,fingerprint,created_at,updated_at,finished_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,'done',0,%s,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+                        job_kind,state,fingerprint,finished_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE NULL END)
                        RETURNING *""",
-                    (job_id, video_id, algorithm_version, decoder_profile, duration_us, user_id, current[0]),
+                    (("p-" if kind == "phash" else "t-") + uuid.uuid4().hex, video_id,
+                     algorithm_version, decoder_profile, duration_us, user_id, kind,
+                     'done' if complete else 'queued', current[0] if complete and kind == 'phash' else None,
+                     complete),
                 ).fetchone()
-            elif row["state"] != "done":
+                outcome = 'complete' if complete else 'queued'
+            elif complete:
+                if row['state'] != 'done':
+                    row = conn.execute(
+                        """UPDATE video_phash_jobs SET state='done',fingerprint=%s,error_code=NULL,error_detail='',
+                           lease_token=NULL,lease_until=NULL,processing_started_at=NULL,
+                           finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=%s RETURNING *""",
+                        (current[0] if kind == 'phash' else None, row['id']),
+                    ).fetchone()
+                outcome = 'complete'
+            elif row['state'] == 'done' or (row['state'] == 'failed'
+                    and row['error_code'] == 'daily_transfer_budget_exhausted'
+                    and (timestamp_seconds(row['updated_at']) or 0) < current_local_day_start_timestamp()):
                 row = conn.execute(
-                    """UPDATE video_phash_jobs SET state='done',fingerprint=%s,error_code=NULL,error_detail='',
-                       processing_duration_ms=processing_duration_ms + CASE WHEN processing_started_at IS NOT NULL
-                           THEN GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP-processing_started_at))*1000)::BIGINT)
-                           ELSE 0 END,processing_started_at=NULL,
-                       lease_token=NULL,lease_until=NULL,finished_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
-                       WHERE id=%s RETURNING *""", (current[0], row["id"]),
+                    """UPDATE video_phash_jobs SET state='queued',duration_us=%s,attempts=0,
+                       available_at=CURRENT_TIMESTAMP,lease_token=NULL,lease_until=NULL,
+                       fingerprint=NULL,bytes_read=NULL,error_code=NULL,error_detail='',finished_at=NULL,
+                       updated_at=CURRENT_TIMESTAMP WHERE id=%s RETURNING *""",
+                    (duration_us, row['id']),
                 ).fetchone()
-            conn.commit()
-            return {"outcome": "complete", "job": dict(row)}
-
-        retry_after_budget_reset = False
-        if row is not None and row["state"] == "failed" and row["error_code"] == "daily_transfer_budget_exhausted":
-            # The shared adapter reports timestamptz columns as epoch seconds,
-            # so normalize the persisted failure time before comparing it with
-            # the local budget-day boundary.
-            failed_at = timestamp_seconds(row["updated_at"])
-            retry_after_budget_reset = (
-                failed_at is not None and failed_at < current_local_day_start_timestamp()
-            )
-
-        if row is not None and (row["state"] == "done" or retry_after_budget_reset):
-            row = conn.execute(
-                """UPDATE video_phash_jobs SET state='queued',duration_us=%s,attempts=0,
-                   available_at=CURRENT_TIMESTAMP,lease_token=NULL,lease_until=NULL,
-                   fingerprint=NULL,bytes_read=NULL,error_code=NULL,error_detail='',finished_at=NULL,
-                   updated_at=CURRENT_TIMESTAMP WHERE id=%s RETURNING *""",
-                (duration_us, row["id"]),
-            ).fetchone()
-        elif row is not None:
-            # Failed and cancelled jobs require an explicit admin retry.
-            conn.commit()
-            return {"outcome": "terminal", "job": dict(row)}
-        else:
-            row = conn.execute(
-                """INSERT INTO video_phash_jobs
-                   (id,video_id,algorithm_version,decoder_profile,duration_us,submitted_by_user_id,state)
-                   VALUES (%s,%s,%s,%s,%s,%s,'queued') RETURNING *""",
-                ("p-" + uuid.uuid4().hex, video_id, algorithm_version, decoder_profile,
-                 duration_us, user_id),
-            ).fetchone()
+                outcome = 'queued'
+            else:
+                outcome = 'existing' if row['state'] in {'queued', 'processing'} else 'terminal'
+            rows[kind] = dict(row)
+            outcomes[kind] = outcome
         conn.commit()
-        return {"outcome": "queued", "job": dict(row)}
+        # Return a real task ID for old clients, while exposing the independent
+        # thumbnail task to newer clients.
+        primary = 'phash' if outcomes['phash'] != 'complete' else 'thumbnail'
+        outcome = outcomes[primary]
+        if outcomes['phash'] == outcomes['thumbnail'] == 'complete':
+            primary, outcome = 'phash', 'complete'
+        return {'outcome': outcome, 'job': rows[primary], 'phash_job': rows['phash'],
+                'thumbnail_job': rows['thumbnail']}
     except Exception:
         conn.rollback()
         raise
@@ -112,11 +115,8 @@ def enqueue(db_url: str | None, *, video_id: str, duration_us: int,
 def _public_job(conn, row) -> dict:
     item = dict(row)
     item["thumbnail_ready"] = conn.execute(
-        """SELECT 1 FROM video_phash_provenance p
-           JOIN video_fingerprints f ON f.video_id=p.video_id AND f.algorithm='PHASH'
-           JOIN video_phash_thumbnails t ON t.video_id=p.video_id
-           WHERE p.video_id=%s AND p.generator_version=%s AND p.fingerprint=f.fingerprint""",
-        (item["video_id"], item["algorithm_version"] + ":" + item["decoder_profile"]),
+        "SELECT 1 FROM video_phash_thumbnails WHERE video_id=%s",
+        (item["video_id"],),
     ).fetchone() is not None
     item.pop("submitted_by_user_id", None)
     item.pop("lease_token", None)

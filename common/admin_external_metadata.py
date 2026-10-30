@@ -23,24 +23,39 @@ def enrichment_status(db_url: str | None) -> dict:
                 ) AS performers
         """).fetchone()
         rows = conn.execute("""
-            SELECT entity_type,source,count(*)::bigint AS attempts,
-                   count(*) FILTER (WHERE outcome='found')::bigint AS found,
-                   count(*) FILTER (WHERE outcome='no_match')::bigint AS no_match,
-                   count(*) FILTER (WHERE outcome='error')::bigint AS errors,
-                   count(*) FILTER (WHERE next_attempt_at<=CURRENT_TIMESTAMP)::bigint AS due,
-                   max(extract(epoch FROM last_attempt_at)) AS last_attempt_at
-            FROM external_metadata_attempts
-            GROUP BY entity_type,source
-            ORDER BY entity_type,source
+            WITH performers AS (
+                SELECT DISTINCT lower(trim(actor)) AS name
+                FROM videos v
+                CROSS JOIN LATERAL jsonb_array_elements_text(
+                    CASE WHEN jsonb_typeof(v.performers)='array' THEN v.performers ELSE '[]'::jsonb END
+                ) AS actors(actor)
+                WHERE trim(actor)<>''
+                  AND lower(trim(actor)) NOT IN ('fucked','fuck','fucking','fucker')
+                  AND lower(trim(actor)) !~ '\\.(mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts)$'
+            )
+            SELECT a.entity_type,a.source,count(*)::bigint AS attempts,
+                   count(*) FILTER (WHERE a.outcome='found')::bigint AS found,
+                   count(*) FILTER (WHERE a.outcome='no_match')::bigint AS no_match,
+                   count(*) FILTER (WHERE a.outcome='error')::bigint AS errors,
+                   count(*) FILTER (WHERE a.next_attempt_at<=CURRENT_TIMESTAMP)::bigint AS due,
+                   max(extract(epoch FROM a.last_attempt_at)) AS last_attempt_at,
+                   count(*) FILTER (WHERE v.id IS NOT NULL OR p.name IS NOT NULL)::bigint AS catalog_checked,
+                   count(*) FILTER (WHERE (v.id IS NOT NULL OR p.name IS NOT NULL)
+                                    AND a.next_attempt_at<=CURRENT_TIMESTAMP)::bigint AS catalog_due
+            FROM external_metadata_attempts a
+            LEFT JOIN videos v ON a.entity_type='video' AND v.id=a.entity_key AND v.provider='telegram'
+            LEFT JOIN performers p ON a.entity_type='performer' AND p.name=a.entity_key
+            GROUP BY a.entity_type,a.source
+            ORDER BY a.entity_type,a.source
         """).fetchall()
         sources = []
-        for entity_type, source, attempts, found, no_match, errors, due, last_attempt_at in rows:
+        for entity_type, source, attempts, found, no_match, errors, due, last_attempt_at, catalog_checked, catalog_due in rows:
             sources.append({
                 "entity_type": str(entity_type), "source": str(source),
                 "catalog_total": int(catalog[0] if entity_type == "video" else catalog[1]),
-                "attempts": int(attempts), "found": int(found),
+                "attempts": int(attempts), "catalog_checked": int(catalog_checked), "catalog_due": int(catalog_due), "found": int(found),
                 "no_match": int(no_match), "errors": int(errors), "due": int(due),
-                "remaining": max(0, int(catalog[0] if entity_type == "video" else catalog[1]) - int(attempts)) + int(due),
+                "remaining": max(0, int(catalog[0] if entity_type == "video" else catalog[1]) - int(catalog_checked)) + int(catalog_due),
                 "last_attempt_at": float(last_attempt_at) if last_attempt_at is not None else None,
             })
         totals = {

@@ -14,6 +14,8 @@
   let schedulesActive = false;
   let pollTimer = null;
   let focusedScheduleId = '';
+  let editingScheduleId = '';
+  let closeActiveEditor = null;
   function timeNode(value) {
     const date = value ? new Date(value) : null;
     if (!date || Number.isNaN(date.getTime())) return node('span', '', '—');
@@ -23,6 +25,8 @@
   }
 
   async function load({ silent = false } = {}) {
+    if (silent && editingScheduleId) return null;
+    if (!silent && closeActiveEditor) closeActiveEditor();
     const sequence = ++loadSeq;
     const feedback = $('#schedulesFeedback');
     if (!silent) feedback.textContent = 'Loading schedules…';
@@ -44,7 +48,7 @@
         const copy = node('div');
         copy.append(node('strong', '', `${item.name} · ${actions[item.action] || item.action}`));
         copy.append(node('small', '', 'Admin schedule'));
-        const cadence = item.schedule_type === 'daily' ? `Daily at ${item.daily_at} Europe/Warsaw` : `Every ${item.interval_minutes} minutes`;
+        const cadence = item.cron_expression ? `Cron: ${item.cron_expression} Europe/Warsaw` : item.schedule_type === 'daily' ? `Daily at ${item.daily_at} Europe/Warsaw` : `Every ${item.interval_minutes} minutes`;
         const nextRun = node('p');
         nextRun.append(node('span', '', `${cadence} · Next run `), timeNode(item.next_run_at));
         copy.append(nextRun);
@@ -53,6 +57,9 @@
         lastRun.append(node('span', '', 'Last run '), timeNode(item.last_run_at),
           node('span', '', ` · Result: ${last}${item.video_count ? ` · ${item.video_count} video IDs` : ''}`));
         copy.append(lastRun);
+        if (['duplicate_reconcile', 'catalog_full_audit'].includes(item.action)) {
+          copy.append(makeScheduleEditor(item, feedback));
+        }
         const jobId = typeof item.last_job_id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(item.last_job_id)
           ? item.last_job_id : '';
         if (jobId) {
@@ -109,6 +116,126 @@
     }
   }
 
+  function makeScheduleEditor(item, feedback) {
+    const wrap = node('div', 'schedule-edit-wrap');
+    const edit = node('button', 'button button-quiet schedule-edit-toggle', 'Edit schedule');
+    edit.type = 'button'; edit.setAttribute('aria-expanded', 'false');
+    const editor = node('div', 'schedule-editor'); editor.hidden = true;
+    const heading = node('div', 'schedule-editor-heading');
+    heading.append(node('strong', '', 'Schedule'), node('span', 'schedule-timezone', 'Europe/Warsaw'));
+    const fields = node('div', 'schedule-editor-fields');
+    const frequencyLabel = node('label', 'schedule-field', 'Frequency');
+    const frequency = node('select');
+    for (const [value, label] of [['15', 'Every 15 minutes'], ['60', 'Every hour'], ['daily', 'Daily'], ['weekly', 'Weekly'], ['custom', 'Custom cron']]) {
+      const option = node('option', '', label); option.value = value; frequency.append(option);
+    }
+    frequencyLabel.append(frequency);
+    const timeLabel = node('label', 'schedule-field', 'Time');
+    const time = node('input'); time.type = 'time'; time.value = '03:00'; timeLabel.append(time);
+    const dayLabel = node('label', 'schedule-field', 'Day');
+    const day = node('select');
+    ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].forEach((label, index) => {
+      const option = node('option', '', label); option.value = String(index); day.append(option);
+    });
+    day.value = '1'; dayLabel.append(day);
+    const cronLabel = node('label', 'schedule-field schedule-field-cron', 'Cron expression');
+    const cron = node('input'); cron.type = 'text'; cron.maxLength = 100; cron.placeholder = 'minute hour day month weekday';
+    cronLabel.append(cron);
+    fields.append(frequencyLabel, timeLabel, dayLabel, cronLabel);
+    const initial = item.cron_expression || (item.schedule_type === 'daily' && /^\d\d:\d\d$/.test(item.daily_at || '')
+      ? `${Number(item.daily_at.slice(3))} ${Number(item.daily_at.slice(0, 2))} * * *`
+      : item.schedule_type === 'interval' && item.interval_minutes > 0 && 60 % item.interval_minutes === 0
+        ? `*/${item.interval_minutes} * * * *` : '');
+    cron.value = initial;
+    let match;
+    if (initial === '*/15 * * * *') frequency.value = '15';
+    else if (initial === '0 * * * *' || initial === '*/60 * * * *') frequency.value = '60';
+    else if ((match = /^(\d{1,2}) (\d{1,2}) \* \* (\*|[0-6])$/.exec(initial))) {
+      time.value = `${match[2].padStart(2, '0')}:${match[1].padStart(2, '0')}`;
+      frequency.value = match[3] === '*' ? 'daily' : 'weekly';
+      if (match[3] !== '*') day.value = match[3];
+    } else frequency.value = 'custom';
+    const expression = node('div', 'schedule-expression');
+    const preview = node('div', 'schedule-preview', 'Choose a frequency to preview upcoming runs.');
+    preview.setAttribute('role', 'status');
+    const actions = node('div', 'schedule-editor-actions');
+    const save = node('button', 'button button-primary', 'Save schedule'); save.type = 'button'; save.disabled = true;
+    const cancel = node('button', 'button button-quiet', 'Cancel'); cancel.type = 'button';
+    actions.append(save, cancel);
+    editor.append(heading, fields, expression, preview, actions);
+    wrap.append(edit, editor);
+    let timer = null, sequence = 0, valid = '';
+    function currentExpression() {
+      if (frequency.value === '15') return '*/15 * * * *';
+      if (frequency.value === '60') return '0 * * * *';
+      if (frequency.value === 'custom') return cron.value.trim();
+      if (!/^\d\d:\d\d$/.test(time.value)) return '';
+      const [hour, minute] = time.value.split(':').map(Number);
+      return `${minute} ${hour} * * ${frequency.value === 'weekly' ? day.value : '*'}`;
+    }
+    async function previewExpression(value, current) {
+      try {
+        const result = await window.AdminV2.getJson(`${endpoint}/cron-preview?expression=${encodeURIComponent(value)}`);
+        if (current !== sequence || editor.hidden) return;
+        if (!Array.isArray(result.next_runs) || !result.next_runs.length) throw new Error('No upcoming runs.');
+        preview.replaceChildren(node('span', '', 'Next runs: '));
+        result.next_runs.forEach((value, index) => {
+          if (index) preview.append(node('span', '', ' · '));
+          preview.append(timeNode(value));
+        });
+        valid = value; save.disabled = false;
+      } catch (error) {
+        if (current !== sequence || editor.hidden) return;
+        preview.textContent = `Check the schedule: ${error.message}`;
+        save.disabled = true;
+      }
+    }
+    function update() {
+      timeLabel.hidden = !['daily', 'weekly'].includes(frequency.value);
+      dayLabel.hidden = frequency.value !== 'weekly';
+      cronLabel.hidden = frequency.value !== 'custom';
+      const value = currentExpression(); expression.textContent = value ? `Cron · ${value}` : 'Enter a cron expression.';
+      valid = ''; save.disabled = true; sequence += 1;
+      if (timer !== null) clearTimeout(timer);
+      if (!value) { preview.textContent = 'Enter a valid schedule.'; return; }
+      preview.textContent = 'Checking upcoming runs…';
+      const current = sequence;
+      timer = setTimeout(() => previewExpression(value, current), 250);
+    }
+    function close() {
+      editor.hidden = true; edit.setAttribute('aria-expanded', 'false');
+      if (editingScheduleId === item.id) editingScheduleId = '';
+      if (closeActiveEditor === close) closeActiveEditor = null;
+      sequence += 1; if (timer !== null) clearTimeout(timer);
+    }
+    edit.addEventListener('click', () => {
+      if (!editor.hidden) { close(); return; }
+      if (closeActiveEditor) closeActiveEditor();
+      closeActiveEditor = close; editingScheduleId = item.id; editor.hidden = false; edit.setAttribute('aria-expanded', 'true'); update();
+    });
+    cancel.addEventListener('click', close);
+    frequency.addEventListener('change', update); time.addEventListener('input', update);
+    day.addEventListener('change', update); cron.addEventListener('input', update);
+    save.addEventListener('click', async () => {
+      const value = currentExpression();
+      if (!valid || valid !== value) return;
+      save.disabled = true;
+      [frequency, time, day, cron, cancel, edit].forEach(control => { control.disabled = true; });
+      try {
+        await window.AdminV2.postJson(`${endpoint}/${encodeURIComponent(item.id)}/cron`,
+          { cron_expression: value, revision: item.revision });
+        close(); const refreshed = await load();
+        feedback.textContent = refreshed === false ? 'Schedule saved, but the list could not be refreshed.' : 'Schedule updated.';
+      } catch (error) {
+        preview.textContent = `Could not save schedule. ${error.message}`; save.disabled = false;
+        [frequency, time, day, cron, cancel, edit].forEach(control => { control.disabled = false; });
+      }
+    });
+    return wrap;
+  }
+
+  $('#scheduleFilter')?.addEventListener('change', () => load());
+
   function updateForm() {
     $('#scheduleDailyField').hidden = $('#scheduleType').value !== 'daily';
     $('#scheduleIntervalField').hidden = $('#scheduleType').value !== 'interval';
@@ -149,7 +276,6 @@
   $('#scheduleType').addEventListener('change', updateForm);
   $('#scheduleAction').addEventListener('change', updateForm);
   $('#scheduleCreateForm').addEventListener('submit', create);
-  $('#scheduleFilter')?.addEventListener('change', () => load());
   $('#schedulesRefresh').addEventListener('click', load);
   function syncSchedules(route) {
     schedulesActive = route === 'jobs' && new URLSearchParams(location.hash.split('?')[1] || '').get('tab') === 'schedules';

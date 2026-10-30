@@ -99,6 +99,8 @@ const context = {
     return id;
   },
   clearInterval(id) { intervals.delete(id); },
+  setTimeout(callback) { return setTimeout(callback, 0); },
+  clearTimeout,
 };
 
 (async () => {
@@ -144,6 +146,34 @@ const context = {
     'an invalid job ID must not produce a task link');
   assert.equal(elements.schedulesRows.children[1].children[0].children[2].children[1].textContent, '—',
     'an unavailable last-run timestamp must not render Invalid Date');
+  context.window.AdminV2.getJson = async path => path.includes('cron-preview?')
+    ? { next_runs: ['2026-11-01T02:00:00Z'] }
+    : ({ items: [{ id: 'duplicate-reconcile', name: 'Duplicate reconciliation',
+      action: 'duplicate_reconcile', enabled: false, schedule_type: 'interval', interval_minutes: 15, revision: 4 },
+    { id: 'catalog-health-full', name: 'Catalog health: daily full audit', action: 'catalog_full_audit',
+      enabled: true, schedule_type: 'daily', daily_at: '03:00', revision: 2 }] });
+  await elements.schedulesRefresh.listeners.click();
+  const wrap = elements.schedulesRows.children[0].children[0].children[3];
+  const editor = wrap.children[1];
+  assert.equal(editor.hidden, true, 'editor is compact until opened');
+  wrap.children[0].listeners.click();
+  const frequency = editor.children[1].children[0].children[0];
+  const cronInput = editor.children[1].children[3].children[0];
+  assert.equal(cronInput.value, '*/15 * * * *');
+  frequency.value = 'custom'; frequency.listeners.change();
+  cronInput.value = '0 3 * * *';
+  cronInput.listeners.input();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  await editor.children[4].children[0].listeners.click();
+  assert.deepEqual(calls.at(-1), { method: 'POST', path: '/admin/api/v2/schedules/duplicate-reconcile/cron',
+    payload: { cron_expression: '0 3 * * *', revision: 4 } });
+  calls.pop();
+  const auditWrap = elements.schedulesRows.children[1].children[0].children[3];
+  auditWrap.children[0].listeners.click();
+  const auditEditor = auditWrap.children[1];
+  assert.equal(auditEditor.children[1].children[0].children[0].value, 'daily');
+  assert.equal(auditEditor.children[1].children[1].children[0].value, '03:00');
+  auditEditor.children[4].children[1].listeners.click();
   context.window.AdminV2.getJson = async path => {
     calls.push({ method: 'GET', path });
     if (failNextGet) { failNextGet = false; throw new Error('The schedule service is unavailable.'); }

@@ -17,7 +17,8 @@
   const OPERATION_LIMIT = 20;
 
   const ACTION_LABELS = {
-    phash_generation: 'pHash and thumbnail',
+    phash_generation: 'Generate pHash', thumbnail_generation: 'Generate thumbnail',
+    phash_thumbnail_legacy: 'pHash and thumbnail (legacy)',
     duplicate_reconcile: 'Duplicate reconciliation', hide: 'Hide duplicates', dismiss: 'Dismiss pair', undo: 'Undo hide', undismiss: 'Undo dismissal',
     performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Telegram fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Catalog health audit schedule', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', sync: 'Sync'
   };
@@ -305,7 +306,7 @@
     const failure = jobError(job);
     const phashResult = queue === 'phash'
       ? jobState === 'failed' ? `Failed · ${safeId(job.error_code) || 'details unavailable'}`
-        : jobState === 'done' ? `Fingerprint complete · thumbnail ${job.thumbnail_ready ? 'ready' : 'missing'}`
+        : jobState === 'done' ? (job.action === 'thumbnail_generation' ? 'Thumbnail complete' : job.action === 'phash_generation' ? 'Fingerprint complete' : `Fingerprint complete · thumbnail ${job.thumbnail_ready ? 'ready' : 'missing'}`)
           : `${Number(job.attempts) || 0} attempts · ${formatDuration(job.processing_time_ms, jobState)} processed`
       : '';
     const resultText = failure || phashResult || resultSummary(job)
@@ -470,7 +471,7 @@
     cell.replaceChildren();
     const wrap = create('div', 'job-detail');
     const fields = [
-      ['Task ID', scrub(job.id) || '—'], ['Queue', 'pHash and thumbnails'],
+      ['Task ID', scrub(job.id) || '—'], ['Type', actionLabel(job.action)],
       ['State', statePill(job.state)[0]], ['Attempts', String(Number(job.attempts) || 0)],
       ['Processing time', formatDuration(job.processing_time_ms, job.state)],
       ['Thumbnail', job.thumbnail_ready ? 'Ready' : 'Missing'],

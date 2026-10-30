@@ -52,6 +52,23 @@ def build_router(admin):
         except Exception:
             return admin.JSONResponse({"ok": False, "error": "Metadata proposals are unavailable."}, status_code=503)
 
+    @router.post("/api/v2/quality/proposals/{proposal_id}/refresh")
+    async def refresh_proposal(request: Request, proposal_id: int):
+        denied = admin._write_denied(request)
+        if denied is not None:
+            return denied
+        try:
+            from common.metadata_review import refresh_metadata_review_proposal
+            result = await admin.asyncio.to_thread(refresh_metadata_review_proposal,
+                                                   admin.HUB_DB_URL, proposal_id)
+        except Exception:
+            return admin.JSONResponse({"ok": False, "error": "Could not refresh this metadata proposal."}, status_code=503)
+        if result["outcome"] == "not_found":
+            return admin.JSONResponse({"ok": False, "error": "Metadata proposal was not found."}, status_code=404)
+        if result["outcome"] in {"invalid", "conflict"}:
+            return admin.JSONResponse({"ok": False, "error": "This metadata proposal is no longer pending."}, status_code=409)
+        return {"ok": True, "id": result["id"], "revision": result["revision"]}
+
     @router.post("/api/v2/quality/proposals/{proposal_id}/reject")
     async def reject_proposal(request: Request, proposal_id: int):
         denied = admin._write_denied(request)

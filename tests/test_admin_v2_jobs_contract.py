@@ -185,12 +185,12 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
         template = (ROOT / "resolver/templates/admin_v2.html").read_text(encoding="utf-8")
         options = JobActionOptions()
         options.feed(template)
-        self.assertEqual(set(options.values), set(ALL_ACTIONS) | {"phash_generation"})
+        self.assertEqual(set(options.values), set(ALL_ACTIONS) | {"phash_generation", "thumbnail_generation", "phash_thumbnail_legacy"})
         jobs_script = (ROOT / "resolver/static/admin-v2/jobs.js").read_text(encoding="utf-8")
         labels_block = re.search(r"const ACTION_LABELS = \{(.*?)\n  \};", jobs_script, re.S)
         self.assertIsNotNone(labels_block)
         labels = set(re.findall(r"\b([a-z_]+):\s*['\"]", labels_block.group(1)))
-        self.assertEqual(labels, set(ALL_ACTIONS) | {"phash_generation"})
+        self.assertEqual(labels, set(ALL_ACTIONS) | {"phash_generation", "thumbnail_generation", "phash_thumbnail_legacy"})
         routes = {route.path: route.endpoint for route in admin_v2_jobs.build_router(make_admin()).routes}
         endpoint = routes["/api/v2/jobs"]
         page = {"available": True, "jobs": [], "total": 0, "active_total": 0}

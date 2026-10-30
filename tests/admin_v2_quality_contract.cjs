@@ -49,6 +49,7 @@ function descendants(root, predicate) {
   };
   let ready = false;
   let proposalPending = false;
+  let proposalStale = false;
   let noReadyReason = 'audit_in_progress';
   const document = {
     querySelector(selector) { return selector.startsWith('#') ? elements[selector.slice(1)] || null : null; },
@@ -98,7 +99,7 @@ function descendants(root, predicate) {
       }
       if (path.startsWith('/admin/api/v2/quality/proposals?')) return proposalPending ? {
         items: [{ id: 12, video_id: 'telegram:1:item', title: 'Example film', source: 'studio:algolia',
-          source_url: 'https://catalog.example/item/1', confidence: 0.92, revision: 0, stale: false,
+          source_url: 'https://catalog.example/item/1', confidence: 0.92, revision: 0, stale: proposalStale,
           current: { plot: 'Current description' }, changes: { plot: 'Suggested description' },
           created_at: '2026-10-12T10:00:00Z' }], total: 1, limit: 30, offset: 0,
       } : { items: [], total: 0, limit: 30, offset: 0 };
@@ -114,6 +115,7 @@ function descendants(root, predicate) {
         if (payload.plan_id === 'metadata-plan') proposalPending = false;
         return { ok: true, job_id: payload.plan_id === 'metadata-plan' ? 'metadata-job' : 'repair-job' };
       }
+      if (path.endsWith('/quality/proposals/12/refresh')) return { ok: true, revision: 3 };
       if (path.endsWith('/operations/preview')) return { ok: true, plan_id: 'metadata-plan', fields: {
         plot: { before: 'Current description', after: 'Edited suggestion' },
       } };
@@ -273,5 +275,19 @@ function descendants(root, predicate) {
   await approveProposal.listeners.click();
   assert.ok(posts.some(item => item.path.endsWith('/operations/execute') && item.payload.plan_id === 'metadata-plan'));
   assert.match(elements.metadataProposalsFeedback.textContent, /0 suggestions waiting for review/);
+  proposalPending = true; proposalStale = true;
+  await elements.metadataProposalsRefresh.listeners.click();
+  await new Promise(resolve => setImmediate(resolve));
+  const staleInput = descendants(elements.metadataProposalsRows, node => node.dataset.proposalField === 'plot')[0];
+  staleInput.value = 'Edited after stale warning';
+  const refreshPreview = descendants(elements.metadataProposalsRows, node => node.textContent === 'Refresh and preview')[0];
+  assert.ok(refreshPreview && !refreshPreview.disabled, 'stale candidates can be refreshed and reviewed');
+  const start = posts.length;
+  await refreshPreview.listeners.click();
+  assert.equal(posts[start].path, '/admin/api/v2/quality/proposals/12/refresh');
+  assert.equal(posts[start + 1].path, '/admin/api/v2/operations/preview');
+  assert.equal(posts[start + 1].payload.expected_revision, 3);
+  assert.equal(posts[start + 1].payload.changes.plot, 'Edited after stale warning');
+  assert.equal(posts.length, start + 2, 'refreshing and previewing does not execute a metadata update');
   process.stdout.write('PASS: Quality findings, field filters, metadata proposal edit/preview/approval, repair, triage, and history\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

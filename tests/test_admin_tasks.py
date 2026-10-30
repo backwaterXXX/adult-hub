@@ -79,6 +79,19 @@ class TestAdminTaskProjection(PgTestCase):
         only_sync = _list_tasks(self.db_url, queue="all", state="", action="sync", offset=0, limit=10)
         self.assertEqual({task["id"] for task in only_sync["tasks"]}, {"sync-queued", "sync-done"})
         only_phash_action = _list_tasks(
-            self.db_url, queue="all", state="", action="phash_generation", offset=0, limit=10,
+            self.db_url, queue="all", state="", action="phash_thumbnail_legacy", offset=0, limit=10,
         )
         self.assertEqual([task["queue"] for task in only_phash_action["tasks"]], ["phash"])
+
+    def test_separate_video_job_filters_and_counts(self):
+        self.add_video("video-separated")
+        for kind in ("phash", "thumbnail", "combined"):
+            self.conn.execute(
+                "INSERT INTO video_phash_jobs (id,video_id,algorithm_version,decoder_profile,duration_us,submitted_by_user_id,state,job_kind) "
+                "VALUES (%s,'video-separated','v1','decoder',1000000,'test','queued',%s)", (kind, kind))
+        self.conn.commit()
+        for action, expected in (("phash_generation", "phash"), ("thumbnail_generation", "thumbnail"),
+                                 ("phash_thumbnail_legacy", "combined")):
+            page = _list_tasks(self.db_url, queue="all", state="", action=action, offset=0, limit=10)
+            self.assertEqual([task["id"] for task in page["tasks"]], [expected])
+            self.assertEqual((page["total"], page["active_total"]), (1, 1))

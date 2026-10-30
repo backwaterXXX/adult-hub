@@ -107,6 +107,21 @@ class TestPhashJobs(PgTestCase):
         self.assertEqual(complete["outcome"], "complete")
         self.assertEqual(complete["job"]["state"], "done")
 
+    def test_fingerprint_and_thumbnail_have_independent_states(self):
+        video_id = "telegram:-100:2:99"
+        self.add_video(video_id)
+        result = self.enqueue(video_id)
+        self.assertEqual(result['phash_job']['job_kind'], 'phash')
+        self.assertEqual(result['thumbnail_job']['job_kind'], 'thumbnail')
+        claimed = phash_jobs.claim_next(self.db_url)
+        self.assertEqual(claimed['job_kind'], 'phash')
+        self.assertTrue(phash_jobs.finish_failure(self.db_url, claimed, 'invalid_video', retryable=False))
+        thumbnail = phash_jobs.claim_next(self.db_url)
+        self.assertEqual(thumbnail['job_kind'], 'thumbnail')
+        self.assertTrue(phash_jobs.finish_failure(self.db_url, thumbnail, 'generation_failed', retryable=False))
+        self.assertTrue(phash_jobs.retry_job(self.db_url, thumbnail['id']))
+        self.assertEqual(self.conn.execute('SELECT state FROM video_phash_jobs WHERE id=%s', (claimed['id'],)).fetchone()[0], 'failed')
+
     def fail_on_budget(self, video_id):
         """Drive a job to a terminal daily-transfer-budget failure and return it."""
         job = self.enqueue(video_id)["job"]

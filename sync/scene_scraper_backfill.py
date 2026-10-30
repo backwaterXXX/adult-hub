@@ -99,7 +99,8 @@ def _is_generated_telegram_post_title(title: Any, video_id: str) -> bool:
 
 
 def _apply_matched_scene(conn: Any, media_dir: Path, video_id: str, matched: ScrapedScene,
-                        http_client: Optional[Any] = None, now: Optional[int] = None) -> bool:
+                        http_client: Optional[Any] = None, now: Optional[int] = None,
+                        strict_media: bool = False) -> bool:
     """Apply trusted scene metadata and persist other differences as proposals."""
     timestamp = int(_core.time.time()) if now is None else int(now)
     cursor = conn.execute("SELECT * FROM videos WHERE id=%s FOR UPDATE", (video_id,))
@@ -178,8 +179,22 @@ def _apply_matched_scene(conn: Any, media_dir: Path, video_id: str, matched: Scr
 
     auto_values = {}
     review_changes = {}
+    trusted_fingerprint = normalized_source in {
+        "stashdb:phash", "stashdb:oshash", "theporndb:phash", "theporndb:oshash",
+    }
+    trusted_text = normalized_source in {
+        f"{provider}:{method}" for provider in ("stashdb", "theporndb")
+        for method in ("title_exact", "linked_id", "split_title_duration_v1")
+    }
+    current_source = str(current.get("scene_match_source") or "").casefold()
+    if trusted_text and any(token in current_source for token in ("phash", "oshash", "fingerprint")):
+        return False
     for field, candidate in candidates.items():
         if not has_value(candidate):
+            continue
+        if trusted_fingerprint or trusted_text:
+            if field not in overrides:
+                auto_values[field] = candidate
             continue
         # A confirmed StashDB/ThePornDB scene match is the canonical title
         # source. Keep an explicit operator override, but replace Telegram's
@@ -237,7 +252,8 @@ def _apply_matched_scene(conn: Any, media_dir: Path, video_id: str, matched: Scr
         )
         _core._update_media_files(media_dir=media_dir, video_id=video_id, matched=auto_scene,
                                   performers=auto_values.get("performers", []),
-                                  http_client=http_client, conn=conn)
+                                  http_client=http_client, conn=conn,
+                                  strict=strict_media or trusted_fingerprint or trusted_text)
     if review_changes:
         from common.metadata_review import store_metadata_review_proposal
         store_metadata_review_proposal(
@@ -250,6 +266,62 @@ def _apply_matched_scene(conn: Any, media_dir: Path, video_id: str, matched: Scr
 # ==============================================================================
 # 4. Backfill Routine for Hub Database
 # ==============================================================================
+
+def apply_pending_fingerprint_proposals(conn: Any, media_dir: Path, *, limit: int = 500,
+                                        http_client: Optional[Any] = None) -> Tuple[int, int]:
+    """Apply existing trusted candidates, newest first, in resumable batches."""
+    sources = [f"{provider}:{method}" for provider in ("stashdb", "theporndb")
+               for method in ("phash", "oshash", "title_exact", "linked_id", "split_title_duration_v1")]
+    rows = conn.execute(
+        "SELECT id FROM metadata_review_proposals WHERE status='pending' AND lower(source)=ANY(%s) "
+        "ORDER BY id DESC LIMIT %s", (sources, max(1, min(int(limit), 1000))),
+    ).fetchall()
+    processed = applied = 0
+    for (proposal_id,) in rows:
+        try:
+            with conn:
+                row = conn.execute(
+                    "SELECT video_id,changes,source,external_id,source_url,confidence "
+                    "FROM metadata_review_proposals WHERE id=%s AND status='pending' FOR UPDATE SKIP LOCKED",
+                    (proposal_id,),
+                ).fetchone()
+                if not row:
+                    continue
+                video_id, changes, source, external_id, url, confidence = row
+                current = conn.execute(
+                    "SELECT scene_match_source,scene_match_external_id FROM videos WHERE id=%s FOR UPDATE",
+                    (video_id,),
+                ).fetchone()
+                # A newer scene identity supersedes this historical suggestion.
+                same_scene = (current and external_id and str(current[1] or '') == str(external_id)
+                              and str(current[0] or '').split(':')[0].casefold() == str(source).split(':')[0].casefold())
+                lower_priority = (str(source).casefold().split(':')[-1] not in {'phash', 'oshash'}
+                                  and current and any(token in str(current[0] or '').casefold()
+                                                      for token in ('phash', 'oshash', 'fingerprint')))
+                if same_scene and not lower_priority:
+                    changes = json.loads(changes) if isinstance(changes, str) else changes
+                    changes = changes if isinstance(changes, dict) else {}
+                    scene = ScrapedScene(title=changes.get('title', ''), plot=changes.get('plot', ''),
+                        date=changes.get('date_released', ''), studio=changes.get('studio', ''),
+                        performers=changes.get('performers', []), tags=changes.get('tags', []),
+                        source=source, external_id=external_id, url=url, confidence=confidence)
+                    _apply_matched_scene(conn, media_dir, str(video_id), scene, http_client=http_client,
+                                         strict_media=True)
+                    applied += 1
+                    conn.execute(
+                        "UPDATE metadata_review_proposals SET status='rejected',reviewed_at=CURRENT_TIMESTAMP "
+                        "WHERE video_id=%s AND status='pending' AND id<%s AND lower(source)=ANY(%s)",
+                        (video_id, proposal_id, sources),
+                    )
+                conn.execute("UPDATE metadata_review_proposals SET status=%s,reviewed_at=CURRENT_TIMESTAMP WHERE id=%s",
+                             ('accepted' if same_scene and not lower_priority else 'rejected', proposal_id))
+                processed += 1
+        except Exception:
+            conn.rollback()
+            _core.logger.exception("Could not automatically apply metadata proposal %s", proposal_id)
+    conn.commit()
+    return processed, applied
+
 
 def backfill_scenes(
     conn: Any,
@@ -269,8 +341,7 @@ def backfill_scenes(
         # Columns not yet migrated, skip gracefully
         return 0, 0
 
-    checked = 0
-    updated = 0
+    checked, updated = apply_pending_fingerprint_proposals(conn, media_dir, limit=500, http_client=http_client)
     hash_checked, hash_updated = _core.backfill_telegram_fingerprints(
         conn, media_dir, limit=min(limit, 20), sleep_sec=sleep_sec, http_client=http_client,
     )
@@ -808,11 +879,12 @@ def _update_media_files(
     performers: List[str],
     http_client: Optional[Any] = None,
     conn: Optional[Any] = None,
+    strict: bool = False,
 ) -> None:
     """Compatibility facade for matched NFO and artwork persistence."""
     if __package__:
         from .scene_scraper_media_files import _update_media_files as implementation
     else:
         from scene_scraper_media_files import _update_media_files as implementation
-    return implementation(media_dir, video_id, matched, performers, http_client, conn)
+    return implementation(media_dir, video_id, matched, performers, http_client, conn, strict)
 

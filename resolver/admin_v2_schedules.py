@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Query
 from admin_v2_errors import V2ErrorRoute
 from common import admin_schedules
 
@@ -49,6 +49,22 @@ def build_router(admin):
             return {"ok": True, "items": items, "system_items": system}
         except Exception:
             return admin.JSONResponse({"ok": False, "error": "Schedule list is unavailable."}, status_code=503)
+
+    @router.get("/api/v2/schedules/cron-preview")
+    async def preview_cron(request: Request, expression: str = Query(..., max_length=100)):
+        if admin._admin_blocked(request):
+            return admin.JSONResponse({"ok": False, "error": "Admin is only available locally."}, status_code=403)
+        try:
+            def calculate():
+                instant = admin_schedules._utc()
+                result = []
+                for _ in range(3):
+                    instant = admin_schedules.next_cron(expression, after=instant)
+                    result.append(instant.isoformat())
+                return result
+            return {"ok": True, "timezone": "Europe/Warsaw", "next_runs": await admin.asyncio.to_thread(calculate)}
+        except ValueError as exc:
+            return admin.JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     @router.post("/api/v2/schedules")
     async def create_schedule(request: Request):
@@ -99,5 +115,28 @@ def build_router(admin):
             return admin.JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
         except Exception:
             return admin.JSONResponse({"ok": False, "error": "Could not update schedule."}, status_code=503)
+
+    @router.post("/api/v2/schedules/{schedule_id}/cron")
+    async def set_schedule_cron(request: Request, schedule_id: str):
+        denied = admin._write_denied(request)
+        if denied is not None:
+            return denied
+        try:
+            body = await request.json()
+            if not isinstance(body, dict) or set(body) != {"cron_expression", "revision"}:
+                raise ValueError("Provide cron_expression and revision.")
+            result = await admin.asyncio.to_thread(
+                admin_schedules.set_reconcile_cron, admin.HUB_DB_URL, schedule_id,
+                expression=body['cron_expression'], revision=body['revision'],
+            )
+            if result['outcome'] == 'not_found':
+                return admin.JSONResponse({"ok": False, "error": "Schedule not found."}, status_code=404)
+            if result['outcome'] == 'conflict':
+                return admin.JSONResponse({"ok": False, "error": "Schedule changed. Refresh and try again.", **result}, status_code=409)
+            return {"ok": True, **result}
+        except ValueError as exc:
+            return admin.JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        except Exception:
+            return admin.JSONResponse({"ok": False, "error": "Could not update cron schedule."}, status_code=503)
 
     return router

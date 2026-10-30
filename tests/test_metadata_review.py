@@ -11,7 +11,7 @@ from tests.pg_helper import PgTestCase
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from common.metadata_review import list_metadata_review_proposals, reject_metadata_review_proposal, store_metadata_review_proposal
+from common.metadata_review import list_metadata_review_proposals, refresh_metadata_review_proposal, reject_metadata_review_proposal, store_metadata_review_proposal
 from common.admin_operations import execute_operation, preview_metadata_plan
 
 
@@ -63,6 +63,40 @@ class TestMetadataReview(PgTestCase):
             self.db_url, video_id, proposal["revision"], {"plot": "Suggested description"}, [], proposal["id"],
         )
         self.assertEqual(result["outcome"], "stale")
+
+    def test_stale_proposal_can_be_refreshed_then_previewed_without_applying_it(self):
+        video_id = self.add_video()
+        store_metadata_review_proposal(
+            self.conn, video_id, {"plot": "Suggested description"}, source="studio:algolia",
+            external_id="item-123", source_url="", confidence=0.95,
+        )
+        proposal = list_metadata_review_proposals(self.db_url)["items"][0]
+        with self.conn:
+            self.conn.execute("UPDATE videos SET plot='Changed while waiting' WHERE id=%s", (video_id,))
+        self.assertTrue(list_metadata_review_proposals(self.db_url)["items"][0]["stale"])
+        refreshed = refresh_metadata_review_proposal(self.db_url, proposal["id"])
+        self.assertEqual(refreshed["outcome"], "refreshed")
+        updated = list_metadata_review_proposals(self.db_url)["items"][0]
+        self.assertFalse(updated["stale"])
+        self.assertEqual(updated["current"]["plot"], "Changed while waiting")
+        self.assertEqual(updated["changes"]["plot"], "Suggested description")
+        plan = preview_metadata_plan(self.db_url, video_id, refreshed["revision"],
+                                     {"plot": "Suggested description"}, [], proposal["id"])
+        self.assertEqual(plan["outcome"], "previewed")
+        self.assertEqual(plan["fields"]["plot"]["before"], "Changed while waiting")
+        self.assertEqual(self.conn.execute("SELECT plot FROM videos WHERE id=%s", (video_id,)).fetchone()[0], "Changed while waiting")
+        with self.conn:
+            self.conn.execute("UPDATE videos SET plot='Changed again' WHERE id=%s", (video_id,))
+        self.assertEqual(execute_operation(self.db_url, plan["plan_id"])["outcome"], "stale")
+
+    def test_refresh_rejects_closed_or_missing_proposal(self):
+        video_id = self.add_video()
+        store_metadata_review_proposal(self.conn, video_id, {"plot": "Suggested"},
+                                       source="test", external_id="1", source_url="", confidence=1)
+        proposal = list_metadata_review_proposals(self.db_url)["items"][0]
+        reject_metadata_review_proposal(self.db_url, proposal["id"])
+        self.assertEqual(refresh_metadata_review_proposal(self.db_url, proposal["id"])["outcome"], "conflict")
+        self.assertEqual(refresh_metadata_review_proposal(self.db_url, 999999)["outcome"], "not_found")
 
     def test_acceptance_is_atomic_with_metadata_operation_enqueue(self):
         video_id = self.add_video()

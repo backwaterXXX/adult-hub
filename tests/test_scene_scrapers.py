@@ -95,6 +95,51 @@ class TestBackfillScenes(PgTestCase):
         self.addCleanup(self.temp_dir.cleanup)
         self.media_dir = Path(self.temp_dir.name)
 
+    def test_trusted_proposals_are_applied_once_and_preserve_overrides(self):
+        from common.metadata_review import store_metadata_review_proposal
+        from scene_scraper_backfill import apply_pending_fingerprint_proposals
+        video_id = 'telegram:-1001:99:999'
+        self.conn.execute("INSERT INTO videos (id,provider,title,plot,studio,first_seen,last_seen,scene_match_source,scene_match_external_id) VALUES (%s,'telegram','Old','Old plot','Old studio',1,1,'stashdb:phash','scene-1')", (video_id,))
+        self.conn.execute("INSERT INTO video_metadata_overrides (video_id,fields,revision) VALUES (%s,%s::jsonb,1)", (video_id, json.dumps({'studio': 'My studio'})))
+        store_metadata_review_proposal(self.conn, video_id, {'plot': 'New plot', 'studio': 'New studio'}, source='stashdb:phash', external_id='scene-1', source_url='', confidence=0.9)
+        self.conn.commit()
+        with patch('scene_scrapers._update_media_files'):
+            self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (1, 1))
+            self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (0, 0))
+        row = self.conn.execute('SELECT plot,studio FROM videos WHERE id=%s', (video_id,)).fetchone()
+        self.assertEqual(tuple(row), ('New plot', 'Old studio'))
+        self.assertEqual(self.conn.execute('SELECT status FROM metadata_review_proposals WHERE video_id=%s', (video_id,)).fetchone()[0], 'accepted')
+
+    def test_text_proposals_apply_but_do_not_replace_hash_matches(self):
+        from common.metadata_review import store_metadata_review_proposal
+        from scene_scraper_backfill import apply_pending_fingerprint_proposals
+        for suffix, source in [('101', 'stashdb:title_exact'), ('102', 'stashdb:phash')]:
+            video_id = f'telegram:-1001:{suffix}:999'
+            self.conn.execute("INSERT INTO videos (id,provider,title,plot,first_seen,last_seen,scene_match_source,scene_match_external_id) VALUES (%s,'telegram','Old','Old plot',1,1,%s,'scene-1')", (video_id, source))
+            store_metadata_review_proposal(self.conn, video_id, {'plot': 'New plot'}, source='stashdb:title_exact', external_id='scene-1', source_url='', confidence=0.9)
+        self.conn.commit()
+        with patch('scene_scrapers._update_media_files'):
+            self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (2, 1))
+        rows = self.conn.execute("SELECT v.plot,p.status FROM videos v JOIN metadata_review_proposals p ON p.video_id=v.id ORDER BY v.id").fetchall()
+        self.assertEqual([tuple(row) for row in rows], [('New plot', 'accepted'), ('Old plot', 'rejected')])
+
+    def test_pending_proposal_updates_every_registered_nfo_and_retries_missing(self):
+        from common.metadata_review import store_metadata_review_proposal
+        from scene_scraper_backfill import apply_pending_fingerprint_proposals
+        video_id = 'telegram:-1001:103:999'
+        self.conn.execute("INSERT INTO videos (id,provider,title,plot,first_seen,last_seen,scene_match_source,scene_match_external_id) VALUES (%s,'telegram','Old','Old plot',1,1,'stashdb:title_exact','scene-1')", (video_id,))
+        for name in ('first', 'second'):
+            self.conn.execute('INSERT INTO synced_files (file_path,video_id) VALUES (%s,%s)', (name + '.strm', video_id))
+        (self.media_dir / 'first.nfo').write_text('<movie><plot>Old plot</plot></movie>')
+        store_metadata_review_proposal(self.conn, video_id, {'plot': 'New plot'}, source='stashdb:title_exact', external_id='scene-1', source_url='', confidence=0.9)
+        self.conn.commit()
+        self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (0, 0))
+        self.assertEqual(self.conn.execute('SELECT status FROM metadata_review_proposals WHERE video_id=%s', (video_id,)).fetchone()[0], 'pending')
+        (self.media_dir / 'second.nfo').write_text('<movie><plot>Old plot</plot></movie>')
+        self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (1, 1))
+        for name in ('first', 'second'):
+            self.assertIn('<plot>New plot</plot>', (self.media_dir / (name + '.nfo')).read_text())
+
     def test_backfill_scenes_enriches_db_and_nfo(self):
         vid_id = "telegram:-1001:42:999"
         self.conn.execute(
