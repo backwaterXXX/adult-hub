@@ -16,6 +16,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import TEST_URL, reset_db
+from test_support import load_flat_sync_module
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "resolver"))
@@ -300,6 +301,7 @@ class TestResolverHttpApi(unittest.TestCase):
         ("POST", "/admin/api/v2/operations/preview"),
         ("POST", "/admin/api/v2/operations/execute"),
         ("POST", "/admin/api/v2/duplicates/actions"),
+        ("POST", "/admin/api/v2/duplicates/visual/verify"),
         ("POST", "/admin/api/v2/jobs/{job_id}/retry"),
         ("POST", "/admin/api/v2/jobs/{job_id}/cancel"),
         ("POST", "/admin/api/v2/metadata/execute"),
@@ -703,8 +705,7 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(job["payload"], {"operation_id": operation_id})
 
     def test_v2_duplicate_hide_uses_authorized_persisted_operation_plan(self):
-        sys.path.insert(0, str(ROOT / "sync"))
-        import sync
+        sync = load_flat_sync_module()
 
         keeper, loser = "telegram:99:keeper", "telegram:99:hide"
         with tempfile.TemporaryDirectory(prefix="adult_hub_v2_hide_undo_") as directory, self.admin_config():
@@ -811,8 +812,7 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertIn("expected_source_fingerprint", job["payload"])
 
     def test_v2_auto_merge_exact_requires_complete_bounded_preview(self):
-        sys.path.insert(0, str(ROOT / "sync"))
-        import sync
+        sync = load_flat_sync_module()
 
         keeper = "telegram:-1001:10:exactplanfid"
         loser = "telegram:-1002:20:exactplanfid"
@@ -832,6 +832,12 @@ class TestResolverHttpApi(unittest.TestCase):
                         "performers": performers, "studio": studio,
                     }, set(), set(), media, conn)
                     (media / f"{sync.stable_media_basename(video_id)}.jpg").write_bytes(b"thumbnail")
+                # An automatic hide needs direct evidence of sameness; equal OSHASH values qualify the pair.
+                with conn:
+                    conn.executemany(
+                        "INSERT INTO video_fingerprints (video_id,algorithm,fingerprint) "
+                        "VALUES (%s,'OSHASH','0123456789abcdef')",
+                        [(keeper,), (loser,)])
             headers = {"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}
             with patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
                  patch.object(admin_module, "_wake_worker") as wake:
@@ -876,7 +882,7 @@ class TestResolverHttpApi(unittest.TestCase):
         keeper = "telegram:-1001:10:stalemergefid"
         loser = "telegram:-1002:20:stalemergefid"
         with self.admin_config():
-            with db.connect(TEST_URL) as conn:
+            with db.connect(TEST_URL) as conn, conn:
                 conn.execute(
                     "INSERT INTO videos (id,provider,title,slug,duration,performers,studio,categories,tags) "
                     "VALUES (%s,'telegram','Keeper','stalemergefid',600,'[\"Actor 1\",\"Actor 2\"]','Studio','[]','[]'),"
@@ -886,6 +892,11 @@ class TestResolverHttpApi(unittest.TestCase):
                     "INSERT INTO synced_files (video_id,file_path,created_at) VALUES "
                     "(%s,'Keeper.strm',now()),(%s,'Loser.strm',now())", (keeper, loser)
                 )
+                # An automatic hide needs direct evidence of sameness; equal OSHASH values qualify the pair.
+                conn.executemany(
+                    "INSERT INTO video_fingerprints (video_id,algorithm,fingerprint) "
+                    "VALUES (%s,'OSHASH','0123456789abcdef')",
+                    [(keeper,), (loser,)])
             headers = {"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}
             with patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
                  patch.object(admin_module, "_wake_worker") as wake:
@@ -1064,8 +1075,7 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(too_large.status_code, 400)
 
     def test_v2_availability_preview_is_read_only_and_execute_is_authorized(self):
-        sys.path.insert(0, str(ROOT / "sync"))
-        import sync
+        sync = load_flat_sync_module()
 
         with tempfile.TemporaryDirectory() as directory, self.admin_config():
             root = Path(directory)
@@ -1595,8 +1605,7 @@ class TestResolverHttpApi(unittest.TestCase):
 
     def test_v2_job_retry_and_cancel_use_durable_queue_lifecycle(self):
         from common.job_queue import enqueue_job, finish_job, read_job
-        sys.path.insert(0, str(ROOT / "sync"))
-        import sync
+        sync = load_flat_sync_module()
 
         failed_id = enqueue_job(TEST_URL, "collections_refresh", {})
         finish_job(TEST_URL, failed_id, "failed", {"error_code": "simulated_upstream_failure"})
@@ -1647,8 +1656,7 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(wake.call_args_list[0].args, ("jobs",))
 
     def test_v2_collections_refresh_persists_real_queue_job(self):
-        sys.path.insert(0, str(ROOT / "sync"))
-        import sync
+        sync = load_flat_sync_module()
 
         result = {"collections": [{"name": "Adult Hub · Test", "items": 2}], "matched_videos": 2}
         with tempfile.TemporaryDirectory(prefix="adult_hub_collections_flow_") as directory, self.admin_config(), \
