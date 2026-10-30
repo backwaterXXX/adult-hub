@@ -5,10 +5,6 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-ARG APP_VERSION=dev
-ENV APP_VERSION=${APP_VERSION}
-LABEL org.opencontainers.image.version=${APP_VERSION}
-COPY VERSION /opt/adult-hub/VERSION
 
 # Resolver dependencies include a pinned Git source package; backup
 # verification also needs PostgreSQL custom-archive tools.
@@ -24,14 +20,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 # Install the fully pinned resolver dependency set, including the shared
 # package's runtime dependencies, before installing the local package itself.
+COPY resolver/requirements.lock ./requirements.lock
+RUN pip install --no-cache-dir -r requirements.lock
 COPY common/ ./common/
+RUN pip install --no-cache-dir --no-deps ./common
+
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+LABEL org.opencontainers.image.version=${APP_VERSION}
+COPY VERSION /opt/adult-hub/VERSION
 COPY sync/video_fingerprints.py ./resolver_video_fingerprints.py
 COPY sync/video_visual.py ./resolver_video_visual.py
 COPY sync/fingerprint_mp4.py ./fingerprint_mp4.py
 COPY sync/thumbnails.py ./thumbnails.py
-COPY resolver/requirements.lock ./requirements.lock
-RUN pip install --no-cache-dir -r requirements.lock \
-    && pip install --no-cache-dir --no-deps ./common
 
 COPY resolver/ .
 COPY tools/export_video_duplicate_review_corpus.py ./tools/export_video_duplicate_review_corpus.py

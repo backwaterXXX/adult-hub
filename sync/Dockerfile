@@ -5,10 +5,6 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-ARG APP_VERSION=dev
-ENV APP_VERSION=${APP_VERSION}
-LABEL org.opencontainers.image.version=${APP_VERSION}
-COPY VERSION /opt/adult-hub/VERSION
 
 # Scheduled database backups use pg_dump/pg_restore. Match the PostgreSQL 17
 # test database rather than Debian Bookworm's older client.
@@ -24,11 +20,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 # Install the fully pinned sync dependency set, including the shared
 # package's runtime dependencies, before installing the local package itself.
-COPY common/ ./common/
-COPY resolver/video_duplicates.py resolver/video_duplicate_scoring.py resolver/video_duplicate_merge_history.py ./
 COPY sync/requirements.lock ./requirements.lock
-RUN pip install --no-cache-dir -r requirements.lock \
-    && pip install --no-cache-dir --no-deps ./common
+RUN pip install --no-cache-dir -r requirements.lock
+COPY common/ ./common/
+RUN pip install --no-cache-dir --no-deps ./common
+
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+LABEL org.opencontainers.image.version=${APP_VERSION}
+COPY VERSION /opt/adult-hub/VERSION
+COPY resolver/video_duplicates.py resolver/video_duplicate_scoring.py resolver/video_duplicate_merge_history.py ./
 
 COPY backup_db.py backup_scheduler.py restore_db.py ./
 COPY tools/benchmark_catalog_search.py ./tools/benchmark_catalog_search.py
