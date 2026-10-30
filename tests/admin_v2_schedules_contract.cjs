@@ -306,14 +306,21 @@ const context = {
   context.window.AdminV2.getJson = async () => ({ items: [], system_items: [
     { id: 'library-sync', name: 'Library sync', group: 'system', enabled: false,
       cron_expression: '0 * * * *', revision: 1 },
-    { name: 'Scene identification', group: 'dependent', parent_id: 'library-sync', source: 'Library sync' }
+    { name: 'Scene identification', group: 'dependent', parent_id: 'library-sync', source: 'Library sync',
+      details: 'Backfills scene fingerprints when work is available.' }
   ] });
   await elements.schedulesRefresh.listeners.click();
   const grouped = currentBody();
   assert.equal(grouped.children[0].children[0].children[0].textContent, 'Library sync');
-  assert.equal(grouped.children[2].className, 'schedule-dependent-row', 'dependent tasks follow their parent');
-  assert.equal(grouped.children[2].children[0].children[0].children[0].children[0].children[0].textContent,
-    'Scene identification');
+  const dependentRow = grouped.children[2];
+  assert.equal(dependentRow.className, 'schedule-dependent-row', 'dependent tasks follow their parent');
+  const dependentLine = dependentRow.children[0].children[0].children[0].children[0];
+  assert.equal(dependentLine.tagName, 'LI', 'dependent tasks render as plain lines, not cards');
+  assert.equal(dependentLine.children[0].textContent, 'Scene identification');
+  assert.equal(dependentLine.children[1].textContent,
+    'Backfills scene fingerprints when work is available.');
+  assert.equal(dependentLine.children.length, 2,
+    'a dependent line carries only the task name and its details, not a copy of the parent cadence');
   const runButton = grouped.children[0].children[5].children[2];
   assert.equal(runButton.textContent, 'Run');
   await runButton.listeners.click();

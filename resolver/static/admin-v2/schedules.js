@@ -283,7 +283,7 @@
     return { row, editorRow, editor };
   }
 
-  function makeTable(items, feedback, dependentItems, parents) {
+  function makeTable(items, feedback, dependentItems) {
     const wrap = node('div', 'schedule-table-wrap');
     const table = node('table', 'schedule-table');
     const head = node('thead');
@@ -298,40 +298,23 @@
       if (children.length) {
         const childRow = node('tr', 'schedule-dependent-row');
         const cell = node('td'); cell.colSpan = 6;
-        cell.append(makeDependentList(children, parents)); childRow.append(cell); body.append(childRow);
+        cell.append(makeDependentList(children)); childRow.append(cell); body.append(childRow);
       }
     }
     table.append(head, body); wrap.append(table);
     return wrap;
   }
 
-  function makeDependentList(items, parents) {
-    const section = node('section', 'schedule-dependent');
+  function makeDependentList(items) {
+    const section = node('section');
     section.setAttribute('aria-label', 'Dependent tasks');
-    const grid = node('div', 'schedule-dependent-list');
+    const list = node('ul', 'schedule-dependent-list');
     for (const item of items) {
-      const parent = parents.get(item.parent_id) || {};
-      const card = node('article', 'schedule-dependent-card');
-      const parentNeedsAttention = Boolean(parent.problem) || parent.status === 'stale' || parent.last_result === 'failed';
-      const statusText = parent.enabled === false ? 'Parent disabled'
-        : parent.status === 'running' ? 'Parent running'
-        : parentNeedsAttention ? 'Parent needs attention'
-        : item.status === 'inherited' ? 'Inherited cadence' : (item.status || 'Unknown');
-      const statusClassName = parentNeedsAttention ? 'is-failed'
-        : parent.status === 'running' ? 'is-running'
-        : parent.status === 'fresh' || parent.last_result === 'done' ? 'is-ok' : 'is-unknown';
-      const cadenceText = parent.enabled === false ? 'Parent schedule is disabled'
-        : parent.cron_expression
-        ? `Inherits ${parent.cron_expression} ${parent.timezone || 'Europe/Warsaw'}`
-        : parent.needs_conversion ? 'Inherits parent cadence · conversion needed' : 'Inherits parent cadence';
-      const status = node('span', `schedule-status ${statusClassName}`, statusText);
-      const next = node('div', 'schedule-dependent-next');
-      next.append(node('span', '', 'Next run'), timeNode(parent.next_run_at, parent.timezone || 'Europe/Warsaw'));
-      card.append(node('strong', '', item.name), node('small', '', `After ${item.source || 'parent task'}`),
-        status, node('p', '', cadenceText), next, node('small', 'schedule-dependent-detail', item.details || ''));
-      grid.append(card);
+      const line = node('li', 'schedule-dependent-item');
+      line.append(node('strong', '', item.name), node('span', 'schedule-dependent-detail', item.details));
+      list.append(line);
     }
-    section.append(grid);
+    section.append(list);
     return section;
   }
 
@@ -364,7 +347,7 @@
         mainItems = [...mainItems, ...system.filter(item => dependentItems.some(child => child.parent_id === item.id) && !mainItems.includes(item))];
       }
       let visibleCount = mainItems.length + dependentItems.length;
-      if (mainItems.length) host.append(makeTable(mainItems, feedback, dependentItems, parents));
+      if (mainItems.length) host.append(makeTable(mainItems, feedback, dependentItems));
       if (!visibleCount) host.append(node('p', 'schedule-empty', filter === 'problems'
         ? 'No schedule problems are currently reported.' : 'No schedules match this filter.'));
       const selectedId = new URLSearchParams(location.hash.split('?')[1] || '').get('schedule_id') || '';

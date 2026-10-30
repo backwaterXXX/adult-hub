@@ -420,16 +420,10 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
 .schedule-expression { color: var(--subtle); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 .schedule-preview { color: var(--muted); font-size: 12px; line-height: 1.6; }
 .schedule-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.schedule-dependent { margin-top: 16px; }
-.schedule-dependent h3 { margin: 0 0 9px; color: var(--muted); font-size: 11px; font-weight: 700; }
-.schedule-dependent-list { display: grid; grid-template-columns: repeat(auto-fit,minmax(215px,1fr)); gap: 8px; }
-.schedule-dependent-card { display: grid; gap: 4px; min-width: 0; padding: 11px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
-.schedule-dependent-card strong { color: var(--text); font-size: 11px; }
-.schedule-dependent-card small { color: var(--subtle); font-size: 10px; }
-.schedule-dependent-card p { margin: 2px 0; color: var(--accent); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
-.schedule-dependent-next { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 10px; }
-.schedule-dependent-next time { color: var(--text); text-align: right; }
-.schedule-dependent-detail { line-height: 1.5; }
+.schedule-dependent-list { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.schedule-dependent-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.schedule-dependent-item strong { color: var(--text); font-size: 11px; font-weight: 600; }
+.schedule-dependent-detail { color: var(--subtle); font-size: 10px; }
 .schedule-empty { margin: 0; padding: 22px 12px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted); text-align: center; font-size: 12px; }
 @media (max-width: 900px) {
   .schedule-table th:nth-child(1) { width: 24%; }
@@ -869,4 +863,3 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
 @media (max-width: 900px) { .fuzzy-row { grid-template-columns: auto minmax(0, 1fr); } .fuzzy-row > :nth-child(n+3) { grid-column: 2; } }
 
 .schedule-dependent-row > td { padding: 0 12px 12px 32px; }
-.schedule-dependent-row .schedule-dependent { margin-top: 0; }
