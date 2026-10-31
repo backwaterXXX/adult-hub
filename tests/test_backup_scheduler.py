@@ -10,11 +10,21 @@ from unittest.mock import call, patch
 import backup_scheduler
 
 
+def _artwork_schedule_module():
+    """Return the module the scheduler will import: flat in the image, packaged in the repo."""
+    try:
+        import artwork_schedule
+    except ImportError:
+        from sync import artwork_schedule
+        return artwork_schedule
+    return artwork_schedule
+
+
 class BackupSchedulerTests(unittest.TestCase):
     def test_artwork_schedule_queues_jobs_and_records_success(self):
         with patch.object(backup_scheduler, 'claim_due_system_schedule', return_value=True) as claim, \
-             patch('sync.artwork_schedule.queue_artwork_generation_batch',
-                   return_value={'candidates': 2, 'job_ids': ['job-1', 'job-2']}) as queue, \
+             patch.object(_artwork_schedule_module(), 'queue_artwork_generation_batch',
+                          return_value={'candidates': 2, 'job_ids': ['job-1', 'job-2']}) as queue, \
              patch.object(backup_scheduler, 'finish_system_schedule') as finish:
             result = backup_scheduler._run_artwork_generation_schedule('db-url')
         self.assertEqual(result, 0)
@@ -26,7 +36,8 @@ class BackupSchedulerTests(unittest.TestCase):
 
     def test_artwork_schedule_failure_keeps_the_daily_slot_owed(self):
         with patch.object(backup_scheduler, 'claim_due_system_schedule', return_value=True), \
-             patch('sync.artwork_schedule.queue_artwork_generation_batch', side_effect=RuntimeError('boom')), \
+             patch.object(_artwork_schedule_module(), 'queue_artwork_generation_batch',
+                          side_effect=RuntimeError('boom')), \
              patch.object(backup_scheduler, 'finish_system_schedule') as finish, \
              patch.object(backup_scheduler, 'LOGGER'):
             result = backup_scheduler._run_artwork_generation_schedule('db-url')
