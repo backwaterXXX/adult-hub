@@ -1618,11 +1618,13 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(wake.call_count, 3)
 
     def test_v2_job_retry_and_cancel_use_durable_queue_lifecycle(self):
-        from common.job_queue import enqueue_job, finish_job, read_job
+        from common.job_queue import claim_job, enqueue_job, finish_job, read_job
         sync = load_flat_sync_module()
 
         failed_id = enqueue_job(TEST_URL, "collections_refresh", {})
-        finish_job(TEST_URL, failed_id, "failed", {"error_code": "simulated_upstream_failure"})
+        claimed = claim_job(TEST_URL, "collections_refresh")
+        finish_job(TEST_URL, failed_id, "failed", {"error_code": "simulated_upstream_failure"},
+                   lease_token=claimed["lease_token"])
         worker_result = {"collections": [{"name": "Adult Hub · Retry", "items": 1}],
                          "matched_videos": 1}
         with tempfile.TemporaryDirectory(prefix="adult_hub_v2_retry_flow_") as directory, self.admin_config():

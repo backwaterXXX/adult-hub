@@ -105,7 +105,10 @@ def enqueue_jobs_batch(db_url: str | None, items: list[tuple[str, dict]]) -> lis
                 to_insert.append((job_id, action, "queued", json.dumps(payload, ensure_ascii=False), None, now, now))
 
         if to_insert:
-            conn.executemany("INSERT INTO video_duplicate_jobs VALUES (%s, %s, %s, %s, %s, %s, %s)", to_insert)
+            conn.executemany(
+                "INSERT INTO video_duplicate_jobs "
+                "(id,action,state,payload,result,created_at,updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)", to_insert)
         conn.commit()
         return job_ids
     except Exception:
@@ -227,7 +230,13 @@ def cancel_queued_job(db_url: str | None, job_id: str) -> dict:
 
 
 def claim_job(db_url: str | None, action: str) -> dict | None:
-    """Atomically claim the oldest queued job for one consumer."""
+    """Atomically claim the oldest queued job for one consumer.
+
+    The returned record carries a fresh ``lease_token``. The other mutators
+    (``finish_job``, ``heartbeat_job``) require it, so a worker that lost the
+    job (for example after a restart requeued it) cannot finish or keep alive
+    the run another process now owns.
+    """
     conn = _open(db_url)
     if conn is None:
         return None
@@ -241,14 +250,16 @@ def claim_job(db_url: str | None, action: str) -> dict | None:
             conn.commit()
             return None
         record = dict(row)
+        token = uuid.uuid4().hex
         changed = conn.execute(
-            "UPDATE video_duplicate_jobs SET state='processing', updated_at=%s "
+            "UPDATE video_duplicate_jobs SET state='processing', lease_token=%s, updated_at=%s "
             "WHERE id=%s AND state='queued'",
-            (int(time.time()), record["id"])).rowcount
+            (token, int(time.time()), record["id"])).rowcount
         if changed != 1:
             conn.rollback()
             return None
         conn.commit()
+        record["lease_token"] = token
         return record
     except UndefinedTable:
         conn.rollback()
@@ -279,8 +290,9 @@ def pending_actions(db_url: str | None) -> set[str]:
         conn.close()
 
 
-def finish_job(db_url: str | None, job_id: str, state: str, result: dict) -> bool:
-    """Finish a job without overwriting a terminal or cancelled state."""
+def finish_job(db_url: str | None, job_id: str, state: str, result: dict, *,
+               lease_token: str) -> bool:
+    """Finish a job this process claimed, without overwriting another owner's run."""
     if state not in {"done", "failed"}:
         raise ValueError("Job completion state must be 'done' or 'failed'.")
     serialized_result = json.dumps(result, ensure_ascii=False)
@@ -296,9 +308,9 @@ def finish_job(db_url: str | None, job_id: str, state: str, result: dict) -> boo
     conn = connect_queue(db_url)
     try:
         changed = conn.execute(
-            "UPDATE video_duplicate_jobs SET state=%s, result=%s, updated_at=%s "
-            "WHERE id=%s AND state IN ('queued','processing')",
-            (state, serialized_result, int(time.time()), job_id),
+            "UPDATE video_duplicate_jobs SET state=%s, result=%s, lease_token=NULL, updated_at=%s "
+            "WHERE id=%s AND state='processing' AND lease_token=%s",
+            (state, serialized_result, int(time.time()), job_id, lease_token),
         ).rowcount
         conn.commit()
         return changed == 1
@@ -309,14 +321,15 @@ def finish_job(db_url: str | None, job_id: str, state: str, result: dict) -> boo
         conn.close()
 
 
-def heartbeat_job(db_url: str | None, job_id: str, *, now: int | None = None) -> bool:
-    """Refresh the heartbeat for a still-processing durable job."""
+def heartbeat_job(db_url: str | None, job_id: str, *, now: int | None = None,
+                  lease_token: str) -> bool:
+    """Refresh the heartbeat for a job this process still owns."""
     conn = connect_queue(db_url)
     try:
         changed = conn.execute(
             "UPDATE video_duplicate_jobs SET updated_at=%s "
-            "WHERE id=%s AND state='processing'",
-            (int(time.time()) if now is None else int(now), job_id),
+            "WHERE id=%s AND state='processing' AND lease_token=%s",
+            (int(time.time()) if now is None else int(now), job_id, lease_token),
         ).rowcount
         conn.commit()
         return changed == 1
@@ -342,7 +355,8 @@ def requeue_processing(db_url: str | None, action: str) -> int:
         return 0
     try:
         cur = conn.execute(
-            "UPDATE video_duplicate_jobs SET state='queued', updated_at=%s WHERE action=%s AND state='processing'",
+            "UPDATE video_duplicate_jobs SET state='queued', lease_token=NULL, updated_at=%s "
+            "WHERE action=%s AND state='processing'",
             (int(time.time()), action))
         changed = cur.rowcount
         conn.commit()

@@ -185,6 +185,8 @@ class TestPerformerProposalIntegration(PgTestCase):
             media.mkdir()
             with flat_sync_binding(), \
                  patch.object(sync, "DATA_DIR", root / "data"), \
+                 patch("common.fuzzy_performers.make_backup",
+                       return_value=root / "pre-merge.dump.gz"), \
                  patch("common.fuzzy_performers.trigger_jellyfin_refresh", return_value=True) as refresh:
                 self.assertEqual(sync.process_video_duplicate_jobs(self.conn, media), 1)
             refresh.assert_called_once_with()
@@ -335,6 +337,32 @@ class TestPerformerProposalIntegration(PgTestCase):
             "SELECT performers FROM videos WHERE id='telegram:proposal-1'"
         ).fetchone()[0]), ["Alias Name", "Other Name"])
         self.assertEqual(wake, [])
+
+    def test_approval_refuses_to_reassign_an_alias_owned_by_another_performer(self):
+        self.conn.execute(
+            "INSERT INTO performer_aliases(alias,canonical) VALUES (%s,%s)",
+            ("alias name", "Other Performer"),
+        )
+        proposal_id = self.add_proposal("Alias Name")
+        self.conn.commit()
+
+        with self.assertRaises(performer_proposals.ProposalError) as raised:
+            performer_proposals.review_proposal(
+                self.db_url, proposal_id, {"action": "approve", "performer_id": "p1"},
+                wake_worker=lambda _worker: None,
+            )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("Other Performer", raised.exception.message)
+        self.assertEqual(self.conn.execute(
+            "SELECT canonical FROM performer_aliases WHERE alias='alias name'"
+        ).fetchone()[0], "Other Performer")
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM telegram_performer_proposals WHERE id=%s", (proposal_id,)
+        ).fetchone()[0], "pending")
+        self.assertEqual(json.loads(self.conn.execute(
+            "SELECT performers FROM videos WHERE id='telegram:proposal-1'"
+        ).fetchone()[0]), ["Alias Name", "Other Name"])
 
     def test_concurrent_reviews_apply_only_one_decision_and_at_most_one_refresh_job(self):
         proposal_id = self.add_proposal("Race Alias")

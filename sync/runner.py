@@ -490,7 +490,7 @@ def run_pending_sync_jobs() -> bool:
         while not heartbeat_stop.wait(SYNC_JOB_HEARTBEAT_INTERVAL_SECONDS):
             try:
                 if heartbeat_job:
-                    heartbeat_job(DB_URL, job["id"])
+                    heartbeat_job(DB_URL, job["id"], lease_token=job["lease_token"])
             except Exception as exc:
                 LOGGER.warning(f"[sync-daemon] Could not update sync-job heartbeat ({type(exc).__name__}).")
 
@@ -523,7 +523,8 @@ def run_pending_sync_jobs() -> bool:
                         "this pass was stopped by a shutdown.")
         else:
             try:
-                finalized = finish_job(DB_URL, job["id"], "done" if success else "failed", result)
+                finalized = finish_job(DB_URL, job["id"], "done" if success else "failed", result,
+                                       lease_token=job["lease_token"])
                 if not finalized:
                     LOGGER.warning(f"[sync-daemon] Sync job {job['id']} was no longer pending when its result arrived.")
             except Exception as e:

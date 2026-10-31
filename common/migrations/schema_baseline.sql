@@ -505,7 +505,8 @@ CREATE TABLE public.video_duplicate_jobs (
     payload text NOT NULL,
     result text,
     created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL
+    updated_at timestamp with time zone NOT NULL,
+    lease_token text
 );
 
 CREATE TABLE public.video_fingerprints (

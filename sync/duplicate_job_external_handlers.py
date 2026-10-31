@@ -224,7 +224,7 @@ def execute_external_operation(action, conn, job_id, payload, media_dir, service
                 if current_revision != expected_revision:
                     raise ValueError("Performer records changed after this preview. Create a new preview.")
         _core._record_job_progress(conn, job_id, "merging_performers")
-        result = fuzzy_performers.execute_performer_merges(db_url, media_dir, pairs, skip_backup=True)
+        result = fuzzy_performers.execute_performer_merges(db_url, media_dir, pairs)
         if not result.get("ok"):
             raise RuntimeError(result.get("error", "Performer merge failed."))
         return result, False

@@ -30,9 +30,10 @@ class TestSyncRunnerProcess(PgTestCase):
         heartbeat_seen = threading.Event()
         runner_module.DB_URL = self.db_url
         runner_module.claim_job = lambda _db_url, _action: {
-            "id": "active-sync-job", "payload": json.dumps({"source": "telegram:test"})
+            "id": "active-sync-job", "payload": json.dumps({"source": "telegram:test"}),
+            "lease_token": "lease-1",
         }
-        runner_module.heartbeat_job = Mock(side_effect=lambda *_args: heartbeat_seen.set())
+        runner_module.heartbeat_job = Mock(side_effect=lambda *_args, **_kwargs: heartbeat_seen.set())
         runner_module.SYNC_JOB_HEARTBEAT_INTERVAL_SECONDS = 0.01
         runner_module.run_full_sync = lambda *_args: (heartbeat_seen.wait(1), 0)
         runner_module.finish_job = Mock()
@@ -62,6 +63,7 @@ class TestSyncRunnerProcess(PgTestCase):
             current_pythonpath = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = os.pathsep.join(
                 part for part in (str(ROOT), current_pythonpath) if part)
+            env["DATABASE_URL"] = self.db_url
             env["CONFIG_PATH"] = str(ROOT / "tests/fixtures/config_telegram_only.yaml")
             env["SYNC_STATUS_FILE"] = str(status_file)
             env["SYNC_TRIGGER_FILE"] = str(trigger_file)
@@ -272,6 +274,7 @@ class TestSyncRunnerProcess(PgTestCase):
             current_pythonpath = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = os.pathsep.join(
                 part for part in (str(ROOT), current_pythonpath) if part)
+            env["DATABASE_URL"] = self.db_url
             env["CONFIG_PATH"] = str(config_file)
             env["SYNC_STATUS_FILE"] = str(status_file)
             env["SYNC_TRIGGER_FILE"] = str(trigger_file)
@@ -466,6 +469,7 @@ class TestSyncRunnerProcess(PgTestCase):
             current_pythonpath = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = os.pathsep.join(
                 part for part in (str(ROOT), current_pythonpath) if part)
+            env["DATABASE_URL"] = self.db_url
             env["CONFIG_PATH"] = str(config_file)
             env["SYNC_STATUS_FILE"] = str(status_file)
             env["SYNC_TRIGGER_FILE"] = str(trigger_file)

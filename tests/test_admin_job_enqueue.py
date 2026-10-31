@@ -21,8 +21,10 @@ class TestAdminJobEnqueue(PgTestCase):
 
         sync_id = enqueue_job(self.db_url, "sync", {})
         from common.job_queue import claim_job
-        self.assertIsNotNone(claim_job(self.db_url, "sync"))
-        self.assertTrue(heartbeat_job(self.db_url, sync_id, now=123456))
+        claimed = claim_job(self.db_url, "sync")
+        self.assertEqual(claimed["id"], sync_id)
+        self.assertTrue(heartbeat_job(self.db_url, sync_id, now=123456,
+                                      lease_token=claimed["lease_token"]))
         row = self.conn.execute(
             "SELECT state,updated_at FROM video_duplicate_jobs WHERE id=%s", (sync_id,)
         ).fetchone()
@@ -32,13 +34,44 @@ class TestAdminJobEnqueue(PgTestCase):
             self.conn.execute(
                 "UPDATE video_duplicate_jobs SET state='done' WHERE id=%s", (sync_id,)
             )
-        self.assertFalse(heartbeat_job(self.db_url, sync_id, now=123999))
+        self.assertFalse(heartbeat_job(self.db_url, sync_id, now=123999,
+                                       lease_token=claimed["lease_token"]))
         self.assertEqual(
             self.conn.execute(
                 "SELECT updated_at FROM video_duplicate_jobs WHERE id=%s", (sync_id,)
             ).fetchone()[0],
             123456,
         )
+
+    def test_only_the_claimant_can_finish_or_heartbeat_a_job(self):
+        from common.job_queue import claim_job, finish_job, heartbeat_job, requeue_processing
+
+        sync_id = enqueue_job(self.db_url, "sync", {})
+        claimed = claim_job(self.db_url, "sync")
+
+        self.assertFalse(finish_job(self.db_url, sync_id, "done", {}, lease_token="not-the-owner"))
+        self.assertFalse(heartbeat_job(self.db_url, sync_id, lease_token="not-the-owner"))
+        self.assertEqual(
+            self.conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s",
+                              (sync_id,)).fetchone()[0],
+            "processing",
+        )
+
+        # A restart requeues the orphaned job and voids the lost worker's token.
+        self.assertEqual(requeue_processing(self.db_url, "sync"), 1)
+        self.assertFalse(heartbeat_job(self.db_url, sync_id, lease_token=claimed["lease_token"]))
+        self.assertFalse(finish_job(self.db_url, sync_id, "done", {}, lease_token=claimed["lease_token"]))
+
+        reclaimed = claim_job(self.db_url, "sync")
+        self.assertNotEqual(reclaimed["lease_token"], claimed["lease_token"])
+        self.assertTrue(finish_job(self.db_url, sync_id, "done", {"ok": True},
+                                   lease_token=reclaimed["lease_token"]))
+        state, token = self.conn.execute(
+            "SELECT state,lease_token FROM video_duplicate_jobs WHERE id=%s", (sync_id,)
+        ).fetchone()
+        self.assertEqual((state, token), ("done", None))
+        self.assertFalse(finish_job(self.db_url, sync_id, "failed", {},
+                                    lease_token=reclaimed["lease_token"]))
 
     def test_pending_scan_is_read_only_and_preserves_worker_ownership(self):
         from common.job_queue import pending_actions

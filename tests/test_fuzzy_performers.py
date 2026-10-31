@@ -256,6 +256,74 @@ class TestFuzzyPerformersDatabase(PgTestCase):
         self.assertGreaterEqual(replay["nfos_updated"], 1)
         self.assertTrue(nfo_path.exists())
 
+    def test_failed_merge_rolls_back_every_database_change(self):
+        with self.conn:
+            for vid, name in (("test:a1", "Alias One"), ("test:a2", "Alias Two")):
+                self.conn.execute(
+                    "INSERT INTO videos (id, provider, title, performers) VALUES (%s, 'test', %s, %s)",
+                    (vid, vid, json.dumps([name])),
+                )
+            self.conn.execute(
+                "INSERT INTO performer_photos (name, thumb, updated_at) "
+                "VALUES ('Alias One', 'http://img/a.jpg', 1)")
+            self.conn.execute(
+                "INSERT INTO performer_bios (name, bio, birth, aliases, updated_at) "
+                "VALUES ('Alias One', 'A bio', '1990', '[]', 1)")
+
+        merges = [("Alias One", "Canon Alpha"), ("Alias Two", "Canon Beta")]
+        # Fail while the second alias mapping is written, after videos, photos
+        # and bios for both merges were already changed in the transaction.
+        with patch("common.fuzzy_performers.is_safe_alias",
+                   side_effect=[True, RuntimeError("simulated crash")]):
+            with self.assertRaisesRegex(RuntimeError, "simulated crash"):
+                execute_performer_merges(TEST_URL, self.media_dir, merges, skip_backup=True)
+
+        perfs = {
+            row[0]: json.loads(row[1])
+            for row in self.conn.execute("SELECT id, performers FROM videos ORDER BY id")
+        }
+        self.assertEqual(perfs, {"test:a1": ["Alias One"], "test:a2": ["Alias Two"]})
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM performer_aliases").fetchone()[0], 0)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT thumb FROM performer_photos WHERE name = 'Alias One'").fetchone()[0],
+            "http://img/a.jpg",
+        )
+        self.assertIsNone(
+            self.conn.execute("SELECT 1 FROM performer_photos WHERE name = 'Canon Alpha'").fetchone())
+        self.assertEqual(
+            [row[0] for row in self.conn.execute("SELECT name FROM performer_bios")],
+            ["Alias One"],
+        )
+
+    def test_merge_keeps_canonical_bio_aliases_when_filling_missing_fields(self):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO performer_bios (name, bio, birth, aliases, updated_at) "
+                "VALUES ('Canon Name', '', '', %s, 1)",
+                (json.dumps(["Canon Alias"]),),
+            )
+            self.conn.execute(
+                "INSERT INTO performer_bios (name, bio, birth, aliases, updated_at) "
+                "VALUES ('Alias Name', 'Filled bio', '1980', %s, 2)",
+                (json.dumps(["First Alias", "canon alias"]),),
+            )
+
+        res = execute_performer_merges(
+            TEST_URL, self.media_dir, [("Alias Name", "Canon Name")], skip_backup=True)
+
+        self.assertTrue(res["ok"])
+        row = self.conn.execute(
+            "SELECT bio, birth, aliases FROM performer_bios WHERE name = 'Canon Name'").fetchone()
+        self.assertEqual(row[0], "Filled bio")
+        self.assertEqual(row[1], "1980")
+        aliases = json.loads(row[2]) if isinstance(row[2], str) else row[2]
+        self.assertEqual(aliases, ["Canon Alias", "First Alias"])
+        self.assertIsNone(
+            self.conn.execute(
+                "SELECT 1 FROM performer_bios WHERE name = 'Alias Name'").fetchone())
+
 
 
     def test_find_fuzzy_performer_candidates_ignores_editors_cut_and_fucked(self):

@@ -316,6 +316,27 @@ class TestMigrationsEngine(PgTestCase):
         self.assertEqual([migration.version for migration in applied], [m.version for m in MIGRATIONS])
         self.assertTrue(get_migration_status(self.conn).is_up_to_date)
 
+    def test_current_schema_without_history_over_data_is_refused(self):
+        # Replaying CURRENT_MIGRATIONS is not a no-op: it resets Telegram
+        # backfill, disables duplicate reconciliation and rewrites schedules.
+        # Losing schema_migrations on a populated hub must abort instead.
+        build_baseline_schema(self.conn)
+        self.addCleanup(recreate_database, self.conn)
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO videos (id, title, duration) VALUES ('v-lost', 'Lost', 600)")
+        with self.assertRaisesRegex(RuntimeError, "history cannot be trusted"):
+            get_migration_status(self.conn)
+        with self.assertRaisesRegex(RuntimeError, "history cannot be trusted"):
+            apply_migrations(self.conn)
+        self.assertEqual(
+            self.conn.execute("SELECT title FROM videos WHERE id = 'v-lost'").fetchone()[0],
+            "Lost",
+        )
+        self.assertEqual(
+            self.conn.execute(f"SELECT count(*) FROM {SCHEMA_MIGRATIONS_TABLE}").fetchone()[0], 0
+        )
+
     def test_existing_v8_database_is_squashed_without_rewriting_data(self):
         recreate_database(self.conn, target_version=8)
         self.conn.execute(
@@ -375,6 +396,7 @@ class TestMigrationsEngine(PgTestCase):
             (57, "0057_split_phash_jobs"),
             (58, "0058_cron_schedules"),
             (59, "0059_metadata_proposal_retries"),
+            (60, "0060_video_job_lease_token"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):

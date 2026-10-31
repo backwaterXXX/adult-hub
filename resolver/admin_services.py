@@ -98,6 +98,8 @@ def _jobs_connection(db_url: str | None) -> db.Connection | None:
 
 def _public_job(row: db.Record, *, include_failure_code: bool = False) -> dict:
     item = dict(row)
+    # An ownership token is internal coordination, never part of the API contract.
+    item.pop("lease_token", None)
     item["payload"] = json.loads(item["payload"])
     item["payload"].pop("fingerprints", None)
     item["result"] = json.loads(item["result"]) if item["result"] else None

@@ -1649,7 +1649,7 @@ class TestVideoDuplicateJobs(PgTestCase):
         with patch("fuzzy_performers.execute_performer_merges", return_value={
                 "ok": True, "videos_updated": 1, "nfos_updated": 1, "message": "merged"}) as execute:
             self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
-        execute.assert_called_once_with(self.db_path, self.media, [("Alias Name", "Canonical Name")], skip_backup=True)
+        execute.assert_called_once_with(self.db_path, self.media, [("Alias Name", "Canonical Name")])
         state, result = self.conn.execute(
             "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
         self.assertEqual(state, "done")
@@ -1682,7 +1682,7 @@ class TestVideoDuplicateJobs(PgTestCase):
                 "ok": True, "videos_updated": 1, "nfos_updated": 1, "message": "merged"}) as execute:
             self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         execute.assert_called_once_with(
-            self.db_path, self.media, [("Alias Name", "Canonical Name")], skip_backup=True)
+            self.db_path, self.media, [("Alias Name", "Canonical Name")])
         state, result = self.conn.execute(
             "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
         self.assertEqual(state, "done")

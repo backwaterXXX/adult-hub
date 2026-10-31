@@ -146,6 +146,21 @@ def _name_exists(conn, table, name, *, _core):
     return conn.execute(
         f"SELECT 1 FROM {table} WHERE lower(name)=lower(%s) LIMIT 1", (name,)).fetchone() is not None
 
+
+def _merge_alias_values(existing, incoming, *, _core):
+    """Union two ``performer_bios.aliases`` values, canonical entries first."""
+    merged: List[str] = []
+    seen = set()
+    for value in (existing, incoming):
+        for name in _core["_json_list"](value):
+            if not isinstance(name, str):
+                continue
+            key = name.strip().casefold()
+            if key and key not in seen:
+                seen.add(key)
+                merged.append(name)
+    return _core["json"].dumps(merged)
+
 def execute_performer_merges(db_url, media_dir, merges, skip_backup=False, *, _core):
     """Merge alias and canonical pairs in the database and NFO files."""
     media_dir = Path(media_dir)
@@ -195,51 +210,53 @@ def execute_performer_merges(db_url, media_dir, merges, skip_backup=False, *, _c
                         + ", ".join(protected[:4])
                     )
 
-        # 1. Update videos.performers
-        video_updates: List[Tuple[str, List[str]]] = []
-        if "videos" in tables:
-            resolved_merges_lower = {k.lower(): v for k, v in resolved_merges.items()}
-            rows = conn.execute(
-                "SELECT id, performers FROM videos WHERE performers <> '[]'::jsonb"
-            ).fetchall()
-            for vid_id, raw_json in rows:
-                try:
-                    arr = _core["_json_list"](raw_json)
-                    if not arr:
+        # Steps 1-5 share one transaction: a crash must not leave a half-merged
+        # identity with videos renamed but bios or aliases still on the old name.
+        # NFO files are rewritten only after this commits.
+        with conn:
+            # 1. Update videos.performers
+            video_updates: List[Tuple[str, List[str]]] = []
+            if "videos" in tables:
+                resolved_merges_lower = {k.lower(): v for k, v in resolved_merges.items()}
+                rows = conn.execute(
+                    "SELECT id, performers FROM videos WHERE performers <> '[]'::jsonb"
+                ).fetchall()
+                for vid_id, raw_json in rows:
+                    try:
+                        arr = _core["_json_list"](raw_json)
+                        if not arr:
+                            continue
+                    except Exception:
                         continue
-                except Exception:
-                    continue
 
-                changed = False
-                new_list = []
-                seen = set()
-                for p in arr:
-                    target = resolved_merges.get(p) or resolved_merges_lower.get(str(p).lower(), p)
-                    if target and target not in seen:
-                        seen.add(target)
-                        new_list.append(target)
-                    if target != p or len(new_list) != len(arr):
-                        changed = True
+                    changed = False
+                    new_list = []
+                    seen = set()
+                    for p in arr:
+                        target = resolved_merges.get(p) or resolved_merges_lower.get(str(p).lower(), p)
+                        if target and target not in seen:
+                            seen.add(target)
+                            new_list.append(target)
+                        if target != p or len(new_list) != len(arr):
+                            changed = True
 
-                if changed and new_list != arr:
-                    video_updates.append((vid_id, new_list))
+                    if changed and new_list != arr:
+                        video_updates.append((vid_id, new_list))
 
-            with conn:
                 for vid_id, new_list in video_updates:
                     conn.execute(
                         "UPDATE videos SET performers = %s WHERE id = %s",
                         (_core["json"].dumps(new_list), vid_id),
                     )
 
-        # 2. Migrate performer_photos
-        photos_migrated = 0
-        if "performer_photos" in tables:
-            photo_rows = dict(
-                conn.execute("SELECT name, thumb FROM performer_photos").fetchall()
-            )
-            photo_rows_lower = {k.lower(): (k, v) for k, v in photo_rows.items()}
-            now_ts = int(_core["time"].time())
-            with conn:
+            # 2. Migrate performer_photos
+            photos_migrated = 0
+            if "performer_photos" in tables:
+                photo_rows = dict(
+                    conn.execute("SELECT name, thumb FROM performer_photos").fetchall()
+                )
+                photo_rows_lower = {k.lower(): (k, v) for k, v in photo_rows.items()}
+                now_ts = int(_core["time"].time())
                 for alias, canon in resolved_merges.items():
                     if alias.lower() in photo_rows_lower:
                         orig_alias, alias_thumb = photo_rows_lower[alias.lower()]
@@ -255,17 +272,16 @@ def execute_performer_merges(db_url, media_dir, merges, skip_backup=False, *, _c
                             "DELETE FROM performer_photos WHERE lower(name) = lower(%s)", (alias,)
                         )
 
-        # 3. Migrate performer_bios
-        bios_migrated = 0
-        if "performer_bios" in tables:
-            bio_rows = {
-                r[0]: r[1:]
-                for r in conn.execute(
-                    "SELECT name, bio, birth, aliases, updated_at FROM performer_bios"
-                ).fetchall()
-            }
-            bio_rows_lower = {k.lower(): (k, v) for k, v in bio_rows.items()}
-            with conn:
+            # 3. Migrate performer_bios
+            bios_migrated = 0
+            if "performer_bios" in tables:
+                bio_rows = {
+                    r[0]: r[1:]
+                    for r in conn.execute(
+                        "SELECT name, bio, birth, aliases, updated_at FROM performer_bios"
+                    ).fetchall()
+                }
+                bio_rows_lower = {k.lower(): (k, v) for k, v in bio_rows.items()}
                 for alias, canon in resolved_merges.items():
                     if alias.lower() in bio_rows_lower:
                         orig_alias, (raw_bio, raw_birth, raw_aliases, raw_updated_at) = bio_rows_lower[alias.lower()]
@@ -278,8 +294,10 @@ def execute_performer_merges(db_url, media_dir, merges, skip_backup=False, *, _c
                             )
                             bios_migrated += 1
                         else:
-                            base_bio, base_birth, _, _ = bio_rows[canon]
+                            base_bio, base_birth, base_aliases, _ = bio_rows[canon]
                             if (not base_bio and raw_bio) or (not base_birth and raw_birth):
+                                # Fill the gaps but keep the canonical profile's
+                                # own aliases; the merged name joins them.
                                 conn.execute(
                                     "INSERT INTO performer_bios (name, bio, birth, aliases, updated_at) VALUES (%s, %s, %s, %s, %s) "
                                     "ON CONFLICT (name) DO UPDATE SET bio=EXCLUDED.bio, birth=EXCLUDED.birth, "
@@ -288,17 +306,16 @@ def execute_performer_merges(db_url, media_dir, merges, skip_backup=False, *, _c
                                         canon,
                                         base_bio or raw_bio,
                                         base_birth or raw_birth,
-                                        raw_aliases,
+                                        _merge_alias_values(base_aliases, raw_aliases, _core=_core),
                                         raw_updated_at,
                                     ),
                                 )
                                 bios_migrated += 1
                         conn.execute("DELETE FROM performer_bios WHERE lower(name) = lower(%s)", (alias,))
 
-        # 4. Add entries to performer_aliases
-        aliases_added = 0
-        if "performer_aliases" in tables:
-            with conn:
+            # 4. Add entries to performer_aliases
+            aliases_added = 0
+            if "performer_aliases" in tables:
                 for alias, canon in resolved_merges.items():
                     if not _core["is_safe_alias"](alias, canon):
                         continue
@@ -311,9 +328,8 @@ def execute_performer_merges(db_url, media_dir, merges, skip_backup=False, *, _c
                     )
                     aliases_added += 1
 
-        # 5. Delete obsolete entries from jellyfin_person_sync
-        if "jellyfin_person_sync" in tables:
-            with conn:
+            # 5. Delete obsolete entries from jellyfin_person_sync
+            if "jellyfin_person_sync" in tables:
                 for alias in resolved_merges.keys():
                     conn.execute(
                         "DELETE FROM jellyfin_person_sync WHERE lower(name) = lower(%s)",

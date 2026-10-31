@@ -1032,7 +1032,8 @@ class TestWakeSignal(RunnerHarness):
 
 class TestDurableSyncJobs(RunnerHarness):
     def job(self, payload=None, **overrides):
-        job = {"id": "job-one", "payload": json.dumps(payload) if payload is not None else "{}"}
+        job = {"id": "job-one", "payload": json.dumps(payload) if payload is not None else "{}",
+               "lease_token": "lease-1"}
         job.update(overrides)
         return job
 
@@ -1162,7 +1163,7 @@ class TestDurableSyncJobs(RunnerHarness):
         module.SYNC_JOB_HEARTBEAT_INTERVAL_SECONDS = 0.01
         beat = threading.Event()
         self.record("claim_job", result=self.job())
-        self.record("heartbeat_job", side_effect=lambda *_a: beat.set())
+        self.record("heartbeat_job", side_effect=lambda *_a, **_k: beat.set())
         self.record("run_full_sync", result=(True, 0), side_effect=lambda *_a: beat.wait(2))
         finished = self.record("finish_job", result=True)
         self.record("_clear_sync_trigger")

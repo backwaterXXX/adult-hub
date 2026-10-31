@@ -35,6 +35,7 @@ from common.migrations.m0056_performer_alias_canonical_index import (
 from common.migrations.m0057_split_phash_jobs import current_migration as current_split_phash_jobs
 from common.migrations.m0058_cron_schedules import current_migration as current_cron_schedules
 from common.migrations.m0059_metadata_proposal_retries import current_migration as current_metadata_proposal_retries
+from common.migrations.m0060_video_job_lease_token import current_migration as current_video_job_lease_token
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ CURRENT_MIGRATIONS: tuple[Migration, ...] = (
     current_video_visual_timestamps, current_video_visual_history, current_telegram_latest_cursor,
     current_duplicate_reconcile_opt_in, current_performer_alias_canonical_index,
     current_split_phash_jobs, current_cron_schedules, current_metadata_proposal_retries,
+    current_video_job_lease_token,
 )
 MIGRATIONS: tuple[Migration, ...] = (baseline, *CURRENT_MIGRATIONS)
 
@@ -290,6 +292,16 @@ def _untrusted_history(applied: list[MigrationRecord]) -> RuntimeError:
     )
 
 
+def _lost_history(applied: list[MigrationRecord]) -> RuntimeError:
+    recorded = ", ".join(str(record.version) for record in applied) or "nothing"
+    return RuntimeError(
+        f"Schema history cannot be trusted: the database already holds hub tables and data, "
+        f"but schema_migrations records {recorded}. Refusing to replay the current migration "
+        "chain over existing data or to stamp it as current. Restore a dump that includes "
+        "schema_migrations, or rebuild the database."
+    )
+
+
 def _plan_for_connection(
     conn: db.Connection,
     applied: list[MigrationRecord],
@@ -302,6 +314,11 @@ def _plan_for_connection(
     chain instead, it is an interrupted pre-squash upgrade: harmless to finish
     while the tables are still empty, dangerous once they hold data, because the
     squashed chain is not idempotent and two of its steps rewrite rows.
+
+    No history at all over a populated schema is the same hazard for the current
+    chain: replaying CURRENT_MIGRATIONS resets Telegram backfill, disables
+    duplicate reconciliation and rewrites cron schedules. Only a data-free schema
+    may be stamped.
     """
     pre_squash_schema = False
     if _has_tables(conn):
@@ -310,6 +327,8 @@ def _plan_for_connection(
             pre_squash_schema = _schema_predates_squash(conn)
             if pre_squash_schema and (not applied or _has_application_data(conn)):
                 raise _untrusted_history(applied)
+            if not applied and _has_application_data(conn):
+                raise _lost_history(applied)
     return _migration_plan(applied, target_version, pre_squash_schema=pre_squash_schema)
 
 

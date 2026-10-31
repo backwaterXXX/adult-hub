@@ -375,48 +375,35 @@ async def prometheus_metrics(request: Request):
 
 
 
-@api.get("/api/performer-bio")
-async def performer_bio(name: str = ""):
-    """Performer information from PBC, StashDB, and local photos.
-
-    Populated by sync (backfill_pbc, backfill_tpdb, backfill_stashdb); resolver
-    only reads (DATABASE_URL). Missing row -> 404.
-    """
+def _performer_bio_payload(wanted: str) -> dict:
+    """Blocking performer lookup; the endpoint runs it off the event loop."""
     import json as _json
 
-    wanted = (name or "").strip()
-    if not wanted:
-        raise HTTPException(status_code=404, detail="Missing performer name")
+    conn = db.connect(os.getenv("DATABASE_URL") or None)
     try:
-        conn = db.connect(os.getenv("DATABASE_URL") or None)
-        try:
-            tables = db.table_names(conn)
-            canonical = wanted
-            if "performer_aliases" in tables:
-                alias_row = conn.execute(
-                    "SELECT canonical FROM performer_aliases WHERE lower(alias) = lower(%s)",
-                    (wanted,),
-                ).fetchone()
-                if alias_row:
-                    canonical = alias_row[0]
-            cols = set(db.table_columns(conn, "performer_bios")) if "performer_bios" in tables else set()
-            nat_col = "nationality" if "nationality" in cols else "''"
-            row = (conn.execute(
-                f"SELECT bio, birth, aliases, updated_at, {nat_col} FROM performer_bios "
-                "WHERE lower(name) = lower(%s)", (canonical,)).fetchone()
-                if "performer_bios" in tables else None)
-            aliases = ([r[0] for r in conn.execute(
-                "SELECT alias FROM performer_aliases WHERE lower(canonical) = lower(%s)",
-                (canonical,)).fetchall()] if "performer_aliases" in tables else [])
-            photo = (conn.execute(
-                "SELECT thumb FROM performer_photos WHERE lower(name) = lower(%s)",
-                (canonical,)).fetchone() if "performer_photos" in tables else None)
-        finally:
-            conn.close()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"HUB DB lookup failed: {e}")
+        tables = db.table_names(conn)
+        canonical = wanted
+        if "performer_aliases" in tables:
+            alias_row = conn.execute(
+                "SELECT canonical FROM performer_aliases WHERE lower(alias) = lower(%s)",
+                (wanted,),
+            ).fetchone()
+            if alias_row:
+                canonical = alias_row[0]
+        cols = set(db.table_columns(conn, "performer_bios")) if "performer_bios" in tables else set()
+        nat_col = "nationality" if "nationality" in cols else "''"
+        row = (conn.execute(
+            f"SELECT bio, birth, aliases, updated_at, {nat_col} FROM performer_bios "
+            "WHERE lower(name) = lower(%s)", (canonical,)).fetchone()
+            if "performer_bios" in tables else None)
+        aliases = ([r[0] for r in conn.execute(
+            "SELECT alias FROM performer_aliases WHERE lower(canonical) = lower(%s)",
+            (canonical,)).fetchall()] if "performer_aliases" in tables else [])
+        photo = (conn.execute(
+            "SELECT thumb FROM performer_photos WHERE lower(name) = lower(%s)",
+            (canonical,)).fetchone() if "performer_photos" in tables else None)
+    finally:
+        conn.close()
     if row is None and (photo is None or not photo[0]):
         raise HTTPException(status_code=404, detail=f"No info for performer '{wanted}'")
     bio, birth, aliases_raw, updated_at, nationality = row if row else (None, None, None, None, "")
@@ -434,6 +421,29 @@ async def performer_bio(name: str = ""):
         "photo_url": photo[0] if photo and photo[0] else "",
         "updated_at": updated_at or 0,
     }
+
+
+@api.get("/api/performer-bio")
+async def performer_bio(request: Request, name: str = ""):
+    """Performer information from PBC, StashDB, and local photos.
+
+    Populated by sync (backfill_pbc, backfill_tpdb, backfill_stashdb); resolver
+    only reads (DATABASE_URL). Missing row -> 404. Profile data is admin-only,
+    so a request blocked from the admin surface must not read it either.
+    """
+    if admin_module._admin_blocked(request):
+        return JSONResponse({"error": "Admin is only available locally."}, status_code=403)
+    wanted = (name or "").strip()
+    if not wanted:
+        raise HTTPException(status_code=404, detail="Missing performer name")
+    try:
+        return await asyncio.to_thread(_performer_bio_payload, wanted)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Drivers can echo hosts, credentials or SQL in their messages.
+        logger.warning(f"Performer bio lookup failed ({type(exc).__name__}).")
+        raise HTTPException(status_code=502, detail="HUB DB lookup failed.")
 
 
 def _parse_play_id_or_400(video_id: str) -> Tuple[str, str]:

@@ -382,10 +382,22 @@ def review_proposal(
                 from common.performer_profiles import get_override_fields
                 aliases_locked = "aliases" in get_override_fields(conn, canonical)
                 if normalize_name(alias) != normalize_name(canonical) and not aliases_locked:
-                    conn.execute("""
-                        INSERT INTO performer_aliases(alias,canonical) VALUES(%s,%s)
-                        ON CONFLICT(alias) DO UPDATE SET canonical=EXCLUDED.canonical
-                    """, (alias.casefold(), canonical))
+                    from common.performers import is_safe_alias
+                    if is_safe_alias(alias, canonical):
+                        owner = conn.execute(
+                            "SELECT canonical FROM performer_aliases WHERE lower(alias)=lower(%s)",
+                            (alias,),
+                        ).fetchone()
+                        if owner and str(owner[0] or "").strip().casefold() != canonical.casefold():
+                            raise ProposalError(
+                                409,
+                                f"Alias '{alias}' is already assigned to '{owner[0]}'. "
+                                "Merge the two performers or approve this proposal for that performer.",
+                            )
+                        conn.execute("""
+                            INSERT INTO performer_aliases(alias,canonical) VALUES(%s,%s)
+                            ON CONFLICT(alias) DO UPDATE SET canonical=EXCLUDED.canonical
+                        """, (alias.casefold(), canonical))
 
             current = conn.execute("SELECT performers FROM videos WHERE id=%s FOR UPDATE", (video_id,)).fetchone()
             names = current[0] if current else []

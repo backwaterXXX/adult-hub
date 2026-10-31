@@ -1033,12 +1033,25 @@ class TestPerformerBio(ResolverHarness):
 
     def test_a_broken_catalog_is_a_bad_gateway(self):
         module = self.load()
-        self.use_database(module, error=RuntimeError("catalog is down"))
+        self.use_database(module, error=RuntimeError("password=supersecret host=db.internal"))
 
         response = self.performer(module)
 
         self.assertEqual(response.status_code, 502)
-        self.assertIn("HUB DB lookup failed", response.json()["detail"])
+        self.assertEqual(response.json()["detail"], "HUB DB lookup failed.")
+        self.assertNotIn("supersecret", response.text)
+        self.assertNotIn("db.internal", response.text)
+
+    def test_admin_profile_data_is_hidden_from_a_blocked_client(self):
+        module = self.load()
+        self.use_admin(module, blocked=True)
+        database = self.use_database(module)
+
+        response = self.performer(module)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertNotIn("Bunny", response.text)
+        self.assertEqual(database.urls, [])
 
 
 class TestStreamUrlValidation(ResolverHarness):

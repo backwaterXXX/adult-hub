@@ -94,10 +94,11 @@ class TestPerformerProposalService(unittest.TestCase):
         self.assertIn("status='rejected'", conn.calls[-1][0])
 
     def test_approve_updates_alias_and_catalog_then_queues_refresh(self):
+        # "Alias" is a generic single word, so it is approved for the video and
+        # catalogue but deliberately not recorded in performer_aliases.
         conn = FakeConnection([
             ("video-1", "Alias", "pending", False),
             ("Canonical Name",),
-            None,
             None,
             None,
             (["Alias", "Other"],),
@@ -118,7 +119,29 @@ class TestPerformerProposalService(unittest.TestCase):
         self.assertEqual(wake, ["jobs"])
         updates = [params for sql, params in conn.calls if sql.startswith("UPDATE videos SET performers")]
         self.assertEqual(updates, [("[\"Canonical Name\", \"Other\"]", "video-1")])
+        self.assertFalse(any(sql.startswith("INSERT INTO performer_aliases") for sql, _ in conn.calls))
         self.assertTrue(conn.committed and conn.closed)
+
+    def test_approval_does_not_steal_an_alias_owned_by_another_performer(self):
+        conn = FakeConnection([
+            ("video-1", "Alias Name", "pending", False),
+            ("Canonical Name",),
+            None,
+            None,
+            ("Other Performer",),
+        ])
+        wake = []
+        with patch.object(performer_proposals.db, "connect", return_value=conn):
+            with self.assertRaises(performer_proposals.ProposalError) as raised:
+                performer_proposals.review_proposal(
+                    "db", 10, {"action": "approve", "performer_id": "p1"},
+                    wake_worker=wake.append,
+                )
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("Other Performer", raised.exception.message)
+        self.assertFalse(any(sql.startswith("INSERT INTO performer_aliases") for sql, _ in conn.calls))
+        self.assertTrue(conn.rolled_back and conn.closed)
+        self.assertEqual(wake, [])
 
     def test_manual_override_conflict_rolls_back_without_queueing(self):
         conn = FakeConnection([("video-1", "Alias", "pending", True)])
