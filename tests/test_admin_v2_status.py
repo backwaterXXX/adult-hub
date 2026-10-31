@@ -218,14 +218,38 @@ class TestAdminV2Status(unittest.IsolatedAsyncioTestCase):
         admin_module._sync_status = lambda: {
             "running": False, "status_text": "Waiting for next run", "error": "/private/status.json denied",
         }
+        admin_module._sync_history = lambda _limit=1: {"runs": []}
         endpoint = next(route.endpoint for route in admin_v2_status.build_router(admin_module).routes
                         if route.path == "/api/v2/status")
         response = await endpoint(request("/admin/api/v2/status"))
         self.assertEqual(response["sync"], {
             "available": False, "running": False, "freshness": "unknown",
-            "status_text": "Status unavailable",
+            "status_text": "Status unavailable", "history_available": True, "last_run": None,
         })
         self.assertNotIn("private", str(response))
+
+    async def test_unreadable_sync_history_is_unavailable_rather_than_absent(self):
+        admin_module = admin()
+        admin_module._sync_status = lambda: {"available": True, "running": False, "last_success": True}
+        endpoint = next(route.endpoint for route in admin_v2_status.build_router(admin_module).routes
+                        if route.path == "/api/v2/status")
+        for history in ({"runs": [], "error": "/private/sync-history.log denied"},
+                        {"runs": []}):
+            with self.subTest(history=str(history)):
+                admin_module._sync_history = lambda _limit=1, history=history: history
+                response = await endpoint(request("/admin/api/v2/status"))
+                self.assertIsNone(response["sync"]["last_run"])
+                self.assertEqual(response["sync"]["history_available"], "error" not in history)
+                self.assertNotIn("private", str(response["sync"]))
+
+        def broken(_limit):
+            raise OSError("/private/sync-history.log denied")
+
+        admin_module._sync_history = broken
+        response = await endpoint(request("/admin/api/v2/status"))
+        self.assertFalse(response["sync"]["history_available"])
+        self.assertIsNone(response["sync"]["last_run"])
+        self.assertNotIn("private", str(response["sync"]))
 
     async def test_sync_status_freshness_uses_two_configured_intervals_and_missing_is_unknown(self):
         endpoint = next(route.endpoint for route in admin_v2_status.build_router(admin()).routes
@@ -236,6 +260,8 @@ class TestAdminV2Status(unittest.IsolatedAsyncioTestCase):
             config.write_text("sync:\n  interval_minutes: 60\nsources: []\n", encoding="utf-8")
             admin_module = admin()
             admin_module.CONFIG_PATH = config
+            admin_module._sync_history = lambda _limit=1: {"runs": [
+                {"started_at": now - 600, "ended_at": now - 60, "success": True, "private_path": "/private/history"}]}
             states = [
                 ({"available": True, "exists": True, "running": False,
                   "last_success": True, "updated_at": now - 3600}, "fresh", "Last run succeeded"),
@@ -255,12 +281,22 @@ class TestAdminV2Status(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(result["sync"]["freshness"], freshness)
                     self.assertEqual(result["sync"]["status_text"], status_text)
 
+                # The recorded run time, not the status-read time, answers "when did the last sync run?".
+                self.assertEqual(result["sync"]["last_run"], {
+                    "started_at": "2027-01-15T07:50:00Z",
+                    "ended_at": "2027-01-15T07:59:00Z",
+                    "success": True,
+                })
+                self.assertTrue(result["sync"]["history_available"])
+                self.assertNotIn("private", str(result["sync"]))
+
             missing_status = Path(directory) / "missing-status.json"
             admin_module._sync_status = lambda: admin_data.sync_status(missing_status)
+            admin_module._sync_history = lambda _limit=1: {"runs": []}
             missing = await endpoint(request("/admin/api/v2/status"))
             self.assertEqual(missing["sync"], {
                 "available": False, "running": False, "freshness": "unknown",
-                "status_text": "Status unavailable",
+                "status_text": "Status unavailable", "history_available": True, "last_run": None,
             })
 
             daily_config = Path(directory) / "daily.yaml"

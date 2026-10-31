@@ -87,6 +87,57 @@ def _sanitized_sync_status(sync, sync_stale_after):
     return sync_result
 
 
+def _sync_history_for_status(admin):
+    """Read the newest synchronization run, tolerating an absent history file."""
+    reader = getattr(admin, "_sync_history", None)
+    if not callable(reader):
+        return {"runs": [], "error": "History reader unavailable"}
+    try:
+        return reader(1)
+    except Exception:
+        return {"runs": [], "error": "Sync history is unavailable."}
+
+
+def _iso_run_timestamp(value):
+    """Normalize a history run timestamp without echoing unexpected shapes."""
+    from common.admin_job_health import timestamp_seconds
+
+    stamp = timestamp_seconds(value)
+    if stamp is None:
+        return None
+    return datetime.fromtimestamp(stamp, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _last_sync_run(sync_result, history):
+    """Attach the newest recorded synchronization run to the sync contract.
+
+    The status file says whether a run is in flight; only the history file says
+    when the last completed run happened and how it ended. A missing history
+    file is reported as no history, an unreadable one as unavailable.
+    """
+    available = isinstance(history, dict) and not history.get("error")
+    sync_result["history_available"] = available
+    sync_result["last_run"] = None
+    if not available:
+        return
+    runs = history.get("runs")
+    run = runs[0] if isinstance(runs, list) and runs and isinstance(runs[0], dict) else None
+    if run is None:
+        return
+
+    last_run = {
+        "started_at": _iso_run_timestamp(run.get("started_at")),
+        "ended_at": _iso_run_timestamp(run.get("ended_at") or run.get("started_at")),
+    }
+    success = run.get("success")
+    if type(success) is bool:
+        last_run["success"] = success
+    interrupted = run.get("interrupted")
+    if type(interrupted) is bool:
+        last_run["interrupted"] = interrupted
+    sync_result["last_run"] = last_run
+
+
 async def _jellyfin_probe():
     """Make a bounded, unauthenticated reachability probe without returning server details."""
     import os
@@ -336,10 +387,11 @@ def build_router(admin):
     async def admin_v2_status(request: Request):
         if admin._admin_blocked(request):
             return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
-        db, sync, sync_stale_after = await asyncio.gather(
+        db, sync, sync_stale_after, sync_history = await asyncio.gather(
             asyncio.to_thread(admin._db_stats),
             asyncio.to_thread(admin._sync_status),
             asyncio.to_thread(_sync_stale_after_seconds, admin.CONFIG_PATH, admin.HUB_DB_URL),
+            asyncio.to_thread(_sync_history_for_status, admin),
         )
         runtime = {}
         app = request.scope.get("app")
@@ -418,6 +470,7 @@ def build_router(admin):
                 if isinstance(value, (str, int, float)) and len(str(value)) <= 64:
                     db_result[key] = value
         sync_result = _sanitized_sync_status(sync, sync_stale_after)
+        _last_sync_run(sync_result, sync_history)
         return {
             "ok": True,
             "time_human": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

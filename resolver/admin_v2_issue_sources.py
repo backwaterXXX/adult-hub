@@ -67,6 +67,9 @@ def collect_source_issues(admin, now, health, issues):
                 "The latest recorded run for this source failed. Check the source and retry synchronization.",
                 "source", source_id, run_time, run_time, "Open source",
                 f"/admin/v2/?source_id={quote(source_id, safe='')}#sources",
+                operation_id=source_id,
+                operation_label=display,
+                list_route=f"/admin/v2/?source_id={quote(source_id, safe='')}#sources",
             ))
         # A never-run source is a different operational state from a failed
         # run. Do not infer that from a truncated history window.

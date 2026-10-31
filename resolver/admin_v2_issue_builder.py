@@ -33,8 +33,16 @@ def _iso_time(value):
 
 
 def _issue(kind, severity, title, message, object_type, object_id,
-           first_seen, last_seen, label, route):
-    return {
+           first_seen, last_seen, label, route, *,
+           operation_id=None, operation_label=None, list_route=None):
+    """Build one issue row.
+
+    ``operation_id`` names the operation that reported the problem (a task
+    action, a source, an audit category) and is what the Overview groups by;
+    it is always passed in, never recovered from the message text.
+    ``list_route`` is where a group that covers many objects should link.
+    """
+    issue = {
         "kind": kind,
         "severity": severity,
         "status": "open",
@@ -45,7 +53,13 @@ def _issue(kind, severity, title, message, object_type, object_id,
         "first_seen": first_seen,
         "last_seen": last_seen,
         "action": {"label": label, "route": route},
+        "operation_id": str(operation_id if operation_id is not None else object_id or "")[:120],
     }
+    if operation_label is not None:
+        issue["operation_label"] = str(operation_label)[:120]
+    if list_route is not None:
+        issue["list_route"] = str(list_route)[:240]
+    return issue
 
 
 def _latest_source_failures(history):
@@ -117,6 +131,7 @@ def _quality_issues(admin, now):
             f"The latest complete audit found {count} open item(s) in this category.",
             "quality", category, latest_at, latest_at, "Review findings",
             f"/admin/v2/?quality_kind={category}#quality",
+            list_route=f"/admin/v2/?quality_kind={category}#quality",
         ))
         issues[-1]["count"] = count
     return issues
@@ -155,6 +170,92 @@ def _backup_warning_seconds():
         return max(3600, min(int(os.environ.get("ADMIN_V2_BACKUP_WARNING_SECONDS", str(36 * 3600))), 90 * 86400))
     except (TypeError, ValueError):
         return 36 * 3600
+
+
+ISSUE_SUMMARY_GROUP_LIMIT = 5
+_ISSUE_PRIORITY = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def _issue_priority(issue):
+    return _ISSUE_PRIORITY.get(issue.get("severity"), len(_ISSUE_PRIORITY))
+
+
+def _issue_occurrences(issue):
+    """Occurrences for one issue row: its recorded count, else a single event."""
+    count = issue.get("count")
+    return count if type(count) is int and count >= 0 else 1
+
+
+def _issue_operation_id(issue):
+    """The operation a problem belongs to, always taken from structured data."""
+    for key in ("operation_id", "object_id"):
+        value = issue.get(key)
+        if value is not None:
+            return str(value)[:120]
+    return ""
+
+
+def _issue_route(issue):
+    action = issue.get("action")
+    return action.get("route") if isinstance(action, dict) else None
+
+
+def _issue_summary(issues, health):
+    """Summarize the complete open issue set as problem groups for Overview.
+
+    Grouping happens before filtering and pagination so the tiles cannot move
+    when the operator narrows the list below.
+    """
+    open_issues = [issue for issue in issues if isinstance(issue, dict)]
+    open_issues = [issue for issue in open_issues if issue.get("status", "open") == "open"]
+    grouped = {}
+    for issue in open_issues:
+        key = (str(issue.get("kind") or "issue"), _issue_operation_id(issue))
+        grouped.setdefault(key, []).append(issue)
+
+    summaries = []
+    for (kind, operation_id), members in grouped.items():
+        newest = max(members, key=lambda item: _timestamp(item.get("last_seen")) or 0)
+        severity = min(members, key=_issue_priority).get("severity")
+        severity = severity if severity in _ISSUE_PRIORITY else "low"
+        routes = {route for route in (_issue_route(item) for item in members) if route}
+        if len(routes) > 1:
+            # A group covering many objects must not link to an arbitrary one.
+            route = next((item.get("list_route") for item in members
+                          if item.get("list_route")), None) or _issue_route(newest)
+        else:
+            route = next(iter(routes), None) or newest.get("list_route")
+        label = str(newest.get("title") or kind)[:160]
+        operation_label = newest.get("operation_label")
+        if operation_label and str(operation_label) not in label:
+            label = f"{label} — {operation_label}"[:160]
+        action = newest.get("action")
+        action_label = str((action.get("label") if isinstance(action, dict) else "") or "Review")[:80]
+        summaries.append((
+            _ISSUE_PRIORITY[severity],
+            -(_timestamp(newest.get("last_seen")) or 0),
+            kind,
+            operation_id,
+            {
+                "kind": kind,
+                "operation_id": operation_id,
+                "label": label,
+                "severity": severity,
+                "occurrences": sum(_issue_occurrences(item) for item in members),
+                "objects": len(members),
+                "last_seen": _iso_time(newest.get("last_seen")),
+                "action": {"label": action_label, "route": route},
+            },
+        ))
+
+    summaries.sort(key=lambda row: row[:4])
+    incomplete = bool(health.get("incomplete", True)) if isinstance(health, dict) else True
+    return {
+        "total_open": len(open_issues),
+        "groups_total": len(summaries),
+        "groups": [row[4] for row in summaries[:ISSUE_SUMMARY_GROUP_LIMIT]],
+        "incomplete": incomplete,
+    }
 
 
 def _build_issues(admin, now):

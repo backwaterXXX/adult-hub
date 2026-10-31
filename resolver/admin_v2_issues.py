@@ -13,6 +13,7 @@ from admin_v2_errors import V2ErrorRoute
 from admin_v2_issue_builder import (
     QUALITY_ISSUE_LABELS,
     _build_issues as _build_issues_impl,
+    _issue_summary,
     _iso_time,  # noqa: F401 - preserve the existing test/import patch point
     _timestamp,
 )
@@ -55,6 +56,9 @@ def build_router(admin):
         filtered.sort(key=lambda item: (
             priority.get(item["severity"], 4),
             -(_timestamp(item["last_seen"]) or 0), item["kind"], item["object_id"] or ""))
+        # Overview tiles read the group summary from this same, unfiltered
+        # result, so filters and pagination never move the five groups.
+        summary = _issue_summary(issues, health)
         return {
             "ok": True,
             "issues": filtered[offset:offset + limit],
@@ -62,6 +66,7 @@ def build_router(admin):
             "offset": offset,
             "limit": limit,
             "truncated": offset + limit < len(filtered),
+            "summary": summary,
             "data": health,
         }
 

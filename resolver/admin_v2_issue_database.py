@@ -32,6 +32,8 @@ def collect_database_issues(admin, now, health, issues):
                 f"{count} synchronization tasks are waiting. The oldest has been queued for {int(age) // 60} minutes. High severity starts after {threshold_minutes} minutes.",
                 "task", "sync-backlog", oldest, now, "Open tasks",
                 "/admin/v2/?job_state=queued&job_action=sync#jobs",
+                operation_id="sync",
+                list_route="/admin/v2/?job_state=queued&job_action=sync#jobs",
             ))
 
         if db_available:
@@ -63,6 +65,9 @@ def collect_database_issues(admin, now, health, issues):
                     updated_at + PROCESSING_STALE_WARNING_SECONDS, now,
                     "Open task details",
                     f"/admin/v2/?job_id={quote(job_id, safe='')}#jobs" if job_id else "/admin/v2/#jobs",
+                    operation_id=action,
+                    operation_label=action,
+                    list_route=f"/admin/v2/?job_state=processing&job_action={quote(action, safe='')}#jobs",
                 ))
             for job in failed_jobs:
                 failed_at = _timestamp(job.get("updated_at") or job.get("created_at"))
@@ -79,6 +84,9 @@ def collect_database_issues(admin, now, health, issues):
                     message,
                     "task", job_id, failed_at, failed_at, "Open task details",
                     f"/admin/v2/?job_id={quote(job_id, safe='')}#jobs" if job_id else "/admin/v2/#jobs",
+                    operation_id=action,
+                    operation_label=action,
+                    list_route=f"/admin/v2/?job_state=failed&job_action={quote(action, safe='')}#jobs",
                 ))
                 if attempts > 1:
                     issues[-1]["count"] = attempts

@@ -12,6 +12,7 @@ from starlette.requests import Request
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "resolver"))
 
+import admin_v2_issue_builder
 import admin_v2_issues
 import admin_services
 
@@ -479,6 +480,90 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
         self.assertTrue(health["incomplete"])
 
 
+class TestAdminV2ProblemGroups(unittest.TestCase):
+    """Overview groups the complete open set by problem kind and operation."""
+
+    @staticmethod
+    def summarize(issues, health=None):
+        return admin_v2_issues._issue_summary(issues, {"incomplete": False} if health is None else health)
+
+    def test_same_kind_and_operation_merge_and_sum_recorded_occurrences(self):
+        summary = self.summarize([
+            {"kind": "job_failure", "object_id": "sync", "severity": "medium", "status": "open",
+             "last_seen": NOW - 100, "count": 8, "title": "Synchronization failed"},
+            {"kind": "job_failure", "object_id": "sync", "severity": "high", "status": "open",
+             "last_seen": NOW, "count": 4, "title": "Synchronization failed", "operation_label": "sync",
+             "action": {"label": "Review failures", "route": "/admin/v2/?job_state=failed&job_action=sync#jobs"}},
+            {"kind": "job_failure", "object_id": "linkcheck", "severity": "high", "status": "open",
+             "last_seen": NOW - 50, "title": "Link check failed"},
+            {"kind": "sync_backlog", "severity": "low", "status": "open", "last_seen": NOW - 10, "title": "Sync queue is old"},
+            {"kind": "sync_backlog", "severity": "low", "status": "open", "last_seen": NOW - 20, "title": "Sync queue is old"},
+            {"kind": "backup", "severity": "high", "status": "resolved", "last_seen": NOW, "title": "Backup restored"},
+        ])
+        self.assertEqual(summary["total_open"], 5, "resolved problems leave the counter")
+        self.assertEqual(summary["groups_total"], 3, "the same kind for another operation stays a separate group")
+        first = summary["groups"][0]
+        self.assertEqual((first["kind"], first["operation_id"]), ("job_failure", "sync"))
+        self.assertEqual(first["occurrences"], 12, "a group adds the occurrences recorded on its rows")
+        self.assertEqual(first["severity"], "high", "a group keeps the most urgent severity of its rows")
+        self.assertEqual(first["label"], "Synchronization failed — sync")
+        self.assertEqual(first["action"], {"label": "Review failures",
+                                           "route": "/admin/v2/?job_state=failed&job_action=sync#jobs"})
+        backlog = next(group for group in summary["groups"] if group["kind"] == "sync_backlog")
+        self.assertEqual(backlog["occurrences"], 2, "a row without a count is one occurrence")
+        self.assertEqual([group["kind"] for group in summary["groups"]],
+                         ["job_failure", "job_failure", "sync_backlog"],
+                         "groups sort by urgency, then by the newest occurrence")
+
+    def test_operations_are_never_parsed_from_message_text(self):
+        summary = self.summarize([
+            {"kind": "system", "severity": "low", "status": "open", "last_seen": NOW,
+             "title": "Channel telegram:7 failed in op-77", "message": "job 44 for channel telegram:7"},
+            {"kind": "system", "severity": "low", "status": "open", "last_seen": NOW - 1,
+             "title": "Channel telegram:8 failed", "message": "job 45 for channel telegram:8"},
+        ])
+        self.assertEqual(summary["groups_total"], 1, "unrelated problems of one kind share a group")
+        self.assertEqual(summary["groups"][0]["operation_id"], "")
+        self.assertEqual(summary["groups"][0]["objects"], 2)
+        self.assertEqual(summary["groups"][0]["last_seen"], admin_v2_issues._iso_time(NOW))
+
+    def test_groups_are_capped_and_reported_for_the_full_list(self):
+        summary = self.summarize([
+            {"kind": "job_failure", "object_id": f"task-{index}", "severity": "medium",
+             "status": "open", "last_seen": NOW - index, "title": "Task failed"}
+            for index in range(7)
+        ])
+        self.assertEqual(len(summary["groups"]), admin_v2_issue_builder.ISSUE_SUMMARY_GROUP_LIMIT)
+        self.assertEqual(summary["groups_total"], 7, "the full list still owns the hidden groups")
+        self.assertEqual([group["operation_id"] for group in summary["groups"]],
+                         ["task-0", "task-1", "task-2", "task-3", "task-4"],
+                         "equal urgency is broken by the newest occurrence, then the operation")
+
+    def test_multi_object_group_links_to_the_category_not_one_arbitrary_object(self):
+        rows = [
+            {"kind": "quality_finding", "object_id": "nfo_metadata_mismatch", "severity": "medium", "status": "open",
+             "last_seen": NOW, "count": 7, "title": "NFO metadata differs",
+             "action": {"label": "Review video", "route": "/admin/v2/?video_id=1#library"},
+             "list_route": "/admin/v2/?quality_kind=nfo_metadata_mismatch#quality"},
+            {"kind": "quality_finding", "object_id": "nfo_metadata_mismatch", "severity": "medium", "status": "open",
+             "last_seen": NOW - 5, "title": "NFO metadata differs",
+             "action": {"label": "Review video", "route": "/admin/v2/?video_id=2#library"},
+             "list_route": "/admin/v2/?quality_kind=nfo_metadata_mismatch#quality"},
+        ]
+        self.assertEqual(self.summarize(rows)["groups"][0]["action"]["route"],
+                         "/admin/v2/?quality_kind=nfo_metadata_mismatch#quality")
+        self.assertEqual(self.summarize(rows[:1])["groups"][0]["action"]["route"],
+                         "/admin/v2/?video_id=1#library",
+                         "a single-object group keeps its own precise link")
+
+    def test_unreadable_sources_keep_the_summary_incomplete(self):
+        row = [{"kind": "system", "severity": "low", "status": "open", "last_seen": NOW}]
+        self.assertTrue(self.summarize(row, {"incomplete": True})["incomplete"])
+        self.assertTrue(self.summarize(row, {})["incomplete"], "a health block without an answer fails closed")
+        self.assertTrue(admin_v2_issues._issue_summary(row, None)["incomplete"])
+        self.assertFalse(self.summarize(row)["incomplete"])
+
+
 class TestAdminV2IssueRoute(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def make_request():
@@ -517,6 +602,29 @@ class TestAdminV2IssueRoute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["total"], 2)
         self.assertEqual([item["object_id"] for item in response["issues"]], ["c"])
         self.assertEqual((response["offset"], response["limit"], response["truncated"]), (1, 1, False))
+
+    async def test_route_summarizes_the_open_set_independently_of_filters(self):
+        admin = self.make_admin()
+        endpoint = admin_v2_issues.build_router(admin).routes[0].endpoint
+        sample = [
+            {"kind": "job_failure", "object_id": "a", "severity": "high", "status": "open",
+             "last_seen": NOW, "title": "Task failed"},
+            {"kind": "sync_backlog", "object_id": "b", "severity": "low", "status": "open",
+             "last_seen": NOW, "title": "Sync queue is old"},
+            {"kind": "sync_backlog", "object_id": "c", "severity": "low", "status": "open",
+             "last_seen": NOW, "title": "Sync queue is old"},
+        ]
+        with patch.object(admin_v2_issues, "_build_issues", return_value=(sample, {"incomplete": False})):
+            narrowed = await endpoint(self.make_request(), "high", "", "open", 0, 1)
+            paged = await endpoint(self.make_request(), "", "", "open", 1, 1)
+
+        self.assertEqual(narrowed["total"], 1, "the filtered total keeps its list meaning")
+        self.assertEqual([item["object_id"] for item in narrowed["issues"]], ["a"])
+        self.assertEqual(narrowed["summary"]["total_open"], 3,
+                         "the Problems tile counts every unresolved problem, not the filtered page")
+        self.assertEqual([group["operation_id"] for group in narrowed["summary"]["groups"]], ["a", "b", "c"])
+        self.assertEqual([item["object_id"] for item in paged["issues"]], ["b"])
+        self.assertEqual(paged["summary"], narrowed["summary"], "pagination must not move the group summary")
 
     async def test_route_accepts_quality_issue_filter(self):
         admin = self.make_admin()
