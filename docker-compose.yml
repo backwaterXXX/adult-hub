@@ -226,9 +226,11 @@ services:
       - BACKUP_KEEP_DAYS=${BACKUP_KEEP_DAYS:-7}
       - BACKUP_DAILY_AT=${BACKUP_DAILY_AT:-04:30}
       - BACKUP_LOCK_PATH=/data/cache/backup.lock
+      - MEDIA_DIR=/media/adult
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ./data:/data
+      - ${MEDIA_PATH:-./media/adult}:/media/adult:ro
     command: ["python", "backup_scheduler.py"]
 
 

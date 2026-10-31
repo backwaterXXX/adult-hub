@@ -110,6 +110,15 @@ class TestScheduleDispatch(PgTestCase):
         self.assertIsNone(row["next_run_at"])
         self.assertEqual(row["last_result"], "done")
 
+    def test_daily_artwork_schedule_is_seeded_for_six_in_warsaw_time(self):
+        system_schedules.ensure_system_schedules(self.db_url)
+        row = next(x for x in system_schedules.list_system_schedules(self.db_url)
+                   if x["id"] == "artwork-generation")
+        self.assertEqual(row["name"], "Daily artwork generation")
+        self.assertEqual(row["cron_expression"], "0 6 * * *")
+        self.assertTrue(row["enabled"])
+        self.assertIsNotNone(row["next_run_at"])
+
     def test_interrupted_system_run_can_be_requested_again(self):
         now = datetime(2026, 1, 1, tzinfo=timezone.utc)
         system_schedules.ensure_system_schedules(self.db_url)

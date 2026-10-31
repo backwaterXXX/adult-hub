@@ -29,6 +29,7 @@ LOGGER = logging.getLogger("backup.scheduler")
 STOP = threading.Event()
 BACKUP_OVERLAP = 75
 BACKUP_RETRY_SECONDS = 300
+ARTWORK_RETRY_SECONDS = 300
 
 
 def _parse_daily_at(value: str) -> tuple[int, int]:
@@ -97,6 +98,58 @@ def _run_backup(db_url: str | None = None) -> int:
     return 0
 
 
+def _run_artwork_generation_schedule(db_url: str | None) -> int:
+    """Queue up to 100 due artwork jobs without waiting for the backup run."""
+    try:
+        due = claim_due_system_schedule(db_url, "artwork-generation")
+    except Exception:
+        LOGGER.exception("Could not check the daily artwork generation schedule")
+        return 1
+    if not due:
+        return 0
+
+    success = False
+    try:
+        try:
+            # The scheduler image copies sync/ modules into /app, where sync.py
+            # is a facade that loads config.yaml (not mounted in this service).
+            # Import the standalone schedule module first to avoid that facade.
+            from artwork_schedule import queue_artwork_generation_batch
+        except ImportError:
+            from sync.artwork_schedule import queue_artwork_generation_batch
+        result = queue_artwork_generation_batch(db_url, Path(os.getenv("MEDIA_DIR", "/media/adult")))
+        queued = len(result.get("job_ids") or [])
+        LOGGER.info(
+            "Daily artwork generation queued %s job(s) from %s candidate(s).",
+            queued, result.get("candidates", 0),
+        )
+        success = True
+    except Exception:
+        LOGGER.exception("Daily artwork generation batch failed")
+    try:
+        finish_system_schedule(db_url, "artwork-generation", success=success)
+    except Exception:
+        LOGGER.exception("Could not record the artwork generation schedule result")
+        return 1
+    return 0 if success else 1
+
+
+def _artwork_scheduler_loop(db_url: str | None) -> None:
+    """Poll artwork independently so a long database backup cannot delay 06:00."""
+    while not STOP.is_set():
+        result = _run_artwork_generation_schedule(db_url)
+        STOP.wait(ARTWORK_RETRY_SECONDS if result else 30.0)
+
+
+def _start_artwork_scheduler(db_url: str | None):
+    thread = threading.Thread(
+        target=_artwork_scheduler_loop, args=(db_url,),
+        name="daily-artwork-scheduler", daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def _stop(signum, _frame) -> None:
     LOGGER.info("Stopping backup scheduler signal=%s", signum)
     STOP.set()
@@ -120,9 +173,9 @@ def main() -> int:
         return 1
     try:
         ensure_system_schedules(db_url, backup_daily_at=os.getenv("BACKUP_DAILY_AT", "04:30"),
-                                include_sync=False)
+                                include_sync=False, include_artwork=True)
     except Exception:
-        LOGGER.exception("Could not initialize the database backup schedule")
+        LOGGER.exception("Could not initialize system schedules")
         return 1
     if args.once:
         try:
@@ -145,29 +198,35 @@ def main() -> int:
             LOGGER.exception("Could not record the database backup result")
         return 0 if code == BACKUP_OVERLAP else code
 
-    LOGGER.info("Database backup scheduler is polling the saved cron schedule")
+    LOGGER.info("Database backup and artwork schedulers are polling the saved cron schedules")
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+    artwork_thread = _start_artwork_scheduler(db_url)
 
-    while not STOP.is_set():
-        code = 0
-        try:
-            due = claim_due_system_schedule(db_url, "database-backup")
-        except Exception:
-            LOGGER.exception("Could not check the database backup schedule")
-            due = False
-        if due:
-            code = 1
+    try:
+        while not STOP.is_set():
+            code = 0
             try:
-                code = _run_backup(db_url)
+                due = claim_due_system_schedule(db_url, "database-backup")
             except Exception:
-                LOGGER.exception("The scheduled database backup crashed")
-            try:
-                finish_system_schedule(db_url, "database-backup", success=code == 0,
-                                       skipped_overlap=code == BACKUP_OVERLAP)
-            except Exception:
-                LOGGER.exception("Could not record the database backup result")
-        STOP.wait(BACKUP_RETRY_SECONDS if code else 30.0)
+                LOGGER.exception("Could not check the database backup schedule")
+                due = False
+                code = 1
+            if due:
+                code = 1
+                try:
+                    code = _run_backup(db_url)
+                except Exception:
+                    LOGGER.exception("The scheduled database backup crashed")
+                try:
+                    finish_system_schedule(db_url, "database-backup", success=code == 0,
+                                           skipped_overlap=code == BACKUP_OVERLAP)
+                except Exception:
+                    LOGGER.exception("Could not record the database backup result")
+            STOP.wait(BACKUP_RETRY_SECONDS if code else 30.0)
+    finally:
+        STOP.set()
+        artwork_thread.join(timeout=5.0)
 
     return 0
 

@@ -230,7 +230,9 @@
     taskCell.dataset.label = 'Task';
     const taskName = node('strong', 'schedule-task-name', item.name);
     const label = group === 'system' ? 'System task' : (taskNames[item.action] || item.action || 'Admin task');
-    taskCell.append(taskName, node('small', 'schedule-task-kind', label));
+    taskCell.append(taskName);
+    if (item.task_description) taskCell.append(node('small', 'schedule-task-description', item.task_description));
+    taskCell.append(node('small', 'schedule-task-kind', label));
     if (item.needs_conversion) taskCell.append(node('span', 'schedule-conversion', 'Conversion needed'));
     if (item.video_count) taskCell.append(node('small', 'schedule-task-kind', `${item.video_count} video IDs`));
     if (item.last_job_id && /^[A-Za-z0-9_-]{1,128}$/.test(item.last_job_id)) {
@@ -321,11 +323,13 @@
     taskCell.dataset.label = 'Task';
     taskCell.colSpan = 2;
     taskCell.append(node('strong', 'schedule-task-name', item.name));
-    if (item.details) taskCell.append(node('small', 'schedule-task-kind', item.details));
+    const description = item.task_description || item.details;
+    if (description) taskCell.append(node('small', 'schedule-task-kind', description));
     else taskCell.append(node('small', 'schedule-task-kind', `Runs with ${parent.name}`));
     const statusCell = node('td');
     statusCell.dataset.label = 'Status';
     statusCell.append(node('span', `schedule-status ${statusClass(item)}`, statusName(item)));
+    if (item.progress_details) statusCell.append(node('small', 'schedule-task-kind', item.progress_details));
     const stageProblem = item.error || item.last_error;
     if (stageProblem) statusCell.append(node('small', 'schedule-task-kind', stageProblem));
     const nextCell = node('td', 'schedule-time-cell');

@@ -398,6 +398,7 @@ class TestMigrationsEngine(PgTestCase):
             (59, "0059_metadata_proposal_retries"),
             (60, "0060_video_job_lease_token"),
             (61, "0061_schedule_stages"),
+            (62, "0062_artwork_generation_schedule"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):

@@ -149,9 +149,23 @@ def _execute(action, conn, job_id, payload, media_dir, services):
         ).fetchall()
         if not rows:
             raise ValueError("Target media file not found in library.")
-        dest = resolve_media_path(str(rows[0][0]), media_dir).with_suffix(".jpg")
+        requested_path = payload.get("file_path")
+        if requested_path is not None:
+            if not isinstance(requested_path, str) or requested_path not in {str(row[0]) for row in rows}:
+                raise ValueError("Artwork generation file is no longer registered for this item.")
+            selected_path = requested_path
+        else:
+            selected_path = str(rows[0][0])
+        dest = resolve_media_path(selected_path, media_dir).with_suffix(".jpg")
         if dest.is_symlink():
             raise ValueError("Artwork destination must not be a symlink.")
+        if payload.get("only_if_artwork_invalid") is True:
+            try:
+                from .artwork_schedule import artwork_needs_generation
+            except ImportError:
+                from artwork_schedule import artwork_needs_generation
+            if not artwork_needs_generation(dest):
+                return {"local_state": "artwork_already_valid", "skipped": True}, True
         base = _core.os.getenv("RESOLVER_API_URL", "http://resolver:8090").rstrip("/")
         # The resolver only serves /play/* under /admin; bare /play/* answers 307,
         # which httpx does not follow while ffmpeg does.

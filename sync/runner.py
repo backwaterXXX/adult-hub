@@ -542,7 +542,8 @@ def run_loop():
         raise RuntimeError("System schedule support is unavailable; refusing to start sync runner.")
     try:
         ensure_system_schedules(DB_URL, sync_daily_at=daily_at, sync_interval_minutes=interval // 60,
-                                backup_daily_at=os.getenv("BACKUP_DAILY_AT", "04:30"))
+                                backup_daily_at=os.getenv("BACKUP_DAILY_AT", "04:30"),
+                                include_artwork=False)
     except Exception as e:
         LOGGER.error(f"[sync-daemon] Could not initialize system cron settings: {e}")
         raise RuntimeError("Could not initialize system cron settings.") from e

@@ -263,6 +263,27 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
         self.assertIn("/admin/play/", called_url)
         self.assertNotIn("/admin/admin", called_url)
 
+    def test_scheduled_generation_skips_when_artwork_was_repaired_after_selection(self):
+        from sync.duplicate_job_external_handlers import execute_external_operation
+
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchall.return_value = [("test.mp4",)]
+        with patch("sync.media_files.resolve_media_path", return_value=Path("/tmp/test.mp4")), \
+                patch("sync.artwork_schedule.artwork_needs_generation", return_value=False), \
+                patch("common.image_utils.extract_video_frame") as mock_extract, \
+                patch("sync.duplicate_job_external_handlers._core._refresh_jellyfin_with_progress") as mock_refresh:
+            result, ok = execute_external_operation(
+                "artwork_generate", mock_conn, 104,
+                {"video_id": "telegram:10:20:30", "offset_seconds": 60,
+                 "only_if_artwork_invalid": True, "file_path": "test.mp4"},
+                "/tmp/media", MagicMock(),
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(result, {"local_state": "artwork_already_valid", "skipped": True})
+        mock_extract.assert_not_called()
+        mock_refresh.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from common import admin_schedules, db
 
-_RUN_LOCKS = {"library-sync": 0x41485501, "database-backup": 0x41485502}
+_RUN_LOCKS = {
+    "library-sync": 0x41485501,
+    "database-backup": 0x41485502,
+    "artwork-generation": 0x41485503,
+}
 _ACTIVE_RUNS = {}
 
 _NAMES = {
     "library-sync": "Library sync",
     "database-backup": "System database backup",
+    "artwork-generation": "Daily artwork generation",
 }
 
 
@@ -46,17 +51,22 @@ def _defaults(daily_at, interval_minutes):
 
 
 def ensure_system_schedules(db_url, *, sync_daily_at=None, sync_interval_minutes=60,
-                            backup_daily_at="04:30", include_sync=True) -> None:
+                            backup_daily_at="04:30", artwork_daily_at="06:00",
+                            include_sync=True, include_artwork=True) -> None:
     """Seed effective defaults once; later config changes never overwrite Admin edits."""
     sync_cron, legacy_interval, legacy_daily = _defaults(sync_daily_at, sync_interval_minutes)
     if backup_daily_at:
         backup_cron, backup_interval, backup_legacy_daily = _defaults(backup_daily_at, None)
     else:
         backup_cron, backup_interval, backup_legacy_daily = _defaults(None, 60)
+    artwork_cron, artwork_interval, artwork_legacy_daily = _defaults(artwork_daily_at, None)
     values = []
     if include_sync:
         values.append(("library-sync", _NAMES["library-sync"], sync_cron, legacy_interval, legacy_daily))
     values.append(("database-backup", _NAMES["database-backup"], backup_cron, backup_interval, backup_legacy_daily))
+    if include_artwork:
+        values.append(("artwork-generation", _NAMES["artwork-generation"], artwork_cron,
+                       artwork_interval, artwork_legacy_daily))
     conn = db.connect(db_url)
     try:
         with conn:

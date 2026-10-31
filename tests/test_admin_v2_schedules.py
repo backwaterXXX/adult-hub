@@ -103,10 +103,35 @@ class TestAdminV2Schedules(unittest.IsolatedAsyncioTestCase):
                        if item.get("id") == "telegram-title-cleanup")
         self.assertEqual(cleanup["parent_id"], "library-sync")
         self.assertEqual(cleanup["status"], "done")
+        self.assertEqual(cleanup["task_description"],
+                         "Up to 500 stored Telegram videos per library sync.")
+        self.assertEqual(cleanup["progress_details"],
+                         "900/900 scanned; 140 titles cleaned; 50 tags added; 35 categories added.")
         self.assertEqual(cleanup["progress"], {
             "processed": 900, "total": 900, "titles_changed": 140,
             "tags_added": 50, "categories_added": 35,
         })
+
+    async def test_daily_artwork_generation_is_visible_as_an_independent_system_task(self):
+        admin = make_admin()
+        endpoint = next(route.endpoint for route in admin_v2_schedules.build_router(admin).routes
+                        if route.path == "/api/v2/schedules" and "GET" in route.methods)
+        with patch("common.admin_schedules.list_schedules", return_value=[]), \
+             patch("common.system_schedules.list_system_schedules", return_value=[{
+                 "id": "artwork-generation", "name": "Daily artwork generation",
+                 "cron_expression": "0 6 * * *", "legacy_interval_minutes": None,
+                 "legacy_daily_at": None, "needs_conversion": False, "enabled": True,
+                 "revision": 1, "next_run_at": "2026-11-01T05:00:00+00:00",
+                 "last_run_at": None, "last_result": None, "last_finished_at": None,
+                 "timezone": "Europe/Warsaw",
+             }]), \
+             patch("common.schedule_stages.list_stage_runs", return_value=stage_rows()):
+            result = await endpoint(request("/admin/api/v2/schedules", method="GET"))
+        task = next(item for item in result["system_items"] if item["id"] == "artwork-generation")
+        self.assertEqual(task["group"], "system")
+        self.assertEqual(task["cron_expression"], "0 6 * * *")
+        self.assertIn("up to 100", task["task_description"])
+        self.assertIn("known studio logo", task["task_description"])
 
     async def test_recorded_stage_state_wins_over_the_cleanup_file(self):
         admin = make_admin()

@@ -396,6 +396,7 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
 .schedule-task-cell { display: grid; gap: 4px; }
 .schedule-task-name { color: var(--text); font-size: 12px; }
 .schedule-task-kind, .schedule-cron-cell small { display: block; margin-top: 3px; color: var(--subtle); font-size: 10px; }
+.schedule-task-description { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .schedule-cron-cell code { color: var(--text); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .schedule-status { display: inline-flex; max-width: 150px; align-items: center; padding: 4px 7px; border: 1px solid var(--border); border-radius: 999px; font-size: 10px; line-height: 1.2; }
 .schedule-status.is-ok { color: var(--mint); border-color: color-mix(in srgb, var(--mint) 35%, var(--border)); background: color-mix(in srgb, var(--mint) 6%, var(--surface)); }

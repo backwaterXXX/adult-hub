@@ -318,6 +318,10 @@ const context = {
       cron_expression: '0 * * * *', revision: 1, last_result: 'done',
       next_run_at: '2026-11-01T02:00:00Z', last_run_at: '2026-10-31T02:00:00Z',
       last_finished_at: '2026-10-31T02:34:00Z', timezone: 'Europe/Warsaw' },
+    { id: 'artwork-generation', name: 'Daily artwork generation', group: 'system', enabled: true,
+      cron_expression: '0 6 * * *', revision: 1, last_result: null, details: '',
+      task_description: 'Queues artwork generation for up to 100 recent items when artwork is missing.',
+      next_run_at: '2026-11-01T05:00:00Z', timezone: 'Europe/Warsaw' },
     { id: 'scene-identification', name: 'Scene identification', group: 'dependent',
       parent_id: 'library-sync', source: 'Library sync', status: 'done', problem: false,
       details: 'Backfills scene fingerprints when work is available.',
@@ -330,12 +334,23 @@ const context = {
       run_unavailable_reason: 'Runs only inside a locked sync pass.', enabled: true, revision: 2,
       last_result: 'failed', last_error: 'One or more sources reported a failure',
       last_run_at: '2026-10-31T02:01:00Z', last_finished_at: '2026-10-31T02:09:00Z' },
+    { id: 'telegram-title-cleanup', name: 'Telegram title and hashtag cleanup', group: 'dependent',
+      parent_id: 'library-sync', source: 'Library sync', status: 'done', problem: false,
+      task_description: 'Up to 500 stored Telegram videos per library sync.',
+      progress_details: '16903/16903 scanned; 167 titles cleaned; 0 tags added; 0 categories added.',
+      run_action: 'telegram_title_cleanup', enabled: true, revision: 1,
+      last_result: 'done', last_error: null },
   ] });
   await elements.schedulesRefresh.listeners.click();
   const grouped = currentBody();
   assert.equal(grouped.children[0].children[0].children[0].textContent, 'Library sync');
   assert.equal(grouped.children[0].children[4].children[0].dateTime, '2026-10-31T02:34:00.000Z',
     'a parent row reports when the pass actually finished');
+  const artworkRow = [...grouped.children].find(row => row.dataset.scheduleId === 'artwork-generation');
+  assert.equal(artworkRow.children[0].children[0].textContent, 'Daily artwork generation');
+  assert.equal(artworkRow.children[0].children[1].textContent,
+    'Queues artwork generation for up to 100 recent items when artwork is missing.',
+    'the artwork task description appears in the first Task column below its name');
   const dependentRow = grouped.children[2];
   assert.match(dependentRow.className, /schedule-dependent-row/, 'dependent tasks follow their parent');
   assert.equal(dependentRow.children.length, 5, 'a dependent row drops the inherited Cron column');
@@ -359,6 +374,14 @@ const context = {
   assert.equal(failedRow.children[1].children[1].textContent, 'One or more sources reported a failure');
   const triggerlessRun = failedRow.children[4].children[0];
   assert.equal(triggerlessRun.textContent, 'Run');
+  const cleanupRow = [...grouped.children].find(row => row.dataset.stageId === 'telegram-title-cleanup');
+  assert.equal(cleanupRow.children[0].children[1].textContent,
+    'Up to 500 stored Telegram videos per library sync.',
+    'the cleanup task description stays generic below the task name');
+  assert.equal(cleanupRow.children[1].children[0].textContent, 'Completed');
+  assert.equal(cleanupRow.children[1].children[1].textContent,
+    '16903/16903 scanned; 167 titles cleaned; 0 tags added; 0 categories added.',
+    'cleanup progress appears in Status rather than the description');
   assert.equal(triggerlessRun.disabled, true);
   assert.equal(triggerlessRun.title, 'Runs only inside a locked sync pass.');
   const dependentRun = dependentRow.children[4].children[0];

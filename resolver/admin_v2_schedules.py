@@ -39,6 +39,7 @@ def build_router(admin):
             for item in configured:
                 status = "unknown"
                 details = "Independent system task."
+                task_description = None
                 problem = bool(item["needs_conversion"])
                 if item["id"] == "library-sync":
                     try:
@@ -55,6 +56,15 @@ def build_router(admin):
                         problem = problem or safe.get("last_success") is False or safe.get("freshness") == "stale"
                     except Exception:
                         details = "Sync status unavailable."
+                elif item["id"] == "artwork-generation":
+                    task_description = (
+                        "Queues artwork generation for up to 100 recent items per run when artwork is "
+                        "missing, black or matches a known studio logo. Each job rechecks before generation."
+                    )
+                    status = item.get("last_result") or "unknown"
+                    details = f"Last result: {item['last_result']}." if item.get("last_result") else ""
+                    if item.get("last_result"):
+                        problem = problem or item["last_result"] == "failed"
                 elif item.get("last_result"):
                     status = item["last_result"]
                     details = f"Last result: {item['last_result']}"
@@ -62,6 +72,7 @@ def build_router(admin):
                 if item["needs_conversion"]:
                     details = "Legacy interval cannot be represented exactly; enter a cron expression to convert it."
                 system.append({**item, "group": "system", "source": "System worker",
+                               "task_description": task_description,
                                "details": details, "status": status, "problem": problem})
             stages = await admin.asyncio.to_thread(schedule_stages.list_stage_runs, admin.HUB_DB_URL)
             cleanup = await admin.asyncio.to_thread(title_cleanup_status)
@@ -77,23 +88,24 @@ def build_router(admin):
                 "done" if cleanup_status == "complete" else
                 "pending" if cleanup_status == "pending" else "unknown"
             )
-            progress = ""
+            cleanup_progress = []
             if cleanup.get("total") is not None:
-                progress = (
+                cleanup_progress.append(
                     f"{int(cleanup.get('processed') or 0)}/{int(cleanup.get('total') or 0)} scanned; "
                     f"{int(cleanup.get('titles_changed') or 0)} titles cleaned; "
                     f"{int(cleanup.get('tags_added') or 0)} tags added; "
                     f"{int(cleanup.get('categories_added') or 0)} categories added"
                 )
-            cleanup_details = "Up to 500 stored Telegram videos per library sync."
-            if progress:
-                cleanup_details += " " + progress + "."
+            cleanup_description = "Up to 500 stored Telegram videos per library sync."
             if cleanup.get("nfos_missing"):
-                cleanup_details += f" {int(cleanup['nfos_missing'])} NFO files were missing."
+                cleanup_progress.append(f"{int(cleanup['nfos_missing'])} NFO files were missing")
             if cleanup.get("nfos_failed"):
-                cleanup_details += f" {int(cleanup['nfos_failed'])} NFO files could not be updated."
+                cleanup_progress.append(f"{int(cleanup['nfos_failed'])} NFO files could not be updated")
             if cleanup_status == "pending":
-                cleanup_details += " It resumes with the next library sync."
+                cleanup_progress.append("It resumes with the next library sync")
+            cleanup_progress_details = ". ".join(cleanup_progress)
+            if cleanup_progress_details:
+                cleanup_progress_details += "."
             cleanup_error = str(cleanup.get("last_error") or "")[:120]
             if cleanup_orphaned_run and not cleanup_error:
                 cleanup_error = "Sync stopped before the batch checkpoint."
@@ -108,7 +120,9 @@ def build_router(admin):
                     "problem": stage["last_result"] == "failed",
                 }
                 if stage["id"] == "telegram-title-cleanup":
-                    row["details"] = cleanup_details
+                    row["task_description"] = cleanup_description
+                    row["details"] = cleanup_description
+                    row["progress_details"] = cleanup_progress_details
                     row["progress"] = {
                         "processed": cleanup.get("processed", 0),
                         "total": cleanup.get("total"),

@@ -73,13 +73,12 @@ def _get_cached_bumper_hashes() -> Set[int]:
     cache_file = Path(cache_path_env) if cache_path_env else None
     if not cache_file or not cache_file.is_file():
         # Check default paths: data/cache/bumper_dhashes.json
-        candidate = Path("data/cache/bumper_dhashes.json")
-        if candidate.is_file():
-            cache_file = candidate
-        else:
-            repo_cache = Path(__file__).resolve().parent.parent / "data" / "cache" / "bumper_dhashes.json"
-            if repo_cache.is_file():
-                cache_file = repo_cache
+        candidates = (
+            Path("/data/cache/bumper_dhashes.json"),
+            Path("data/cache/bumper_dhashes.json"),
+            Path(__file__).resolve().parent.parent / "data" / "cache" / "bumper_dhashes.json",
+        )
+        cache_file = next((candidate for candidate in candidates if candidate.is_file()), None)
     if not cache_file or not cache_file.is_file():
         return set()
 
@@ -95,6 +94,11 @@ def _get_cached_bumper_hashes() -> Set[int]:
         return _BUMPER_HASHES_CACHE or set()
     except Exception:
         return _BUMPER_HASHES_CACHE or set()
+
+
+def known_bumper_hashes() -> Set[int]:
+    """Return hashes for studio bumpers/logos detected during artwork audits."""
+    return _get_cached_bumper_hashes()
 
 
 def _valid_thumbnail_bytes(data: bytes, url: str, bumper_hashes: Optional[Set[int]] = None,
