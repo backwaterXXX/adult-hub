@@ -306,7 +306,7 @@ const context = {
   context.window.AdminV2.getJson = async () => ({ items: [], system_items: [
     { id: 'library-sync', name: 'Library sync', group: 'system', enabled: true,
       cron_expression: '0 * * * *', revision: 1, last_result: 'done',
-      next_run_at: '2026-11-01T02:00:00Z', timezone: 'Europe/Warsaw' },
+      next_run_at: '2026-11-01T02:00:00Z', last_run_at: '2026-10-31T02:00:00Z', timezone: 'Europe/Warsaw' },
     { name: 'Scene identification', group: 'dependent', parent_id: 'library-sync', source: 'Library sync',
       details: 'Backfills scene fingerprints when work is available.' }
   ] });
@@ -314,21 +314,32 @@ const context = {
   const grouped = currentBody();
   assert.equal(grouped.children[0].children[0].children[0].textContent, 'Library sync');
   const dependentRow = grouped.children[2];
-  assert.equal(dependentRow.className, 'schedule-dependent-row', 'dependent tasks follow their parent');
-  const dependentLine = dependentRow.children[0].children[0].children[0].children[0];
-  assert.equal(dependentLine.tagName, 'LI', 'dependent tasks render as plain lines, not cards');
-  assert.equal(dependentLine.children[0].textContent, 'Scene identification');
-  assert.equal(dependentLine.children[1].textContent, 'Inherited cadence',
-    'a dependent line states how it is scheduled');
-  const dependentNext = dependentLine.children[2];
-  assert.equal(dependentNext.children[0].textContent, 'Next run ');
-  assert.equal(dependentNext.children[1].dateTime, '2026-11-01T02:00:00.000Z',
-    'a dependent line shows when the parent will next run');
-  assert.equal(dependentLine.children[3].textContent,
+  assert.match(dependentRow.className, /schedule-dependent-row/, 'dependent tasks follow their parent');
+  assert.equal(dependentRow.children.length, 6, 'a dependent row uses the same columns as its parent');
+  assert.deepEqual([...dependentRow.children].map(cell => cell.dataset.label),
+    ['Task', 'Cron', 'Status', 'Next run', 'Last run', 'Actions']);
+  assert.equal(dependentRow.children[0].children[0].textContent, 'Scene identification');
+  assert.equal(dependentRow.children[0].children[1].textContent, 'Runs with Library sync');
+  assert.equal(dependentRow.children[1].children[0].textContent, '0 * * * *',
+    'a dependent row shows the cadence it inherits');
+  assert.equal(dependentRow.children[1].children[1].textContent, 'Inherited from Library sync');
+  assert.equal(dependentRow.children[2].children[0].textContent, 'Inherited cadence',
+    'a dependent row states how it is scheduled');
+  assert.equal(dependentRow.children[2].children[1].textContent,
     'Backfills scene fingerprints when work is available.');
-  assert.equal(dependentLine.children.length, 4,
-    'a dependent line carries its name, inherited state, next run and details without repeating the parent cron');
-  const runButton = grouped.children[0].children[5].children[2];
+  assert.equal(dependentRow.children[3].children[0].dateTime, '2026-11-01T02:00:00.000Z',
+    'a dependent row shows when the parent will next run');
+  assert.equal(dependentRow.children[4].children[0].dateTime, '2026-10-31T02:00:00.000Z',
+    'a dependent row shows the parent last run');
+  assert.equal(dependentRow.children[4].children[1].textContent, 'Completed');
+  const dependentRun = dependentRow.children[5].children[0];
+  assert.equal(dependentRun.textContent, 'Run parent');
+  await dependentRun.listeners.click();
+  assert.deepEqual(calls.filter(call => call.method === 'POST').at(-1), {
+    method: 'POST', path: '/admin/api/v2/schedules/system/library-sync/run', payload: {}
+  });
+  assert.equal(elements.schedulesFeedback.textContent, 'Library sync queued.');
+  const runButton = currentBody().children[0].children[5].children[2];
   assert.equal(runButton.textContent, 'Run');
   await runButton.listeners.click();
   assert.deepEqual(calls.filter(call => call.method === 'POST').at(-1), {

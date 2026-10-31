@@ -66,6 +66,14 @@
     return resultNames[item.last_result] || resultNames[item.status] || 'No runs yet';
   }
 
+  function dependentState(parent) {
+    if (parent.enabled === false) return ['is-disabled', 'Parent disabled'];
+    if (parent.problem || parent.status === 'stale' || parent.last_result === 'failed') return ['is-failed', 'Parent needs attention'];
+    if (parent.status === 'running') return ['is-running', 'Parent running'];
+    if (parent.status === 'fresh' || parent.last_result === 'done') return ['is-ok', 'Inherited cadence'];
+    return ['is-unknown', 'Inherits parent schedule'];
+  }
+
   function statusClass(item) {
     if (item.enabled === false) return 'is-disabled';
     const value = item.status === 'running' ? item.status : (item.last_result || item.status);
@@ -283,7 +291,7 @@
     return { row, editorRow, editor };
   }
 
-  function makeTable(items, feedback, dependentItems, parents) {
+  function makeTable(items, feedback, dependentItems) {
     const wrap = node('div', 'schedule-table-wrap');
     const table = node('table', 'schedule-table');
     const head = node('thead');
@@ -295,37 +303,58 @@
       const row = makeMainRow(item, item.group, feedback);
       body.append(row.row, row.editorRow);
       const children = dependentItems.filter(child => child.parent_id === item.id);
-      if (children.length) {
-        const childRow = node('tr', 'schedule-dependent-row');
-        const cell = node('td'); cell.colSpan = 6;
-        cell.append(makeDependentList(children, parents)); childRow.append(cell); body.append(childRow);
-      }
+      for (const child of children) body.append(makeDependentRow(child, item, feedback));
     }
     table.append(head, body); wrap.append(table);
     return wrap;
   }
 
-  function makeDependentList(items, parents) {
-    const section = node('section');
-    section.setAttribute('aria-label', 'Dependent tasks');
-    const list = node('ul', 'schedule-dependent-list');
-    for (const item of items) {
-      const parent = parents.get(item.parent_id) || {};
-      const needsAttention = Boolean(parent.problem) || parent.status === 'stale' || parent.last_result === 'failed';
-      const [stateClass, stateText] = parent.enabled === false ? ['is-disabled', 'Parent disabled']
-        : needsAttention ? ['is-failed', 'Parent needs attention']
-        : parent.status === 'running' ? ['is-running', 'Parent running']
-        : parent.status === 'fresh' || parent.last_result === 'done' ? ['is-ok', 'Inherited cadence']
-        : ['is-unknown', 'Inherits parent schedule'];
-      const next = node('span', 'schedule-dependent-next');
-      next.append(node('span', '', 'Next run '), timeNode(parent.next_run_at, parent.timezone || 'Europe/Warsaw'));
-      const line = node('li', 'schedule-dependent-item');
-      line.append(node('strong', '', item.name), node('span', `schedule-status ${stateClass}`, stateText),
-        next, node('span', 'schedule-dependent-detail', item.details));
-      list.append(line);
-    }
-    section.append(list);
-    return section;
+  function makeDependentRow(item, parent, feedback) {
+    const [stateClass, stateText] = dependentState(parent);
+    const scheduleZone = parent.timezone || 'Europe/Warsaw';
+    const row = node('tr', 'schedule-row schedule-dependent-row');
+    row.dataset.parentId = parent.id;
+    const taskCell = node('td', 'schedule-task-cell');
+    taskCell.dataset.label = 'Task';
+    taskCell.append(node('strong', 'schedule-task-name', item.name),
+      node('small', 'schedule-task-kind', `Runs with ${parent.name}`));
+    const cronCell = node('td', 'schedule-cron-cell');
+    cronCell.dataset.label = 'Cron';
+    if (parent.cron_expression) {
+      cronCell.append(node('code', '', parent.cron_expression), node('small', '', `Inherited from ${parent.name}`));
+    } else cronCell.append(node('span', 'schedule-unknown', 'Requires conversion'));
+    const statusCell = node('td');
+    statusCell.dataset.label = 'Status';
+    statusCell.append(node('span', `schedule-status ${stateClass}`, stateText));
+    if (item.details) statusCell.append(node('small', 'schedule-task-kind', item.details));
+    const nextCell = node('td', 'schedule-time-cell'); nextCell.append(timeNode(parent.next_run_at, scheduleZone));
+    nextCell.dataset.label = 'Next run';
+    const lastCell = node('td', 'schedule-time-cell');
+    lastCell.dataset.label = 'Last run';
+    lastCell.append(timeNode(parent.last_run_at, scheduleZone));
+    if (parent.last_result && parent.last_result !== 'processing') lastCell.append(node('small', 'schedule-task-kind', resultNames[parent.last_result] || parent.last_result));
+    const actionCell = node('td', 'schedule-actions-cell');
+    actionCell.dataset.label = 'Actions';
+    const run = node('button', 'button button-quiet schedule-run', 'Run parent');
+    run.type = 'button';
+    run.title = `Runs ${parent.name}, which also runs this task.`;
+    run.addEventListener('click', async () => {
+      run.disabled = true;
+      try {
+        const url = parent.group === 'system' ? `${endpoint}/system/${encodeURIComponent(parent.id)}/run` : `${endpoint}/${encodeURIComponent(parent.id)}/run`;
+        const result = await window.AdminV2.postJson(url, {});
+        await load();
+        feedback.textContent = `${parent.name} queued.`;
+        if (result.job_id) {
+          const link = node('a', '', ' Open task');
+          link.href = `/admin/v2/?job_id=${encodeURIComponent(result.job_id)}#jobs`;
+          feedback.append(link);
+        }
+      } catch (error) { feedback.textContent = `Could not run ${parent.name}. ${error.message}`; run.disabled = false; }
+    });
+    actionCell.append(run);
+    row.append(taskCell, cronCell, statusCell, nextCell, lastCell, actionCell);
+    return row;
   }
 
   async function load({ silent = false } = {}) {
@@ -357,7 +386,7 @@
         mainItems = [...mainItems, ...system.filter(item => dependentItems.some(child => child.parent_id === item.id) && !mainItems.includes(item))];
       }
       let visibleCount = mainItems.length + dependentItems.length;
-      if (mainItems.length) host.append(makeTable(mainItems, feedback, dependentItems, parents));
+      if (mainItems.length) host.append(makeTable(mainItems, feedback, dependentItems));
       if (!visibleCount) host.append(node('p', 'schedule-empty', filter === 'problems'
         ? 'No schedule problems are currently reported.' : 'No schedules match this filter.'));
       const selectedId = new URLSearchParams(location.hash.split('?')[1] || '').get('schedule_id') || '';
