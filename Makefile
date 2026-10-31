@@ -1,7 +1,11 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-PYTHON ?= python3
+# proxy-origin and the Python suite import the application dependencies, which
+# CI installs into the PATH interpreter but a local checkout usually keeps in
+# the repository .venv. When the PATH interpreter cannot import them and a
+# .venv exists, use it, so the checks do not fail on imports alone.
+PYTHON ?= $(shell if [ -x .venv/bin/python ] && ! python3 -c 'import uvicorn, telethon' 2>/dev/null; then echo .venv/bin/python; else echo python3; fi)
 NODE ?= node
 COVERAGE ?= $(shell command -v coverage 2>/dev/null || (test -x .venv/bin/coverage && echo .venv/bin/coverage) || printf '%s' "$(PYTHON) -m coverage")
 RUFF ?= $(shell command -v ruff 2>/dev/null || (test -x .venv/bin/ruff && echo .venv/bin/ruff) || printf '%s' "$(HOME)/develop/bin/ruff")
