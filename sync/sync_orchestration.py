@@ -10,6 +10,10 @@ if __package__:
 else:
     import sync as _core
 
+from common import schedule_stages
+
+_SYNC_SCHEDULE = "library-sync"
+
 
 def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "scheduled",
                      skip_telegram_channels: bool = False):
@@ -52,6 +56,61 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         except Exception as e:
             _core.logger.warning("Could not process queued duplicate decisions: %s", e)
 
+    # Filled once the pass has its connection: the operator's stage switches.
+    stages: dict = {}
+    _ACTIVE_STAGES: set = set()
+    stage_target: Optional[str] = None
+
+    def stage_enabled(stage_id: str) -> bool:
+        return bool(stages.get(stage_id, {}).get("enabled", True))
+
+    def open_stage(stage_id: str) -> bool:
+        """Start one dependent stage unless an operator switched it off."""
+        if not stage_enabled(stage_id):
+            _core.logger.info("Stage %s is disabled; skipping it in this pass.", stage_id)
+            return False
+        _ACTIVE_STAGES.add(stage_id)
+        if stage_target is not None:
+            schedule_stages.record_stage_start(stage_target, _SYNC_SCHEDULE, stage_id)
+        return True
+
+    def close_stage(stage_id: str, problems=()) -> None:
+        if stage_id not in _ACTIVE_STAGES:
+            return
+        _ACTIVE_STAGES.discard(stage_id)
+        if stage_target is None:
+            return
+        detail = "; ".join(str(item) for item in problems if item)[:400] or None
+        schedule_stages.record_stage_finish(stage_target, _SYNC_SCHEDULE, stage_id,
+                                            success=detail is None, error=detail)
+
+    def run_stage(stage_id: str, metric_name: Optional[str], operation):
+        """One recorded stage around a single operation; failures keep propagating."""
+        if metric_name and skip_stage(metric_name):
+            return None
+        if not open_stage(stage_id):
+            return None
+        problems: list = []
+        try:
+            if metric_name:
+                return run_timed_stage(metric_name, operation)
+            return operation()
+        except Exception as error:
+            problems.append(_core._safe_error_detail(error))
+            raise
+        finally:
+            close_stage(stage_id, problems)
+
+    def run_stage_group(stage_id: str, operation):
+        """One recorded stage made of steps that each stay individually tolerant."""
+        if not open_stage(stage_id):
+            return
+        problems: list = []
+        try:
+            operation(problems)
+        finally:
+            close_stage(stage_id, problems)
+
     started_at = int(_core.time.time())
     _core.logger.info("Starting Adult-Hub sync (deduplicated)...")
     _core.logger.info(f"Media Dir: {_core.MEDIA_DIR}")
@@ -60,13 +119,21 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
     _core.logger.info(f"Retention Days: {_core.RETENTION_DAYS}")
 
     conn = _core.init_db()
-    try:
-        from performer_catalog_sync import sync_catalog_if_due
-        catalogue_result = sync_catalog_if_due(conn)
-        if catalogue_result:
-            _core.logger.info("Performer catalogue refreshed: %s people, %s aliases", *catalogue_result)
-    except Exception as e:
-        _core.logger.warning("Performer catalogue refresh failed; using last local copy: %s", e)
+    stage_target = getattr(conn, "_url", None)
+    schedule_stages.mark_interrupted_stages(conn, _SYNC_SCHEDULE)
+    stages.update(schedule_stages.stage_states(conn, _SYNC_SCHEDULE))
+    if open_stage("performer-catalog"):
+        catalogue_problems: list = []
+        try:
+            from performer_catalog_sync import sync_catalog_if_due
+            catalogue_result = sync_catalog_if_due(conn)
+            if catalogue_result:
+                _core.logger.info("Performer catalogue refreshed: %s people, %s aliases", *catalogue_result)
+        except Exception as e:
+            _core.logger.warning("Performer catalogue refresh failed; using last local copy: %s", e)
+            catalogue_problems.append(_core._safe_error_detail(e))
+        finally:
+            close_stage("performer-catalog", catalogue_problems)
     before_ids = _core._video_id_snapshot(conn)
 
     # 0. Migrate filenames, migrate categories, clean legacy folders and old transcodes.
@@ -110,7 +177,15 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
     )
     if _core.SYNC_TELEGRAM and telegram_filter_enabled and skip_telegram_channels:
         _core.logger.info("Skipping Telegram channel scans by request; continuing full maintenance pass.")
-    if _core.SYNC_TELEGRAM and telegram_filter_enabled and not skip_telegram_channels:
+    # Source scans and the availability sweep they feed are recorded stages: an
+    # operator can switch either one off without stopping the rest of the pass.
+    scans_wanted = _core.SYNC_TELEGRAM and telegram_filter_enabled and not skip_telegram_channels
+    scans_active = scans_wanted and open_stage("source-scans")
+    availability_active = scans_active and open_stage("availability-reconciliation")
+    availability_errors: list = []
+    if scans_wanted and not scans_active:
+        _core.logger.info("Configured source scans are disabled; skipping channel crawls in this pass.")
+    if scans_active:
         tg_src = _core.CONFIG.get_source("telegram") if _core.CONFIG else None
         if tg_src:
             enabled_channels = [ch for ch in tg_src.channels if ch.enabled]
@@ -131,7 +206,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                         source_warnings[f"telegram:{ch.id}"] = warnings
                     else:
                         providers_succeeded.add(f"telegram:{ch.id}")
-                    if sync_mode == "scheduled" and not warnings:
+                    if availability_active and sync_mode == "scheduled" and not warnings:
                         try:
                             outcome = _core.reconcile_telegram_channel(
                                 conn, ch.id, _core.MEDIA_DIR,
@@ -144,6 +219,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                             _core.logger.info("Telegram %s availability: %s", ch.id, outcome)
                         except Exception as e:
                             _core.logger.warning("Telegram availability reconciliation failed for %s: %s", ch.id, e)
+                            availability_errors.append(f"{ch.id}: {_core._safe_error_detail(e)}")
                 except Exception as e:
                     detail = _core._safe_error_detail(e)
                     _core.logger.error("Telegram sync failed for %s: %s", ch.id, detail)
@@ -185,6 +261,8 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
                 finally:
                     source_durations[f"telegram:{channel_name}"] = round(_core.time.monotonic() - source_started, 3)
                 run_duplicate_jobs_checkpoint(conn, collected)
+    close_stage("source-scans", list(source_errors.values()))
+    close_stage("availability-reconciliation", availability_errors)
 
     # 2. Drop catalog entries the availability worker has denylisted.
     if _core.HIDE_DEAD_STREAMS:
@@ -214,50 +292,61 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
 
     # Scene identification for Telegram is the first metadata-enrichment step:
     # fingerprints must run before performer-profile lookups and PBC requests.
+    # The scraper is optional, so an absent module leaves the stage unrecorded
+    # instead of reporting a failure on every install that never asked for it.
     try:
         from scene_scrapers import backfill_scenes  # type: ignore
-        run_timed_stage(
-            "metadata_scenes",
-            lambda: backfill_scenes(conn, _core.MEDIA_DIR, limit=_core.SCENE_BACKFILL_PER_RUN),
-        )
     except ImportError:
-        pass
-    except Exception as e:
-        _core.logger.warning(f"Scene fingerprint backfill pass failed: {e}")
+        backfill_scenes = None
+    if backfill_scenes is not None:
+        try:
+            run_stage(
+                "scene-identification", "metadata_scenes",
+                lambda: backfill_scenes(conn, _core.MEDIA_DIR, limit=_core.SCENE_BACKFILL_PER_RUN),
+            )
+        except Exception as e:
+            _core.logger.warning(f"Scene fingerprint backfill pass failed: {e}")
     run_duplicate_jobs_checkpoint(conn, collected)
 
-    # 8c. Backfill missing performers from studio title naming conventions.
-    try:
-        run_timed_stage(
-            "performer_title_backfill",
-            lambda: _core.backfill_performers_from_titles(conn, _core.MEDIA_DIR),
-        )
-    except Exception as e:
-        _core.logger.warning(f"Title performer backfill pass failed: {e}")
-    run_duplicate_jobs_checkpoint(conn, collected)
+    def performer_and_metadata_backfill(problems: list) -> None:
+        """One stage of enrichment steps that each stay individually tolerant."""
+        # 8c. Backfill missing performers from studio title naming conventions.
+        try:
+            run_timed_stage(
+                "performer_title_backfill",
+                lambda: _core.backfill_performers_from_titles(conn, _core.MEDIA_DIR),
+            )
+        except Exception as e:
+            _core.logger.warning(f"Title performer backfill pass failed: {e}")
+            problems.append(_core._safe_error_detail(e))
+        run_duplicate_jobs_checkpoint(conn, collected)
+        # 8d. Performer enrichment: PBC aliases+bios (rate-limited).
+        try:
+            from pbc import backfill_pbc  # type: ignore
+            run_timed_stage("metadata_pbc", lambda: backfill_pbc(conn, limit=_core.PBC_BACKFILL_PER_RUN))
+        except ImportError:
+            pass
+        except Exception as e:
+            _core.logger.warning(f"PBC backfill pass failed: {e}")
+            problems.append(_core._safe_error_detail(e))
+        try:
+            from theporndb import backfill_tpdb  # type: ignore
+            run_timed_stage("metadata_tpdb", lambda: backfill_tpdb(conn, limit=_core.TPDB_BACKFILL_PER_RUN))
+        except ImportError:
+            pass
+        except Exception as e:
+            _core.logger.warning(f"ThePornDB backfill pass failed: {e}")
+            problems.append(_core._safe_error_detail(e))
+        try:
+            from stashdb import backfill_stashdb  # type: ignore
+            run_timed_stage("metadata_stashdb", lambda: backfill_stashdb(conn, limit=_core.TPDB_BACKFILL_PER_RUN))
+        except ImportError:
+            pass
+        except Exception as e:
+            _core.logger.warning(f"StashDB backfill pass failed: {e}")
+            problems.append(_core._safe_error_detail(e))
 
-    # 8d. Performer enrichment: PBC aliases+bios (rate-limited).
-    try:
-        from pbc import backfill_pbc  # type: ignore
-        run_timed_stage("metadata_pbc", lambda: backfill_pbc(conn, limit=_core.PBC_BACKFILL_PER_RUN))
-    except ImportError:
-        pass
-    except Exception as e:
-        _core.logger.warning(f"PBC backfill pass failed: {e}")
-    try:
-        from theporndb import backfill_tpdb  # type: ignore
-        run_timed_stage("metadata_tpdb", lambda: backfill_tpdb(conn, limit=_core.TPDB_BACKFILL_PER_RUN))
-    except ImportError:
-        pass
-    except Exception as e:
-        _core.logger.warning(f"ThePornDB backfill pass failed: {e}")
-    try:
-        from stashdb import backfill_stashdb  # type: ignore
-        run_timed_stage("metadata_stashdb", lambda: backfill_stashdb(conn, limit=_core.TPDB_BACKFILL_PER_RUN))
-    except ImportError:
-        pass
-    except Exception as e:
-        _core.logger.warning(f"StashDB backfill pass failed: {e}")
+    run_stage_group("metadata-backfill", performer_and_metadata_backfill)
 
     # Repair stored Telegram titles and move caption hashtags into the existing
     # genre/tag fields. The bounded worker resumes its cursor on the next pass.
@@ -266,8 +355,8 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
             from .telegram_title_cleanup import cleanup_telegram_titles
         else:
             from telegram_title_cleanup import cleanup_telegram_titles
-        cleanup_result = run_timed_stage(
-            "telegram_title_cleanup",
+        cleanup_result = run_stage(
+            "telegram-title-cleanup", "telegram_title_cleanup",
             lambda: cleanup_telegram_titles(
                 conn, _core.MEDIA_DIR, stop_requested=_core.stop_requested,
                 logger=_core.logger,
@@ -286,46 +375,61 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
     # 9. Clean up expired videos via retention policy + orphaned records.
     # Both use the success signal: absent, disabled and failed sources keep
     # every historical row, file and .strm URL.
-    try:
-        _core.cleanup_orphaned_records(_core.MEDIA_DIR, conn, providers_succeeded)
-    except Exception as e:
-        _core.logger.warning(f"Orphaned-record cleanup failed: {e}")
-    _core.cleanup_retention(conn, _core.MEDIA_DIR, _core.RETENTION_DAYS, providers_succeeded)
+    def library_maintenance_pass():
+        try:
+            _core.cleanup_orphaned_records(_core.MEDIA_DIR, conn, providers_succeeded)
+        except Exception as e:
+            _core.logger.warning(f"Orphaned-record cleanup failed: {e}")
+        _core.cleanup_retention(conn, _core.MEDIA_DIR, _core.RETENTION_DAYS, providers_succeeded)
+
+    run_stage("library-maintenance", None, library_maintenance_pass)
 
     # Locked Telegram entries require an explicit unlock/refresh/relock cycle
     # when their authoritative local NFO changes. Reconcile existing entries
     # before queueing the global scan so targeted refreshes avoid its backlog.
     # New entries import their locked NFO during the scan; the next run verifies
     # their metadata and records the durable hash state.
+    # Reconciliation, the library refresh trigger, person pages and display
+    # titles all belong to one recorded Jellyfin stage.
+    jellyfin_active = open_stage("jellyfin-refresh")
+    jellyfin_problems: list = []
     try:
-        jellyfin_result = run_timed_stage(
-            "jellyfin_metadata_reconciliation", _core.sync_jellyfin_telegram_metadata,
-        )
-        if isinstance(jellyfin_result, dict):
-            _core._ACTIVE_SYNC_METRICS["jellyfin_refresh_poll"] = dict(
-                jellyfin_result.get("refresh_poll") or {}
-            )
-    except Exception as e:
-        _core.logger.warning(f"Telegram metadata reconciliation failed: {e}")
-    run_duplicate_jobs_checkpoint(conn, collected)
-
-    # 10. Trigger Jellyfin Refresh
-    _core.trigger_jellyfin_refresh()
-
-    # Publish structured StashDB details to existing Jellyfin person pages.
-    if not skip_stage("jellyfin_people"):
         try:
-            from jellyfin_people import sync_jellyfin_people
-            sync_jellyfin_people(
-                conn, _core.JELLYFIN_URL, _core.JELLYFIN_API_KEY,
-                limit=_core.JELLYFIN_PEOPLE_PER_RUN,
-            )
+            jellyfin_result = (run_timed_stage(
+                "jellyfin_metadata_reconciliation", _core.sync_jellyfin_telegram_metadata,
+            ) if jellyfin_active else None)
+            if isinstance(jellyfin_result, dict):
+                _core._ACTIVE_SYNC_METRICS["jellyfin_refresh_poll"] = dict(
+                    jellyfin_result.get("refresh_poll") or {}
+                )
         except Exception as e:
-            _core.logger.warning(f"Jellyfin person metadata pass failed: {e}")
+            _core.logger.warning(f"Telegram metadata reconciliation failed: {e}")
+            jellyfin_problems.append(_core._safe_error_detail(e))
+        run_duplicate_jobs_checkpoint(conn, collected)
 
-    # 11. Sync display titles through Jellyfin's supported item API.
-    if not skip_stage("jellyfin_titles"):
-        _core.sync_jellyfin_titles()
+        # 10. Trigger Jellyfin Refresh
+        if jellyfin_active:
+            _core.trigger_jellyfin_refresh()
+
+        # Publish structured StashDB details to existing Jellyfin person pages.
+        if jellyfin_active and not skip_stage("jellyfin_people"):
+            try:
+                from jellyfin_people import sync_jellyfin_people
+                sync_jellyfin_people(
+                    conn, _core.JELLYFIN_URL, _core.JELLYFIN_API_KEY,
+                    limit=_core.JELLYFIN_PEOPLE_PER_RUN,
+                )
+            except Exception as e:
+                _core.logger.warning(f"Jellyfin person metadata pass failed: {e}")
+                jellyfin_problems.append(_core._safe_error_detail(e))
+
+        # 11. Sync display titles through Jellyfin's supported item API.
+        if jellyfin_active and not skip_stage("jellyfin_titles"):
+            _core.sync_jellyfin_titles()
+    except Exception as error:
+        close_stage("jellyfin-refresh", [*jellyfin_problems, _core._safe_error_detail(error)])
+        raise
+    close_stage("jellyfin-refresh", jellyfin_problems)
     expected_sources = set()
     if _core.CONFIG:
         for source in _core.CONFIG.get_enabled_sources():

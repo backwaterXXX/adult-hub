@@ -36,6 +36,7 @@ from common.migrations.m0057_split_phash_jobs import current_migration as curren
 from common.migrations.m0058_cron_schedules import current_migration as current_cron_schedules
 from common.migrations.m0059_metadata_proposal_retries import current_migration as current_metadata_proposal_retries
 from common.migrations.m0060_video_job_lease_token import current_migration as current_video_job_lease_token
+from common.migrations.m0061_schedule_stages import current_migration as current_schedule_stages
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ CURRENT_MIGRATIONS: tuple[Migration, ...] = (
     current_video_visual_timestamps, current_video_visual_history, current_telegram_latest_cursor,
     current_duplicate_reconcile_opt_in, current_performer_alias_canonical_index,
     current_split_phash_jobs, current_cron_schedules, current_metadata_proposal_retries,
-    current_video_job_lease_token,
+    current_video_job_lease_token, current_schedule_stages,
 )
 MIGRATIONS: tuple[Migration, ...] = (baseline, *CURRENT_MIGRATIONS)
 
@@ -143,6 +144,7 @@ APPLICATION_TABLES: tuple[str, ...] = (
     "admin_audit_items",
     "admin_schedules",
     "system_schedules",
+    "system_schedule_stages",
     "admin_action_events",
     "admin_audit_events",
     "admin_orphan_quarantine",

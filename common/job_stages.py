@@ -7,6 +7,7 @@ WORKING_STAGES = frozenset({
     "checking_jellyfin_import_state", "creating_backup", "testing_backup_restore",
     "repairing_nfo", "writing_nfo", "scanning_metadata", "downloading_artwork", "generating_artwork",
     "metadata_pbc", "metadata_photos", "metadata_tpdb", "metadata_stashdb", "metadata_scenes",
+    "pruning_history", "syncing_performer_catalog", "cleaning_telegram_titles",
 })
 
 # Job states that may appear in persisted progress as final markers; they are not

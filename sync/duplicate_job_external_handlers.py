@@ -6,8 +6,28 @@ if __package__:
 else:
     import duplicate_jobs as _core
 
+from common import schedule_stages
+
 
 def execute_external_operation(action, conn, job_id, payload, media_dir, services):
+    """Run the action, reporting scheduled-stage results for the stages it owns."""
+    stage = schedule_stages.stage_for_job(action)
+    if stage is None:
+        return _execute(action, conn, job_id, payload, media_dir, services)
+    db_url = getattr(conn, "_url", None) or _core.os.getenv("DATABASE_URL")
+    schedule_id, stage_id = stage
+    schedule_stages.record_stage_start(db_url, schedule_id, stage_id)
+    try:
+        result = _execute(action, conn, job_id, payload, media_dir, services)
+    except Exception as error:
+        schedule_stages.record_stage_finish(db_url, schedule_id, stage_id,
+                                            success=False, error=str(error))
+        raise
+    schedule_stages.record_stage_finish(db_url, schedule_id, stage_id, success=True)
+    return result
+
+
+def _execute(action, conn, job_id, payload, media_dir, services):
     """Execute a maintenance or integration action and report commit status."""
     if action == "backup_create":
         _core._record_job_progress(conn, job_id, "creating_backup")
@@ -227,6 +247,51 @@ def execute_external_operation(action, conn, job_id, payload, media_dir, service
         result = fuzzy_performers.execute_performer_merges(db_url, media_dir, pairs)
         if not result.get("ok"):
             raise RuntimeError(result.get("error", "Performer merge failed."))
+        return result, False
+
+    if action == "history_cleanup":
+        _core._record_job_progress(conn, job_id, "pruning_history")
+        from common.history_retention import prune_history
+        counts = prune_history(conn)
+        return {"history_rows_removed": counts, "local_state": "history_cleanup_completed"}, False
+
+    if action == "performer_catalog":
+        _core._record_job_progress(conn, job_id, "syncing_performer_catalog")
+        try:
+            from .performer_catalog_sync import sync_catalog
+        except ImportError:
+            from performer_catalog_sync import sync_catalog
+        performers, aliases = sync_catalog(conn)
+        return {
+            "catalogue_performers": performers,
+            "catalogue_aliases": aliases,
+            "local_state": "performer_catalog_completed",
+        }, False
+
+    if action == "scene_backfill":
+        try:
+            from scene_scrapers import backfill_scenes  # type: ignore
+        except ImportError:
+            raise RuntimeError("Scene identification is not installed in this worker.")
+        limit = payload.get("limit")
+        if not isinstance(limit, int) or limit < 1:
+            limit = int(_core.os.getenv("SCENE_BACKFILL_PER_RUN", "500"))
+        _core._record_job_progress(conn, job_id, "metadata_scenes", total=limit)
+        matched, enriched = backfill_scenes(conn, media_dir, limit=limit)
+        return {
+            "scene_identified": matched,
+            "metadata_enriched": enriched,
+            "local_state": "scene_backfill_completed",
+        }, False
+
+    if action == "telegram_title_cleanup":
+        try:
+            from .telegram_title_cleanup import cleanup_telegram_titles
+        except ImportError:
+            from telegram_title_cleanup import cleanup_telegram_titles
+        _core._record_job_progress(conn, job_id, "cleaning_telegram_titles")
+        result = cleanup_telegram_titles(conn, media_dir, logger=services.logger)
+        result["local_state"] = "telegram_title_cleanup_completed"
         return result, False
 
     raise ValueError("Unsupported external job type.")

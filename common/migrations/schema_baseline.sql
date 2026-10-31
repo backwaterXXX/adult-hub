@@ -226,6 +226,20 @@ CREATE TABLE public.admin_schedules (
     CONSTRAINT admin_schedules_timezone_check CHECK ((timezone = 'Europe/Warsaw'::text))
 );
 
+CREATE TABLE public.system_schedule_stages (
+    schedule_id text NOT NULL,
+    id text NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    revision integer DEFAULT 1 NOT NULL,
+    last_result text,
+    last_error text,
+    last_run_at timestamp with time zone,
+    last_finished_at timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT system_schedule_stages_last_result_check CHECK ((last_result = ANY (ARRAY['queued'::text, 'running'::text, 'done'::text, 'failed'::text]))),
+    CONSTRAINT system_schedule_stages_revision_check CHECK ((revision >= 1))
+);
+
 CREATE TABLE public.system_schedules (
     id text NOT NULL,
     name text NOT NULL,
@@ -237,6 +251,7 @@ CREATE TABLE public.system_schedules (
     revision integer DEFAULT 1 NOT NULL,
     next_run_at timestamp with time zone,
     last_run_at timestamp with time zone,
+    last_finished_at timestamp with time zone,
     last_result text,
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT system_schedules_id_check CHECK ((id = ANY (ARRAY['library-sync'::text, 'database-backup'::text]))),
@@ -784,6 +799,9 @@ ALTER TABLE ONLY public.admin_quality_acknowledgements
 ALTER TABLE ONLY public.admin_schedules
     ADD CONSTRAINT admin_schedules_pkey PRIMARY KEY (id);
 
+ALTER TABLE ONLY public.system_schedule_stages
+    ADD CONSTRAINT system_schedule_stages_pkey PRIMARY KEY (schedule_id, id);
+
 ALTER TABLE ONLY public.system_schedules
     ADD CONSTRAINT system_schedules_pkey PRIMARY KEY (id);
 
@@ -1054,6 +1072,9 @@ ALTER TABLE ONLY public.metadata_review_proposals
 
 ALTER TABLE ONLY public.performer_catalog_aliases
     ADD CONSTRAINT performer_catalog_aliases_performer_id_fkey FOREIGN KEY (performer_id) REFERENCES public.performer_catalog(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.system_schedule_stages
+    ADD CONSTRAINT system_schedule_stages_schedule_id_fkey FOREIGN KEY (schedule_id) REFERENCES public.system_schedules(id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY public.telegram_performer_proposals
     ADD CONSTRAINT telegram_performer_proposals_performer_id_fkey FOREIGN KEY (performer_id) REFERENCES public.performer_catalog(id);

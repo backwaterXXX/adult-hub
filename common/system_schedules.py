@@ -83,7 +83,8 @@ def list_system_schedules(db_url) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT id,name,cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,"
-            "enabled,revision,next_run_at,last_run_at,last_result FROM system_schedules ORDER BY id"
+            "enabled,revision,next_run_at,last_run_at,last_result,last_finished_at "
+            "FROM system_schedules ORDER BY id"
         ).fetchall()
         return [
             {
@@ -94,6 +95,7 @@ def list_system_schedules(db_url) -> list[dict]:
                 "next_run_at": admin_schedules._utc(row[8]).isoformat() if row[8] else None,
                 "last_run_at": admin_schedules._utc(row[9]).isoformat() if row[9] else None,
                 "last_result": row[10], "timezone": "Europe/Warsaw",
+                "last_finished_at": admin_schedules._utc(row[11]).isoformat() if row[11] else None,
             }
             for row in rows
         ]
@@ -252,11 +254,13 @@ def finish_system_schedule(db_url, schedule_id: str, *, success: bool, now=None,
             if success and row[4] and int(row[5]) == revision and (not manual or slot_due):
                 upcoming = (admin_schedules.next_run("daily" if row[2] else "interval", row[1], row[2], after=instant)
                             if row[3] else admin_schedules.next_cron(row[0], after=instant))
-                conn.execute("UPDATE system_schedules SET last_result=%s,next_run_at=%s,updated_at=%s WHERE id=%s",
-                             (result, upcoming, instant.timestamp(), schedule_id))
+                conn.execute("UPDATE system_schedules SET last_result=%s,last_finished_at=%s,"
+                             "next_run_at=%s,updated_at=%s WHERE id=%s",
+                             (result, instant, upcoming, instant.timestamp(), schedule_id))
             else:
-                conn.execute("UPDATE system_schedules SET last_result=%s,updated_at=%s WHERE id=%s",
-                             (result, instant.timestamp(), schedule_id))
+                conn.execute("UPDATE system_schedules SET last_result=%s,last_finished_at=%s,"
+                             "updated_at=%s WHERE id=%s",
+                             (result, instant, instant.timestamp(), schedule_id))
         conn.commit()
     except Exception:
         conn.rollback()

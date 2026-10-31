@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 import backup_db
+from common import schedule_stages
 from common.history_retention import prune_history
 from common.system_schedules import (
     claim_due_system_schedule, ensure_system_schedules, finish_system_schedule,
@@ -48,7 +49,7 @@ def _next_run(now: dt.datetime, hour: int, minute: int) -> dt.datetime:
     return target
 
 
-def _run_backup() -> int:
+def _run_backup(db_url: str | None = None) -> int:
     lock_path = Path(os.getenv("BACKUP_LOCK_PATH", "/data/cache/backup.lock"))
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a") as lock_file:
@@ -74,18 +75,25 @@ def _run_backup() -> int:
         if exit_code:
             LOGGER.error("Scheduled PostgreSQL backup failed exit_code=%d", exit_code)
             return exit_code
-        else:
-            LOGGER.info("Scheduled PostgreSQL backup completed")
-            try:
-                counts = prune_history()
-                LOGGER.info("Scheduled monthly history cleanup completed counts=%s", counts)
-            except Exception as error:
-                LOGGER.error(
-                    "Scheduled monthly history cleanup failed error=%s detail=%s",
-                    type(error).__name__,
-                    error,
-                )
-                return 1
+        LOGGER.info("Scheduled PostgreSQL backup completed")
+        schedule_stages.mark_interrupted_stages(db_url, "database-backup")
+        if not schedule_stages.stage_enabled(db_url, "database-backup", "history-cleanup"):
+            LOGGER.info("Backup history cleanup is disabled; keeping history as it is")
+            return 0
+        schedule_stages.record_stage_start(db_url, "database-backup", "history-cleanup")
+        try:
+            counts = prune_history()
+            LOGGER.info("Scheduled monthly history cleanup completed counts=%s", counts)
+        except Exception as error:
+            LOGGER.error(
+                "Scheduled monthly history cleanup failed error=%s detail=%s",
+                type(error).__name__,
+                error,
+            )
+            schedule_stages.record_stage_finish(db_url, "database-backup", "history-cleanup",
+                                                success=False, error=str(error))
+            return 1
+        schedule_stages.record_stage_finish(db_url, "database-backup", "history-cleanup", success=True)
     return 0
 
 
@@ -105,7 +113,7 @@ def main() -> int:
     args = parser.parse_args()
     db_url = (os.getenv("DATABASE_URL") or "").strip() or None
     if args.force:
-        code = _run_backup()
+        code = _run_backup(db_url)
         return 0 if code == BACKUP_OVERLAP else code
     if not db_url:
         LOGGER.error("DATABASE_URL is required to read the saved backup cron schedule")
@@ -127,7 +135,7 @@ def main() -> int:
             return 0
         code = 1
         try:
-            code = _run_backup()
+            code = _run_backup(db_url)
         except Exception:
             LOGGER.exception("The scheduled database backup crashed")
         try:
@@ -151,7 +159,7 @@ def main() -> int:
         if due:
             code = 1
             try:
-                code = _run_backup()
+                code = _run_backup(db_url)
             except Exception:
                 LOGGER.exception("The scheduled database backup crashed")
             try:

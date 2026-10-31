@@ -77,6 +77,9 @@
       metadata_tpdb: 'Enriching actor and video metadata from ThePornDB',
       metadata_stashdb: 'Enriching actor metadata from StashDB',
       metadata_scenes: 'Enriching video metadata from studio catalogs and ThePornDB',
+      pruning_history: 'Removing expired history rows',
+      syncing_performer_catalog: 'Importing the StashDB performer catalog',
+      cleaning_telegram_titles: 'Cleaning Telegram titles and tags',
       checking_availability: 'Checking playback availability',
       recovery: 'Recovering operation',
       done: 'Completed', failed: 'Failed', cancelled: 'Cancelled before start'

@@ -277,7 +277,7 @@ def list_schedules(db_url) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT s.id,s.name,s.action,s.payload,s.schedule_type,s.interval_minutes,s.daily_at,s.cron_expression,s.timezone,"
-            "s.enabled,s.revision,s.next_run_at,s.last_run_at,s.last_job_id,s.last_result,j.state "
+            "s.enabled,s.revision,s.next_run_at,s.last_run_at,s.last_job_id,s.last_result,j.state,j.updated_at "
             "FROM admin_schedules s LEFT JOIN video_duplicate_jobs j ON j.id=s.last_job_id "
             "ORDER BY s.created_at DESC,s.id"
         ).fetchall()
@@ -289,6 +289,7 @@ def list_schedules(db_url) -> list[dict]:
                 payload = {}
             job_state = row[15] if row[15] in {"queued", "processing", "done", "failed", "cancelled"} else None
             stored_result = row[14] if row[14] in {"queued", "processing", "done", "failed", "cancelled", "skipped_overlap"} else None
+            finished = row[16] if job_state in {"done", "failed", "cancelled"} else None
             result.append({"id": row[0], "name": row[1], "action": row[2],
                            "video_count": len(payload.get("video_ids", [])) if row[2] == "availability_check" else 0,
                            "schedule_type": row[4], "interval_minutes": row[5], "daily_at": row[6],
@@ -297,6 +298,7 @@ def list_schedules(db_url) -> list[dict]:
                            "next_run_at": _utc(row[11]).isoformat() if row[11] else None,
                            "last_run_at": _utc(row[12]).isoformat() if row[12] else None,
                            "last_job_id": row[13],
+                           "last_finished_at": _utc(finished).isoformat() if finished else None,
                            "last_result": stored_result if stored_result == "skipped_overlap" else (job_state or stored_result),
                            "last_job_state": job_state})
         return result
