@@ -54,6 +54,7 @@ LAZY_FUNCTIONS = {
     "pbc": "backfill_pbc",
     "theporndb": "backfill_tpdb",
     "stashdb": "backfill_stashdb",
+    "telegram_title_cleanup": "cleanup_telegram_titles",
     "jellyfin_people": "sync_jellyfin_people",
 }
 
@@ -776,9 +777,9 @@ class TestEnrichmentStages(SyncPassHarness):
 
         self.assertEqual([stage for stage, _, _ in self.core.stages], [
             "metadata_scenes", "performer_title_backfill", "metadata_pbc", "metadata_tpdb",
-            "metadata_stashdb", "jellyfin_metadata_reconciliation",
+            "metadata_stashdb", "telegram_title_cleanup", "jellyfin_metadata_reconciliation",
         ])
-        self.assertEqual([failed for _, _, failed in self.core.stages], [False] * 6)
+        self.assertEqual([failed for _, _, failed in self.core.stages], [False] * 7)
         self.assertEqual(self.sink("backfill_scenes").args(), (CONN, MEDIA_DIR))
         self.assertEqual(self.sink("backfill_scenes").kwargs(), {"limit": self.core.SCENE_BACKFILL_PER_RUN})
         self.assertEqual(self.sink("backfill_performers_from_titles").args(), (CONN, MEDIA_DIR))
@@ -788,6 +789,7 @@ class TestEnrichmentStages(SyncPassHarness):
         # The StashDB pass is limited by the PornDB knob, not its own.
         self.assertEqual(self.sink("backfill_stashdb").kwargs(),
                          {"limit": self.core.TPDB_BACKFILL_PER_RUN})
+        self.assertEqual(self.sink("cleanup_telegram_titles").args(), (CONN, MEDIA_DIR))
         self.assertEqual(self.sink("sync_jellyfin_people").args(),
                          (CONN, self.core.JELLYFIN_URL, self.core.JELLYFIN_API_KEY))
         self.assertEqual(self.sink("sync_jellyfin_people").kwargs(),
@@ -818,7 +820,8 @@ class TestEnrichmentStages(SyncPassHarness):
         self.assertTrue(self.sync())
 
         self.assertEqual([stage for stage, _, _ in self.core.stages],
-                         ["performer_title_backfill", "jellyfin_metadata_reconciliation"])
+                         ["performer_title_backfill", "telegram_title_cleanup",
+                          "jellyfin_metadata_reconciliation"])
         self.assertEqual(self.core.logger.text("warning"), [])
 
     def test_a_failing_enrichment_pass_is_only_a_warning(self):

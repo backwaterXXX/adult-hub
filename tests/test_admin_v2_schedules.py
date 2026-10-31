@@ -1,7 +1,9 @@
 """Database-free contracts for schedule API validation and write policy."""
 
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,6 +62,30 @@ class TestAdminV2Schedules(unittest.IsolatedAsyncioTestCase):
             result = await endpoint(request("/admin/api/v2/schedules", method="GET"))
         self.assertTrue(result["ok"])
         seed.assert_not_called()
+
+    async def test_title_cleanup_is_listed_as_library_sync_child_with_progress(self):
+        admin = make_admin()
+        endpoint = next(route.endpoint for route in admin_v2_schedules.build_router(admin).routes
+                        if route.path == "/api/v2/schedules" and "GET" in route.methods)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status_path = Path(temp_dir) / "telegram-title-cleanup.json"
+            status_path.write_text(json.dumps({
+                "status": "complete", "last_result": "done", "last_run_at": "2026-10-31T08:00:00+00:00",
+                "processed": 900, "total": 900, "titles_changed": 140,
+                "tags_added": 50, "categories_added": 35,
+            }), encoding="utf-8")
+            with patch.dict(os.environ, {"TELEGRAM_TITLE_CLEANUP_STATUS_PATH": str(status_path)}), \
+                 patch("common.admin_schedules.list_schedules", return_value=[]), \
+                 patch("common.system_schedules.list_system_schedules", return_value=[]):
+                result = await endpoint(request("/admin/api/v2/schedules", method="GET"))
+        cleanup = next(item for item in result["system_items"]
+                       if item.get("id") == "telegram-title-cleanup")
+        self.assertEqual(cleanup["parent_id"], "library-sync")
+        self.assertEqual(cleanup["status"], "done")
+        self.assertEqual(cleanup["progress"], {
+            "processed": 900, "total": 900, "titles_changed": 140,
+            "tags_added": 50, "categories_added": 35,
+        })
 
     async def test_create_schedule_rejects_irrelevant_ids_and_non_warsaw_timezone(self):
         admin = make_admin()

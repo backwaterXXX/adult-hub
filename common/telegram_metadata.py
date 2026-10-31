@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
+from common.title_cleaning import clean_title_text
+
 
 _FIELD_RE = re.compile(r"^\s*(?P<label>[^|:]{1,24})\s*[|:]\s*(?P<value>.*?)\s*$")
 _CAST_LABEL_RE = re.compile(r"\b(?:cast|names|performers?|actors?)\b|👤", re.IGNORECASE)
@@ -65,7 +67,7 @@ def extract_telegram_metadata(caption: str, channel_title: str = "") -> dict:
                 cast_names = [value]
             cast_source = "labeled_cast"
         elif _TITLE_LABEL_RE.search(label) and not title:
-            title = value[:120]
+            title = clean_title_text(value, max_length=120)
             title_source = "labeled_title"
 
     lower_caption = str(caption or "").casefold()
@@ -89,7 +91,7 @@ def extract_telegram_metadata(caption: str, channel_title: str = "") -> dict:
                     and not candidate.startswith(("#", "@"))
                     and not _DECORATION_RE.fullmatch(candidate)
                     and not _PROMO_RE.search(candidate)):
-                title = candidate[:120]
+                title = clean_title_text(candidate, max_length=120)
                 title_source = "first_line"
                 break
 

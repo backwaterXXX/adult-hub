@@ -1,4 +1,3 @@
-import html
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -10,6 +9,7 @@ from common.performers import (
 )
 from common.performer_titles import parse_title_performers_with_known_map as _parse_title_performers_with_known_map
 from common.performer_titles import strip_performer_credits as _strip_performer_credits
+from common.title_cleaning import clean_title_text
 
 # ---------------------------------------------------------------------------
 # Neutral extension hooks (ETAP C).
@@ -76,7 +76,9 @@ def clean_display_title(
     """
     if not title:
         return ""
-    text = html.unescape(title).strip()
+    text = clean_title_text(title)
+    if not text:
+        return ""
 
     # 1. Strip parenthesized handles e.g. (handle) or (@handle)
     text = re.sub(r'\s*\(@?[\w\.\-]+\)', '', text).strip()

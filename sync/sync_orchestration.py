@@ -259,6 +259,30 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
     except Exception as e:
         _core.logger.warning(f"StashDB backfill pass failed: {e}")
 
+    # Repair stored Telegram titles and move caption hashtags into the existing
+    # genre/tag fields. The bounded worker resumes its cursor on the next pass.
+    try:
+        if __package__:
+            from .telegram_title_cleanup import cleanup_telegram_titles
+        else:
+            from telegram_title_cleanup import cleanup_telegram_titles
+        cleanup_result = run_timed_stage(
+            "telegram_title_cleanup",
+            lambda: cleanup_telegram_titles(
+                conn, _core.MEDIA_DIR, stop_requested=_core.stop_requested,
+                logger=_core.logger,
+            ),
+        )
+        if isinstance(cleanup_result, dict):
+            _core._ACTIVE_SYNC_METRICS["telegram_title_cleanup"] = {
+                key: cleanup_result.get(key) for key in (
+                    "status", "processed", "total", "titles_changed", "tags_added",
+                    "categories_added", "nfos_missing", "nfos_failed", "last_result",
+                )
+            }
+    except Exception as e:
+        _core.logger.warning("Telegram title cleanup failed: %s", _core._safe_error_detail(e))
+
     # 9. Clean up expired videos via retention policy + orphaned records.
     # Both use the success signal: absent, disabled and failed sources keep
     # every historical row, file and .strm URL.

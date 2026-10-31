@@ -1,11 +1,11 @@
 """Display-title cleanup and provider-specific title hooks."""
 
-import html
 import re
 from typing import Any, Dict, Iterable, Optional
 
 from common.performers import MEDIA_EXT_SUFFIX_RE, is_performer_segment
 from common.performer_titles import strip_performer_credits
+from common.title_cleaning import clean_title_text
 
 
 _SYNC_SLUG_TOKEN_HOOKS: Dict[str, Any] = {}
@@ -42,7 +42,9 @@ def clean_display_title(
     """Clean a display title while preserving its meaningful text."""
     if not title:
         return ""
-    text = html.unescape(title).strip()
+    text = clean_title_text(title)
+    if not text:
+        return ""
     text = re.sub(r'\s*\(@?[\w\.\-]+\)', '', text).strip()
 
     cleaned_tags = _LEADING_TAGS_RE.sub("", text).strip()

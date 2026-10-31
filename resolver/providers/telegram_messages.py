@@ -7,12 +7,12 @@ import re
 import urllib.parse
 from typing import Any, List, Optional
 
+from common.title_cleaning import clean_title_text, extract_title_hashtags
+
 from .base import CategoryItem
 
 
 _CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
-
-_HASHTAG_RE = re.compile(r"""#[^\s#@.,!?:;()\[\]{}"'<>]+""")
 
 _LEADING_TAGS_RE = re.compile(
     r'^(?:[^\w\s#]*\s*#[a-zA-Z0-9_]*[a-zA-Z_][a-zA-Z0-9_]*\s*)+[-–—:]?\s*',
@@ -33,42 +33,22 @@ def parse_caption_title(caption: str, fallback: str) -> str:
     (e.g. '#ANAL #MEN - Arno Antino, Enzo Muller') are stripped so the title
     is clean ('Arno Antino, Enzo Muller').
     """
-    hashtag_only_lines = []
     for line in (caption or "").splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        cleaned = _LEADING_TAGS_RE.sub("", stripped).strip()
+        cleaned = clean_title_text(_LEADING_TAGS_RE.sub("", stripped))
         if cleaned:
-            return cleaned[:120]
-        hashtag_only_lines.append(stripped)
-    if hashtag_only_lines:
-        return hashtag_only_lines[0][:120]
-    return fallback
+            return clean_title_text(cleaned, max_length=120)
+    return clean_title_text(fallback, max_length=120)
 
 def extract_hashtags(caption: str) -> List[str]:
-    """Extract ``#tag`` hashtags from caption (without leading ``#``, preserving case).
+    """Extract category ``#tag`` markers (numeric scene IDs remain in titles).
 
-    Unicode-aware (regex ``#[^\\s#@.,!%s:;()\\[\\]{}"'<>]+``), max 15 tags,
-    duplicates removed while preserving order. Empty/None -> [].
+    Names preserve the first spelling, deduplicate case-insensitively, and cap at 15.
+    Empty/None -> [].
     """
-    if not caption or not isinstance(caption, str):
-        return []
-    tags: List[str] = []
-    seen = set()
-    for match in _HASHTAG_RE.finditer(caption):
-        raw = match.group(0)
-        name = raw[1:] if raw.startswith("#") else raw
-        name = name.strip()
-        name = name.rstrip("#").strip()
-        if not name:
-            continue
-        if name not in seen:
-            seen.add(name)
-            tags.append(name)
-        if len(tags) >= 15:
-            break
-    return tags
+    return extract_title_hashtags(caption)
 
 def _filter_caption_for_title(caption: str) -> str:
     """Keep only lines containing at least one letter or digit (unicode-aware).
@@ -107,8 +87,7 @@ def _filename_to_title(filename: str) -> str:
     if not stem.strip():
         return ""
     title = re.sub(r"[_\-\.]+", " ", stem)
-    title = re.sub(r"\s+", " ", title).strip()
-    return title[:120].strip()
+    return clean_title_text(title, max_length=120)
 
 def _text_hits(haystack: str, flat: str, clean: str) -> bool:
     """Granice slow albo (dla nazw wielowyrazowych >= 8 liter) wariant bezspacjowy."""

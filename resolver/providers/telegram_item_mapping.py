@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from common.telegram_metadata import extract_telegram_metadata, resolve_explicit_cast
+from common.title_cleaning import clean_title_text
 from .base import VideoItem
 from .telegram_messages import (
     _caption_of,
@@ -68,7 +69,8 @@ def message_to_video_impl(
     channel_link = _channel_id[4:] if _channel_id.startswith("-100") else _channel_id.lstrip("-")
     url = f"https://t.me/c/{channel_link}/{message_id}"
     caption = _caption_of(msg)
-    hashtags = extract_hashtags(caption)
+    filename = msg.get("filename") or ""
+    hashtags = extract_hashtags(caption + "\n" + str(filename))
     categories = ([channel_title] + ["#" + hashtag for hashtag in hashtags])[:16]
     filtered_caption = _filter_caption_for_title(caption)
     extracted = extract_telegram_metadata(caption, channel_title)
@@ -78,7 +80,6 @@ def message_to_video_impl(
     if not filtered_caption and extracted.get("title_source") == "first_line":
         extracted["title"] = ""
         extracted["title_source"] = ""
-    filename = msg.get("filename") or ""
     filename_title = _filename_to_title(filename)
     fallback = filename_title or f"{channel_title} #{message_id}"
     proposals = []
@@ -172,6 +173,7 @@ def message_to_video_impl(
         fallback if performer_resolution and performer_resolution.get("source") != "no_cast_field"
         else parse_caption_title(filtered_caption, fallback)
     )
+    title = clean_title_text(title, max_length=120) or clean_title_text(fallback, max_length=120)
     return VideoItem(
         id=f"telegram:{unique_id}",
         provider="telegram",

@@ -151,10 +151,10 @@ class TestParseCaptionTitle(unittest.TestCase):
             parse_caption_title(caption, "fb"),
             "Arno Antino, Enzo Muller")
 
-    def test_hashtag_only_caption_uses_first_hashtag_line(self):
-        """When every line is hashtag-only, return the first one."""
+    def test_hashtag_only_caption_uses_fallback(self):
+        """Category markers belong in tags, not in a title without content."""
         caption = "#onlyfans"
-        self.assertEqual(parse_caption_title(caption, "fb"), "#onlyfans")
+        self.assertEqual(parse_caption_title(caption, "fb"), "fb")
 
     def test_mixed_hashtag_then_content(self):
         caption = "#OF #ANAK\nOnlyFans - Craig Marks with Papi Kocic"
