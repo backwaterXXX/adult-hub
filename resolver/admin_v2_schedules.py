@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request, Query
 from admin_v2_errors import V2ErrorRoute
 from common import admin_schedules
+from common import schedule_stages
 from common import system_schedules
 
 
@@ -62,6 +63,7 @@ def build_router(admin):
                     details = "Legacy interval cannot be represented exactly; enter a cron expression to convert it."
                 system.append({**item, "group": "system", "source": "System worker",
                                "details": details, "status": status, "problem": problem})
+            stages = await admin.asyncio.to_thread(schedule_stages.list_stage_runs, admin.HUB_DB_URL)
             cleanup = await admin.asyncio.to_thread(title_cleanup_status)
             cleanup_status = str(cleanup.get("status") or "unknown")
             cleanup_result = str(cleanup.get("last_result") or "")
@@ -95,35 +97,37 @@ def build_router(admin):
             cleanup_error = str(cleanup.get("last_error") or "")[:120]
             if cleanup_orphaned_run and not cleanup_error:
                 cleanup_error = "Sync stopped before the batch checkpoint."
-            system.extend([
-                {"name": "Backup history cleanup", "group": "dependent", "parent_id": "database-backup", "source": "System database backup", "details": "Runs after a successful system backup; removes history older than one calendar month.", "status": "inherited"},
-                {"name": "StashDB performer catalog", "group": "dependent", "parent_id": "library-sync", "source": "Library sync", "details": "At sync, at most once per 24 hours; requires configured credentials.", "status": "unknown"},
-                {"name": "Configured source scans", "group": "dependent", "parent_id": "library-sync", "source": "Library sync", "details": "Scans enabled sources; Telegram availability checks run after successful channel scans.", "status": "unknown"},
-                {"name": "Telegram availability reconciliation", "group": "dependent", "parent_id": "library-sync", "source": "Library sync", "details": "Runs for eligible enabled channels after a successful channel scan.", "status": "unknown"},
-                {"name": "Scene identification", "group": "dependent", "parent_id": "library-sync", "source": "Library sync", "details": "Backfills scene fingerprints when the optional scraper is installed and work is available.", "status": "unknown"},
-                {"name": "Performer and scene metadata backfill", "group": "dependent", "parent_id": "library-sync", "source": "Library sync", "details": "Title-based performer discovery and PBC, TPDB and StashDB enrichment; subject to configuration and available work.", "status": "unknown"},
-                {
-                    "id": "telegram-title-cleanup",
-                    "name": "Telegram title and hashtag cleanup",
-                    "group": "dependent", "parent_id": "library-sync",
-                    "source": "Library sync", "details": cleanup_details,
-                    "status": cleanup_display_status,
-                    "last_result": cleanup_result or None,
-                    "last_run_at": cleanup.get("last_run_at"),
-                    "updated_at": cleanup.get("updated_at"),
-                    "progress": {
+            for stage in stages:
+                parent = stage["schedule_id"]
+                row = {
+                    **stage,
+                    "group": "dependent",
+                    "parent_id": parent,
+                    "source": "System database backup" if parent == "database-backup" else "Library sync",
+                    "status": stage["last_result"] or "unknown",
+                    "problem": stage["last_result"] == "failed",
+                }
+                if stage["id"] == "telegram-title-cleanup":
+                    row["details"] = cleanup_details
+                    row["progress"] = {
                         "processed": cleanup.get("processed", 0),
                         "total": cleanup.get("total"),
                         "titles_changed": cleanup.get("titles_changed", 0),
                         "tags_added": cleanup.get("tags_added", 0),
                         "categories_added": cleanup.get("categories_added", 0),
-                    },
-                    "problem": cleanup_status == "failed" or int(cleanup.get("nfos_failed") or 0) > 0,
-                    "error": cleanup_error,
-                },
-                {"name": "Library maintenance", "group": "dependent", "parent_id": "library-sync", "source": "Library sync", "details": "Retention, orphan cleanup and stream maintenance depend on source success and safety guards.", "status": "unknown"},
-                {"name": "Jellyfin reconciliation and refresh", "group": "dependent", "parent_id": "library-sync", "source": "Library sync", "details": "Subject to configuration and available work.", "status": "unknown"},
-            ])
+                    }
+                    # Installations upgraded before the first recorded pass still have
+                    # the batch file but no stage row, so the file fills in for it.
+                    if stage["last_result"] is None:
+                        row["status"] = cleanup_display_status
+                        row["last_result"] = cleanup_result or None
+                        row["last_run_at"] = cleanup.get("last_run_at")
+                    row["error"] = stage["last_error"] or cleanup_error
+                    row["problem"] = bool(
+                        row["problem"] or cleanup_status == "failed"
+                        or int(cleanup.get("nfos_failed") or 0) > 0
+                    )
+                system.append(row)
             return {"ok": True, "items": items, "system_items": system}
         except Exception:
             return admin.JSONResponse({"ok": False, "error": "Schedule list is unavailable."}, status_code=503)
@@ -270,5 +274,52 @@ def build_router(admin):
     @router.post("/api/v2/schedules/system/{schedule_id}/run")
     async def run_system_schedule(request: Request, schedule_id: str):
         return await queue_run(request, schedule_id, system=True)
+
+    @router.post("/api/v2/schedules/system/{schedule_id}/stages/{stage_id}/enabled")
+    async def set_stage_enabled(request: Request, schedule_id: str, stage_id: str):
+        denied = admin._write_denied(request)
+        if denied is not None:
+            return denied
+        try:
+            body = await request.json()
+            if not isinstance(body, dict) or set(body) != {"enabled", "revision"}:
+                raise ValueError("Provide enabled and revision.")
+            result = await admin.asyncio.to_thread(
+                schedule_stages.set_stage_enabled, admin.HUB_DB_URL, schedule_id, stage_id,
+                enabled=body["enabled"], revision=body["revision"],
+            )
+            if result["outcome"] == "not_found":
+                return admin.JSONResponse({"ok": False, "error": "Stage not found."}, status_code=404)
+            if result["outcome"] == "conflict":
+                return admin.JSONResponse({"ok": False, "error": "Schedule changed. Refresh and try again.",
+                                           **result}, status_code=409)
+            return {"ok": True, **result}
+        except ValueError as exc:
+            return admin.JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        except Exception:
+            return admin.JSONResponse({"ok": False, "error": "Could not update stage."}, status_code=503)
+
+    @router.post("/api/v2/schedules/system/{schedule_id}/stages/{stage_id}/run")
+    async def run_stage(request: Request, schedule_id: str, stage_id: str):
+        denied = admin._write_denied(request)
+        if denied is not None:
+            return denied
+        try:
+            result = await admin.asyncio.to_thread(
+                schedule_stages.request_stage_run, admin.HUB_DB_URL, schedule_id, stage_id
+            )
+        except ValueError as exc:
+            return admin.JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        except Exception:
+            return admin.JSONResponse({"ok": False, "error": "Could not run stage."}, status_code=503)
+        if result["outcome"] == "not_found":
+            return admin.JSONResponse({"ok": False, "error": "Stage not found."}, status_code=404)
+        if result["outcome"] == "disabled":
+            return admin.JSONResponse({"ok": False, "error": "Stage is disabled."}, status_code=409)
+        if result["outcome"] == "conflict":
+            return admin.JSONResponse({"ok": False, "error": "A run is already queued or processing."},
+                                       status_code=409)
+        admin._wake_worker("jobs")
+        return admin.JSONResponse({"ok": True, **result}, status_code=202)
 
     return router

@@ -14,6 +14,7 @@ import re
 from typing import NamedTuple
 
 from common import admin_schedules, db
+from common.job_queue import enqueue_job
 
 LOGGER = logging.getLogger(__name__)
 MAX_ERROR_LENGTH = 200
@@ -374,6 +375,10 @@ def request_stage_run(db_url, schedule_id: str, stage_id: str, *, now=None) -> d
         if row and row[1] in {"queued", "running"}:
             conn.rollback()
             return {"outcome": "conflict"}
+        # The job is committed on its own connection before the marker is written:
+        # a failed marker write leaves a runnable job whose worker records the row,
+        # while the reverse order could strand the stage in 'queued' forever.
+        job_id = enqueue_job(db_url, stage.run_action, {})
         conn.execute(
             "INSERT INTO system_schedule_stages (schedule_id,id,last_result,last_run_at,updated_at)"
             " VALUES (%s,%s,'queued',%s,%s)"
@@ -382,7 +387,7 @@ def request_stage_run(db_url, schedule_id: str, stage_id: str, *, now=None) -> d
              instant.timestamp(), instant.timestamp()),
         )
         conn.commit()
-        return {"outcome": "queued", "action": stage.run_action}
+        return {"outcome": "queued", "action": stage.run_action, "job_id": job_id}
     except Exception:
         conn.rollback()
         raise

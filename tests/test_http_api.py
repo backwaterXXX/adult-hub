@@ -327,6 +327,8 @@ class TestResolverHttpApi(unittest.TestCase):
         ("POST", "/admin/api/v2/schedules/{schedule_id}/run"),
         ("POST", "/admin/api/v2/schedules/system/{schedule_id}/run"),
         ("POST", "/admin/api/v2/schedules/system/{schedule_id}"),
+        ("POST", "/admin/api/v2/schedules/system/{schedule_id}/stages/{stage_id}/enabled"),
+        ("POST", "/admin/api/v2/schedules/system/{schedule_id}/stages/{stage_id}/run"),
         ("POST", "/admin/api/v2/diagnostics/playback/enable"),
         ("POST", "/admin/api/v2/diagnostics/playback/disable"),
         ("DELETE", "/admin/api/v2/diagnostics/playback/reports"),

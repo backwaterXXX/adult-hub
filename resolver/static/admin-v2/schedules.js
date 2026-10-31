@@ -16,7 +16,7 @@
   const resultNames = {
     queued: 'Queued', processing: 'Running', processing_manual: 'Running', done: 'Completed', failed: 'Failed',
     cancelled: 'Cancelled', skipped_overlap: 'Previous run still active',
-    inherited: 'Inherited cadence', unknown: 'Unknown', fresh: 'Fresh', stale: 'Stale'
+    unknown: 'Unknown', fresh: 'Fresh', stale: 'Stale'
   };
   const POLL_INTERVAL_MS = 30_000;
   let loadSeq = 0;
@@ -34,6 +34,19 @@
     const time = node('time', '', date.toLocaleString('en-GB', { timeZone: timezone }));
     time.dateTime = date.toISOString();
     return time;
+  }
+
+  function finishedCell(item, scheduleZone) {
+    const cell = node('td', 'schedule-time-cell');
+    cell.dataset.label = 'Finished';
+    cell.append(timeNode(item.last_finished_at, scheduleZone));
+    if (!item.last_finished_at && item.last_run_at
+        && ['queued', 'processing', 'running'].includes(item.last_result)) {
+      const started = node('small', 'schedule-task-kind', 'Started ');
+      started.append(timeNode(item.last_run_at, scheduleZone));
+      cell.append(started);
+    }
+    return cell;
   }
 
   function cadence(item) {
@@ -64,14 +77,6 @@
     if (item.enabled === false) return 'Disabled';
     if (item.status === 'running') return 'Running';
     return resultNames[item.last_result] || resultNames[item.status] || 'No runs yet';
-  }
-
-  function dependentState(parent) {
-    if (parent.enabled === false) return ['is-disabled', 'Parent disabled'];
-    if (parent.problem || parent.status === 'stale' || parent.last_result === 'failed') return ['is-failed', 'Parent needs attention'];
-    if (parent.status === 'running') return ['is-running', 'Parent running'];
-    if (parent.status === 'fresh' || parent.last_result === 'done') return ['is-ok', 'Inherited cadence'];
-    return ['is-unknown', 'Inherits parent schedule'];
   }
 
   function statusClass(item) {
@@ -245,10 +250,6 @@
     if (item.details) statusCell.append(node('small', 'schedule-task-kind', item.details));
     const nextCell = node('td', 'schedule-time-cell'); nextCell.append(timeNode(item.next_run_at, scheduleZone));
     nextCell.dataset.label = 'Next run';
-    const lastCell = node('td', 'schedule-time-cell');
-    lastCell.dataset.label = 'Last run';
-    lastCell.append(timeNode(item.last_run_at, scheduleZone));
-    if (item.last_result && item.last_result !== 'processing') lastCell.append(node('small', 'schedule-task-kind', resultNames[item.last_result] || item.last_result));
     const actionCell = node('td', 'schedule-actions-cell');
     actionCell.dataset.label = 'Actions';
     const editButton = node('button', 'button button-quiet schedule-edit-toggle', 'Edit');
@@ -285,7 +286,7 @@
       } catch (error) { feedback.textContent = `Could not run the schedule. ${error.message}`; run.disabled = false; }
     });
     actionCell.append(editButton, toggle, run);
-    row.append(taskCell, cronCell, statusCell, nextCell, lastCell, actionCell);
+    row.append(taskCell, cronCell, statusCell, nextCell, finishedCell(item, scheduleZone), actionCell);
     const editorRow = node('tr', 'schedule-editor-row'); editorRow.hidden = true;
     const editor = makeScheduleEditor({ ...item, group }, feedback, editorRow, editButton);
     return { row, editorRow, editor };
@@ -296,7 +297,7 @@
     const table = node('table', 'schedule-table');
     const head = node('thead');
     const header = node('tr');
-    ['Task', 'Cron', 'Status', 'Next run', 'Last run', 'Actions'].forEach(label => header.append(node('th', '', label)));
+    ['Task', 'Cron', 'Status', 'Next run', 'Finished', 'Actions'].forEach(label => header.append(node('th', '', label)));
     head.append(header);
     const body = node('tbody');
     for (const item of items) {
@@ -310,50 +311,70 @@
   }
 
   function makeDependentRow(item, parent, feedback) {
-    const [stateClass, stateText] = dependentState(parent);
     const scheduleZone = parent.timezone || 'Europe/Warsaw';
     const row = node('tr', 'schedule-row schedule-dependent-row');
     row.dataset.parentId = parent.id;
+    row.dataset.stageId = item.id;
+    // Stages inherit their parent cadence, so they take the Cron column too and
+    // give the room to their own description instead of repeating the expression.
     const taskCell = node('td', 'schedule-task-cell');
     taskCell.dataset.label = 'Task';
-    taskCell.append(node('strong', 'schedule-task-name', item.name),
-      node('small', 'schedule-task-kind', `Runs with ${parent.name}`));
-    const cronCell = node('td', 'schedule-cron-cell');
-    cronCell.dataset.label = 'Cron';
-    if (parent.cron_expression) {
-      cronCell.append(node('code', '', parent.cron_expression), node('small', '', `Inherited from ${parent.name}`));
-    } else cronCell.append(node('span', 'schedule-unknown', 'Requires conversion'));
+    taskCell.colSpan = 2;
+    taskCell.append(node('strong', 'schedule-task-name', item.name));
+    if (item.details) taskCell.append(node('small', 'schedule-task-kind', item.details));
+    else taskCell.append(node('small', 'schedule-task-kind', `Runs with ${parent.name}`));
     const statusCell = node('td');
     statusCell.dataset.label = 'Status';
-    statusCell.append(node('span', `schedule-status ${stateClass}`, stateText));
-    if (item.details) statusCell.append(node('small', 'schedule-task-kind', item.details));
-    const nextCell = node('td', 'schedule-time-cell'); nextCell.append(timeNode(parent.next_run_at, scheduleZone));
+    statusCell.append(node('span', `schedule-status ${statusClass(item)}`, statusName(item)));
+    const stageProblem = item.error || item.last_error;
+    if (stageProblem) statusCell.append(node('small', 'schedule-task-kind', stageProblem));
+    const nextCell = node('td', 'schedule-time-cell');
     nextCell.dataset.label = 'Next run';
-    const lastCell = node('td', 'schedule-time-cell');
-    lastCell.dataset.label = 'Last run';
-    lastCell.append(timeNode(parent.last_run_at, scheduleZone));
-    if (parent.last_result && parent.last_result !== 'processing') lastCell.append(node('small', 'schedule-task-kind', resultNames[parent.last_result] || parent.last_result));
+    nextCell.append(timeNode(item.enabled === false ? null : parent.next_run_at, scheduleZone));
+    const finished = finishedCell(item, scheduleZone);
     const actionCell = node('td', 'schedule-actions-cell');
     actionCell.dataset.label = 'Actions';
-    const run = node('button', 'button button-quiet schedule-run', 'Run parent');
+    const run = node('button', 'button button-quiet schedule-run', 'Run');
     run.type = 'button';
-    run.title = `Runs ${parent.name}, which also runs this task.`;
-    run.addEventListener('click', async () => {
-      run.disabled = true;
-      try {
-        const url = parent.group === 'system' ? `${endpoint}/system/${encodeURIComponent(parent.id)}/run` : `${endpoint}/${encodeURIComponent(parent.id)}/run`;
-        const result = await window.AdminV2.postJson(url, {});
-        await load();
-        feedback.textContent = `${parent.name} queued.`;
-        if (result.job_id) {
-          const link = node('a', '', ' Open task');
-          link.href = `/admin/v2/?job_id=${encodeURIComponent(result.job_id)}#jobs`;
-          feedback.append(link);
+    if (item.run_action) {
+      run.addEventListener('click', async () => {
+        run.disabled = true;
+        try {
+          const result = await window.AdminV2.postJson(
+            `${endpoint}/system/${encodeURIComponent(parent.id)}/stages/${encodeURIComponent(item.id)}/run`, {});
+          await load();
+          feedback.textContent = `${item.name} queued.`;
+          if (result.job_id) {
+            const link = node('a', '', ' Open task');
+            link.href = `/admin/v2/?job_id=${encodeURIComponent(result.job_id)}#jobs`;
+            feedback.append(link);
+          }
+        } catch (error) {
+          feedback.textContent = `Could not run ${item.name}. ${error.message}`;
+          run.disabled = false;
         }
-      } catch (error) { feedback.textContent = `Could not run ${parent.name}. ${error.message}`; run.disabled = false; }
+      });
+    } else {
+      run.disabled = true;
+      run.title = item.run_unavailable_reason || 'This stage has no independent trigger.';
+    }
+    const toggle = node('button', 'button button-quiet schedule-enable-toggle',
+      item.enabled === false ? 'Enable' : 'Disable');
+    toggle.type = 'button';
+    toggle.addEventListener('click', async () => {
+      toggle.disabled = true;
+      try {
+        await window.AdminV2.postJson(
+          `${endpoint}/system/${encodeURIComponent(parent.id)}/stages/${encodeURIComponent(item.id)}/enabled`,
+          { enabled: item.enabled === false, revision: item.revision });
+        await load();
+      } catch (error) {
+        feedback.textContent = `Could not update ${item.name}. ${error.message}`;
+        toggle.disabled = false;
+      }
     });
-    actionCell.append(run);
-    row.append(taskCell, cronCell, statusCell, nextCell, lastCell, actionCell);
+    actionCell.append(run, toggle);
+    row.append(taskCell, statusCell, nextCell, finished, actionCell);
     return row;
   }
 

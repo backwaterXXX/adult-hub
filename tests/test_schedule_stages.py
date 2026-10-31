@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from common import schedule_stages, system_schedules
 from common.admin_audit_events import list_change_events
@@ -132,12 +135,16 @@ class TestStageState(PgTestCase):
                                               enabled=False, revision=0, now=START)
 
     def test_request_run_queues_once_and_refuses_overlap(self):
-        self.assertEqual(
-            schedule_stages.request_stage_run(self.db_url, "library-sync", "jellyfin-refresh",
-                                              now=START),
-            {"outcome": "queued", "action": "collections_refresh"})
+        result = schedule_stages.request_stage_run(self.db_url, "library-sync", "jellyfin-refresh",
+                                                   now=START)
+        self.assertEqual({k: v for k, v in result.items() if k != "job_id"},
+                         {"outcome": "queued", "action": "collections_refresh"})
+        self.assertTrue(result["job_id"])
         self.assertEqual(self.row("jellyfin-refresh")["last_result"], "queued")
         self.assertEqual(self.row("jellyfin-refresh")["last_run_at"], START.isoformat())
+        self.assertEqual(self.conn.execute(
+            "SELECT action,state FROM video_duplicate_jobs WHERE id=%s", (result["job_id"],)
+        ).fetchone(), ("collections_refresh", "queued"))
         self.assertEqual(schedule_stages.request_stage_run(
             self.db_url, "library-sync", "jellyfin-refresh", now=END)["outcome"], "conflict")
         schedule_stages.record_stage_finish(self.conn, "library-sync", "jellyfin-refresh",
@@ -154,6 +161,51 @@ class TestStageState(PgTestCase):
             self.db_url, "library-sync", "metadata-backfill", now=START)["outcome"], "disabled")
         self.assertEqual(schedule_stages.request_stage_run(
             self.db_url, "library-sync", "missing", now=START)["outcome"], "not_found")
+
+
+class TestStandaloneStageJobs(PgTestCase):
+    """A manually triggered stage writes the row the scheduled pass would write."""
+
+    def setUp(self):
+        super().setUp()
+        system_schedules.ensure_system_schedules(self.db_url)
+
+    def row(self, stage_id):
+        return next(item for item in schedule_stages.list_stage_runs(self.db_url)
+                    if item["id"] == stage_id)
+
+    def _worker(self, queued):
+        from pathlib import Path
+        from types import SimpleNamespace
+        from sync import duplicate_job_external_handlers
+        services = SimpleNamespace(logger=logging.getLogger("test"), external_metadata_backfill=None)
+        return duplicate_job_external_handlers.execute_external_operation(
+            queued["action"], self.conn, queued["job_id"], {}, Path("/tmp/media"), services)
+
+    def test_successful_job_records_a_finished_stage_with_an_end_time(self):
+        queued = schedule_stages.request_stage_run(
+            self.db_url, "database-backup", "history-cleanup")
+        self.assertEqual(queued["outcome"], "queued")
+        self.assertEqual(self.row("history-cleanup")["last_result"], "queued")
+        result, catalog_committed = self._worker(queued)
+        self.assertFalse(catalog_committed)
+        self.assertIn("history_rows_removed", result)
+        row = self.row("history-cleanup")
+        self.assertEqual(row["last_result"], "done")
+        self.assertIsNone(row["last_error"])
+        self.assertIsNotNone(row["last_finished_at"])
+        self.assertLessEqual(row["last_run_at"], row["last_finished_at"])
+
+    def test_failed_job_records_the_stage_failure_and_still_raises(self):
+        with patch.dict(os.environ, {}):
+            os.environ.pop("STASHDB_API_KEY", None)
+            os.environ.pop("STASH_API_KEY", None)
+            queued = schedule_stages.request_stage_run(self.db_url, "library-sync", "performer-catalog")
+            with self.assertRaises(RuntimeError):
+                self._worker(queued)
+        row = self.row("performer-catalog")
+        self.assertEqual(row["last_result"], "failed")
+        self.assertIn("STASHDB_API_KEY", row["last_error"])
 
 
 class TestParentFinishTime(PgTestCase):

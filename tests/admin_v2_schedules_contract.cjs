@@ -117,9 +117,12 @@ const context = {
   currentList.resolve({ items: [
     { id: 'current', name: 'Current schedule', action: 'backup_create', enabled: true,
       next_run_at: '2026-10-11T01:30:00+00:00', last_run_at: '2026-10-10T01:30:00+00:00',
+      last_finished_at: '2026-10-10T01:42:00+00:00',
       last_result: 'done', last_job_id: 'job_123' },
     { id: 'invalid-job', name: 'Invalid job reference', action: 'backup_create', enabled: true,
       last_run_at: null, last_result: 'done', last_job_id: '<script>' },
+    { id: 'in-flight', name: 'In flight schedule', action: 'backup_create', enabled: true,
+      next_run_at: null, last_run_at: '2026-10-10T01:30:00+00:00', last_result: 'processing' },
   ] });
   await latestRefresh;
   staleList.resolve({ items: [{ id: 'stale', name: 'Stale schedule', action: 'backup_create', enabled: true }] });
@@ -133,9 +136,11 @@ const context = {
   assert.equal(currentCopy.children[3].children[0].dateTime, '2026-10-11T01:30:00.000Z',
     'next run timestamps must use semantic, machine-readable time markup');
   assert.equal(currentCopy.children[4].children[0].tagName, 'TIME');
-  assert.equal(currentCopy.children[4].children[0].dateTime, '2026-10-10T01:30:00.000Z',
-    'last run timestamps must use semantic, machine-readable time markup');
-  assert.match(currentCopy.children[4].children[1].textContent, /Completed/,
+  assert.equal(currentCopy.children[4].children[0].dateTime, '2026-10-10T01:42:00.000Z',
+    'the finished column must carry the real end time, not the task start');
+  assert.equal(currentCopy.children[4].children.length, 1,
+    'a finished run must not add a start-time line');
+  assert.match(currentCopy.children[2].children[0].textContent, /Completed/,
     'schedule history must include the last run result');
   assert.equal(currentCopy.children[0].children[2].tagName, 'A');
   assert.equal(currentCopy.children[0].children[2].textContent, 'Open latest task');
@@ -144,7 +149,12 @@ const context = {
   assert.equal(currentBody().children[2].children[0].children.length, 2,
     'an invalid job ID must not produce a task link');
   assert.equal(currentBody().children[2].children[4].children[0].textContent, '—',
-    'an unavailable last-run timestamp must not render Invalid Date');
+    'an unavailable finish timestamp must not render Invalid Date');
+  const inFlight = currentBody().children[4];
+  assert.equal(inFlight.children[4].children[0].textContent, '—',
+    'a run that has not finished has no end time');
+  assert.equal(inFlight.children[4].children[1].children[0].dateTime, '2026-10-10T01:30:00.000Z',
+    'an in-flight run states when it started instead of an end time');
   context.window.AdminV2.getJson = async path => path.includes('cron-preview?')
     ? { next_runs: ['2026-11-01T02:00:00Z', '2026-11-02T02:00:00Z', '2026-11-03T02:00:00Z'] }
     : ({ items: [{ id: 'duplicate-reconcile', name: 'Duplicate reconciliation',
@@ -306,39 +316,66 @@ const context = {
   context.window.AdminV2.getJson = async () => ({ items: [], system_items: [
     { id: 'library-sync', name: 'Library sync', group: 'system', enabled: true,
       cron_expression: '0 * * * *', revision: 1, last_result: 'done',
-      next_run_at: '2026-11-01T02:00:00Z', last_run_at: '2026-10-31T02:00:00Z', timezone: 'Europe/Warsaw' },
-    { name: 'Scene identification', group: 'dependent', parent_id: 'library-sync', source: 'Library sync',
-      details: 'Backfills scene fingerprints when work is available.' }
+      next_run_at: '2026-11-01T02:00:00Z', last_run_at: '2026-10-31T02:00:00Z',
+      last_finished_at: '2026-10-31T02:34:00Z', timezone: 'Europe/Warsaw' },
+    { id: 'scene-identification', name: 'Scene identification', group: 'dependent',
+      parent_id: 'library-sync', source: 'Library sync', status: 'done', problem: false,
+      details: 'Backfills scene fingerprints when work is available.',
+      run_action: 'scene_backfill', run_unavailable_reason: null, enabled: true, revision: 1,
+      last_result: 'done', last_error: null, last_run_at: '2026-10-31T02:12:00Z',
+      last_finished_at: '2026-10-31T02:19:00Z' },
+    { id: 'source-scans', name: 'Configured source scans', group: 'dependent',
+      parent_id: 'library-sync', source: 'Library sync', status: 'failed', problem: true,
+      details: 'Scans enabled sources.', run_action: null,
+      run_unavailable_reason: 'Runs only inside a locked sync pass.', enabled: true, revision: 2,
+      last_result: 'failed', last_error: 'One or more sources reported a failure',
+      last_run_at: '2026-10-31T02:01:00Z', last_finished_at: '2026-10-31T02:09:00Z' },
   ] });
   await elements.schedulesRefresh.listeners.click();
   const grouped = currentBody();
   assert.equal(grouped.children[0].children[0].children[0].textContent, 'Library sync');
+  assert.equal(grouped.children[0].children[4].children[0].dateTime, '2026-10-31T02:34:00.000Z',
+    'a parent row reports when the pass actually finished');
   const dependentRow = grouped.children[2];
   assert.match(dependentRow.className, /schedule-dependent-row/, 'dependent tasks follow their parent');
-  assert.equal(dependentRow.children.length, 6, 'a dependent row uses the same columns as its parent');
+  assert.equal(dependentRow.children.length, 5, 'a dependent row drops the inherited Cron column');
   assert.deepEqual([...dependentRow.children].map(cell => cell.dataset.label),
-    ['Task', 'Cron', 'Status', 'Next run', 'Last run', 'Actions']);
+    ['Task', 'Status', 'Next run', 'Finished', 'Actions']);
+  assert.equal(dependentRow.children[0].colSpan, 2, 'the stage name and description take the Cron column');
   assert.equal(dependentRow.children[0].children[0].textContent, 'Scene identification');
-  assert.equal(dependentRow.children[0].children[1].textContent, 'Runs with Library sync');
-  assert.equal(dependentRow.children[1].children[0].textContent, '0 * * * *',
-    'a dependent row shows the cadence it inherits');
-  assert.equal(dependentRow.children[1].children[1].textContent, 'Inherited from Library sync');
-  assert.equal(dependentRow.children[2].children[0].textContent, 'Inherited cadence',
-    'a dependent row states how it is scheduled');
-  assert.equal(dependentRow.children[2].children[1].textContent,
-    'Backfills scene fingerprints when work is available.');
-  assert.equal(dependentRow.children[3].children[0].dateTime, '2026-11-01T02:00:00.000Z',
+  assert.equal(dependentRow.children[0].children[1].textContent,
+    'Backfills scene fingerprints when work is available.',
+    'the description sits under the name, not in the status column');
+  assert.equal(dependentRow.children[1].children[0].textContent, 'Completed',
+    'each stage reports its own result rather than the parent cadence');
+  assert.match(dependentRow.children[1].children[0].className, /is-ok/);
+  assert.equal(dependentRow.children[2].children[0].dateTime, '2026-11-01T02:00:00.000Z',
     'a dependent row shows when the parent will next run');
-  assert.equal(dependentRow.children[4].children[0].dateTime, '2026-10-31T02:00:00.000Z',
-    'a dependent row shows the parent last run');
-  assert.equal(dependentRow.children[4].children[1].textContent, 'Completed');
-  const dependentRun = dependentRow.children[5].children[0];
-  assert.equal(dependentRun.textContent, 'Run parent');
+  assert.equal(dependentRow.children[3].children[0].dateTime, '2026-10-31T02:19:00.000Z',
+    'a dependent row shows the stage finish time, not its start');
+  const failedRow = grouped.children[3];
+  assert.equal(failedRow.children[1].children[0].textContent, 'Failed');
+  assert.match(failedRow.children[1].children[0].className, /is-failed/);
+  assert.equal(failedRow.children[1].children[1].textContent, 'One or more sources reported a failure');
+  const triggerlessRun = failedRow.children[4].children[0];
+  assert.equal(triggerlessRun.textContent, 'Run');
+  assert.equal(triggerlessRun.disabled, true);
+  assert.equal(triggerlessRun.title, 'Runs only inside a locked sync pass.');
+  const dependentRun = dependentRow.children[4].children[0];
+  assert.equal(dependentRun.textContent, 'Run');
   await dependentRun.listeners.click();
   assert.deepEqual(calls.filter(call => call.method === 'POST').at(-1), {
-    method: 'POST', path: '/admin/api/v2/schedules/system/library-sync/run', payload: {}
+    method: 'POST', path: '/admin/api/v2/schedules/system/library-sync/stages/scene-identification/run',
+    payload: {}
   });
-  assert.equal(elements.schedulesFeedback.textContent, 'Library sync queued.');
+  assert.equal(elements.schedulesFeedback.textContent, 'Scene identification queued.');
+  const dependentToggle = currentBody().children[2].children[4].children[1];
+  assert.equal(dependentToggle.textContent, 'Disable');
+  await dependentToggle.listeners.click();
+  assert.deepEqual(calls.filter(call => call.method === 'POST').at(-1), {
+    method: 'POST', path: '/admin/api/v2/schedules/system/library-sync/stages/scene-identification/enabled',
+    payload: { enabled: false, revision: 1 }
+  });
   const runButton = currentBody().children[0].children[5].children[2];
   assert.equal(runButton.textContent, 'Run');
   await runButton.listeners.click();

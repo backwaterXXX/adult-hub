@@ -270,6 +270,28 @@ class TestScheduleDispatch(PgTestCase):
         self.assertNotEqual(schedule["last_job_id"], first_job_id)
         self.assertEqual(self.conn.execute("SELECT count(*) FROM video_duplicate_jobs").fetchone()[0], 2)
 
+    def test_listing_reports_when_the_dispatched_job_actually_finished(self):
+        now = datetime(2026, 1, 1, 0, tzinfo=timezone.utc)
+        created = self._make_due_schedule(now)
+        self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=now), 1)
+        job_id = self._listed(created["id"])["last_job_id"]
+        self.assertIsNone(self._listed(created["id"])["last_finished_at"],
+                          "a job that has not ended has no finish time")
+        self.conn.execute("UPDATE video_duplicate_jobs SET state='processing',updated_at=%s WHERE id=%s",
+                          ((now + timedelta(minutes=4)).timestamp(), job_id))
+        self.conn.commit()
+        self.assertIsNone(self._listed(created["id"])["last_finished_at"],
+                          "a running job must not report an end time")
+
+        finished = now + timedelta(minutes=12)
+        self.conn.execute("UPDATE video_duplicate_jobs SET state='done',updated_at=%s WHERE id=%s",
+                          (finished.timestamp(), job_id))
+        self.conn.commit()
+        listed = self._listed(created["id"])
+        self.assertEqual(listed["last_finished_at"], finished.isoformat())
+        self.assertLess(listed["last_run_at"], listed["last_finished_at"],
+                        "the finish time is the completion, not the dispatch")
+
     def test_availability_schedule_enforces_distinct_twenty_id_limit(self):
         with self.assertRaises(ValueError):
             admin_schedules.create_schedule(
