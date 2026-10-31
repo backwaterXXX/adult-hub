@@ -21,24 +21,22 @@
   <script defer src="/admin/assets-v2/activity.js"></script>
   <script defer src="/admin/assets-v2/linkcheck.js"></script>
   <script defer src="/admin/assets-v2/enrichment.js"></script>
-  <script defer src="/admin/assets-v2/command-palette.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar" aria-label="Admin navigation">
-      <a class="brand" href="#start" aria-label="Adult Hub — Dashboard">
+      <a class="brand" href="#start" aria-label="Adult Hub — Overview">
         <span class="brand-mark" aria-hidden="true">A</span>
         <span><strong>Adult Hub</strong><small>ADMIN</small></span>
       </a>
       <div class="nav-caption">WORKSPACE</div>
       <nav class="primary-nav" aria-label="Sections">
-        <a href="#start" data-route="start"><span class="nav-icon" aria-hidden="true">⌂</span>Dashboard</a>
+        <a href="#start" data-route="start"><span class="nav-icon" aria-hidden="true">⌂</span>Overview</a>
         <a href="#library" data-route="library"><span class="nav-icon" aria-hidden="true">▤</span>Library</a>
         <a href="#performers" data-route="performers"><span class="nav-icon" aria-hidden="true">♙</span>Performers</a>
-        <a href="#quality" data-route="quality"><span class="nav-icon" aria-hidden="true">◈</span>Catalog Health</a>
         <a href="#sources" data-route="sources"><span class="nav-icon" aria-hidden="true">◉</span>Sources</a>
-        <a href="#jobs" data-route="jobs"><span class="nav-icon" aria-hidden="true">◷</span>Jobs &amp; Automation</a>
+        <a href="#jobs" data-route="jobs"><span class="nav-icon" aria-hidden="true">◷</span>Tasks</a>
         <a href="#schedules" data-route="schedules"><span class="nav-icon" aria-hidden="true">◷</span>Schedules</a>
         <a href="#system" data-route="system"><span class="nav-icon" aria-hidden="true">⚙</span>System</a>
       </nav>
@@ -50,59 +48,36 @@
     <main class="main-area" id="main-content" tabindex="-1">
       <header class="topbar">
         <button class="mobile-menu" id="menuButton" type="button" aria-label="Open navigation" aria-expanded="false">☰</button>
-        <div class="breadcrumbs"><span>ADMIN</span><span aria-hidden="true">/</span><strong id="crumbCurrent">Home</strong></div>
-        <button class="global-search" id="commandPaletteTrigger" type="button" aria-haspopup="dialog" aria-controls="commandPalette">
-          <span aria-hidden="true">⌕</span><span class="command-trigger-label">Search anything or run a command...</span><kbd id="commandPaletteShortcut">Ctrl K</kbd>
-        </button>
+        <div class="breadcrumbs"><span>ADMIN</span><span aria-hidden="true">/</span><strong id="crumbCurrent">Overview</strong></div>
         <div class="topbar-actions">
-          <a class="admin-access-mode" id="adminAccessMode" href="#system?tab=diagnostics" data-state="unknown" aria-live="polite" aria-label="Admin access status. Open System diagnostics.">Checking access…</a>
-          <a class="sync-freshness" id="syncFreshness" href="#sources" data-state="unknown" aria-live="polite" title="Synchronization freshness could not be verified." aria-label="Synchronization freshness. Open Sources and sync history.">Sync status unavailable</a>
-          <a class="active-task-count" id="activeTaskCount" href="#jobs?tab=tasks" data-state="unknown" aria-live="polite" aria-label="Active task count. Open Tasks.">Active tasks: —</a>
-          <a class="connection-state" id="connectionState" href="#system?tab=diagnostics" aria-label="API and connection status. Open System diagnostics." aria-live="polite" aria-atomic="true"><span class="state-dot"></span><span>Connecting…</span></a>
+          <a class="service-status" id="serviceStatus" href="#system" data-state="checking" aria-live="polite" aria-atomic="true" aria-label="Service status. Open System."><span class="state-dot" aria-hidden="true"></span><span>Checking services…</span></a>
           <button class="theme-toggle" id="themeToggle" type="button" aria-label="Change theme" title="Change theme"><span aria-hidden="true">◐</span></button>
         </div>
       </header>
 
       <div class="content-wrap">
         <div id="liveMessage" class="sr-only" aria-live="polite" aria-atomic="true"></div>
-        <dialog class="command-palette" id="commandPalette" aria-labelledby="commandPaletteTitle" aria-describedby="commandPaletteHelp">
-          <div class="command-palette-panel">
-            <h2 id="commandPaletteTitle" class="sr-only">Search anything or run a command</h2>
-            <label class="sr-only" for="commandPaletteQuery">Search videos, performers, channels, pages, and actions</label>
-            <div class="command-palette-input"><span aria-hidden="true">⌕</span><input id="commandPaletteQuery" type="search" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="commandPaletteResults" autocomplete="off" placeholder="Search anything or run a command..."><button class="command-palette-close" id="commandPaletteClose" type="button" aria-label="Close Command Palette">×</button><kbd>Esc</kbd></div>
-            <p id="commandPaletteHelp" class="sr-only">Use the up and down arrows to move through results. Press Enter to select and Escape to close.</p>
-            <p id="commandPaletteStatus" class="command-palette-status" role="status" aria-live="polite"></p>
-            <div id="commandPaletteResults" class="command-palette-results" role="listbox" aria-label="Search results"></div>
-          </div>
-        </dialog>
         <section class="view" data-view="start" aria-labelledby="pageTitle">
           <div class="page-heading">
-            <div><p class="eyebrow">OVERVIEW</p><h1 id="pageTitle">Good morning</h1><p class="page-intro">Your library and service status at a glance.</p></div>
+            <div><p class="eyebrow">OVERVIEW</p><h1 id="pageTitle">Overview</h1><p class="page-intro">Catalog size, synchronization, tasks and open problems at a glance.</p></div>
             <button class="button button-quiet" type="button" data-action="refresh-status"><span aria-hidden="true">↻</span> Refresh</button>
           </div>
           <div id="statusState" class="state-banner state-loading" role="status"><span class="spinner" aria-hidden="true"></span><span>Checking system status…</span></div>
           <div id="statusContent" hidden>
             <div class="status-grid" id="statusCards"></div>
-            <section class="panel catalog-health-panel" aria-labelledby="catalogHealthTitle">
-              <div class="panel-heading"><div><p class="eyebrow">CATALOG HEALTH</p><h2 id="catalogHealthTitle">Library data</h2></div><span class="panel-icon" aria-hidden="true">▤</span></div>
-              <div class="status-grid" id="catalogHealthCards"></div>
-              <div id="providerBreakdown" class="operation-history-list" aria-label="Videos by provider"></div>
-            </section>
-            <div class="dashboard-grid">
-              <section class="panel attention-panel">
-                <div class="panel-heading"><div><p class="eyebrow">NEEDS ATTENTION</p><h2>What’s happening</h2></div><span class="panel-icon" aria-hidden="true">↗</span></div>
-                <p id="issueCompleteness" class="panel-footnote" hidden></p>
+            <section class="panel problems-panel" aria-labelledby="problemsTitle">
+              <div class="panel-heading"><div><p class="eyebrow">PROBLEMS</p><h2 id="problemsTitle">What needs attention</h2><p class="page-intro">Grouped by problem type and the operation that reported it.</p></div><span class="panel-icon" aria-hidden="true">↗</span></div>
+              <p id="problemCompleteness" class="panel-footnote" hidden></p>
+              <div id="problemGroups" class="problem-groups"></div>
+              <details class="all-problems" id="allProblems">
+                <summary>All problems</summary>
                 <div class="issue-filters"><label for="issueSeverity">Severity<select id="issueSeverity"><option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label><label for="issueKind">Type<select id="issueKind"><option value="">All types</option><option value="sync_failure">Sync failures</option><option value="sync_never_run">Never synchronized</option><option value="sync_backlog">Queue backlog</option><option value="job_failure">Failed tasks</option><option value="job_stalled">Tasks with no recent activity</option><option value="unavailable_video">Unavailable videos</option><option value="missing_metadata">Missing metadata</option><option value="missing_nfo">Missing NFO</option><option value="invalid_nfo">Invalid NFO</option><option value="nfo_metadata_mismatch">NFO metadata mismatch</option><option value="missing_artwork">Missing artwork</option><option value="quality_audit">Quality audit</option><option value="backup">Backup health</option><option value="system">System</option></select></label></div>
+                <p id="issueCompleteness" class="panel-footnote" hidden></p>
                 <p id="issueCount" class="panel-footnote" role="status" aria-atomic="true" hidden></p>
                 <div id="attentionList" class="attention-list"></div>
                 <button class="button button-quiet issues-load-more" type="button" id="issuesLoadMore" hidden>Load more issues</button>
-              </section>
-              <section class="panel service-panel">
-                <div class="panel-heading"><div><p class="eyebrow">SERVICES</p><h2>Connections</h2></div><span class="panel-icon" aria-hidden="true">⌁</span></div>
-                <div id="serviceList" class="service-list"></div>
-                <p class="panel-footnote">Data is from the latest admin status check.</p>
-              </section>
-            </div>
+              </details>
+            </section>
             <section class="panel next-panel">
               <div class="next-copy"><span class="next-icon" aria-hidden="true">✳</span><div><p class="eyebrow">QUICK ACCESS</p><h2>Find an item in your library</h2><p>Search the catalog and view item details without leaving the admin.</p></div></div>
               <a class="button button-primary" href="#library">Browse library <span aria-hidden="true">→</span></a>
@@ -133,6 +108,18 @@
             <div id="videoGrid" class="video-grid" hidden></div>
             <div id="videoTableWrap" class="table-wrap" hidden><table class="video-table"><thead><tr><th><span class="sr-only">Select</span></th><th>Item</th><th>Studio</th><th>Source</th><th>Availability</th><th>Reason</th><th>Last detected</th><th>Added</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="videoRows"></tbody></table></div>
             <div id="pagination" class="pagination" hidden><button class="button button-quiet" type="button" id="pagePrev">← Previous</button><span id="pageInfo">Page 1</span><button class="button button-quiet" type="button" id="pageNext">Next →</button></div>
+          </section>
+          <section class="panel more-tools-panel" aria-labelledby="libraryMoreToolsTitle">
+            <details id="libraryMoreTools">
+              <summary id="libraryMoreToolsTitle">More tools</summary>
+              <p class="page-intro">These catalog review screens keep their current location until they move into Library and Performers.</p>
+              <div class="more-tools-links">
+                <a href="#organize?tab=duplicates">Duplicate suggestions</a>
+                <a href="#quality?tab=visual">Visual comparisons</a>
+                <a href="#organize?tab=quarantine">Quarantine review</a>
+                <a href="#quality?tab=enrichment">Metadata suggestions</a>
+              </div>
+            </details>
           </section>
           <dialog class="operation-dialog" id="metadataDialog" aria-labelledby="metadataDialogTitle"><section class="operation-dialog-panel"><button class="drawer-close" type="button" aria-label="Close metadata editor" data-close-dialog="metadataDialog">×</button><div id="metadataDialogContent"></div><div class="operation-dialog-actions" id="metadataDialogActions"></div></section></dialog>
         </section>
@@ -223,6 +210,15 @@
             <a href="#system?tab=backups" data-system-tab="backups">Backups</a>
             <a href="#system?tab=activity" data-system-tab="activity">Audit Log</a>
           </nav>
+          <details id="systemMoreTools" class="panel more-tools-panel" hidden>
+            <summary>More tools</summary>
+            <p class="page-intro">Administrative reports keep their current screens until the later stages move or remove them.</p>
+            <div class="more-tools-links">
+              <a href="#quality">Catalog Health reports</a>
+              <a href="#quality?tab=enrichment">Enrichment progress</a>
+              <a href="#system?tab=linkcheck">Link-check report</a>
+            </div>
+          </details>
           <section id="qualityView" class="panel operation-history-panel" hidden aria-labelledby="qualityTitle">
             <nav class="section-tabs catalog-health-tabs" aria-label="Catalog Health">
               <a href="#quality?tab=issues" data-section-tab="issues">Overview</a>
@@ -322,6 +318,12 @@
               <button class="button button-quiet" type="button" id="refreshJellyfinCollections">Update collections</button>
             </div>
             <div id="maintenanceFeedback" class="catalog-feedback" role="status" aria-live="polite">Choose an action to continue.</div>
+            <div id="writeAccessNotice" class="state-banner" hidden role="status"></div>
+            <section class="panel service-panel" aria-labelledby="systemServiceTitle">
+              <div class="panel-heading"><div><p class="eyebrow">SERVICES</p><h3 id="systemServiceTitle">Connections</h3></div><span class="panel-icon" aria-hidden="true">⌁</span></div>
+              <div id="serviceList" class="service-list"></div>
+              <p class="panel-footnote">Data is from the latest admin status check.</p>
+            </section>
           </section>
 
           <section id="systemActivityView" class="panel operation-history-panel" hidden aria-labelledby="activityTitle">

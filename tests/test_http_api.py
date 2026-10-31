@@ -127,8 +127,12 @@ class TestResolverHttpApi(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("Review quarantine", response.text)
-        self.assertIn('id="adminAccessMode"', response.text)
-        self.assertIn('id="activeTaskCount"', response.text)
+        # The header keeps one aggregate service control; the write state is explained in System.
+        self.assertIn('id="serviceStatus"', response.text)
+        self.assertIn('id="writeAccessNotice"', response.text)
+        self.assertIn('id="serviceList"', response.text)
+        for removed_chip in ("connectionState", "adminAccessMode", "activeTaskCount"):
+            self.assertNotIn(f'id="{removed_chip}"', response.text)
         self.assertIn('/admin/assets-v2/header-status.js', response.text)
         self.assertIn('id="operationDialog"', response.text)
         self.assertIn('id="bulkSelectionCount"', response.text)

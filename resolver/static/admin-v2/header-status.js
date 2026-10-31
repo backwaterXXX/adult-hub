@@ -65,5 +65,38 @@
     return { state: 'unknown', label: 'Sync freshness unknown', title: 'The synchronization freshness could not be determined.' };
   }
 
-  window.AdminV2HeaderStatus = Object.freeze({ access, activeTasks, syncStatusText, syncFreshness });
+  // The header shows one aggregate control instead of four separate chips, so
+  // the combined state must never look healthier than its weakest source.
+  function serviceStatus(snapshot) {
+    if (!snapshot || snapshot.checking === true) {
+      return { state: 'checking', label: 'Checking services…', title: 'Service status is still loading.' };
+    }
+    const accessState = access(snapshot.capabilities);
+    const syncState = syncFreshness(snapshot.sync);
+    const taskState = activeTasks(snapshot.activeTasks);
+    const details = [accessState, syncState, taskState];
+    if (snapshot.connection === false) {
+      return {
+        state: 'error',
+        label: 'Connection unavailable',
+        title: 'The admin status endpoints could not be read. Displayed data may be out of date.',
+      };
+    }
+    if (details.every(item => item.state === 'unknown')) {
+      return { state: 'unknown', label: 'Status unverified', title: 'No admin status source could be verified.' };
+    }
+    const attention = details.filter(item => (
+      item.state === 'readonly' || item.state === 'stale' || item.state === 'failed'));
+    if (attention.length) {
+      return { state: 'attention', label: 'Attention needed', title: attention.map(item => item.title).join(' ') };
+    }
+    if (details.some(item => item.state === 'unknown')) {
+      const missing = details.filter(item => item.state === 'unknown').map(item => item.label);
+      return { state: 'partial', label: 'Partial status', title: `${missing.join(', ')} could not be verified.` };
+    }
+    const running = taskState.count ? ` · ${taskState.count} active ${taskState.count === 1 ? 'task' : 'tasks'}` : '';
+    return { state: 'ok', label: `All services available${running}`, title: details.map(item => item.label).join(' · ') };
+  }
+
+  window.AdminV2HeaderStatus = Object.freeze({ access, activeTasks, syncStatusText, syncFreshness, serviceStatus });
 })();

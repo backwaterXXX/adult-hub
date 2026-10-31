@@ -3,20 +3,24 @@ import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 
 const port = 4173;
+// "active" is the primary-navigation entry the panel must mark as current, so
+// the legacy Catalog Health and Organize addresses report under Library.
 const routes = [
   { hash: 'start', view: 'start', active: 'start' },
   { hash: 'library', view: 'library', active: 'library' },
   { hash: 'performers', view: 'performers', active: 'performers' },
   { hash: 'performers?tab=directory', view: 'organize', active: 'performers' },
-  { hash: 'quality?tab=issues', view: 'operational', active: 'quality' },
-  { hash: 'quality?tab=duplicates', view: 'organize', active: 'quality' },
-  { hash: 'quality?tab=quarantine', view: 'organize', active: 'quality' },
-  { hash: 'quality?tab=enrichment', view: 'operational', active: 'quality', enrichment: true },
-  { hash: 'organize', view: 'organize', active: 'quality' },
+  { hash: 'quality?tab=issues', view: 'operational', active: 'library' },
+  { hash: 'quality?tab=duplicates', view: 'organize', active: 'library' },
+  { hash: 'quality?tab=quarantine', view: 'organize', active: 'library' },
+  { hash: 'quality?tab=enrichment', view: 'operational', active: 'library', enrichment: true },
+  { hash: 'organize', view: 'organize', active: 'library' },
   { hash: 'sources', view: 'operational', active: 'sources' },
   { hash: 'jobs', view: 'operational', active: 'jobs' },
+  { hash: 'schedules', view: 'operational', active: 'schedules' },
   { hash: 'system', view: 'operational', active: 'system' },
 ];
+const overviewTiles = ['Videos in library', 'Last sync', 'Active tasks', 'Problems'];
 const widths = [390, 768, 1440];
 const themes = ['light', 'dark'];
 const statuses = { total: 0, ok: 0, redirects: 0, clientError: 0, serverError: 0, images: 0 };
@@ -145,7 +149,7 @@ for (const route of routes) for (const width of widths) for (const theme of them
   try { await loaded; } catch (error) { loadError = error.name; }
   await sleep(800);
   const evaluated = await cmd('Runtime.evaluate', {
-    expression: "JSON.stringify({visible:[...document.querySelectorAll('.view')].filter(v=>!v.hidden).map(v=>v.dataset.view),activeRoute:document.querySelector('.primary-nav a[aria-current=page]')?.dataset.route||'',innerWidth,documentWidth:document.documentElement.scrollWidth,adminAccessPresent:!!document.querySelector('#adminAccessMode'),activeCountPresent:!!document.querySelector('#activeTaskCount'),enrichmentRows:[...document.querySelectorAll('#enrichmentRows .enrichment-source-heading strong')].map(node=>node.textContent),enrichmentFreshness:document.querySelector('#enrichmentFreshness')?.dataset.state||'',enrichmentFeedback:document.querySelector('#enrichmentFeedback')?.textContent||''})",
+    expression: "JSON.stringify({visible:[...document.querySelectorAll('.view')].filter(v=>!v.hidden).map(v=>v.dataset.view),activeRoute:document.querySelector('.primary-nav a[aria-current=page]')?.dataset.route||'',innerWidth,documentWidth:document.documentElement.scrollWidth,serviceState:document.querySelector('#serviceStatus')?.dataset.state||'',overviewTiles:[...document.querySelectorAll('#statusCards .metric-top > span:first-child')].map(node=>node.textContent),enrichmentRows:[...document.querySelectorAll('#enrichmentRows .enrichment-source-heading strong')].map(node=>node.textContent),enrichmentFreshness:document.querySelector('#enrichmentFreshness')?.dataset.state||'',enrichmentFeedback:document.querySelector('#enrichmentFeedback')?.textContent||''})",
     returnByValue: true,
   }, sessionId);
   let view = {};
@@ -161,14 +165,19 @@ for (const route of routes) for (const width of widths) for (const theme of them
     !/(?:lukayan|telegram)_/i.test(label));
   const enrichmentLoaded = !route.enrichment || (view.enrichmentFreshness === 'fresh' &&
     (view.enrichmentRows.length > 0 ? enrichmentLabelsSafe : expectedEmptyEnrichment));
+  const overviewMatches = !route.hash.startsWith('start') ||
+    (view.overviewTiles || []).join('|') === overviewTiles.join('|');
+  const serviceStateKnown = ['checking', 'ok', 'attention', 'partial', 'unknown', 'error'].includes(view.serviceState);
   const result = {
     route: route.hash, width, theme,
     ok: !loadError && view.visible?.length === 1 && view.visible[0] === route.view &&
       view.activeRoute === route.active && view.innerWidth === width && view.documentWidth <= width &&
-      jsErrors === errorsBefore && view.adminAccessPresent && view.activeCountPresent &&
+      jsErrors === errorsBefore && serviceStateKnown && overviewMatches &&
       enrichmentLoaded && enrichmentLabelsSafe,
     overflow: view.documentWidth > width,
     errors: jsErrors - errorsBefore,
+    serviceState: view.serviceState,
+    overviewMatches,
     ...(route.enrichment ? {
       enrichmentRows: view.enrichmentRows?.length || 0,
       enrichmentLabelsSafe,
@@ -181,20 +190,24 @@ for (const route of routes) for (const width of widths) for (const theme of them
     ' overflow=' + result.overflow + ' jsErrors=' + result.errors + (loadError ? ' load=' + loadError : ''));
 }
 // Exercise native modal focus behavior in a real Chromium runtime, not a
-// showModal()-only unit stub: Tab/Shift+Tab remain inside and Escape restores
-// focus to the control that opened the Command Palette.
-await cmd('Page.navigate', { url: 'http://127.0.0.1:' + port + '/admin/v2/?qaTheme=light#start' }, sessionId);
-await sleep(800);
-await cmd('Runtime.evaluate', { expression: "document.querySelector('#commandPaletteTrigger')?.click()" }, sessionId);
-await sleep(100);
-const focusableCountEval = await cmd('Runtime.evaluate', {
-  expression: "document.querySelectorAll('#commandPalette button:not([disabled]),#commandPalette input:not([disabled]),#commandPalette select:not([disabled]),#commandPalette textarea:not([disabled]),#commandPalette a[href],[tabindex]:not([tabindex=\\\"-1\\\"])').length",
+// showModal()-only unit stub: Tab/Shift+Tab stay inside the performer detail
+// dialog and Escape returns focus to the directory control that opened it.
+await cmd('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false }, sessionId);
+await cmd('Page.navigate', { url: 'http://127.0.0.1:' + port + '/admin/v2/?qaTheme=light#performers?tab=directory' }, sessionId);
+await sleep(1200);
+const openerEval = await cmd('Runtime.evaluate', {
+  expression: "(() => { const button = [...document.querySelectorAll('[data-view=\\\"organize\\\"] button')].find(node => node.textContent.trim() === 'Details'); if (!button) return false; window.__modalOpener = button; button.click(); return true; })()",
   returnByValue: true,
 }, sessionId);
-const paletteFocusableCount = Number(focusableCountEval.result.value || 0);
-const focusInPalette = async () => {
+await sleep(400);
+const focusableCountEval = await cmd('Runtime.evaluate', {
+  expression: "document.querySelectorAll('#personDetailDialog button:not([disabled]),#personDetailDialog input:not([disabled]),#personDetailDialog select:not([disabled]),#personDetailDialog textarea:not([disabled]),#personDetailDialog a[href],[tabindex]:not([tabindex=\\\"-1\\\"])').length",
+  returnByValue: true,
+}, sessionId);
+const dialogFocusableCount = Number(focusableCountEval.result.value || 0);
+const focusInDialog = async () => {
   const evaluated = await cmd('Runtime.evaluate', {
-    expression: "!!document.querySelector('#commandPalette')?.contains(document.activeElement)", returnByValue: true,
+    expression: "!!document.querySelector('#personDetailDialog')?.contains(document.activeElement)", returnByValue: true,
   }, sessionId);
   return evaluated.result.value === true;
 };
@@ -202,29 +215,30 @@ const tabResults = [];
 for (const modifiers of [0, 0, 8, 8]) {
   await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers }, sessionId);
   await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers }, sessionId);
-  tabResults.push(await focusInPalette());
+  tabResults.push(await focusInDialog());
 }
 await cmd('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId);
 await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId);
-const paletteCloseEval = await cmd('Runtime.evaluate', {
-  expression: "({closed:!document.querySelector('#commandPalette')?.open,restored:document.activeElement?.id==='commandPaletteTrigger'})",
+const dialogCloseEval = await cmd('Runtime.evaluate', {
+  expression: "({closed:!document.querySelector('#personDetailDialog')?.open,restored:document.activeElement===window.__modalOpener})",
   returnByValue: true,
 }, sessionId);
-const paletteKeyboard = {
-  focusableCount: paletteFocusableCount,
+const modalKeyboard = {
+  opened: openerEval.result.value === true,
+  focusableCount: dialogFocusableCount,
   tabStayedInDialog: tabResults.every(Boolean),
-  escapeClosed: paletteCloseEval.result.value?.closed === true,
-  focusRestored: paletteCloseEval.result.value?.restored === true,
+  escapeClosed: dialogCloseEval.result.value?.closed === true,
+  focusRestored: dialogCloseEval.result.value?.restored === true,
 };
-paletteKeyboard.ok = paletteKeyboard.focusableCount > 0 && paletteKeyboard.tabStayedInDialog &&
-  paletteKeyboard.escapeClosed && paletteKeyboard.focusRestored;
-console.log((paletteKeyboard.ok ? 'PASS ' : 'FAIL ') + 'Command Palette modal keyboard focus ' + JSON.stringify(paletteKeyboard));
+modalKeyboard.ok = modalKeyboard.opened && modalKeyboard.focusableCount > 0 && modalKeyboard.tabStayedInDialog &&
+  modalKeyboard.escapeClosed && modalKeyboard.focusRestored;
+console.log((modalKeyboard.ok ? 'PASS ' : 'FAIL ') + 'Performer detail modal keyboard focus ' + JSON.stringify(modalKeyboard));
 const summary = {
   count: results.length, passed: results.filter(result => result.ok).length,
   failed: results.filter(result => !result.ok).length,
   apiRequests: statuses.total, api2xx: statuses.ok, api3xx: statuses.redirects,
   api4xx: statuses.clientError, api5xx: statuses.serverError, imageResponsesReplaced: statuses.images,
-  writeMethods: [...methods].filter(method => method !== 'GET'), paletteKeyboard, results,
+  writeMethods: [...methods].filter(method => method !== 'GET'), modalKeyboard, results,
 };
 fs.writeFileSync('/output/live-results.json', JSON.stringify(summary, null, 2));
 console.log('SUMMARY ' + summary.passed + '/' + summary.count + '; API=' + statuses.total +
@@ -233,4 +247,4 @@ console.log('SUMMARY ' + summary.passed + '/' + summary.count + '; API=' + statu
 ws.close();
 chrome.kill('SIGTERM');
 server.close();
-if (summary.failed || !paletteKeyboard.ok || summary.writeMethods.length || summary.count !== routes.length * widths.length * themes.length) process.exitCode = 1;
+if (summary.failed || !modalKeyboard.ok || summary.writeMethods.length || summary.count !== routes.length * widths.length * themes.length) process.exitCode = 1;

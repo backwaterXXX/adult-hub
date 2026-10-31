@@ -34,4 +34,31 @@ assert.equal(status.syncStatusText({ available: true, running: false, last_succe
 assert.equal(status.syncStatusText({ available: true, running: false, last_success: false, freshness: 'unknown' }), 'Freshness unknown · Last run failed');
 assert.equal(status.syncStatusText({ available: true, running: false, freshness: 'unknown' }), 'No data');
 
-console.log('PASS: Admin v2 topbar access mode and active-task count distinguish writable, token, read-only, zero, and unavailable states');
+// The header keeps one aggregate control, so its combined state must never
+// read healthier than the weakest source it hides.
+const healthy = { capabilities: { actions_enabled: true }, sync: { available: true, freshness: 'fresh', last_success: true }, activeTasks: { data: { available: true }, active_total: 2 } };
+assert.deepEqual({ ...status.serviceStatus({ checking: true }) }, {
+  state: 'checking', label: 'Checking services…', title: 'Service status is still loading.',
+});
+assert.equal(status.serviceStatus(null).state, 'checking', 'no data yet must read as loading, not as healthy');
+assert.equal(status.serviceStatus({ ...healthy, connection: false }).state, 'error', 'a lost connection outranks current-looking details');
+assert.equal(status.serviceStatus({ ...healthy, connection: false }).label, 'Connection unavailable');
+assert.deepEqual({ ...status.serviceStatus({ connection: true, capabilities: null, sync: null, activeTasks: null }) }, {
+  state: 'unknown', label: 'Status unverified', title: 'No admin status source could be verified.',
+});
+const workerPause = status.serviceStatus({
+  ...healthy, connection: true, capabilities: { actions_enabled: false, read_only_reason: 'worker_unavailable' },
+});
+assert.equal(workerPause.state, 'attention');
+assert.equal(workerPause.label, 'Attention needed');
+assert.match(workerPause.title, /sync worker is unavailable/i, 'the aggregate control keeps the concrete write cause');
+assert.equal(status.serviceStatus({
+  ...healthy, connection: true, sync: { available: false },
+}).state, 'partial', 'one unverified source must not read as fully healthy');
+assert.match(status.serviceStatus({ ...healthy, connection: true, sync: { available: false } }).title, /Sync status unavailable/);
+assert.equal(status.serviceStatus({
+  ...healthy, connection: true, sync: { available: true, freshness: 'fresh', last_success: false },
+}).state, 'attention', 'a failed synchronization reads as attention, not as success');
+assert.equal(status.serviceStatus({ ...healthy, connection: true }).label, 'All services available · 2 active tasks');
+
+console.log('PASS: Admin v2 header access modes, task counts, and the aggregate service state distinguish writable, token, read-only, zero, unavailable, and unverified states');

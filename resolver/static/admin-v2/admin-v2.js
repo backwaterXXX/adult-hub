@@ -12,6 +12,7 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const state = { route: 'start', detailId: null, organizeTab: null, performerTab: null, qualityTab: null, systemTab: null, peopleDirectoryQuery: '', status: null, statusLoaded: false, statusRequestSeq: 0,
+    services: { checking: true }, problemSummary: null, systemStatusInFlight: false,
     headerStatusInFlight: false, headerStatusTimer: null, headerSyncInFlight: false, headerSyncTimer: null,
     list: null, lastSuccessfulQuery: null, offset: 0, total: null, nextOffset: null,
     catalogCursor: null, catalogCursorDirection: 'after', nextCatalogCursor: null, previousCatalogCursor: null, requestSeq: 0,
@@ -32,16 +33,19 @@
     availabilityRequest: null,
     operationPollTimer: null, operationRefreshing: false, detailOpener: null, sideDetailId: null };
   const routeInfo = {
-    start: { title: 'Dashboard', intro: 'Your library and service status at a glance.' },
+    start: { title: 'Overview', intro: 'Catalog size, synchronization, tasks and open problems at a glance.' },
     library: { title: 'Library', intro: 'Find videos and check their source and availability.' },
     quality: { title: 'Catalog Health', intro: 'Review catalog metadata and local file issues.' },
     sources: { title: 'Sources', intro: 'Channels and synchronization history.' },
     organize: { title: 'Organize', intro: 'Review duplicates and catalog quality.' },
     performers: { title: 'Performers', intro: 'Review performer names detected in Telegram titles.' },
-    jobs: { title: 'Jobs & Automation', intro: 'The operation queue and history.' },
+    jobs: { title: 'Tasks', intro: 'The operation queue and history.' },
     schedules: { title: 'Schedules', intro: 'Recurring tasks and their schedules.' },
     system: { title: 'System', intro: 'Run consistency audits and review service maintenance.' }
   };
+  // Catalog review screens are reached through Library until they move there,
+  // so the menu highlights Library while their own screen title is shown.
+  const navOwner = route => (route === 'quality' ? 'library' : route);
 
   function safeText(value, fallback = '—') {
     if (value === null || value === undefined || value === '') return fallback;
@@ -169,6 +173,7 @@
     const routeChanged = next.route !== state.route;
     const detailChanged = next.detailId !== state.detailId;
     const organizeTabChanged = next.organizeTab !== state.organizeTab;
+    const systemTabChanged = (next.systemTab || null) !== state.systemTab;
     const peopleDirectoryQuery = next.route === 'organize' && next.primaryRoute === 'performers'
       ? routeQueryParams().get('person') || '' : '';
     const peopleDirectoryQueryChanged = peopleDirectoryQuery !== state.peopleDirectoryQuery;
@@ -213,8 +218,8 @@
     }
     $$('.view[data-view]').forEach(node => { node.hidden = node.dataset.view !== (['start', 'library', 'organize', 'performers'].includes(state.route) ? state.route : 'operational'); });
     $$('.primary-nav a[data-route]').forEach(link => {
-      // Organize remains a supported legacy deep link, represented by Catalog Health.
-      const active = link.dataset.route === (next.primaryRoute || state.route);
+      // Legacy screens stay reachable; the menu marks the section that owns them.
+      const active = link.dataset.route === navOwner(next.primaryRoute || state.route);
       if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
     });
     setText($('#crumbCurrent'), next.detailId ? 'Video details' : routeInfo[next.primaryRoute || state.route].title);
@@ -230,6 +235,8 @@
     });
     $$('.catalog-health-tabs').forEach(nav => { nav.hidden = next.primaryRoute !== 'quality'; });
     $('#systemSectionTabs').hidden = next.route !== 'system';
+    setHidden('#systemMoreTools', !(next.route === 'system'
+      && (next.systemTab || 'maintenance') === 'maintenance'));
     $$('#systemSectionTabs [data-system-tab]').forEach(link => {
       if (link.dataset.systemTab === (next.systemTab || 'maintenance')) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
@@ -264,6 +271,9 @@
       state.issues = [];
       loadIssues();
     }
+    // The service-state panel lives in System, so its own read starts there.
+    if (next.route === 'system' && (next.systemTab || 'maintenance') === 'maintenance'
+      && (routeChanged || systemTabChanged)) void loadSystemStatus();
     if (next.route === 'library') {
       syncFiltersFromUrl();
       const currentLibraryParams = filterParams();
@@ -574,6 +584,7 @@
     return node;
   }
   function setText(target, value) { if (target) target.textContent = value; }
+  function setHidden(selector, hidden) { const element = $(selector); if (element) element.hidden = Boolean(hidden); }
   function announce(message) { setText($('#liveMessage'), message); }
   async function copyToClipboard(value) {
     if (navigator.clipboard?.writeText) {
@@ -643,33 +654,35 @@
     requestJson, getJson, postJson, putJson, deleteJson, openDialog, closeDialog, setFeedback, downloadBlob,
     create, el: create, setText, announce, safeId, scrub, titleCase, detailField, formatDuration, scheduleSync
   });
-  function setConnection(ok, message) {
-    const element = $('#connectionState');
+  function renderServiceChip() {
+    const element = $('#serviceStatus');
     if (!element) return;
-    const nextState = ok ? 'ok' : 'error';
+    const status = window.AdminV2HeaderStatus.serviceStatus(state.services);
     const label = $('span:last-child', element);
-    if (element.dataset.state === nextState && (!label || label.textContent === message)) return;
-    element.dataset.state = nextState;
-    setText(label, message);
-  }
-  function renderHeaderAccess(capabilities) {
-    const element = $('#adminAccessMode');
-    if (!element) return;
-    const previousState = element.dataset.state;
-    const status = window.AdminV2HeaderStatus.access(capabilities);
+    if (element.dataset.state === status.state && label && label.textContent === status.label) return;
     element.dataset.state = status.state;
     element.title = status.title;
-    setText(element, status.label);
-    if (previousState !== status.state) {
-      document.dispatchEvent(new CustomEvent('adminv2:access-change', { detail: { state: status.state } }));
-    }
+    setText(label, status.label);
+    element.setAttribute('aria-label', `${status.label}. Open System.`);
   }
-  function renderHeaderActiveJobs(payload) {
-    const element = $('#activeTaskCount');
-    if (!element) return;
-    const status = window.AdminV2HeaderStatus.activeTasks(payload);
-    element.dataset.state = status.state;
-    setText(element, status.label);
+  function updateServices(patch) {
+    state.services = { ...state.services, checking: false, ...patch };
+    renderServiceChip();
+  }
+  function renderWriteAccessNotice(capabilities, error) {
+    const notice = $('#writeAccessNotice');
+    if (!notice) return;
+    const status = window.AdminV2HeaderStatus.access(error ? null : capabilities);
+    if (status.state === 'writable') {
+      notice.hidden = true;
+      notice.textContent = '';
+      return;
+    }
+    notice.hidden = false;
+    notice.className = 'state-banner state-stale';
+    notice.textContent = status.state === 'token'
+      ? 'Writes are enabled, but every action needs the admin write token.'
+      : `${status.label}: ${status.title}`;
   }
   async function loadHeaderStatus() {
     if (document.hidden || state.headerStatusInFlight) return;
@@ -679,12 +692,11 @@
         getJson(`${V2_API}/capabilities`),
         getJson(`${V2_API}/jobs?state=active&limit=1&offset=0`)
       ]);
-      if (capabilityResult.status === 'fulfilled') {
-        const payload = capabilityResult.value;
-        renderHeaderAccess(payload.capabilities || payload);
-      } else renderHeaderAccess(null);
-      if (jobsResult.status === 'fulfilled') renderHeaderActiveJobs(jobsResult.value);
-      else renderHeaderActiveJobs(null);
+      updateServices({
+        capabilities: capabilityResult.status === 'fulfilled'
+          ? (capabilityResult.value.capabilities || capabilityResult.value) : null,
+        activeTasks: jobsResult.status === 'fulfilled' ? jobsResult.value : null
+      });
     } finally {
       state.headerStatusInFlight = false;
     }
@@ -692,23 +704,11 @@
   async function loadHeaderSyncStatus() {
     if (document.hidden || state.headerSyncInFlight) return;
     state.headerSyncInFlight = true;
-    const element = $('#syncFreshness');
     try {
       const payload = await getJson(`${V2_API}/status/sync`);
-      const status = window.AdminV2HeaderStatus.syncFreshness(payload && payload.sync);
-      if (element) {
-        if (element.dataset.state !== status.state || element.textContent !== status.label) {
-          element.dataset.state = status.state;
-          setText(element, status.label);
-        }
-        element.title = status.title;
-      }
-    } catch (error) {
-      if (element) {
-        element.dataset.state = 'unknown';
-        setText(element, 'Sync status unavailable');
-        element.title = 'Synchronization freshness could not be verified.';
-      }
+      updateServices({ sync: (payload && payload.sync) || null });
+    } catch {
+      updateServices({ sync: null });
     } finally {
       state.headerSyncInFlight = false;
     }
@@ -734,30 +734,26 @@
       if (sequence !== state.statusRequestSeq) return;
       if (statusResult.error) throw statusResult.error;
       const status = statusResult.value;
-      const capabilities = capabilityResult.value;
       state.status = status;
       state.statusLoaded = true;
-      const capabilityData = capabilities && (capabilities.capabilities || capabilities);
-      renderStatus(status, capabilityData);
+      const capabilityData = capabilitiesPayload(capabilityResult.value);
+      updateServices({ connection: true, capabilities: capabilityData, sync: (status && status.sync) || null });
       if (issueSequence === state.issueRequestSeq && state.route === 'start') {
         if (issues.value) renderIssues(issues.value);
         else renderIssues(null, issues.error);
       }
-      if (state.route === 'start') {
-        void loadQualitySummary(sequence);
-        void loadJellyfinStatus(sequence);
-      }
+      renderStatus(status, capabilityData);
+      renderWriteAccessNotice(capabilityData, capabilityResult.error);
       banner.hidden = !capabilityResult.error;
       if (capabilityResult.error) {
         banner.className = 'state-banner state-stale';
         banner.replaceChildren(create('span', '', 'System status is current, but write access could not be verified.'));
       }
       $('#statusContent').hidden = false;
-      setConnection(true, 'Connected');
       announce(capabilityResult.error ? 'System status updated. Write access could not be verified.' : 'System status updated.');
     } catch (error) {
       if (sequence !== state.statusRequestSeq) return;
-      setConnection(false, 'Connection unavailable');
+      updateServices({ connection: false });
       if (state.statusLoaded && state.status) {
         banner.hidden = false; banner.className = 'state-banner state-stale';
         banner.replaceChildren(create('span', '', 'Data may be out of date. ' + error.message));
@@ -768,88 +764,102 @@
       }
     }
   }
+  async function loadSystemStatus() {
+    if (state.systemStatusInFlight) return;
+    state.systemStatusInFlight = true;
+    const sequence = ++state.statusRequestSeq;
+    try {
+      const [statusResult, capabilityResult] = await Promise.all([
+        getJson(`${V2_API}/status`).then(value => ({ value }), error => ({ error })),
+        getJson(`${V2_API}/capabilities`).then(value => ({ value }), error => ({ error }))
+      ]);
+      if (sequence !== state.statusRequestSeq) return;
+      const capabilityData = capabilitiesPayload(capabilityResult.value);
+      if (statusResult.error) {
+        // Never show the previous service rows as current after a failed read.
+        renderServicePanel({}, capabilityData, statusResult.error);
+        renderWriteAccessNotice(capabilityData, capabilityResult.error || statusResult.error);
+        updateServices({ connection: false, capabilities: capabilityData });
+        return;
+      }
+      const status = statusResult.value;
+      state.status = status;
+      state.statusLoaded = true;
+      updateServices({ connection: true, capabilities: capabilityData, sync: (status && status.sync) || null });
+      renderServicePanel(status, capabilityData);
+      renderWriteAccessNotice(capabilityData, capabilityResult.error);
+      void loadQualitySummary(sequence);
+      void loadJellyfinStatus(sequence);
+    } finally {
+      state.systemStatusInFlight = false;
+    }
+  }
+  function capabilitiesPayload(payload) {
+    if (!payload) return null;
+    return payload.capabilities || payload;
+  }
   function metric(label, value, caption, icon) {
     const card = create('article', 'metric-card');
     const top = create('div', 'metric-top'); top.append(create('span', '', label), create('span', 'metric-icon', icon));
     card.append(top, create('strong', 'metric-value', value), create('span', 'metric-caption', caption));
     return card;
   }
+  function lastSyncMetric(sync) {
+    if (!sync || sync.available === false) {
+      return metric('Last sync', 'No data', 'The synchronization status could not be read.', '◷');
+    }
+    if (sync.running === true) {
+      return metric('Last sync', 'In progress', 'A synchronization run is executing now.', '◷');
+    }
+    if (sync.history_available === false) {
+      return metric('Last sync', 'No data', 'The synchronization history could not be read.', '◷');
+    }
+    const run = sync.last_run && typeof sync.last_run === 'object' ? sync.last_run : null;
+    const finishedAt = run ? (run.ended_at || run.started_at) : null;
+    if (!finishedAt) {
+      return metric('Last sync', 'No history', 'No completed synchronization run is recorded yet.', '◷');
+    }
+    const outcome = run.interrupted === true ? 'The recorded run was interrupted'
+      : run.success === true ? 'The recorded run completed'
+        : run.success === false ? 'The recorded run failed'
+          : 'The recorded outcome is unknown';
+    return metric('Last sync', displayDateTime(finishedAt),
+      `${outcome}. Started ${run.started_at ? displayDateTime(run.started_at) : 'unknown'}.`, '◷');
+  }
+  function renderOverviewCards(data) {
+    const db = data.db || {};
+    const attention = data.attention || {};
+    const videos = first(db, ['videos_total', 'videos', 'video_count', 'total_videos', 'total'])
+      ?? first(data, ['video_count', 'videos_count']);
+    const queue = first(attention, ['pending_tasks', 'pending', 'active_jobs'])
+      ?? first(data.sync || {}, ['queued', 'queue_length']);
+    const problems = state.problemSummary;
+    const problemTotal = problems && Number.isSafeInteger(problems.total_open) && problems.total_open >= 0
+      ? problems.total_open : null;
+    const cards = $('#statusCards');
+    if (!cards) return;
+    cards.replaceChildren(
+      metric('Videos in library', safeText(videos), 'Catalog records', '▤'),
+      lastSyncMetric(data.sync || {}),
+      metric('Active tasks', safeText(queue, 'No data'), 'Queued or processing', '◷'),
+      metric('Problems', problemTotal === null ? 'No data' : safeText(problemTotal),
+        problemTotal === null ? 'The problem sources could not be read'
+          : problems.incomplete ? 'Unresolved problems; some sources are unavailable'
+            : 'Unresolved problems', '!')
+    );
+  }
   function renderStatus(data, capabilities) {
+    renderOverviewCards(data);
+    renderServicePanel(data, capabilities);
+  }
+  function renderServicePanel(data, capabilities, error) {
+    const services = $('#serviceList');
+    if (!services) return;
     const db = data.db || {};
     const sync = data.sync || {};
-    const attention = data.attention || {};
-    const videos = first(db, ['videos_total', 'videos', 'video_count', 'total_videos', 'total']) ?? first(data, ['video_count', 'videos_count']);
-    const channelCount = db.telegram_channels && typeof db.telegram_channels === 'object' ? Object.keys(db.telegram_channels).length : null;
-    const sources = first(sync, ['source_count', 'configured_sources']) ?? channelCount;
-    const queue = first(attention, ['pending_tasks', 'pending', 'active_jobs']) ?? first(sync, ['queued', 'queue_length']);
-    const unavailable = first(attention, ['unavailable_videos', 'unavailable', 'dead_streams']) ?? first(db, ['unavailable', 'dead_streams']);
-    const failedTaskSummary = attention.failed_tasks_available === false
-      ? 'No data' : safeText(attention.failed_tasks, 'No data');
-    const failedSources = attention.last_sync_failed_sources;
-    const rateLimited = attention.last_sync_rate_limited;
-    const latestSyncIssues = Number.isInteger(failedSources) && failedSources >= 0
-      && Number.isInteger(rateLimited) && rateLimited >= 0
-      ? `${failedSources} / ${rateLimited}` : 'No data';
-    const cards = $('#statusCards'); cards.replaceChildren(
-      metric('Videos in library', safeText(videos), 'Catalog records', '▤'),
-      metric('Channels with videos', safeText(sources), 'Channels represented in the catalog', '◉'),
-      metric('Active tasks', safeText(queue, 'No data'), 'Queued or processing', '◷'),
-      metric('Unavailable videos', safeText(unavailable, 'No data'), 'Latest recorded status', '⌁'),
-      metric('Unresolved task groups', failedTaskSummary, 'Failed tasks without a newer successful retry', '!'),
-      metric('Latest sync failures / HTTP 429', latestSyncIssues, 'Failed sources / rate-limited responses in the latest run', '!')
-    );
-    const health = $('#catalogHealthCards');
-    if (health) {
-      const providerCount = db.by_provider && typeof db.by_provider === 'object'
-        ? Object.keys(db.by_provider).length : null;
-      const freshest = db.last_seen_human || (db.last_seen ? displayTime(db.last_seen) : 'No data');
-      const oshashCard = metric('OSHASH coverage', 'No data', 'Catalog videos with an OSHASH fingerprint', '≈');
-      oshashCard.children[1].id = 'dashboardOshashCoverage';
-      const phashCard = metric('pHash coverage', 'No data', 'Catalog videos with a pHash fingerprint; coverage is partial by design', '≈');
-      phashCard.children[1].id = 'dashboardPhashCoverage';
-      health.replaceChildren(
-        metric('Catalog files', safeText(db.files_total), 'Indexed media files', '▧'),
-        metric('Database backend', safeText(db.database_backend, 'No data'), 'Catalog storage type', '▤'),
-        metric('Database size', db.db_size_mb == null ? 'No data' : `${safeText(db.db_size_mb)} MB`, 'Current catalog database', '▤'),
-        metric('Seen in 24 hours', safeText(db.fresh_24h), 'Recent catalog activity', '↗'),
-        metric('Providers represented', safeText(providerCount), 'Videos grouped by source', '◉'),
-        oshashCard,
-        phashCard,
-        metric('Performer photos', safeText(db.photos_total), 'Catalog profile images', '▧'),
-        metric('Performer biographies', safeText(db.bios_total), 'Profiles with a biography', '≡'),
-        metric('Performer aliases', safeText(db.aliases_total), 'Known name variants', '≈'),
-        metric('Dead-stream records', safeText(db.dead_streams_total), 'Recorded failed stream checks', '!'),
-        metric('Unplayable entries', safeText(db.unplayable_total), 'Catalog rows marked unplayable', '!'),
-        metric('Latest catalog activity', safeText(freshest), 'Most recently observed item', '◷')
-      );
-      const providerList = $('#providerBreakdown');
-      if (providerList) {
-        providerList.replaceChildren();
-        const distribution = db.by_provider && typeof db.by_provider === 'object' ? db.by_provider : {};
-        const entries = Object.entries(distribution).sort((a, b) => Number(b[1]) - Number(a[1]));
-        if (!entries.length) providerList.append(create('p', 'catalog-empty', 'Provider breakdown unavailable.'));
-        else entries.slice(0, 30).forEach(([provider, count]) => {
-          const row = create('article', 'operation-history-row');
-          const label = safeText(provider).replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
-          row.append(create('strong', '', label), create('span', '', Number(count).toLocaleString('en-US')));
-          providerList.append(row);
-        });
-      }
-    }
-    const items = [];
-    if (Number.isFinite(Number(unavailable)) && Number(unavailable) > 0) items.push(['Unavailable videos', 'Some catalog items need review.', unavailable, false]);
-    if (Number.isFinite(Number(queue)) && Number(queue) > 0) items.push(['Tasks in progress', 'Tasks continue after you close this page.', queue, false]);
-    const attentionList = $('#attentionList'); attentionList.replaceChildren();
-    if (!items.length) attentionList.append(create('p', 'empty-attention', 'No reported issues need attention. If detailed data is unavailable, check service status below.'));
-    else items.forEach(([title, description, value, danger]) => {
-      const row = create('div', 'attention-row');
-      row.append(create('span', `attention-mark${danger ? ' is-danger' : ''}`, danger ? '!' : '↗'));
-      const copy = create('div', 'attention-copy'); copy.append(create('strong', '', title), create('small', '', description));
-      row.append(copy, create('strong', 'attention-value', safeText(value))); attentionList.append(row);
-    });
-    const services = $('#serviceList'); services.replaceChildren();
+    services.replaceChildren();
     const dbAvailable = first(db, ['db_ok', 'available', 'connected', 'ok']);
-    const syncState = window.AdminV2HeaderStatus.syncStatusText(sync);
+    const syncState = error ? 'Status unavailable' : window.AdminV2HeaderStatus.syncStatusText(sync);
     const accessState = !capabilities
       ? 'Access status unavailable · writes need verification'
       : capabilities.actions_enabled
@@ -876,45 +886,40 @@
     );
   }
   async function loadQualitySummary(sequence) {
+    // Only the latest-audit Jellyfin import row needs this read; the Quality
+    // screen reads fingerprint coverage for itself.
+    const auditState = $('#jellyfinAuditState');
+    if (!auditState) return;
+    const unavailable = () => {
+      auditState.textContent = 'No data';
+      auditState.className = 'service-result unknown';
+      auditState.title = 'No Jellyfin import check is available from the latest audit.';
+    };
     try {
       const summary = await getJson(`${V2_API}/quality/summary`);
-      if (sequence !== state.statusRequestSeq || state.route !== 'start') return;
-      const fingerprints = summary?.fingerprint_coverage;
-      for (const [key, id] of [['oshash', 'dashboardOshashCoverage'], ['phash', 'dashboardPhashCoverage']]) {
-        const target = $(`#${id}`);
-        if (!target) continue;
-        if (!fingerprints || fingerprints.available !== true
-            || !Number.isSafeInteger(fingerprints.total_videos) || fingerprints.total_videos < 0
-            || !Number.isSafeInteger(fingerprints[key]) || fingerprints[key] < 0
-            || fingerprints[key] > fingerprints.total_videos) {
-          target.textContent = 'No data';
-          continue;
-        }
-        const count = fingerprints[key];
-        const total = fingerprints.total_videos;
-        const percent = total ? Math.round((count / total) * 100) : 0;
-        target.textContent = `${count.toLocaleString('en-US')} / ${total.toLocaleString('en-US')} (${percent}%)`;
-      }
-      const auditState = $('#jellyfinAuditState');
-      if (auditState) {
-        const importState = summary?.latest_audit?.jellyfin_import_state;
-        const auditDate = summary?.latest_audit?.created_at;
-        const baseLabel = importState === 'checked' ? 'Checked in latest audit'
-          : importState === 'partial' ? 'Partially checked in latest audit'
-            : 'No data';
-        auditState.textContent = baseLabel && auditDate && baseLabel !== 'No data'
-          ? `${baseLabel} · ${displayTime(auditDate)}` : baseLabel;
+      if (sequence !== state.statusRequestSeq) return;
+      const importState = summary?.latest_audit?.jellyfin_import_state;
+      const auditDate = summary?.latest_audit?.created_at;
+      const baseLabel = importState === 'checked' ? 'Checked in latest audit'
+        : importState === 'partial' ? 'Partially checked in latest audit'
+          : 'No data';
+      if (baseLabel === 'No data') unavailable();
+      else {
+        auditState.textContent = auditDate ? `${baseLabel} · ${displayTime(auditDate)}` : baseLabel;
         auditState.className = 'service-result unknown';
-        auditState.title = baseLabel === 'No data' ? 'No Jellyfin import check is available from the latest audit.' : '';
+        auditState.title = '';
       }
-    } catch { /* Keep fingerprint and audit summaries as No data without blocking Dashboard status. */ }
+    } catch {
+      if (sequence !== state.statusRequestSeq) return;
+      unavailable();
+    }
   }
   async function loadJellyfinStatus(sequence) {
     const target = $('#jellyfinIntegrationState');
     if (!target) return;
     try {
       const result = await getJson(`${V2_API}/status/jellyfin`);
-      if (sequence !== state.statusRequestSeq || state.route !== 'start') return;
+      if (sequence !== state.statusRequestSeq) return;
       const stateLabels = {
         reachable: 'Reachable', unavailable: 'Unavailable', not_configured: 'Not configured', unknown: 'No data',
       };
@@ -923,7 +928,7 @@
       target.className = `service-result${label === 'Unavailable' ? ' is-error' : label === 'Reachable' ? '' : ' unknown'}`;
       target.title = result.checked_at ? `Last checked ${displayTime(result.checked_at)}.` : 'Jellyfin connection status is not available.';
     } catch {
-      if (sequence !== state.statusRequestSeq || state.route !== 'start') return;
+      if (sequence !== state.statusRequestSeq) return;
       target.textContent = 'No data';
       target.className = 'service-result unknown';
       target.title = 'Jellyfin connection status is not available.';
@@ -934,6 +939,9 @@
     const count = $('#issueCount');
     const host = $('#attentionList');
     if (!payload) {
+      state.problemSummary = null;
+      renderProblemGroups(null, error);
+      if (state.status) renderOverviewCards(state.status);
       count.hidden = false;
       count.textContent = state.issues.length
         ? 'Issue count unavailable; showing previously loaded results.'
@@ -956,6 +964,9 @@
     state.issues = append ? state.issues.concat(incoming) : incoming;
     state.issueTotal = payload.total;
     state.issueTruncated = payload.truncated;
+    state.problemSummary = payload.summary && typeof payload.summary === 'object' ? payload.summary : null;
+    renderProblemGroups(state.problemSummary, null);
+    if (state.status) renderOverviewCards(state.status);
     const incomplete = payload.data.incomplete;
     count.hidden = false;
     if (incomplete) count.textContent = `Showing ${state.issues.length} returned ${state.issues.length === 1 ? 'issue' : 'issues'}; the total may be incomplete.`;
@@ -965,10 +976,78 @@
     completeness.textContent = incomplete ? 'Partial list: some issue sources are unavailable or history is truncated.' : '';
     host.replaceChildren();
     if (!state.issues.length) {
-      host.append(create('p', 'empty-attention', incomplete ? 'No issues were returned. This list is incomplete; check service status.' : 'No issues need attention.'));
+      host.append(create('p', 'empty-attention', incomplete ? 'No issues were returned. This list is incomplete; check System for service status.' : 'No issues need attention.'));
     } else state.issues.forEach(issue => host.append(renderIssueRow(issue)));
     $('#issuesLoadMore').hidden = !state.issueTruncated;
     $('#issuesLoadMore').disabled = state.issueLoading;
+  }
+  const ISSUE_ROUTE_PATTERNS = [
+    /^\/?(?:admin\/v2\/)?#(?:library|quality|sources|organize|jobs|system|performers|schedules)(?:[?&/]|$)/,
+    /^\/admin\/v2\/\?source_id=[A-Za-z0-9%._~-]+#sources$/,
+    /^\/admin\/v2\/\?job_id=[A-Za-z0-9%._~-]{1,128}#jobs$/,
+    /^\/admin\/v2\/\?quality_kind=(?:missing_metadata|missing_nfo|invalid_nfo|nfo_metadata_mismatch|missing_artwork)#quality$/,
+    /^\/admin\/v2\/\?job_state=(?:active|queued|processing|done|failed|cancelled)#jobs$/,
+    /^\/admin\/v2\/\?job_state=(?:active|queued|processing|done|failed|cancelled)&job_action=[A-Za-z0-9%._~-]{1,64}#jobs$/
+  ];
+  function safeIssueRoute(route) {
+    return typeof route === 'string' && ISSUE_ROUTE_PATTERNS.some(pattern => pattern.test(route)) ? route : null;
+  }
+  function issueHref(route) {
+    if (!route) return null;
+    return route.startsWith('#') ? `/admin/v2/${route}` : (route.startsWith('/') ? route : `/admin/v2/${route}`);
+  }
+  function renderProblemGroups(summary, error) {
+    const host = $('#problemGroups');
+    if (!host) return;
+    const groups = summary && Array.isArray(summary.groups) ? summary.groups : null;
+    const completeness = $('#problemCompleteness');
+    host.replaceChildren();
+    if (!groups) {
+      setHidden('#problemCompleteness', false);
+      setText(completeness, error
+        ? `The problem summary could not be loaded: ${error.message}`
+        : 'The problem summary is unavailable; the full list below may still be loaded.');
+      host.append(create('p', 'empty-attention', 'Problem summaries unavailable.'));
+      return;
+    }
+    setHidden('#problemCompleteness', !summary.incomplete);
+    setText(completeness, summary.incomplete
+      ? 'Some problem sources are unavailable, so this summary may be incomplete.' : '');
+    if (!groups.length) {
+      host.append(create('p', 'empty-attention', summary.incomplete
+        ? 'No problems were returned. This summary is incomplete; check System for service status.'
+        : 'No problems need attention.'));
+    } else groups.forEach(group => host.append(problemGroupRow(group)));
+    const hidden = Number.isSafeInteger(summary.groups_total)
+      ? summary.groups_total - groups.length : 0;
+    if (hidden > 0) {
+      host.append(create('p', 'problem-groups-more', `${hidden} more problem ${hidden === 1 ? 'group' : 'groups'} in All problems.`));
+    }
+  }
+  function problemGroupRow(group) {
+    const severity = String(group.severity || '').toLowerCase();
+    const danger = ['critical', 'high', 'error'].includes(severity);
+    const row = create('div', 'attention-row problem-group-row');
+    row.append(create('span', `attention-mark${danger ? ' is-danger' : ''}`, danger ? '!' : '↗'));
+    const copy = create('div', 'attention-copy');
+    copy.append(create('strong', '', safeText(group.label, 'Problem')));
+    const occurrences = Number.isSafeInteger(group.occurrences) && group.occurrences >= 0 ? group.occurrences : 1;
+    const objects = Number.isSafeInteger(group.objects) && group.objects > 1 ? group.objects : null;
+    copy.append(create('small', '', `${occurrences} ${occurrences === 1 ? 'occurrence' : 'occurrences'}`
+      + (objects ? ` · ${objects} items` : '')));
+    copy.append(create('small', 'issue-time', group.last_seen
+      ? `Last detected ${displayTime(group.last_seen)}` : 'Time unavailable'));
+    row.append(copy, create('span', `issue-severity severity-${severity || 'unknown'}`, severity || 'Unknown'));
+    const action = group.action && typeof group.action === 'object' ? group.action : null;
+    const route = safeIssueRoute(action ? action.route : null);
+    if (route) {
+      const label = safeText(action.label, 'Open →');
+      const link = create('a', 'issue-action', label);
+      link.href = issueHref(route);
+      link.setAttribute('aria-label', `${label}: ${safeText(group.label, 'Problem')}`);
+      row.append(link);
+    }
+    return row;
   }
   function renderIssueRow(issue) {
       const kind = safeText(first(issue, ['kind', 'type', 'code']), 'System issue');
@@ -991,17 +1070,10 @@
         row.append(create('strong', 'attention-value', countLabel));
       }
       const action = issue.action && typeof issue.action === 'object' ? issue.action : null;
-      const actionRoute = action && typeof action.route === 'string' ? action.route : null;
-      const internalRoute = actionRoute && (
-        /^\/?(?:admin\/v2\/)?#(?:library|quality|sources|organize|jobs|system)(?:[?&/]|$)/.test(actionRoute)
-        || /^\/admin\/v2\/\?source_id=[A-Za-z0-9%._~-]+#sources$/.test(actionRoute)
-        || /^\/admin\/v2\/\?job_id=[A-Za-z0-9%._~-]{1,128}#jobs$/.test(actionRoute)
-        || /^\/admin\/v2\/\?quality_kind=(?:missing_metadata|missing_nfo|invalid_nfo|nfo_metadata_mismatch|missing_artwork)#quality$/.test(actionRoute)
-        || actionRoute === '/admin/v2/?job_state=queued&job_action=sync#jobs'
-      );
-      if (internalRoute) {
+      const actionRoute = safeIssueRoute(action ? action.route : null);
+      if (actionRoute) {
         const link = create('a', 'issue-action', safeText(action.label, 'Open →'));
-        link.href = actionRoute.startsWith('#') ? `/admin/v2/${actionRoute}` : (actionRoute.startsWith('/') ? actionRoute : `/admin/v2/${actionRoute}`);
+        link.href = issueHref(actionRoute);
         link.setAttribute('aria-label', `${safeText(action.label, 'Open')}: ${title}`); row.append(link);
       }
       return row;
@@ -1051,6 +1123,13 @@
     const date = new Date(dateValue);
     if (Number.isNaN(date.getTime())) return safeText(value);
     return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' }).format(date);
+  }
+  function displayDateTime(value) {
+    if (!value) return '—';
+    const dateValue = typeof value === 'number' && value < 100000000000 ? value * 1000 : value;
+    const date = new Date(dateValue);
+    if (Number.isNaN(date.getTime())) return safeText(value);
+    return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
   }
   function availability(video) {
     const raw = first(video, ['availability', 'availability_status', 'playback_status', 'status', 'playable']);
@@ -1277,6 +1356,12 @@
       list.append(row);
     }
     content.append(list, create('p', 'operation-expiry', `Preview expires ${displayTime(plan.expires_at)}. Changes to selected items will invalidate it.`));
+    const access = window.AdminV2HeaderStatus?.access(state.services?.checking ? null : state.services?.capabilities);
+    if (access && access.state !== 'writable') {
+      content.append(create('p', 'operation-readonly', access.state === 'unknown'
+        ? 'Write access could not be verified. The admin checks it again before queueing this operation.'
+        : `${access.label}: ${access.title}`));
+    }
     const footer = $('#operationDialogActions'); footer.replaceChildren();
     const cancel = create('button', 'button button-quiet', 'Cancel'); cancel.type = 'button'; cancel.addEventListener('click', () => closeDialog($('#operationDialog')));
     const execute = create('button', 'button button-primary', isRestore ? 'Queue restore' : isHideBatch ? 'Queue auto-merge' : isHide ? 'Queue hide' : 'Queue quarantine'); execute.type = 'button'; execute.addEventListener('click', executeOperationPlan);
@@ -3048,9 +3133,6 @@
       }
     });
     document.addEventListener('keydown', event => {
-      if (event.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) && !event.ctrlKey && !event.metaKey) {
-        event.preventDefault(); document.dispatchEvent(new CustomEvent('adminv2:open-palette'));
-      }
       if (event.key === 'Tab') {
         const dialogs = $$('dialog[open]');
         const modal = dialogs[dialogs.length - 1];

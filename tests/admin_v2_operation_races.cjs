@@ -67,7 +67,8 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
     renderIssues: payload => { state.renderedIssues = payload; },
     issueFeedUrl: offset => `/admin/api/v2/issues?limit=50&offset=${offset || 0}`,
     readIssueFiltersFromUrl() {},
-    renderStatus() {}, setConnection() {},
+    renderStatus() {}, updateServices() {}, renderWriteAccessNotice() {},
+    renderServiceChip() {}, renderOverviewCards() {},
     openDialog: dialog => { if (dialog) dialog.open = true; },
     closeDialog: dialog => { if (dialog) dialog.open = false; },
     requestJson: async (url, options = {}) => {

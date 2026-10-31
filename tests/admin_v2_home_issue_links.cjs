@@ -45,24 +45,62 @@ class Element {
   get offsetParent() { return this.hidden ? null : {}; }
   focus() { if (activeDocument) activeDocument.activeElement = this; }
 }
+const textOf = node => `${node?.textContent || ''} ${(node?.children || []).map(textOf).join(' ')}`.trim();
 
 const html = fs.readFileSync('resolver/templates/admin_v2.html', 'utf8');
+const routerSource = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
+
 assert.match(html, /class="view"[^>]*data-view="operational"/,
   'Sources, Tasks, and System must use the named shared operational view');
 assert.doesNotMatch(html, /roadmapCard|Coming soon|legacyRoute/,
   'The implemented v2 views must not retain the obsolete coming-soon fallback');
+
+// Removed manual triage entry points must not leave markup or behaviour behind.
+assert.doesNotMatch(html, /command-palette|commandPalette|commandTrigger|data-command/,
+  'The command palette must be fully removed from the template');
+assert.doesNotMatch(html, /command-palette\.js/, 'The command palette script must not be loaded');
+assert.doesNotMatch(routerSource, /commandPalette|open-palette|command-palette/,
+  'The router must not keep palette-only behaviour');
+
+const topbar = html.slice(html.indexOf('<header class="topbar">'), html.indexOf('</header>'));
+assert.deepEqual([...topbar.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => id),
+  ['menuButton', 'crumbCurrent', 'serviceStatus', 'themeToggle'],
+  'The header keeps the title, one aggregate service control, and the theme toggle only');
+assert.match(topbar, /<a class="service-status" id="serviceStatus" href="#system"/,
+  'The aggregate service control leads to System');
+assert.doesNotMatch(html, /id="connectionState"/, 'The removed per-source connection chip must not return');
+
 assert.match(html, /id="issueCount"[^>]*role="status"[^>]*aria-atomic="true"/,
   'Home announces issue result counts accessibly');
+assert.match(html, /<details class="all-problems" id="allProblems">\s*<summary>All problems<\/summary>/,
+  'The full problem list is available but collapsed by default');
+assert.doesNotMatch(html, /<details[^>]*id="allProblems"[^>]*open/,
+  'The full problem list must not expand on load');
+
+const startView = html.slice(html.indexOf('data-view="start"'), html.indexOf('data-view="library"'));
+assert.match(startView, /id="statusCards"/, 'Overview renders its summary tiles into the metric grid');
+assert.match(startView, /id="problemGroups"/, 'Overview renders grouped problem summaries');
+assert.match(startView, /id="attentionList"/, 'Overview keeps the full filtered problem list reachable');
+assert.doesNotMatch(startView, /catalogHealthCards|pHash|OSHASH|Database size|db_size/,
+  'Overview drops the detailed catalog health statistics');
+
+// Temporary "More tools" hosts keep the not-yet-moved screens reachable.
+assert.match(html, /id="libraryMoreTools"/, 'Library exposes the temporary catalog tool links');
+assert.match(html, /<details id="systemMoreTools" class="panel more-tools-panel" hidden>/,
+  'System exposes the remaining administrative tools as collapsed More tools');
+assert.match(html, /id="writeAccessNotice"/, 'System reports why writes are limited');
+assert.match(html, /id="serviceList"/, 'System hosts the aggregated service state');
+
 const elements = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => [id, new Element('div')]));
-const connectionState = elements.get('connectionState');
-const connectionLabel = new Element('span');
-let connectionLabelText = 'Connecting…';
-let connectionLabelWrites = 0;
-Object.defineProperty(connectionLabel, 'textContent', {
-  get: () => connectionLabelText,
-  set: value => { connectionLabelWrites += 1; connectionLabelText = String(value); },
+const serviceChip = elements.get('serviceStatus');
+const chipLabel = new Element('span');
+let chipLabelText = 'Checking services…';
+let chipLabelWrites = 0;
+Object.defineProperty(chipLabel, 'textContent', {
+  get: () => chipLabelText,
+  set: value => { chipLabelWrites += 1; chipLabelText = String(value); },
 });
-connectionState.queryResults.set('span:last-child', connectionLabel);
+serviceChip.queryResults.set('span:last-child', chipLabel);
 const views = [...html.matchAll(/<section\b[^>]*class="[^"]*view[^\"]*"[^>]*data-view="([^"]+)"/g)]
   .map(([, route]) => { const element = new Element('section'); element.dataset.view = route; return element; });
 const navLinks = [...html.matchAll(/<a\b[^>]*data-route="([^"]+)"/g)]
@@ -80,15 +118,15 @@ const detailOverlay = elements.get('detailOverlay');
 const openDialogs = [operationDialog, metadataDialog, detailOverlay];
 let detailDrawer = null;
 const expectedRoutes = ['start', 'library', 'quality', 'sources', 'organize', 'performers', 'jobs', 'schedules', 'system'];
-const primaryRoutes = ['start', 'library', 'performers', 'quality', 'sources', 'jobs', 'schedules', 'system'];
-assert.deepEqual(navLinks.map(link => link.dataset.route), primaryRoutes,
-  'the primary navigation must expose exactly the eight destinations in order');
+assert.deepEqual(navLinks.map(link => link.dataset.route),
+  ['start', 'library', 'performers', 'sources', 'jobs', 'schedules', 'system'],
+  'the primary navigation must expose exactly the seven Stage 2 destinations in order');
 const primaryLabels = [...html.matchAll(/<a\b[^>]*data-route="[^"]+"[^>]*>([\s\S]*?)<\/a>/g)]
   .map(([, contents]) => contents.replace(/<span\b[^>]*aria-hidden="true"[^>]*>[\s\S]*?<\/span>/g, '')
     .replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').trim());
-assert.deepEqual(primaryLabels, ['Dashboard', 'Library', 'Performers', 'Catalog Health', 'Sources', 'Jobs & Automation', 'Schedules', 'System'],
-  'the primary navigation uses the v3.1 section names');
-const routerSource = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
+assert.deepEqual(primaryLabels, ['Overview', 'Library', 'Performers', 'Sources', 'Tasks', 'Schedules', 'System'],
+  'the primary navigation uses the Stage 2 section names');
+
 const detailRenderer = routerSource.slice(routerSource.indexOf('async function loadAvailabilityHistory'), routerSource.indexOf('function duration(value)'));
 for (const heading of ['Overview', 'Metadata', 'Files', 'Availability & History']) {
   assert.ok(detailRenderer.includes(`'${heading}'`), `the video detail must expose a ${heading} section`);
@@ -109,6 +147,11 @@ for (const route of expectedRoutes) {
   assert.match(routerSource, new RegExp(`\\b${route}:\\s*\\{\\s*title:`),
     `the Admin v2 router must define the ${route} destination`);
 }
+assert.match(routerSource, /jobs: \{ title: 'Tasks'/, 'the queue destination is named Tasks');
+assert.match(routerSource, /start: \{ title: 'Overview'/, 'the landing destination is named Overview');
+assert.match(routerSource, /const navOwner = route => \(route === 'quality' \? 'library' : route\)/,
+  'legacy Catalog Health screens are owned by the Library menu entry');
+
 const document = {
   hidden: false,
   readyState: 'complete',
@@ -151,6 +194,7 @@ const libraryFields = new Map(['q', 'channel_id', 'studio', 'performer', 'tag', 
 const libraryForm = elements.get('libraryFilters');
 libraryForm.elements = { namedItem: name => libraryFields.get(name) || null };
 libraryForm.reset = () => { for (const [name, field] of libraryFields) field.value = name === 'sort' ? 'first_seen' : ''; };
+
 const issues = [
   { kind: 'source_failure', severity: 'high', title: 'Channel failed', action: { label: 'Open source', route: '/admin/v2/?source_id=telegram%3A1#sources' } },
   { kind: 'sync_never_run', severity: 'low', title: 'Channel never synced', action: { label: 'Open source', route: '/admin/v2/?source_id=telegram%3A2#sources' } },
@@ -163,55 +207,87 @@ const issues = [
   { kind: 'backup', severity: 'high', title: 'Database backup is overdue', action: { label: 'Review backups', route: '/admin/v2/#system?tab=backups' } },
   { kind: 'system', severity: 'low', title: 'Unsafe external issue', action: { label: 'Open external site', route: 'https://example.invalid/' } },
 ];
+// The server summarizes the complete open set before filtering and pagination; the client only renders it.
+const problemSummary = {
+  total_open: 9,
+  groups_total: 7,
+  incomplete: false,
+  groups: [
+    { kind: 'job_failure', operation_id: 'sync', severity: 'high', label: 'Task failed — sync',
+      occurrences: 12, objects: 4, last_seen: '2026-10-14T08:30:00+00:00',
+      action: { label: 'Review failures', route: '/admin/v2/?job_state=failed&job_action=sync#jobs' } },
+    { kind: 'sync_failure', operation_id: 'telegram:1', severity: 'high', label: 'Channel failed — Action Channel',
+      occurrences: 3, objects: 1, last_seen: '2026-10-14T09:00:00+00:00',
+      action: { label: 'Open source', route: '/admin/v2/?source_id=telegram%3A1#sources' } },
+    { kind: 'backup', operation_id: 'backup', severity: 'high', label: 'Database backup is overdue',
+      occurrences: 1, objects: 1, last_seen: '2026-10-14T05:00:00+00:00',
+      action: { label: 'Review backups', route: '/admin/v2/#system?tab=backups' } },
+    { kind: 'quality_finding', operation_id: 'video-9', severity: 'medium', label: 'NFO metadata differs',
+      occurrences: 7, objects: 7, last_seen: '2026-10-14T07:00:00+00:00',
+      action: { label: 'Review findings', route: '/admin/v2/?quality_kind=nfo_metadata_mismatch#quality' } },
+    { kind: 'sync_backlog', operation_id: 'sync', severity: 'medium', label: 'Sync queue is old',
+      occurrences: 40, objects: 1, last_seen: '2026-10-14T06:00:00+00:00',
+      action: { label: 'Review queue', route: '/admin/v2/?job_state=queued&job_action=sync#jobs' } },
+  ],
+};
+const FIRST_PAGE_SIZE = 2;
 const calls = [];
 let failCapabilities = false;
 let failStatus = false;
 let failQualitySummary = false;
 let failJellyfinStatus = false;
-let failedTaskSummaryAvailable = true;
-let failedTaskSummary = 2;
-let lastSyncFailedSources = 3;
-let lastSyncRateLimited = 2;
+let writableCapabilities = false;
 let issueFeedIncomplete = false;
 let failIssueFeed = false;
 let malformedIssueFeed = false;
+const syncFixture = {
+  available: true, running: false, freshness: 'fresh', last_success: true, history_available: true,
+  last_run: { started_at: '2026-10-14T09:40:00+00:00', ended_at: '2026-10-14T10:00:00+00:00', success: true },
+};
+const expectedSyncTime = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+  .format(new Date(syncFixture.last_run.ended_at));
 async function fetch(url) {
   calls.push(String(url));
   if (failCapabilities && String(url).endsWith('/capabilities')) return { ok: false, status: 503, json: async () => ({ detail: 'unavailable' }) };
-  if (failStatus && String(url).endsWith('/status')) return { ok: false, status: 503, json: async () => ({ detail: 'unavailable' }) };
+  if (failStatus && (String(url).endsWith('/status') || String(url).endsWith('/status/sync'))) return { ok: false, status: 503, json: async () => ({ detail: 'unavailable' }) };
   let payload;
   const parsedUrl = new URL(String(url), 'http://localhost');
   if (parsedUrl.pathname === '/admin/api/v2/issues') {
     if (failIssueFeed) return { ok: false, status: 503, json: async () => ({ detail: 'unavailable' }) };
     const filtered = issues.filter(issue => (!parsedUrl.searchParams.get('severity') || issue.severity === parsedUrl.searchParams.get('severity'))
       && (!parsedUrl.searchParams.get('kind') || issue.kind === parsedUrl.searchParams.get('kind')));
+    const offset = Number(parsedUrl.searchParams.get('offset') || 0);
+    // Only the first page is short so "Load more" appends the remaining fixtures.
+    const page = offset === 0 ? filtered.slice(0, FIRST_PAGE_SIZE) : filtered.slice(offset);
     payload = {
-      ok: true, items: filtered, total: malformedIssueFeed ? null : filtered.length,
-      truncated: false, data: { incomplete: issueFeedIncomplete },
+      ok: true,
+      items: page,
+      total: malformedIssueFeed ? null : filtered.length,
+      truncated: offset + page.length < filtered.length,
+      summary: { ...problemSummary, incomplete: issueFeedIncomplete },
+      data: { incomplete: issueFeedIncomplete },
     };
   }
-  else if (String(url).endsWith('/capabilities')) payload = {
-    ok: true, actions_enabled: false, worker: { available: true }, worker_ready: true,
-  };
-  else if (String(url).endsWith('/status')) payload = {
-    ok: true,
-    db: { db_ok: true, database_backend: 'PostgreSQL', db_size_mb: 42.5 },
-    sync: { available: true, running: false, freshness: 'fresh', last_success: true },
-    runtime: { status: 'ok', version: '1.2.3', cache_entries: 5, providers: ['telegram'] },
-    attention: {
-      failed_tasks: failedTaskSummary, failed_tasks_available: failedTaskSummaryAvailable,
-      last_sync_failed_sources: lastSyncFailedSources, last_sync_rate_limited: lastSyncRateLimited,
-    },
-  };
-  else if (String(url).endsWith('/quality/summary')) {
+  else if (parsedUrl.pathname === '/admin/api/v2/quality/summary') {
     if (failQualitySummary) return { ok: false, status: 503, json: async () => ({ error: 'unavailable' }) };
-    payload = { ok: true, latest_audit: { jellyfin_import_state: 'checked' },
-      fingerprint_coverage: { available: true, total_videos: 10, oshash: 5, phash: 3 } };
+    payload = { ok: true, latest_audit: { jellyfin_import_state: 'checked', created_at: '2026-10-14T09:00:00+00:00' } };
   }
   else if (parsedUrl.pathname === '/admin/api/v2/status/jellyfin') {
     if (failJellyfinStatus) return { ok: false, status: 503, json: async () => ({ error: 'unavailable' }) };
     payload = { ok: true, status: 'reachable', checked_at: '2026-10-14T10:00:00+00:00' };
   }
+  else if (parsedUrl.pathname === '/admin/api/v2/status/sync') payload = { ok: true, sync: syncFixture };
+  else if (parsedUrl.pathname === '/admin/api/v2/capabilities') payload = {
+    ok: true, actions_enabled: writableCapabilities, worker: { available: true }, worker_ready: true,
+    read_only_reason: writableCapabilities ? undefined : 'admin_disabled',
+  };
+  else if (parsedUrl.pathname === '/admin/api/v2/status') payload = {
+    ok: true,
+    db: { db_ok: true, database_backend: 'PostgreSQL', videos_total: 1234 },
+    sync: syncFixture,
+    runtime: { status: 'ok', version: '1.2.3', cache_entries: 5, providers: ['telegram'] },
+    attention: { pending_tasks: 4 },
+  };
   else if (String(url).includes('/library/videos?')) {
     const parsed = new URL(String(url), 'http://localhost');
     const offset = Number(parsed.searchParams.get('offset') || 0);
@@ -222,7 +298,7 @@ async function fetch(url) {
       data: { available: true, stale: false, incomplete: false },
     };
   }
-  else if (String(url).includes('/jobs?state=active')) payload = { ok: true, jobs: [], total: 0 };
+  else if (String(url).includes('/jobs?state=active')) payload = { ok: true, jobs: [], total: 0, active_total: 4, data: { available: true } };
   else throw new Error(`Unexpected request: ${url}`);
   return { ok: true, status: 200, json: async () => payload };
 }
@@ -283,17 +359,62 @@ const context = {
 (async () => {
   vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/header-status.js', 'utf8'), context);
   vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8'), context);
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  const flush = async (ticks = 5) => {
+    for (let index = 0; index < ticks; index += 1) await new Promise(resolve => setImmediate(resolve));
+  };
+  const refresh = async () => {
+    documentListeners.get('click')({ target: { closest: selector => selector === '[data-action]' ? { dataset: { action: 'refresh-status' } } : null } });
+    await flush();
+  };
+  await flush();
 
-  assert.equal(connectionState.dataset.state, 'ok', 'Home marks a successful status response as connected');
-  assert.equal(connectionLabelText, 'Connected');
-  assert.equal(connectionLabelWrites, 1, 'The initial connection result is announced once');
+  // Overview: exactly four tiles, each backed by an explicit source value.
+  const tileLabels = () => elements.get('statusCards').children.map(card => card.children[0].children[0].textContent);
+  const tileValue = index => elements.get('statusCards').children[index]?.children[1].textContent;
+  const tileCaption = index => elements.get('statusCards').children[index]?.children[2].textContent;
+  assert.deepEqual(tileLabels(), ['Videos in library', 'Last sync', 'Active tasks', 'Problems'],
+    'Overview must show exactly the four Stage 2 summary tiles');
+  assert.equal(tileValue(0), '1234', 'the catalog tile reports the library video count');
+  assert.equal(tileValue(1), expectedSyncTime,
+    'the sync tile reports the recorded run time, not the time the status was read');
+  assert.match(tileCaption(1), /The recorded run completed\. Started .*\./,
+    'the sync tile pairs the run time with its outcome and start');
+  assert.equal(tileValue(2), '4', 'the task tile reports queued or processing work');
+  assert.equal(tileValue(3), '9', 'the problem tile reports unresolved problems');
+  assert.match(tileCaption(3), /Unresolved problems/, 'the problem tile names what it counts');
 
+  // Grouped problems: five groups maximum, with occurrences, last detection, and a working link.
+  const groupRows = elements.get('problemGroups').children;
+  assert.equal(groupRows.length, problemSummary.groups.length + 1,
+    'Overview shows the returned groups plus the overflow note');
+  const firstGroup = groupRows[0];
+  assert.equal(textOf(firstGroup.children[1].children[0]), 'Task failed — sync',
+    'a group is named by its problem and operation, not by an arbitrary object');
+  assert.equal(textOf(firstGroup.children[1].children[1]), '12 occurrences · 4 items',
+    'a group sums recorded occurrences and mentions the number of affected items');
+  assert.match(textOf(firstGroup.children[1].children[2]), /^Last detected /, 'a group shows its last occurrence');
+  assert.equal(textOf(firstGroup.children[2]), 'high', 'a group carries its highest severity');
+  assert.equal(firstGroup.children[3].tagName, 'A');
+  assert.equal(firstGroup.children[3].href, '/admin/v2/?job_state=failed&job_action=sync#jobs',
+    'a multi-object group links to the filtered list rather than one arbitrary job');
+  assert.equal(firstGroup.children[3].getAttribute('aria-label'), 'Review failures: Task failed — sync');
+  assert.equal(groupRows.at(-1).children.length, 0, 'the overflow note is plain text');
+  assert.match(textOf(groupRows.at(-1)), /^2 more problem groups in All problems\.$/,
+    'Overview discloses that more groups exist than it shows');
+  assert.equal(elements.get('problemCompleteness').hidden, true, 'a complete summary shows no partial-data warning');
+
+  // The full list keeps its own links, count, and pagination inside "All problems".
   const rows = elements.get('attentionList').children;
-  const links = rows.flatMap(row => row.children).filter(child => child.tagName === 'A');
+  assert.equal(rows.length, FIRST_PAGE_SIZE, 'the issue list renders one page at a time');
+  assert.equal(elements.get('issueCount').textContent, `Showing ${FIRST_PAGE_SIZE} of ${issues.length} issues.`,
+    'Home announces the loaded issue count against the server total');
+  assert.equal(elements.get('issuesLoadMore').hidden, false, 'a truncated issue list offers more results');
+  elements.get('issuesLoadMore').listeners.click();
+  await flush();
+  assert(calls.includes('/admin/api/v2/issues?limit=50&offset=2'), 'loading more issues requests the next offset');
+  const allRows = elements.get('attentionList').children;
+  assert.equal(allRows.length, issues.length, 'Load more appends the remaining issues');
+  const links = allRows.flatMap(row => row.children).filter(child => child.tagName === 'A');
   const actual = links.map(link => [link.getAttribute('aria-label'), link.href]);
   assert.deepEqual(actual, [
     ['Open source: Channel failed', '/admin/v2/?source_id=telegram%3A1#sources'],
@@ -304,145 +425,184 @@ const context = {
     ['Review unavailable: Unavailable video', '/admin/v2/#library?availability=unavailable'],
     ['Review findings: NFO metadata differs', '/admin/v2/?quality_kind=nfo_metadata_mismatch#quality'],
     ['Review backups: Database backup is overdue', '/admin/v2/#system?tab=backups'],
-  ]);
-  assert.equal(rows.length, issues.length, 'All issue summaries, including issues without a safe action, remain visible');
+  ], 'unsafe external actions must not become links');
   assert.equal(elements.get('issueCount').textContent, `Showing ${issues.length} issues.`,
-    'Home announces the loaded issue count');
-  const backendCard = elements.get('catalogHealthCards').children.find(card =>
-    card.children[0].children[0].textContent === 'Database backend');
-  assert.ok(backendCard, 'Home must render the database backend in catalog health');
-  assert.equal(backendCard.children[1].textContent, 'PostgreSQL', 'Home shows only the safe backend label');
-  const unresolvedTaskCard = elements.get('statusCards').children.find(card =>
-    card.children[0].children[0].textContent === 'Unresolved task groups');
-  assert.equal(unresolvedTaskCard.children[1].textContent, '2', 'Home shows actionable failed task groups');
-  const syncIssueCard = elements.get('statusCards').children.find(card =>
-    card.children[0].children[0].textContent === 'Latest sync failures / HTTP 429');
-  assert.equal(syncIssueCard.children[1].textContent, '3 / 2',
-    'Home preserves the classic failed-source and rate-limited response counts');
-  assert.match(syncIssueCard.children[2].textContent, /Failed sources \/ rate-limited responses/);
-  const databaseSizeCard = elements.get('catalogHealthCards').children.find(card =>
-    card.children[0].children[0].textContent === 'Database size');
-  assert.equal(databaseSizeCard.children[1].textContent, '42.5 MB', 'Home preserves the classic database size field');
-  const phashCard = elements.get('catalogHealthCards').children.find(card =>
-    card.children[0].children[0].textContent === 'pHash coverage');
-  assert.equal(phashCard.children[1].textContent, '3 / 10 (30%)', 'Dashboard reports pHash coverage from the authoritative summary');
-  assert.match(phashCard.children[2].textContent, /partial by design/,
-    'Dashboard does not imply pHash coverage is expected for every video');
-  const oshashCard = elements.get('catalogHealthCards').children.find(card =>
-    card.children[0].children[0].textContent === 'OSHASH coverage');
-  assert.equal(oshashCard.children[1].textContent, '5 / 10 (50%)');
-  const serviceValues = new Map(elements.get('serviceList').children.map(row =>
-    [row.children[0].textContent, row.children[1].textContent]));
-  assert.equal(serviceValues.get('Application version'), '1.2.3', 'Home preserves the classic application version field');
-  assert.equal(serviceValues.get('Synchronization'), 'Last run succeeded', 'Home preserves the classic sync status field');
-  assert.equal(serviceValues.get('Resolver'), 'Operational', 'Home shows resolver status with the configuration details');
-  assert.equal(serviceValues.get('Background worker'), 'Operational', 'Dashboard reflects worker capability state');
-  assert.equal(serviceValues.get('Jellyfin connection'), 'Reachable', 'Dashboard shows the sanitized Jellyfin reachability probe');
-  assert.equal(serviceValues.get('Jellyfin import check (latest audit)'), 'Checked in latest audit',
-    'Dashboard describes Jellyfin evidence as coming from the latest audit, not a live probe');
-  assert(calls.includes('/admin/api/v2/status/jellyfin'), 'Dashboard loads the bounded Jellyfin health probe');
-  assert(calls.includes('/admin/api/v2/issues?limit=50&offset=0'), 'Home must load the V2 issue feed');
-  assert(calls.includes('/admin/api/v2/quality/summary'), 'Dashboard uses the bounded quality summary for fingerprint coverage');
+    'appended pages update the announced count');
+  assert.equal(elements.get('issuesLoadMore').hidden, true, 'the last issue page hides Load more');
+  const groupSnapshot = textOf(elements.get('problemGroups'));
+  assert.equal(tileValue(3), '9', 'pagination must not change the unfiltered problem total');
+  assert.equal(textOf(elements.get('problemGroups')), groupSnapshot,
+    'pagination must not change the grouped problem summary');
 
+  // Filtering the list must not move the summary tiles or groups.
   elements.get('issueSeverity').value = 'high';
   elements.get('issueSeverity').listeners.change();
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(new URLSearchParams(location.search).get('issue_severity'), 'high', 'Home saves issue severity in the URL');
   assert.equal(new URLSearchParams(location.search).get('campaign'), 'keep', 'Home issue filters preserve unrelated query parameters');
-  assert.equal(elements.get('attentionList').children.length, 4, 'Home applies the selected issue severity');
-  assert.equal(elements.get('issueCount').textContent, 'Showing 4 issues.', 'Issue count follows the severity filter');
+  assert.equal(elements.get('attentionList').children.length, FIRST_PAGE_SIZE, 'Home applies the selected issue severity');
+  assert.equal(elements.get('issueCount').textContent, 'Showing 2 of 4 issues.', 'Issue count follows the severity filter');
   assert(calls.includes('/admin/api/v2/issues?limit=50&offset=0&severity=high'), 'Home sends severity to the issues API');
+  assert.equal(textOf(elements.get('problemGroups')), groupSnapshot,
+    'the problem summary is independent of the list filters');
+  assert.equal(tileValue(3), '9', 'filtering the issue list must not change the Problems tile');
   elements.get('issueKind').value = 'job_stalled';
   elements.get('issueKind').listeners.change();
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(new URLSearchParams(location.search).get('issue_kind'), 'job_stalled', 'Home saves issue type in the URL');
   assert.equal(new URLSearchParams(location.search).get('campaign'), 'keep', 'Home combined filters preserve unrelated query parameters');
   assert.equal(elements.get('attentionList').children.length, 1, 'Home applies combined severity and type filters');
   assert.equal(elements.get('issueCount').textContent, 'Showing 1 issue.', 'Combined filters update the announced count');
   assert(calls.includes('/admin/api/v2/issues?limit=50&offset=0&severity=high&kind=job_stalled'), 'Home sends both issue filters to the API');
+  assert.equal(tileValue(3), '9', 'combined filters must not change the Problems tile');
   history.back();
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(elements.get('issueKind').value, '', 'Back restores the previous Home issue filters');
-  assert.equal(elements.get('attentionList').children.length, 4, 'Back reloads the previous severity-filtered issues');
+  assert.equal(elements.get('attentionList').children.length, FIRST_PAGE_SIZE, 'Back reloads the previous severity-filtered issues');
   history.forward();
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(elements.get('issueKind').value, 'job_stalled', 'Forward restores the Home issue type');
   assert.equal(elements.get('attentionList').children.length, 1, 'Forward reloads the combined issue filters');
 
   issueFeedIncomplete = true;
-  documentListeners.get('click')({ target: { closest: selector => selector === '[data-action]' ? { dataset: { action: 'refresh-status' } } : null } });
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await refresh();
   assert.equal(elements.get('issueCount').textContent, 'Showing 1 returned issue; the total may be incomplete.',
     'Home qualifies the count when some issue sources are unavailable');
   assert.equal(elements.get('issueCompleteness').hidden, false, 'Home exposes the incomplete-feed explanation');
+  assert.equal(elements.get('problemCompleteness').hidden, false,
+    'an incomplete summary is disclosed above the grouped problems');
+  assert.match(textOf(elements.get('problemCompleteness')), /may be incomplete/i,
+    'the partial-data notice explains that problem groups may be missing');
   issueFeedIncomplete = false;
-  documentListeners.get('click')({ target: { closest: selector => selector === '[data-action]' ? { dataset: { action: 'refresh-status' } } : null } });
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await refresh();
 
   const previouslyLoadedIssueCount = elements.get('attentionList').children.length;
   failIssueFeed = true;
-  documentListeners.get('click')({ target: { closest: selector => selector === '[data-action]' ? { dataset: { action: 'refresh-status' } } : null } });
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await refresh();
   assert.equal(elements.get('issueCount').textContent, 'Issue count unavailable; showing previously loaded results.',
     'A failed refresh marks the issue count unavailable without presenting stale counts as current');
   assert.equal(elements.get('attentionList').children.length, previouslyLoadedIssueCount,
     'A failed refresh preserves the previously loaded issue rows');
+  assert.match(textOf(elements.get('problemGroups')), /Problem summaries unavailable\./,
+    'a failed issue read removes the unverified problem groups');
+  assert.equal(tileValue(3), 'No data', 'the Problems tile must not present an unverified count as current');
   failIssueFeed = false;
 
   malformedIssueFeed = true;
-  documentListeners.get('click')({ target: { closest: selector => selector === '[data-action]' ? { dataset: { action: 'refresh-status' } } : null } });
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await refresh();
   assert.equal(elements.get('issueCount').textContent, 'Issue count unavailable; showing previously loaded results.',
     'A null issue total cannot be coerced into a false zero count');
   assert.equal(elements.get('attentionList').children.length, previouslyLoadedIssueCount,
     'A malformed issue response preserves the last valid rows');
   malformedIssueFeed = false;
+  await refresh();
+  assert.equal(tileValue(3), '9', 'a recovered issue feed restores the unfiltered problem count');
 
-  failedTaskSummaryAvailable = false;
-  lastSyncFailedSources = null;
-  lastSyncRateLimited = null;
+  // Empty and unreadable sources: the tiles must say which of the two it is.
+  const problemSnapshot = JSON.parse(JSON.stringify(problemSummary));
+  const issueSnapshot = issues.slice();
+  problemSummary.total_open = 0; problemSummary.groups_total = 0; problemSummary.groups = [];
+  issues.length = 0;
+  await refresh();
+  assert.equal(tileValue(3), '0', 'a catalog without problems reports zero, not missing data');
+  assert.match(textOf(elements.get('problemGroups')), /No problems need attention\./,
+    'an empty problem set is reported as empty, not as an error');
+  assert.equal(tileCaption(3), 'Unresolved problems', 'the complete zero keeps its plain caption');
+  Object.assign(problemSummary, problemSnapshot);
+  issues.push(...issueSnapshot);
+
+  const syncSnapshot = { ...syncFixture };
+  syncFixture.running = true;
+  await refresh();
+  assert.equal(tileValue(1), 'In progress', 'a running synchronization is named as such');
+  assert.match(tileCaption(1), /executing now/, 'the sync tile does not present a past run while one is running');
+  syncFixture.running = false; syncFixture.last_run = null;
+  await refresh();
+  assert.equal(tileValue(1), 'No history', 'a panel without any recorded run says so plainly');
+  assert.match(tileCaption(1), /No completed synchronization run is recorded yet\./);
+  syncFixture.history_available = false;
+  await refresh();
+  assert.equal(tileValue(1), 'No data', 'an unreadable history must not read as "no history"');
+  assert.match(tileCaption(1), /history could not be read/);
+  syncFixture.history_available = true; syncFixture.available = false;
+  await refresh();
+  assert.equal(tileValue(1), 'No data', 'an unavailable sync status has no invented time');
+  assert.match(tileCaption(1), /status could not be read/);
+  Object.assign(syncFixture, syncSnapshot);
+  syncFixture.last_run = {
+    started_at: '2026-10-14T09:40:00+00:00', ended_at: '2026-10-14T10:00:00+00:00',
+    success: false, interrupted: true,
+  };
+  await refresh();
+  assert.match(tileCaption(1), /The recorded run was interrupted\. Started /,
+    'an interrupted run is reported with its outcome and start time');
+  syncFixture.last_run = { started_at: '2026-10-14T09:40:00+00:00', ended_at: '2026-10-14T10:00:00+00:00' };
+  await refresh();
+  assert.match(tileCaption(1), /The recorded outcome is unknown\. Started /,
+    'a run without a recorded outcome is never presented as a success');
+  Object.assign(syncFixture, syncSnapshot);
+  await refresh();
+  assert.equal(tileValue(1), expectedSyncTime, 'a restored status read returns the recorded run time');
+
+  // The Overview must not pay for statistics that only System shows.
+  assert.equal(calls.some(url => url.includes('/quality/summary')), false,
+    'Overview must not load the quality summary for its tiles');
+  assert.equal(calls.some(url => url.includes('/status/jellyfin')), false,
+    'Overview must not load the Jellyfin probe for its tiles');
+
+  // Header: one aggregate service control that never looks healthy when unverified.
+  assert.equal(serviceChip.dataset.state, 'attention', 'a read-only panel reads as needing attention');
+  assert.equal(chipLabelText, 'Attention needed');
+  assert.match(serviceChip.title, /Writes are disabled by the current admin configuration\./,
+    'the aggregate control names the reason it needs attention');
+  assert.match(serviceChip.getAttribute('aria-label'), /Attention needed\. Open System\./,
+    'the aggregate control announces where the detail lives');
+  assert.equal(elements.get('writeAccessNotice').hidden, false, 'System reports the write restriction');
+  assert.match(textOf(elements.get('writeAccessNotice')), /Read-only: Writes are disabled/,
+    'the write-access notice explains the read-only cause');
+
+  const chipWritesBefore = chipLabelWrites;
   failCapabilities = true;
-  documentListeners.get('click')({ target: { closest: selector => selector === '[data-action]' ? { dataset: { action: 'refresh-status' } } : null } });
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await refresh();
   assert.equal(elements.get('statusContent').hidden, false, 'A capabilities failure must not hide a successfully loaded system status');
   assert.match(elements.get('statusState').children[0].textContent, /write access could not be verified/i,
     'Home must disclose when capabilities are unavailable while status remains current');
+  assert.equal(serviceChip.dataset.state, 'partial', 'unknown permissions must not read as healthy');
+  assert.equal(chipLabelText, 'Partial status', 'the aggregate control reports partially verified status');
+  assert.equal(chipLabelWrites, chipWritesBefore + 1, 'only the changed service state is re-announced');
+  assert.match(textOf(elements.get('writeAccessNotice')), /Access unavailable/i,
+    'an unverified permission check is reported instead of assumed read-only');
   const panelAccess = elements.get('serviceList').children.find(row => row.children[0].textContent === 'Panel access');
   assert.match(panelAccess.children[1].textContent, /unavailable.*writes need verification/i,
     'Home must not imply read-only or writable access when capability state is unknown');
-  const unavailableTaskCard = elements.get('statusCards').children.find(card =>
-    card.children[0].children[0].textContent === 'Unresolved task groups');
-  assert.equal(unavailableTaskCard.children[1].textContent, 'No data',
-    'Home must not report zero failed tasks when the failure summary is incomplete');
-  const unavailableSyncIssueCard = elements.get('statusCards').children.find(card =>
-    card.children[0].children[0].textContent === 'Latest sync failures / HTTP 429');
-  assert.equal(unavailableSyncIssueCard.children[1].textContent, 'No data',
-    'Home must not show zero sync failures when the latest sync counts are unavailable');
-  assert.equal(connectionLabelWrites, 1, 'An unchanged connection state is not re-announced on refresh');
-  assert(calls.includes('/admin/api/v2/issues?limit=50&offset=0&severity=high&kind=job_stalled'),
-    'Refreshing Home status preserves the active issue filters');
-
-  failedTaskSummaryAvailable = true;
   failCapabilities = false;
+  writableCapabilities = true;
+  await refresh();
+  assert.equal(serviceChip.dataset.state, 'ok', 'verified writable access with current data reads as healthy');
+  assert.equal(chipLabelText, 'All services available · 4 active tasks', 'the healthy state summarizes active work');
+  assert.equal(elements.get('writeAccessNotice').hidden, true, 'enabled writes need no warning');
+  const chipWritesBeforeRestore = chipLabelWrites;
+  writableCapabilities = false;
+  await refresh();
+  assert.equal(serviceChip.dataset.state, 'attention', 'a restored read-only state is reported again');
+  assert.equal(chipLabelWrites, chipWritesBeforeRestore + 1, 'an unchanged service state is not re-announced on every refresh');
+
   failStatus = true;
-  documentListeners.get('click')({ target: { closest: selector => selector === '[data-action]' ? { dataset: { action: 'refresh-status' } } : null } });
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await refresh();
   assert.equal(elements.get('statusContent').hidden, false, 'A later status failure must preserve the previously loaded status');
   assert.match(elements.get('statusState').children[0].textContent, /out of date/i, 'A failed status refresh must visibly mark retained data as stale');
-  assert.equal(connectionState.dataset.state, 'error', 'A failed status refresh marks the connection unavailable');
-  assert.equal(connectionLabelText, 'Connection unavailable');
-  assert.equal(connectionLabelWrites, 2, 'Only the changed connection state is announced');
+  assert.equal(serviceChip.dataset.state, 'error', 'A failed status refresh marks the connection unavailable');
+  assert.equal(chipLabelText, 'Connection unavailable');
   failStatus = false;
+  await refresh();
 
   const routeTitles = {
-    start: 'Dashboard', library: 'Library', sources: 'Sources', organize: 'Catalog Health',
-    quality: 'Catalog Health', performers: 'Performers', jobs: 'Jobs & Automation', schedules: 'Schedules', system: 'System',
+    start: 'Overview', library: 'Library', sources: 'Sources', organize: 'Catalog Health',
+    quality: 'Catalog Health', performers: 'Performers', jobs: 'Tasks', schedules: 'Schedules', system: 'System',
+  };
+  const navOwners = {
+    start: 'start', library: 'library', performers: 'performers', quality: 'library', organize: 'library',
+    sources: 'sources', jobs: 'jobs', schedules: 'schedules', system: 'system',
   };
   const onHashChange = windowListeners.get('hashchange');
   assert.equal(typeof onHashChange, 'function', 'The router must listen for direct hash navigation');
@@ -453,15 +613,30 @@ const context = {
     const visibleViews = views.filter(view => !view.hidden).map(view => view.dataset.view);
     const expectedView = ['start', 'library', 'organize', 'performers'].includes(route) ? route : 'operational';
     assert.deepEqual(visibleViews, [expectedView], `${route} must select exactly its intended view`);
-    const expectedPrimaryRoute = route === 'organize' ? 'quality' : route;
-    assert.deepEqual(navLinks.filter(link => link.getAttribute('aria-current') === 'page').map(link => link.dataset.route), [expectedPrimaryRoute],
-      `${route} must activate its primary v3.1 section or legacy-compatible parent`);
+    assert.deepEqual(navLinks.filter(link => link.getAttribute('aria-current') === 'page').map(link => link.dataset.route), [navOwners[route]],
+      `${route} must activate the Stage 2 section that owns it`);
     assert.equal(elements.get('crumbCurrent').textContent, routeTitles[route], `${route} must update the breadcrumb`);
     if (['quality', 'sources', 'jobs', 'schedules', 'system'].includes(route)) {
       assert.equal(elements.get('operationalTitle').textContent, routeTitles[route],
         `${route} must name the shared operational view after navigation`);
     }
   }
+  location.hash = '#jobs?tab=schedules';
+  onHashChange();
+  assert.equal(location.hash, '#schedules', 'the historical Jobs/Schedules address moves to Schedules');
+  assert.deepEqual(navLinks.filter(link => link.getAttribute('aria-current') === 'page').map(link => link.dataset.route), ['schedules'],
+    'the migrated Schedules address activates the Schedules menu entry');
+  location.hash = '#library';
+  onHashChange();
+  assert.equal(elements.get('systemMoreTools').hidden, true, 'System More tools stays hidden outside System');
+  location.hash = '#system';
+  onHashChange();
+  assert.equal(elements.get('systemMoreTools').hidden, false,
+    'System maintenance exposes the temporary More tools list for screens that have not moved');
+  location.hash = '#system?tab=diagnostics';
+  onHashChange();
+  assert.equal(elements.get('systemMoreTools').hidden, true, 'More tools is scoped to the System maintenance tab');
+
   location.hash = '#quality?tab=duplicates';
   onHashChange();
   assert.deepEqual(views.filter(view => !view.hidden).map(view => view.dataset.view), ['organize'],
@@ -470,8 +645,8 @@ const context = {
   assert.equal(elements.get('organizePeoplePane').hidden, true);
   assert.equal(elements.get('organizeTabList').hidden, true,
     'canonical Catalog Health hides the legacy Organize tab bar to avoid duplicate tabs');
-  assert.deepEqual(navLinks.filter(link => link.getAttribute('aria-current') === 'page').map(link => link.dataset.route), ['quality'],
-    'Catalog Health subtabs keep the Catalog Health sidebar destination active');
+  assert.deepEqual(navLinks.filter(link => link.getAttribute('aria-current') === 'page').map(link => link.dataset.route), ['library'],
+    'Catalog Health subtabs keep the owning Library menu entry active');
   assert.equal(sectionTabLinks.filter(link => link.className.includes('catalog-health-tabs')
     && link.dataset.sectionTab === 'duplicates' && link.getAttribute('aria-current') === 'page').length, 2,
   'the current Catalog Health tab is marked in both legacy and canonical containers');
@@ -525,12 +700,11 @@ const context = {
     'Unknown hashes must fall back to the Home view');
   assert.deepEqual(navLinks.filter(link => link.getAttribute('aria-current') === 'page').map(link => link.dataset.route), ['start'],
     'Unknown hashes must select Home in the primary navigation');
-  assert.equal(elements.get('crumbCurrent').textContent, 'Dashboard', 'Unknown hashes must reset the breadcrumb to Dashboard');
+  assert.equal(elements.get('crumbCurrent').textContent, 'Overview', 'Unknown hashes must reset the breadcrumb to Overview');
 
   resetHistory('http://localhost/admin/v2/?q=alpha&campaign=keep#library');
   onHashChange();
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(libraryFields.get('q').value, 'alpha', 'Library restores its search from the URL');
   assert.equal(new URLSearchParams(location.search).get('sort'), 'first_seen');
   libraryFields.get('q').value = 'beta';
@@ -542,8 +716,7 @@ const context = {
   assert.equal(location.hash, '#library', 'Library URL updates preserve the active route hash');
   assert.equal(historyUrls.length, 2, 'typing one search burst creates one Back step');
   runLatestTimer();
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert(calls.some(url => url.includes('/library/videos?q=gamma&sort=first_seen&limit=50&offset=0')),
     'the settled search requests the URL state shown to the operator');
   const gammaSelection = elements.get('videoGrid').children[0].children[0].children[0];
@@ -551,8 +724,7 @@ const context = {
   gammaSelection.listeners.change();
   assert.equal(elements.get('bulkSelectionCount').textContent, '1 selected');
   history.back();
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(libraryFields.get('q').value, 'alpha', 'Back restores the prior Library filter');
   assert.equal(elements.get('bulkSelectionCount').textContent, '0 selected', 'Back to different filters clears the hidden selection');
   assert.equal(elements.get('reviewQuarantine').disabled, true, 'bulk actions stay disabled after history changes filters');
@@ -560,29 +732,25 @@ const context = {
   assert(calls.some(url => url.includes('/library/videos?q=alpha&sort=first_seen&limit=50&offset=0')),
     'restored filter state triggers a matching catalog request');
   elements.get('pageNext').listeners.click();
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(new URLSearchParams(location.search).get('offset'), '50', 'page navigation is linkable');
   const pageTwoSelection = elements.get('videoGrid').children[0].children[0].children[0];
   pageTwoSelection.checked = true;
   pageTwoSelection.listeners.change();
   assert.equal(elements.get('bulkSelectionCount').textContent, '1 selected');
   history.back();
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(new URLSearchParams(location.search).get('offset'), null, 'Back restores the previous page');
   assert.equal(elements.get('pageInfo').textContent, 'Page 1 of 2');
   assert.equal(elements.get('bulkSelectionCount').textContent, '1 selected', 'page navigation preserves selections across pages');
   history.forward();
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(elements.get('pageInfo').textContent, 'Page 2 of 2', 'Forward restores the next page');
   assert.equal(elements.get('bulkSelectionCount').textContent, '1 selected', 'Forward keeps the multi-page selection');
 
   resetHistory('http://localhost/admin/v2/?q=alpha&campaign=keep#library');
   onHashChange();
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   const callsBeforePendingSearch = calls.length;
   libraryFields.get('q').value = 'beta';
   libraryForm.listeners.input({ target: libraryFields.get('q') });
@@ -591,21 +759,18 @@ const context = {
   const timersBeforeBack = timers.size;
   history.back();
   assert.ok(timers.size < timersBeforeBack, 'Back cancels the pending Library search debounce');
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(libraryFields.get('q').value, 'alpha', 'Back during typing restores the prior search');
   assert.equal(calls.slice(callsBeforePendingSearch).some(url => url.includes('/library/videos?q=gamma')),
     false, 'the cancelled search does not issue a stale request after Back');
   history.forward();
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(libraryFields.get('q').value, 'gamma', 'Forward restores the grouped search entry');
 
   savedViewsFixture = JSON.stringify([{ name: 'Unavailable catalog', filters: { q: 'saved title', availability: 'unavailable', sort: 'title' } }]);
   const historyBeforeSavedView = historyUrls.length;
   elements.get('savedViews').listeners.change({ target: { value: '0' } });
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(historyUrls.length, historyBeforeSavedView + 1, 'applying a saved view creates one history entry');
   assert.equal(new URLSearchParams(location.search).get('q'), 'saved title');
   assert.equal(new URLSearchParams(location.search).get('availability'), 'unavailable');
@@ -614,29 +779,24 @@ const context = {
   assert(calls.some(url => url.includes('/library/videos?q=saved+title&availability=unavailable&sort=title&limit=50&offset=0')),
     'applying a saved view fetches its exact URL-backed filters');
   history.back();
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(libraryFields.get('q').value, 'gamma', 'Back restores the filters before a saved view');
   history.forward();
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(libraryFields.get('availability').value, 'unavailable', 'Forward restores the saved view filters');
   const historyBeforeClearFilters = historyUrls.length;
   elements.get('clearFilters').listeners.click();
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(historyUrls.length, historyBeforeClearFilters + 1, 'clearing filters creates one history entry');
   assert.equal(libraryFields.get('q').value, '');
   assert.equal(libraryFields.get('availability').value, '');
   assert.equal(new URLSearchParams(location.search).get('q'), null);
   history.back();
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(libraryFields.get('q').value, 'saved title', 'Back restores filters before clearing');
   assert.equal(libraryFields.get('availability').value, 'unavailable');
   history.forward();
-  await new Promise(resolve => setImmediate(resolve));
-  await new Promise(resolve => setImmediate(resolve));
+  await flush();
   assert.equal(libraryFields.get('q').value, '', 'Forward restores the cleared filters');
 
   const onKeydown = documentListeners.get('keydown');
@@ -646,6 +806,8 @@ const context = {
     onKeydown(event);
     return event;
   };
+  document.activeElement = new Element('body');
+  assert.equal(tab().defaultPrevented, false, 'Tab outside a modal must keep native navigation');
   const modalFocusSelector = 'a[href],button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])';
   const modalFirst = new Element('button');
   const modalMiddle = new Element('button');
@@ -688,27 +850,44 @@ const context = {
   assert.equal(document.activeElement, detailOverlay);
   detailOverlay.open = false;
 
+  // Service state now belongs to System: its reads start there and survive partial failures.
+  resetHistory('http://localhost/admin/v2/#system');
+  onHashChange();
+  await flush(6);
+  assert(calls.includes('/admin/api/v2/quality/summary'), 'System loads the latest-audit Jellyfin evidence');
+  assert(calls.includes('/admin/api/v2/status/jellyfin'), 'System loads the bounded Jellyfin health probe');
+  const serviceValues = new Map(elements.get('serviceList').children.map(row =>
+    [row.children[0].textContent, row.children[1].textContent]));
+  assert.equal(serviceValues.get('Library database'), 'Operational', 'System preserves the database health row');
+  assert.equal(serviceValues.get('Synchronization'), 'Last run succeeded', 'System preserves the sync status row');
+  assert.equal(serviceValues.get('Panel access'), 'Read-only', 'System names the read-only access state');
+  assert.equal(serviceValues.get('Resolver'), 'Operational', 'System shows resolver status');
+  assert.equal(serviceValues.get('Background worker'), 'Operational', 'System reflects worker capability state');
+  assert.equal(serviceValues.get('Application version'), '1.2.3', 'System preserves the application version row');
+  assert.equal(serviceValues.get('Jellyfin connection'), 'Reachable', 'System shows the sanitized Jellyfin reachability probe');
+  assert.match(serviceValues.get('Jellyfin import check (latest audit)'), /^Checked in latest audit/,
+    'System describes Jellyfin evidence as coming from the latest audit, not a live probe');
+  assert.match(textOf(elements.get('writeAccessNotice')), /Read-only: Writes are disabled/,
+    'System states the write restriction cause for operators');
+
   failQualitySummary = true;
   failJellyfinStatus = true;
-  const dashboardUrl = new URL(location.href);
-  dashboardUrl.hash = '#start';
-  history.pushState({}, '', dashboardUrl);
-  windowListeners.get('popstate')?.();
-  for (let i = 0; i < 6; i += 1) await new Promise(resolve => setImmediate(resolve));
-  const unavailablePhashCard = elements.get('catalogHealthCards').children.find(card =>
-    card.children[0].children[0].textContent === 'pHash coverage');
-  assert.equal(unavailablePhashCard.children[1].textContent, 'No data',
-    'a failed quality summary does not invent a fingerprint count');
-  assert.equal(elements.get('statusContent').hidden, false,
-    'a failed quality summary does not hide the rest of the Dashboard');
+  resetHistory('http://localhost/admin/v2/#library');
+  onHashChange();
+  resetHistory('http://localhost/admin/v2/#system');
+  onHashChange();
+  await flush(6);
   assert.equal(elements.get('serviceList').children.length > 0, true,
-    'service status remains available when fingerprint coverage cannot be loaded');
-  const jellyfinWithoutAudit = new Map(elements.get('serviceList').children.map(row =>
+    'service status remains available when the audit evidence cannot be loaded');
+  const unavailableServiceValues = new Map(elements.get('serviceList').children.map(row =>
     [row.children[0].textContent, row.children[1].textContent]));
-  assert.equal(jellyfinWithoutAudit.get('Jellyfin import check (latest audit)'), 'No data',
-    'Dashboard does not claim current Jellyfin health when the quality summary is unavailable');
-  assert.equal(jellyfinWithoutAudit.get('Jellyfin connection'), 'No data',
-    'A failed Jellyfin probe becomes No data without hiding the Dashboard');
+  assert.equal(unavailableServiceValues.get('Jellyfin import check (latest audit)'), 'No data',
+    'System does not claim current Jellyfin health when the quality summary is unavailable');
+  assert.equal(unavailableServiceValues.get('Jellyfin connection'), 'No data',
+    'A failed Jellyfin probe becomes No data without hiding the service list');
+  failQualitySummary = false;
+  failJellyfinStatus = false;
+
   assert.deepEqual(systemTabLinks.map(link => link.dataset.systemTab), ['maintenance', 'diagnostics', 'backups', 'activity']);
   const activityUrl = new URL(location.href); activityUrl.hash = '#system?tab=activity';
   history.pushState({}, '', activityUrl); windowListeners.get('popstate')?.();
@@ -727,5 +906,5 @@ const context = {
   assert.match(fs.readFileSync('resolver/static/admin-v2/sources.js', 'utf8'),
     /route === 'system' && \['sync', 'sync-activity', 'sync_activity', 'history'\]\.includes\(tab\)/,
     'the old global sync-history hashes still render the Sources history view');
-  process.stdout.write('PASS: seven-section navigation, legacy route/tab deep links, Library URL history, and modal/detail-drawer focus boundaries\n');
+  process.stdout.write('PASS: seven-section navigation, Overview tiles, grouped problems, System service state, legacy deep links, Library history, and modal focus boundaries\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

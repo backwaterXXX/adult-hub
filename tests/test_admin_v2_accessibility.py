@@ -298,15 +298,22 @@ class TestAdminV2TemplateAccessibility(unittest.TestCase):
         css = (STATIC_DIR / "admin-v2.css").read_text(encoding="utf-8")
         self.assertIn(".skip-link:focus { transform: translateY(0); }", css)
 
-    def test_connection_state_announces_only_meaningful_status_changes(self):
+    def test_service_status_chip_announces_only_meaningful_changes(self):
         source = TEMPLATE.read_text(encoding="utf-8")
         self.assertRegex(
             source,
-            r'<a class="connection-state" id="connectionState" href="#system\?tab=diagnostics"[^>]*aria-label="[^"]+"[^>]*aria-live="polite"[^>]*aria-atomic="true"',
+            r'<a class="service-status" id="serviceStatus" href="#system"[^>]*data-state="checking"'
+            r'[^>]*aria-live="polite"[^>]*aria-atomic="true"[^>]*aria-label="[^"]+"',
         )
+        self.assertNotIn('id="connectionState"', source)
         script = (STATIC_DIR / "admin-v2.js").read_text(encoding="utf-8")
         self.assertIn("if (!element) return;", script)
-        self.assertIn("label.textContent === message", script)
+        # The aggregate control rewrites only its label span, and only when the
+        # combined state actually changed, so the polite live region stays quiet.
+        self.assertIn("const label = $('span:last-child', element);", script)
+        self.assertIn("if (element.dataset.state === status.state && label"
+                      " && label.textContent === status.label) return;", script)
+        self.assertNotIn("label.textContent === message", script)
 
     def test_shared_operation_dialog_is_outside_hidden_route_views(self):
         audit = _DialogPlacementAudit()
