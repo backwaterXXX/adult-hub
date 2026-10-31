@@ -58,6 +58,20 @@ class TestPerformerHelpers(unittest.TestCase):
         self.assertEqual(normalize_performers(None), [])
         self.assertEqual(normalize_performers([]), [])
 
+    def test_normalize_discards_gang_bang_content_label(self):
+        self.assertEqual(
+            normalize_performers([
+                "Gang Bang", "Gang-Bang", "GangBangGuysXXX", "Threesome Leo Grin",
+            ]),
+            ["GangBangGuysXXX", "Leo Grin"],
+        )
+        self.assertFalse(is_valid_performer_name("Gang Bang"))
+        self.assertEqual(normalize_performers(["Gang Bang"], preserve_literal=True), [])
+        self.assertEqual(
+            normalize_performers(["Threesome Leo Grin"], preserve_literal=True),
+            ["Leo Grin"],
+        )
+
     def test_normalize_unescapes_entities(self):
         self.assertEqual(normalize_performers(["Tom &amp; Jerry"]), ["Tom & Jerry"])
 

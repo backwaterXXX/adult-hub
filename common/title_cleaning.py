@@ -11,6 +11,7 @@ from typing import Optional
 _HASHTAG_RE = re.compile(r"#([\w]+)", re.UNICODE)
 _WORD_RE = re.compile(r"\w+(?:['’]\w+)*", re.UNICODE)
 _REPEATED_MARKS_RE = re.compile(r"[!?]{2,}")
+_CHANNEL_NAME_RE = re.compile(r"(?<!\w)GYMRAT\s+KINK(?!\w)", re.IGNORECASE)
 _EDGE_PUNCTUATION = " \t\r\n-–—:|,.;!?…'\""
 
 
@@ -113,6 +114,7 @@ def clean_title_text(value: object, max_length: Optional[int] = None) -> str:
     text = re.sub(r"[0-9#*]\ufe0f?\u20e3", " ", text)
     text = _remove_category_hashtags(text)
     text = _remove_symbols_and_controls(text)
+    text = _CHANNEL_NAME_RE.sub(" ", text)
     text = _REPEATED_MARKS_RE.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip(_EDGE_PUNCTUATION)
     text = _collapse_repeated_whole_title(text)

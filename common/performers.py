@@ -181,6 +181,11 @@ def strip_scene_suffix(name: str) -> str:
     return curr
 
 
+def _strip_name_descriptors(name: str) -> str:
+    """Remove known title descriptors accidentally attached to a name."""
+    return re.sub(r"^threesome(?:[\s_-]+)+", "", name, flags=re.IGNORECASE).strip()
+
+
 def normalize_performers(names, alias_map: Optional[dict] = None, *, preserve_literal: bool = False) -> List[str]:
     """Deduplicate performer names, preserving first-seen order.
 
@@ -199,6 +204,9 @@ def normalize_performers(names, alias_map: Optional[dict] = None, *, preserve_li
             if raw is None:
                 continue
             name = html.unescape(str(raw)).strip()
+            name = _strip_name_descriptors(name)
+            if not name or is_non_performer_name(name):
+                continue
             key = name.casefold()
             if name and key not in seen:
                 seen.add(key)
@@ -215,7 +223,10 @@ def normalize_performers(names, alias_map: Optional[dict] = None, *, preserve_li
         if m and m.group(1).strip():
             name = m.group(1).strip()
         name = strip_scene_suffix(name)
+        name = _strip_name_descriptors(name)
         if not name or STANDALONE_SCENE_RE.match(name):
+            continue
+        if is_non_performer_name(name):
             continue
         if alias_map:
             canonical = alias_map.get(name.lower()) or alias_map.get(name)
@@ -375,7 +386,7 @@ PARTICLES = {"the", "de", "von", "la", "van", "del", "da", "di"}
 
 ACTION_VERBS = r"(?:flip fucks|flip fuck|flipfuck\w*|fucked by|fuck & DP|fucks & DPs|fucks|fuck|fucked|breeds with|breeds|breed|bottoms for|bottoms|takes|rides|dp\'s|dps|dpd|dp)"
 
-_NON_PERFORMER_NAME_KEYS = {"onlyfans", "of"}
+_NON_PERFORMER_NAME_KEYS = {"onlyfans", "of", "gangbang"}
 
 
 def is_non_performer_name(name: str) -> bool:

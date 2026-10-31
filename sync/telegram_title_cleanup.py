@@ -15,7 +15,7 @@ from common.title_cleaning import clean_title_text, extract_title_hashtags
 
 
 TASK_ID = "telegram-title-cleanup"
-TASK_VERSION = 1
+TASK_VERSION = 2
 TASK_BATCH_SIZE = 500
 STATUS_PATH = Path(os.getenv(
     "TELEGRAM_TITLE_CLEANUP_STATUS_PATH", "/data/cache/telegram-title-cleanup.json"

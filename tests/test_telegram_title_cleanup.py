@@ -80,7 +80,7 @@ class TestTelegramTitleCleanup(unittest.TestCase):
 
             update_calls = [call for call in conn.calls if call[0].startswith("UPDATE videos")]
             by_id = {params[3]: params for _sql, params in update_calls}
-            self.assertEqual(by_id["telegram:one"][0], "Gymrat KINK #203")
+            self.assertEqual(by_id["telegram:one"][0], "#203")
             self.assertEqual(by_id["telegram:manual"][0], dirty)
             self.assertEqual(by_id["telegram:catalog"][0], dirty)
             self.assertEqual(json.loads(by_id["telegram:one"][1]), [
@@ -91,7 +91,7 @@ class TestTelegramTitleCleanup(unittest.TestCase):
             ])
 
             root = ET.parse(media_dir / "one.nfo").getroot()
-            self.assertEqual(root.findtext("title"), "Gymrat KINK #203")
+            self.assertEqual(root.findtext("title"), "#203")
             self.assertEqual(root.findtext("originaltitle"), "Source caption")
             self.assertEqual({node.text for node in root.findall("genre")}, {
                 "Amateur & OnlyFans", "Anal", "Asian & International",
@@ -106,6 +106,28 @@ class TestTelegramTitleCleanup(unittest.TestCase):
             self.assertEqual(result["status"], "complete")
             self.assertEqual(result["processed"], 3)
             self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["status"], "complete")
+
+    def test_removes_channel_branding_from_stored_title_and_nfo(self):
+        row = self._row(
+            "telegram:channel-branding", "💪 GYMRAT Kink - Bareback with Alex",
+            "", "channel-branding.nfo",
+        )
+        conn = FakeConnection([row])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media_dir = Path(temp_dir)
+            (media_dir / "channel-branding.nfo").write_text(
+                "<movie><title>Old title</title></movie>", encoding="utf-8",
+            )
+            result = cleanup_telegram_titles(
+                conn, media_dir, status_path=media_dir / "status.json",
+            )
+            update = next(call for call in conn.calls if call[0].startswith("UPDATE videos"))
+            self.assertEqual(update[1][0], "Bareback with Alex")
+            self.assertEqual(
+                ET.parse(media_dir / "channel-branding.nfo").getroot().findtext("title"),
+                "Bareback with Alex",
+            )
+            self.assertEqual(result["status"], "complete")
 
     def test_stop_leaves_cursor_ready_for_the_next_sync(self):
         row = self._row("telegram:one", "💪 Dirty #ANAL", "#ANAL caption", "one.nfo")
