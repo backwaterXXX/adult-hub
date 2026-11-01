@@ -26,7 +26,6 @@ from providers._http import get_shared_client, aclose_shared_client
 import admin as admin_module
 from admin import router as admin_router
 from admin_v2_errors import configure_activity_database, v2_error_response
-from playback_diagnostics import diagnostics
 from common.app_version import __version__ as APP_VERSION
 from metrics import resolver_metrics
 from catalog_api import (
@@ -722,12 +721,10 @@ async def _proxy_telegram_response(request: Request, url: str, cache_key: Option
     """Compatibility facade for the Telegram HTTP range proxy."""
     is_variant = bool(cache_key and ":variant:" in cache_key)
     services = TelegramProxyServices(
-        diagnostics=diagnostics,
         get_provider=get_provider,
         parse_range_request=_parse_range_request,
         asyncio=asyncio,
         inspect=inspect,
-        time=time,
         record_file_size=(None if is_variant else _record_playback_file_size),
     )
     return await _proxy_telegram_response_impl(request, url, cache_key, services=services)

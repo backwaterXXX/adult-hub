@@ -10,7 +10,7 @@ from tests.pg_helper import PgTestCase
 class TestAdminActionEvents(PgTestCase):
     def test_records_only_route_template_and_outcome(self):
         record_event(
-            self.db_url, method="POST", route="/admin/api/v2/audits/{job_id}/repairs/preview",
+            self.db_url, method="POST", route="/admin/api/v2/sources/save",
             status_code=202, correlation_id="a" * 32,
         )
         result = list_events(self.db_url)
@@ -19,7 +19,7 @@ class TestAdminActionEvents(PgTestCase):
             "id": 1,
             "created_at": result["items"][0]["created_at"],
             "method": "POST",
-            "route": "/admin/api/v2/audits/{job_id}/repairs/preview",
+            "route": "/admin/api/v2/sources/save",
             "status_code": 202,
             "outcome": "accepted",
             "correlation_id": "a" * 32,
@@ -37,7 +37,7 @@ class TestAdminActionEvents(PgTestCase):
 
     def test_ignores_non_v2_routes_and_unsupported_methods(self):
         record_event(self.db_url, method="POST", route="/admin/api/jobs", status_code=202)
-        record_event(self.db_url, method="GET", route="/admin/api/v2/activity", status_code=200)
+        record_event(self.db_url, method="GET", route="/admin/api/v2/quality/proposals/{proposal_id}/reject", status_code=200)
         record_event(self.db_url, method="POST", route="/admin/api/v2/operations/preview", status_code=202)
         record_event(self.db_url, method="POST", route="/admin/api/v2/denied", status_code=403)
         self.assertEqual(list_events(self.db_url)["total"], 1)
@@ -60,7 +60,7 @@ class TestAdminActionEvents(PgTestCase):
                      status_code=200)
         record_event(self.db_url, method="POST", route="/admin/api/v2/jobs/retry",
                      status_code=202)
-        record_event(self.db_url, method="POST", route="/admin/api/v2/audits/execute",
+        record_event(self.db_url, method="POST", route="/admin/api/v2/quality/proposals/{proposal_id}/reject",
                      status_code=202)
         library_posts = list_events(self.db_url, method="post", outcome="accepted", area="library")
         self.assertEqual(library_posts["total"], 1)

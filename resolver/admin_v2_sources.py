@@ -46,40 +46,6 @@ def build_router(admin):
         except Exception:
             return admin.JSONResponse({"error": "Could not load configured sources."}, status_code=500)
 
-    @router.get("/api/v2/sources/search")
-    async def search_sources(request: Request, q: str = "", limit: int = 10):
-        """Return a bounded, secret-free source lookup for global Admin search."""
-        if admin._admin_blocked(request):
-            return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
-        query = q.strip()
-        if not query or len(query) > 200 or not 1 <= limit <= 10:
-            return admin.JSONResponse({"error": "Invalid source search."}, status_code=400)
-        try:
-            data = await admin.asyncio.to_thread(
-                admin.admin_data.configured_sources, admin.CONFIG_PATH)
-            if not isinstance(data, dict) or data.get("available") is not True:
-                return {"ok": True, "available": False, "items": [], "limit": limit}
-            needle = query.casefold()
-            matches = []
-            for source in data.get("sources", []):
-                provider = str(source.get("provider") or "")
-                for channel in source.get("channels", []):
-                    identifier = str(channel.get("id") or "")
-                    label = str(channel.get("studio") or identifier)
-                    searchable = (label.casefold(), identifier.casefold(), provider.casefold())
-                    if not any(needle in value for value in searchable):
-                        continue
-                    rank = 0 if needle == label.casefold() else 1 if label.casefold().startswith(needle) else 2
-                    matches.append((rank, label.casefold(), identifier, {
-                        "provider": provider, "id": identifier, "label": label,
-                        "enabled": channel.get("enabled") is True,
-                    }))
-            matches.sort(key=lambda item: item[:3])
-            return {"ok": True, "available": True,
-                    "items": [item[3] for item in matches[:limit]], "limit": limit}
-        except Exception:
-            return admin.JSONResponse({"error": "Could not search configured sources."}, status_code=503)
-
     @router.get("/api/v2/sources/sync-history")
     async def source_sync_history(request: Request, limit: int = 30, offset: int = 0):
         if admin._admin_blocked(request):

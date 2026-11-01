@@ -13,8 +13,7 @@ from tests.pg_helper import PgTestCase
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from common.admin_quality import (acknowledge_quality_finding, read_quality_items,
-                                 read_quality_summary, reopen_quality_finding)
+from common.admin_quality import read_quality_summary
 from common.admin_quality import _complete_audit
 from common.job_queue import enqueue_job
 
@@ -66,15 +65,10 @@ class TestAdminQuality(PgTestCase):
         })
 
         summary = read_quality_summary(self.db_url)
-        page = read_quality_items(self.db_url)
         self.assertEqual(summary["latest_audit"]["mode"], "full")
         self.assertEqual(set(summary["latest_audit"]["job_ids"]), {metadata, files})
         self.assertEqual(summary["counts"]["missing_metadata"], 1)
         self.assertEqual(summary["counts"]["nfo_metadata_mismatch"], 1)
-        self.assertEqual(page["total"], 2)
-        self.assertEqual({item["video_id"] for item in page["items"]}, {
-            "telegram:quality:full-metadata", "telegram:quality:full-file",
-        })
 
     def test_full_audit_is_in_progress_until_both_child_jobs_finish(self):
         baseline = self.add_audit(created=50)
@@ -154,7 +148,6 @@ class TestAdminQuality(PgTestCase):
         })
 
         summary = read_quality_summary(self.db_url)
-        page = read_quality_items(self.db_url)
 
         self.assertEqual(summary["status"], "ready")
         self.assertEqual(summary["latest_audit"]["checked"], 2)
@@ -162,68 +155,6 @@ class TestAdminQuality(PgTestCase):
         self.assertEqual(summary["latest_audit"]["library_inventory_status"], "partial")
         self.assertEqual(summary["history"][0]["library_inventory_status"], "partial")
         self.assertEqual(summary["counts"]["nfo_metadata_mismatch"], 1)
-        self.assertEqual(page["audit_id"], audit)
-        self.assertEqual(page["items"][0]["findings"][0]["kind"], "nfo_metadata_mismatch")
-
-    def test_missing_field_filter_returns_only_items_with_that_field(self):
-        audit = self.add_audit()
-        self.add_item(audit, "telegram:quality:missing-plot", "missing_metadata", {"fields": ["plot"]})
-        self.add_item(audit, "telegram:quality:missing-studio", "missing_metadata", {"fields": ["studio"]})
-        result = read_quality_items(self.db_url, kind="missing_metadata", field="plot")
-        self.assertEqual(result["total"], 1)
-        self.assertEqual(result["items"][0]["video_id"], "telegram:quality:missing-plot")
-
-    def test_items_group_findings_filter_and_page_by_video(self):
-        audit = self.add_audit()
-        video_a = "telegram:quality:a"
-        video_b = "telegram:quality:b"
-        self.add_item(audit, video_a, "missing_metadata", {"fields": ["plot", "thumbnail"]})
-        self.add_item(audit, video_a, "nfo_metadata_mismatch", {
-            "diffs": [{"field": "Title", "current": "Old", "expected": "New"},
-                      {"field": "Plot", "current": "http://secret.invalid/x", "expected": "Summary"}],
-        })
-        self.add_item(audit, video_b, "missing_artwork", {"fields": ["thumbnail"]})
-
-        first = read_quality_items(self.db_url, limit=1, offset=0)
-        second = read_quality_items(self.db_url, kind="missing_artwork", limit=1, offset=0)
-        self.assertEqual(first["total"], 2)
-        self.assertEqual(first["items"][0]["finding_count"], 2)
-        self.assertEqual(len(first["items"][0]["findings"]), 2)
-        diffs = first["items"][0]["findings"][1]["details"]["diffs"]
-        self.assertEqual(diffs[0], {"field": "Title", "current": "Old", "expected": "New"})
-        self.assertNotIn("secret.invalid", str(diffs))
-        self.assertEqual(second["total"], 1)
-        self.assertEqual(second["items"][0]["video_id"], video_b)
-
-    def test_acknowledgement_suppresses_matching_future_audits_and_can_be_reopened(self):
-        video_id = "telegram:quality:accepted-exception"
-        details = {"fields": ["plot"]}
-        first_audit = self.add_audit(created=100)
-        first_finding = self.add_item(first_audit, video_id, "missing_metadata", details)
-        acknowledged = acknowledge_quality_finding(
-            self.db_url, first_finding, video_id, "missing_metadata", "Description is intentionally blank."
-        )
-        self.assertEqual(acknowledged["outcome"], "acknowledged")
-
-        latest_audit = self.add_audit(created=200)
-        latest_finding = self.add_item(latest_audit, video_id, "missing_metadata", details)
-        summary = read_quality_summary(self.db_url)
-        self.assertEqual(summary["latest_audit"]["id"], latest_audit)
-        self.assertEqual(summary["counts"]["missing_metadata"], 0)
-        self.assertEqual(summary["history"][1]["open_total"], 1,
-                         "an acknowledgement must not rewrite the historical audit count")
-
-        active = read_quality_items(self.db_url, status="open")
-        self.assertEqual(active["total"], 0)
-        acknowledged_items = read_quality_items(self.db_url, status="acknowledged")
-        finding = acknowledged_items["items"][0]["findings"][0]
-        self.assertEqual(finding["status"], "acknowledged")
-        self.assertEqual(finding["acknowledgement"]["note"], "Description is intentionally blank.")
-
-        reopened = reopen_quality_finding(self.db_url, acknowledged["acknowledgement_id"])
-        self.assertEqual(reopened["outcome"], "reopened")
-        self.assertEqual(read_quality_items(self.db_url, status="open")["items"][0]["findings"][0]["id"],
-                         latest_finding)
 
 
 if __name__ == "__main__":

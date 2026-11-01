@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -90,19 +89,3 @@ def backup_status(backup_dir: Path | str) -> dict:
         "latest": latest,
         "files": files[:100],
     }
-
-
-def linkcheck_tail(log_path: Path | str, n: int = 20) -> dict:
-    path = Path(log_path)
-    out: dict = {"path": str(path), "exists": False, "tail": []}
-    try:
-        if path.exists():
-            out["exists"] = True
-            out["mtime_human"] = datetime.fromtimestamp(
-                path.stat().st_mtime
-            ).strftime("%Y-%m-%d %H:%M")
-            lines = path.read_text(errors="replace").splitlines()
-            out["tail"] = lines[-n:]
-    except Exception as exc:
-        out["error"] = str(exc)[:200]
-    return out

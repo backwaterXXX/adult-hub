@@ -112,8 +112,8 @@ def _quality_issues(admin, now):
     if status == "no_complete_audit":
         return [_issue(
             "quality_audit", "low", "No complete quality audit",
-            "Run a complete catalog audit to review NFO, artwork, and metadata findings.",
-            "quality", "latest-audit", now, now, "Review Quality", "/admin/v2/#quality",
+            "The retained audit history has no completed run to summarize yet.",
+            "quality", "latest-audit", now, now, "Open System status", "/admin/v2/#system",
         )]
     if status != "ready" or not isinstance(summary.get("counts"), dict):
         raise RuntimeError("Quality summary has an unexpected shape")
@@ -129,9 +129,8 @@ def _quality_issues(admin, now):
         issues.append(_issue(
             "quality_finding", "medium", label,
             f"The latest complete audit found {count} open item(s) in this category.",
-            "quality", category, latest_at, latest_at, "Review findings",
-            f"/admin/v2/?quality_kind={category}#quality",
-            list_route=f"/admin/v2/?quality_kind={category}#quality",
+            "quality", category, latest_at, latest_at, "Open System status", "/admin/v2/#system",
+            list_route="/admin/v2/#system",
         ))
         issues[-1]["count"] = count
     return issues

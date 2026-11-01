@@ -121,8 +121,8 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
         self.assertEqual(len(quality), 3)
         self.assertEqual(mismatch["count"], 7)
         self.assertIn("7 open item(s)", mismatch["message"])
-        self.assertEqual(mismatch["action"]["route"],
-                         "/admin/v2/?quality_kind=nfo_metadata_mismatch#quality")
+        self.assertEqual(mismatch["action"]["route"], "/admin/v2/#system")
+        self.assertEqual(mismatch["list_route"], "/admin/v2/#system")
         self.assertEqual(mismatch["first_seen"], admin_v2_issues._iso_time(NOW - 120))
         self.assertTrue(health["available"]["quality_audit"])
         self.assertFalse(health["incomplete"])
@@ -137,7 +137,7 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
 
         audit = next(issue for issue in issues if issue["kind"] == "quality_audit")
         self.assertEqual(audit["severity"], "low")
-        self.assertEqual(audit["action"]["route"], "/admin/v2/#quality")
+        self.assertEqual(audit["action"]["route"], "/admin/v2/#system")
         self.assertNotIn("count", audit)
         self.assertTrue(health["available"]["quality_audit"])
 
@@ -544,14 +544,14 @@ class TestAdminV2ProblemGroups(unittest.TestCase):
             {"kind": "quality_finding", "object_id": "nfo_metadata_mismatch", "severity": "medium", "status": "open",
              "last_seen": NOW, "count": 7, "title": "NFO metadata differs",
              "action": {"label": "Review video", "route": "/admin/v2/?video_id=1#library"},
-             "list_route": "/admin/v2/?quality_kind=nfo_metadata_mismatch#quality"},
+             "list_route": "/admin/v2/#system"},
             {"kind": "quality_finding", "object_id": "nfo_metadata_mismatch", "severity": "medium", "status": "open",
              "last_seen": NOW - 5, "title": "NFO metadata differs",
              "action": {"label": "Review video", "route": "/admin/v2/?video_id=2#library"},
-             "list_route": "/admin/v2/?quality_kind=nfo_metadata_mismatch#quality"},
+             "list_route": "/admin/v2/#system"},
         ]
         self.assertEqual(self.summarize(rows)["groups"][0]["action"]["route"],
-                         "/admin/v2/?quality_kind=nfo_metadata_mismatch#quality")
+                         "/admin/v2/#system")
         self.assertEqual(self.summarize(rows[:1])["groups"][0]["action"]["route"],
                          "/admin/v2/?video_id=1#library",
                          "a single-object group keeps its own precise link")

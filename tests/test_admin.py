@@ -4,7 +4,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase, TEST_URL, reset_db
 
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
 from test_support import optional_import_failed
@@ -141,20 +140,6 @@ class TestAdminOperations(unittest.TestCase):
         self.assertTrue(status["available"])
         self.assertEqual(status["count"], 1)
         self.assertEqual(status["latest"]["name"], backup.name)
-
-    def test_playback_summary_groups_errors_and_timings(self):
-        now = time.time()
-        report = {
-            "provider": "telegram", "started_epoch": now, "outcome": "error",
-            "elapsed_ms": 2000, "upstream_first_byte_ms": 300,
-            "downstream_max_gap_ms": 900, "active": False,
-        }
-        with patch.object(admin, "_playback_diagnostics") as diagnostics:
-            diagnostics.return_value.list_reports.return_value = [report]
-            summary = admin._playback_summary()
-        self.assertEqual(summary["reports"], 1)
-        self.assertEqual(summary["by_provider"][0]["failures"], 1)
-        self.assertEqual(summary["by_provider"][0]["median_start_ms"], 300)
 
 
 @unittest.skipUnless(ADMIN_AVAILABLE, "FastAPI / admin module not available")

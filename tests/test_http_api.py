@@ -159,96 +159,39 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertIn("const SOURCE_CHECK_URL = `${V2_API}/sources/check`;", source_script.text)
         maintenance_script = self.request("GET", "/admin/assets-v2/maintenance.js", base_url="http://127.0.0.1")
         self.assertEqual(maintenance_script.status_code, 200, maintenance_script.text)
-        activity_script = self.request("GET", "/admin/assets-v2/sync-activity.js", base_url="http://127.0.0.1")
-        self.assertEqual(activity_script.status_code, 200, activity_script.text)
-        self.assertIn("/admin/api/v2/sync/activity", activity_script.text)
         self.assertIn("`${api}/sync`", maintenance_script.text)
         quarantine_script = self.request("GET", "/admin/assets-v2/quarantine.js", base_url="http://127.0.0.1")
         self.assertEqual(quarantine_script.status_code, 200, quarantine_script.text)
         self.assertIn("organize/quarantine", quarantine_script.text)
 
-    def test_admin_v2_overview_and_log_routes_are_registered_and_redacted(self):
-        fixture_log = {
-            "path": "/private/activity.log", "exists": True,
-            "mtime_human": "2026-10-06 12:00",
-            "tail": [
-                "2026-10-06 12:00:00,001 [INFO] Starting Adult-Hub sync (deduplicated)...",
-                "2026-10-06 12:00:01,001 [ERROR] Telegram sync failed for telegram:-100secret: token=hidden",
-            ],
-        }
+    def test_admin_v2_status_remains_and_retired_reports_return_404(self):
         with patch.object(admin_module, "ADMIN_PUBLIC", False), \
              patch.object(admin_module, "ENABLE_ADMIN", True), \
-             patch.object(admin_module, "_db_stats", return_value={"db_ok": True, "db_path": "/private/db", "videos_total": 3}), \
-             patch.object(admin_module, "_sync_status", return_value={"running": True, "status_text": "secret token=hidden"}), \
-             patch.object(admin_module, "_attention_summary", return_value={"pending_tasks": 1}), \
-             patch.object(admin_module, "_sync_activity_tail", return_value=fixture_log):
+             patch.object(admin_module, "_db_stats", return_value={"db_ok": True, "videos_total": 3}), \
+             patch.object(admin_module, "_sync_status", return_value={"running": True}), \
+             patch.object(admin_module, "_attention_summary", return_value={"pending_tasks": 1}):
             status = self.request("GET", "/admin/api/v2/status", base_url="http://127.0.0.1")
-            activity = self.request("GET", "/admin/api/v2/sync/activity", base_url="http://127.0.0.1")
-
         self.assertEqual(status.status_code, 200, status.text)
         self.assertEqual(status.json()["db"]["videos_total"], 3)
-        self.assertNotIn("db_path", status.json()["db"])
-        self.assertEqual(status.json()["sync"]["status_text"], "Sync in progress")
-        self.assertEqual(activity.status_code, 200, activity.text)
-        self.assertEqual(activity.json()["entries"][0]["message"], "Sync started.")
-        self.assertNotIn("telegram:-100secret", activity.text)
-        self.assertNotIn("token=hidden", activity.text)
-
-    def test_admin_v2_activity_records_accepted_action_without_payload(self):
-        with self.admin_config(), patch.object(admin_module, "HUB_DB_URL", TEST_URL):
-            queued = self.request(
-                "POST", "/admin/api/v2/audits/execute", base_url="http://localhost",
-                headers={"Authorization": "Bearer test-write-token", "Origin": "http://localhost"},
-                json={"mode": "full"},
-            )
-            activity = self.request("GET", "/admin/api/v2/activity?limit=10", base_url="http://localhost")
-            filtered = self.request(
-                "GET", "/admin/api/v2/activity?method=POST&outcome=accepted&area=quality",
-                base_url="http://localhost",
-            )
-            invalid_filter = self.request(
-                "GET", "/admin/api/v2/activity?area=../../", base_url="http://localhost"
-            )
-
-        self.assertEqual(queued.status_code, 202, queued.text)
-        self.assertEqual(activity.status_code, 200, activity.text)
-        self.assertEqual(filtered.status_code, 200, filtered.text)
-        self.assertEqual(filtered.json()["total"], 1)
-        self.assertEqual(invalid_filter.status_code, 400)
-        item = activity.json()["items"][0]
-        self.assertEqual(item["route"], "/admin/api/v2/audits/execute")
-        self.assertEqual(item["method"], "POST")
-        self.assertEqual(item["outcome"], "accepted")
-        self.assertEqual(item["status_code"], 202)
-        self.assertEqual(item["actor_type"], "shared_admin")
-        self.assertNotIn("body", item)
-        self.assertNotIn("payload", item)
-
-    def test_admin_v2_activity_changes_exposes_persisted_metadata_diff(self):
-        from common.admin_audit_events import record_metadata_change
-        with self.admin_config(), patch.object(admin_module, "HUB_DB_URL", TEST_URL):
-            with db.connect(TEST_URL) as conn:
-                conn.execute(
-                    "INSERT INTO video_duplicate_jobs (id,action,state,payload,created_at,updated_at) "
-                    "VALUES ('activity-audit-job','metadata_update','done','{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
-                )
-                record_metadata_change(
-                    conn, job_id="activity-audit-job", video_id="telegram:99:activity-item",
-                    before={"title": "Source title"}, after={"title": "Operator title"},
-                    before_overrides={}, after_overrides={"title": "Operator title"},
-                    fields=["title"],
-                )
-            response = self.request(
-                "GET", "/admin/api/v2/activity/changes?limit=10&event_type=metadata_update&object_type=video&q=activity-item",
-                base_url="http://localhost"
-            )
-        self.assertEqual(response.status_code, 200, response.text)
-        event = response.json()["items"][0]
-        self.assertEqual(event["event_type"], "metadata_update")
-        self.assertEqual(event["changes"]["title"], {
-            "before": "Source title", "after": "Operator title",
-            "before_overridden": False, "after_overridden": True,
-        })
+        for method, path in (
+            ("GET", "/admin/api/v2/audits"),
+            ("GET", "/admin/api/v2/activity"),
+            ("GET", "/admin/api/v2/activity/changes"),
+            ("GET", "/admin/api/v2/metadata/enrichment"),
+            ("POST", "/admin/api/v2/metadata/enrichment/scan"),
+            ("GET", "/admin/api/v2/linkcheck"),
+            ("GET", "/admin/api/v2/sync/activity"),
+            ("GET", "/admin/api/v2/sources/search?q=test"),
+            ("GET", "/admin/api/v2/quality/items"),
+            ("GET", "/admin/api/v2/quality/summary"),
+            ("GET", "/admin/api/v2/diagnostics/playback/status"),
+        ):
+            with self.subTest(method=method, path=path):
+                response = self.request(method, path, base_url="http://127.0.0.1")
+                self.assertEqual(response.status_code, 404, response.text)
+        for asset in ("activity.js", "audits.js", "enrichment.js", "linkcheck.js", "sync-activity.js"):
+            with self.subTest(asset=asset):
+                self.assertEqual(self.request("GET", f"/admin/assets-v2/{asset}").status_code, 404)
 
     def test_admin_v2_errors_have_stable_envelope_and_correlation_header(self):
         with self.admin_config():
@@ -317,14 +260,10 @@ class TestResolverHttpApi(unittest.TestCase):
         ("POST", "/admin/api/v2/jobs/{job_id}/retry"),
         ("POST", "/admin/api/v2/jobs/{job_id}/cancel"),
         ("POST", "/admin/api/v2/metadata/execute"),
-        ("POST", "/admin/api/v2/metadata/enrichment/scan"),
         ("POST", "/admin/api/v2/sources"),
         ("POST", "/admin/api/v2/sources/save"),
         ("POST", "/admin/api/v2/sources/check"),
         ("POST", "/admin/api/v2/availability/execute"),
-        ("POST", "/admin/api/v2/audits/execute"),
-        ("POST", "/admin/api/v2/audits/{job_id}/repairs/preview"),
-        ("POST", "/admin/api/v2/audits/{job_id}/reimports/preview"),
         ("POST", "/admin/api/v2/backups/create"),
         ("POST", "/admin/api/v2/backups/restore-test"),
         ("POST", "/admin/api/v2/schedules"),
@@ -335,11 +274,6 @@ class TestResolverHttpApi(unittest.TestCase):
         ("POST", "/admin/api/v2/schedules/system/{schedule_id}"),
         ("POST", "/admin/api/v2/schedules/system/{schedule_id}/stages/{stage_id}/enabled"),
         ("POST", "/admin/api/v2/schedules/system/{schedule_id}/stages/{stage_id}/run"),
-        ("POST", "/admin/api/v2/diagnostics/playback/enable"),
-        ("POST", "/admin/api/v2/diagnostics/playback/disable"),
-        ("DELETE", "/admin/api/v2/diagnostics/playback/reports"),
-        ("POST", "/admin/api/v2/quality/acknowledge"),
-        ("POST", "/admin/api/v2/quality/reopen"),
         ("POST", "/admin/api/v2/quality/proposals/{proposal_id}/reject"),
         ("POST", "/admin/api/v2/quality/proposals/{proposal_id}/refresh"),
         ("POST", "/admin/api/v2/maintenance/cache/clear"),
@@ -550,7 +484,7 @@ class TestResolverHttpApi(unittest.TestCase):
             with patch.object(admin_module, "WORKER_CAPABILITIES_FILE", missing_snapshot):
                 capabilities = self.request("GET", "/admin/api/v2/capabilities", base_url="http://localhost")
                 denied = self.request(
-                    "POST", "/admin/api/v2/audits/execute", base_url="http://localhost",
+                    "POST", "/admin/api/v2/availability/execute", base_url="http://localhost",
                     headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"},
                 )
         self.assertEqual(capabilities.status_code, 200)
@@ -568,7 +502,7 @@ class TestResolverHttpApi(unittest.TestCase):
             with patch.object(admin_module, "WORKER_CAPABILITIES_FILE", partial_snapshot):
                 capabilities = self.request("GET", "/admin/api/v2/capabilities", base_url="http://localhost")
                 denied = self.request(
-                    "POST", "/admin/api/v2/audits/execute", base_url="http://localhost",
+                    "POST", "/admin/api/v2/availability/execute", base_url="http://localhost",
                     headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"},
                 )
         self.assertEqual(capabilities.status_code, 200)
@@ -1139,89 +1073,6 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(completed["result"]["local_state"], "availability_checked")
         wake.assert_called_once_with("jobs")
 
-    def test_v2_consistency_audit_is_authorized_and_report_is_paginated(self):
-        with tempfile.TemporaryDirectory(), self.admin_config():
-            with patch.object(admin_module, "HUB_DB_URL", TEST_URL):
-                denied = self.request("POST", "/admin/api/v2/audits/execute", base_url="http://localhost",
-                                      headers={"Origin": "http://localhost"}, json={})
-                allowed = self.request("POST", "/admin/api/v2/audits/execute", base_url="http://localhost",
-                                       headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}, json={})
-                conn = db.connect(TEST_URL)
-                try:
-                    conn.execute("UPDATE video_duplicate_jobs SET result=%s WHERE id=%s",
-                                 (json.dumps({"checked": 1, "total": 4,
-                                              "jellyfin_import_state": "checked", "library_inventory_status": "partial",
-                                              "library_inventory_entries": 50000, "raw_token": "secret"}),
-                                  allowed.json()["job_id"]))
-                    conn.commit()
-                finally:
-                    conn.close()
-                history = self.request("GET", "/admin/api/v2/audits?limit=10&offset=0", base_url="http://localhost")
-                report = self.request("GET", f"/admin/api/v2/audits/{allowed.json()['job_id']}?limit=10&offset=0",
-                                      base_url="http://localhost")
-        self.assertEqual(denied.status_code, 403)
-        self.assertEqual(allowed.status_code, 202, allowed.text)
-        self.assertEqual(history.status_code, 200, history.text)
-        history_item = next(item for item in history.json()["items"] if item["id"] == allowed.json()["job_id"])
-        self.assertEqual(history_item["jellyfin_import_state"], "checked")
-        self.assertEqual(history_item["library_inventory_status"], "partial")
-        self.assertEqual(history_item["library_inventory_entries"], 50000)
-        self.assertEqual(history_item["checked"], 1)
-        self.assertEqual(history_item["catalog_total"], 4)
-        self.assertEqual(len(allowed.json()["job_ids"]), 2)
-        self.assertEqual({item["id"] for item in history.json()["items"]}, set(allowed.json()["job_ids"]))
-        self.assertEqual(report.status_code, 200, report.text)
-        self.assertEqual(report.json()["audit"]["jellyfin_import_state"], "checked")
-        self.assertEqual(report.json()["audit"]["library_inventory_status"], "partial")
-        self.assertEqual(report.json()["audit"]["library_inventory_entries"], 50000)
-        self.assertEqual(report.json()["audit"]["checked"], 1)
-        self.assertEqual(report.json()["audit"]["catalog_total"], 4)
-        self.assertNotIn("raw_token", report.text)
-        self.assertEqual(report.json()["items"], [])
-        self.assertEqual(report.json()["total"], 0)
-
-    def test_v2_audit_nfo_repair_preview_is_authorized_and_path_free(self):
-        audit_id = "audit-http-repair"
-        video_id = "telegram:10:http-repair"
-        conn = db.connect(TEST_URL)
-        try:
-            conn.execute("INSERT INTO videos (id,provider,title,performers,categories,tags,duration) "
-                         "VALUES (%s,'telegram','Repair title','[]','[]','[]',600)", (video_id,))
-            conn.execute("INSERT INTO synced_files (file_path,video_id,category) "
-                         "VALUES ('Library/http-repair.strm',%s,'video')", (video_id,))
-            conn.execute("INSERT INTO video_duplicate_jobs (id,action,state,payload,result,created_at,updated_at) "
-                         "VALUES (%s,'consistency_audit','done','{}','{}',1,1)", (audit_id,))
-            finding_id = conn.execute(
-                "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence) "
-                "VALUES (%s,%s,'missing_nfo','open','Missing NFO') RETURNING id", (audit_id, video_id)
-            ).fetchone()[0]
-            import_finding_id = conn.execute(
-                "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence) "
-                "VALUES (%s,%s,'nfo_import_state_mismatch','open','Import hash mismatch') RETURNING id",
-                (audit_id, video_id),
-            ).fetchone()[0]
-            conn.commit()
-        finally:
-            conn.close()
-        with self.admin_config(), patch.object(admin_module, "HUB_DB_URL", TEST_URL):
-            response = self.request(
-                "POST", f"/admin/api/v2/audits/{audit_id}/repairs/preview", base_url="http://localhost",
-                headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"},
-                json={"finding_ids": [finding_id]},
-            )
-            reimport = self.request(
-                "POST", f"/admin/api/v2/audits/{audit_id}/reimports/preview", base_url="http://localhost",
-                headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"},
-                json={"finding_ids": [import_finding_id]},
-            )
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["operation_type"], "audit_repair_nfo")
-        self.assertEqual(response.json()["items"][0]["title"], "Repair title")
-        self.assertNotIn("Library/", response.text)
-        self.assertEqual(reimport.status_code, 200, reimport.text)
-        self.assertEqual(reimport.json()["operation_type"], "audit_import_refresh")
-        self.assertNotIn("Library/", reimport.text)
-
     def test_v2_backup_inventory_and_verification_are_read_only_and_path_safe(self):
         import hashlib
         import sqlite3
@@ -1346,36 +1197,6 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(disabled.status_code, 200, disabled.text)
         self.assertEqual(conflict.status_code, 409, conflict.text)
 
-    def test_v2_playback_diagnostics_redacts_and_authorizes_controls(self):
-        diagnostic = Mock()
-        diagnostic.status.return_value = {"enabled": False, "saved_count": 1, "secret_url": "https://secret.example/token"}
-        diagnostic.list_reports.return_value = [{"report_id": "r1", "provider": "telegram", "outcome": "error",
-                                                 "started_epoch": 1700000000, "url": "https://secret.example/token"}]
-        diagnostic.set_enabled.return_value = {"enabled": True, "enabled_until": "2026-10-05 19:00 UTC", "url": "secret"}
-        diagnostic.clear_reports.return_value = 3
-        with self.admin_config(), patch.object(admin_module, "_playback_diagnostics", return_value=diagnostic):
-            status = self.request("GET", "/admin/api/v2/diagnostics/playback/status", base_url="http://localhost")
-            reports = self.request("GET", "/admin/api/v2/diagnostics/playback/reports", base_url="http://localhost")
-            denied = self.request("POST", "/admin/api/v2/diagnostics/playback/enable", base_url="http://localhost",
-                                  headers={"Origin": "http://localhost"}, json={})
-            allowed = self.request("POST", "/admin/api/v2/diagnostics/playback/enable", base_url="http://localhost",
-                                   headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}, json={})
-            clear_denied = self.request("DELETE", "/admin/api/v2/diagnostics/playback/reports", base_url="http://localhost",
-                                        headers={"Origin": "http://localhost"})
-            clear_allowed = self.request("DELETE", "/admin/api/v2/diagnostics/playback/reports", base_url="http://localhost",
-                                         headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"})
-        self.assertEqual(status.status_code, 200)
-        self.assertNotIn("secret_url", status.text)
-        self.assertEqual(reports.status_code, 200)
-        self.assertNotIn("secret.example", reports.text)
-        self.assertEqual(denied.status_code, 403)
-        self.assertEqual(allowed.status_code, 200)
-        self.assertNotIn("url", allowed.json())
-        self.assertEqual(clear_denied.status_code, 403)
-        self.assertEqual(clear_allowed.status_code, 200, clear_allowed.text)
-        diagnostic.clear_reports.assert_called_once_with()
-        self.assertEqual(clear_allowed.json()["cleared"], 3)
-
 
     def test_v2_cache_clear_requires_write_access_and_reports_count(self):
         clear = Mock(return_value=6)
@@ -1457,110 +1278,6 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(empty_source.status_code, 400)
         self.assertEqual(malformed.status_code, 400)
         self.assertEqual(wake.call_count, 3)
-
-    def test_v2_metadata_scan_requires_write_access_and_queues_bounded_worker_job(self):
-        with self.admin_config():
-            with patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
-                 patch("video_duplicates.enqueue_job", return_value="metadata-scan-job") as enqueue, \
-                 patch("common.job_queue.read_job", side_effect=[
-                     {"state": "queued"}, {"state": "processing"}, OSError("temporary status read failure")
-                 ]) as read_job, \
-                 patch.object(admin_module, "_wake_worker") as wake:
-                denied = self.request(
-                    "POST", "/admin/api/v2/metadata/enrichment/scan", base_url="http://localhost",
-                    headers={"Origin": "http://localhost"}, json={},
-                )
-                accepted = self.request(
-                    "POST", "/admin/api/v2/metadata/enrichment/scan", base_url="http://localhost",
-                    headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}, json={},
-                )
-                deduplicated = self.request(
-                    "POST", "/admin/api/v2/metadata/enrichment/scan", base_url="http://localhost",
-                    headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}, json={},
-                )
-                accepted_with_status_read_failure = self.request(
-                    "POST", "/admin/api/v2/metadata/enrichment/scan", base_url="http://localhost",
-                    headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}, json={},
-                )
-                invalid = self.request(
-                    "POST", "/admin/api/v2/metadata/enrichment/scan", base_url="http://localhost",
-                    headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"},
-                    json={"limit": 10000},
-                )
-                oversized = self.request(
-                    "POST", "/admin/api/v2/metadata/enrichment/scan", base_url="http://localhost",
-                    headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"},
-                    content=b" " * 4097,
-                )
-
-        self.assertEqual(denied.status_code, 403)
-        self.assertEqual(accepted.status_code, 202, accepted.text)
-        self.assertEqual(accepted.json(), {"ok": True, "job_id": "metadata-scan-job", "state": "queued"})
-        self.assertEqual(deduplicated.status_code, 202, deduplicated.text)
-        self.assertEqual(deduplicated.json(), {"ok": True, "job_id": "metadata-scan-job", "state": "processing"})
-        self.assertEqual(accepted_with_status_read_failure.status_code, 202)
-        self.assertEqual(accepted_with_status_read_failure.json(), {
-            "ok": True, "job_id": "metadata-scan-job", "state": "accepted"
-        })
-        self.assertEqual(invalid.status_code, 400)
-        self.assertEqual(oversized.status_code, 413)
-        self.assertEqual(enqueue.call_count, 3)
-        enqueue.assert_called_with(TEST_URL, "metadata_backfill", {})
-        self.assertEqual(read_job.call_count, 3)
-        self.assertEqual(wake.call_count, 3)
-
-    def test_v2_metadata_enrichment_status_exposes_configured_batch_limits(self):
-        from common import system_schedules
-        system_schedules.ensure_system_schedules(TEST_URL)
-        config = ROOT / "tests/fixtures/config_telegram_only.yaml"
-        with self.admin_config(), \
-             patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
-             patch.object(admin_module, "CONFIG_PATH", config):
-            response = self.request(
-                "GET", "/admin/api/v2/metadata/enrichment", base_url="http://localhost"
-            )
-            public = self.request(
-                "GET", "/admin/api/v2/metadata/enrichment", base_url="https://media.example.org"
-            )
-
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["batch_limits"], {
-            "videos_per_run": 500,
-            "pbc_actors_per_run": 50,
-            "theporndb_actors_per_run": 50,
-            "stashdb_actors_per_run": 50,
-        })
-        self.assertEqual(response.json()["sync_schedule"], {
-            "mode": "cron", "cron_expression": "0 * * * *", "timezone": "Europe/Warsaw",
-            "legacy_daily_at": None, "legacy_interval_minutes": None,
-            "needs_conversion": False, "run_on_startup": True,
-        })
-        self.assertNotIn("entity_key", response.text)
-        self.assertEqual(public.status_code, 403)
-
-    def test_v2_metadata_scan_is_blocked_when_worker_lacks_that_action(self):
-        from common.job_queue import ALL_ACTIONS
-
-        old_worker_actions = [action for action in ALL_ACTIONS if action != "metadata_backfill"]
-        with self.admin_config(worker_actions=old_worker_actions), \
-             patch("video_duplicates.enqueue_job") as enqueue, \
-             patch.object(admin_module, "_wake_worker") as wake:
-            capabilities = self.request("GET", "/admin/api/v2/capabilities", base_url="http://localhost")
-            response = self.request(
-                "POST", "/admin/api/v2/metadata/enrichment/scan", base_url="http://localhost",
-                headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"},
-                json={},
-            )
-
-        self.assertEqual(capabilities.status_code, 200)
-        self.assertFalse(capabilities.json()["actions_enabled"])
-        self.assertEqual(capabilities.json()["read_only_reason"], "worker_incompatible")
-        self.assertIn("metadata_backfill", capabilities.json()["worker"]["missing_actions"])
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["code"], "worker_incompatible")
-        enqueue.assert_not_called()
-        wake.assert_not_called()
-        self.assertEqual(self._job_count(), 0)
 
     def test_v2_manual_sync_persists_and_deduplicates_real_queue_job(self):
         with self.admin_config():
@@ -1774,38 +1491,6 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(queued.json()["job_id"], "job-collections")
         enqueue.assert_called_once_with(TEST_URL, "collections_refresh", {})
         wake.assert_called_once_with("jobs")
-
-    def test_v2_playback_diagnostics_export_is_bounded_redacted_and_downloadable(self):
-        diagnostic = Mock()
-        diagnostic.list_reports.return_value = [
-            {"report_id": "recent", "provider": "telegram", "outcome": "error",
-             "started_epoch": time.time(), "elapsed_ms": 420, "error_type": "TimeoutError",
-             "video_key": "telegram:-1001:secret-message", "url": "https://private.example/token",
-             "exception": "private traceback"},
-            {"report_id": "old", "provider": "telegram", "started_epoch": time.time() - 40 * 86400},
-            {"report_id": "bad-time", "started_epoch": "invalid"},
-        ]
-        with self.admin_config(), patch.object(admin_module, "_playback_diagnostics", return_value=diagnostic):
-            exported = self.request("GET", "/admin/api/v2/diagnostics/playback/export?days=7&limit=10",
-                                    base_url="http://localhost")
-            invalid = self.request("GET", "/admin/api/v2/diagnostics/playback/export?days=31",
-                                   base_url="http://localhost")
-            blocked = self.request("GET", "/admin/api/v2/diagnostics/playback/export",
-                                   base_url="http://media.example.org")
-        self.assertEqual(exported.status_code, 200, exported.text)
-        self.assertEqual(exported.headers["cache-control"], "no-store")
-        self.assertIn("attachment; filename=\"adult-hub-playback-diagnostics-", exported.headers["content-disposition"])
-        self.assertEqual(diagnostic.list_reports.call_args.kwargs["limit"], 10)
-        data = exported.json()
-        self.assertEqual(data["scope"]["days"], 7)
-        self.assertEqual([report["report_id"] for report in data["reports"]], ["recent"])
-        self.assertEqual(data["reports"][0]["elapsed_ms"], 420)
-        for secret in ("video_key", "private-message", "private.example", "private traceback"):
-            self.assertNotIn(secret, exported.text)
-        self.assertEqual(invalid.status_code, 400)
-        self.assertEqual(invalid.json()["error"]["code"], "invalid_request")
-        self.assertEqual(invalid.headers["X-Correlation-ID"], invalid.json()["error"]["correlation_id"])
-        self.assertEqual(blocked.status_code, 403)
 
     def test_admin_page_shows_application_version(self):
         with self.admin_config():

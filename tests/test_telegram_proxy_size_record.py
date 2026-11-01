@@ -3,7 +3,6 @@
 import asyncio
 import inspect as inspect_module
 import sys
-import time as time_module
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,12 +33,10 @@ class _Provider:
 
 def _services(**overrides):
     fields = {
-        "diagnostics": SimpleNamespace(begin=lambda *a: None),
         "get_provider": lambda name: _Provider(),
         "parse_range_request": lambda raw, total: None,
         "asyncio": asyncio,
         "inspect": inspect_module,
-        "time": time_module,
     }
     fields.update(overrides)
     return TelegramProxyServices(**fields)

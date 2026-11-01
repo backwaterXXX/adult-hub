@@ -179,7 +179,8 @@
       "parity_tests": [
         "tests/admin_ui_contract.cjs",
         "tests/admin_v2_jobs_deeplink.cjs"
-      ]
+      ],
+      "v2_routes": []
     },
     {
       "area": "Overview and maintenance",
@@ -211,7 +212,8 @@
         "tests/admin_v2_maintenance_contract.cjs",
         "tests/admin_v2_linkcheck_contract.cjs",
         "tests/admin_v2_sync_activity_contract.cjs"
-      ]
+      ],
+      "v2_routes": []
     },
     {
       "area": "Sources",
@@ -238,7 +240,8 @@
         "tests/admin_ui_contract.cjs",
         "tests/test_managed_sources.py",
         "tests/test_http_api.py"
-      ]
+      ],
+      "v2_routes": []
     },
     {
       "area": "Library and quarantine",
@@ -269,7 +272,8 @@
         "tests/admin_v2_quarantine_export.cjs",
         "tests/test_admin_operations.py",
         "tests/test_video_duplicate_jobs.py"
-      ]
+      ],
+      "v2_routes": []
     },
     {
       "area": "Duplicates",
@@ -302,7 +306,8 @@
         "tests/admin_v2_section_tabs.cjs",
         "tests/admin_ui_contract.cjs",
         "tests/test_admin_operations.py"
-      ]
+      ],
+      "v2_routes": []
     },
     {
       "area": "Performers",
@@ -329,7 +334,8 @@
         "tests/test_performer_proposals_integration.py",
         "tests/test_admin_v2_performers.py",
         "tests/admin_v2_performers_contract.cjs"
-      ]
+      ],
+      "v2_routes": []
     },
     {
       "area": "Tasks",
@@ -358,7 +364,8 @@
         "tests/admin_v2_jobs_deeplink.cjs",
         "tests/admin_ui_contract.cjs",
         "tests/test_video_duplicate_jobs.py"
-      ]
+      ],
+      "v2_routes": []
     },
     {
       "area": "Playback diagnostics",
@@ -384,7 +391,8 @@
       "parity_tests": [
         "tests/admin_diagnostics_report_export.cjs",
         "tests/test_admin_v2_status.py"
-      ]
+      ],
+      "v2_routes": []
     }
   ],
   "groups": [
@@ -399,16 +407,7 @@
         "GET /api/playback-diagnostics/reports/{report_id}",
         "DELETE /api/playback-diagnostics/reports"
       ],
-      "v2_routes": [
-        "GET /api/v2/diagnostics/playback/summary",
-        "GET /api/v2/diagnostics/playback/status",
-        "POST /api/v2/diagnostics/playback/enable",
-        "POST /api/v2/diagnostics/playback/disable",
-        "GET /api/v2/diagnostics/playback/reports",
-        "GET /api/v2/diagnostics/playback/reports/{report_id}",
-        "DELETE /api/v2/diagnostics/playback/reports",
-        "GET /api/v2/diagnostics/playback/export"
-      ],
+      "v2_routes": [],
       "status": "implemented; V1/V2 shared-fixture parity and keyboard acceptance passed; live retention/runtime acceptance pending",
       "owner": "Diagnostics service, API, and frontend",
       "dependencies": [
@@ -419,7 +418,8 @@
       "parity_tests": [
         "tests/admin_diagnostics_report_export.cjs",
         "tests/test_admin_v2_status.py"
-      ]
+      ],
+      "v2_replacement": "Retired in Stage 6; automatic worker behavior and retained shared APIs are documented in ADMIN_SIMPLIFICATION.md."
     },
     {
       "area": "Duplicates and jobs",
@@ -459,7 +459,6 @@
       "parity_tests": [
         "tests/test_video_duplicates.py",
         "tests/test_admin_v2_jobs_contract.py",
-        "tests/test_admin_v2_release_smoke.py",
         "tests/test_video_duplicate_jobs.py",
         "tests/test_runner.py"
       ]
@@ -540,8 +539,8 @@
         "GET /api/v2/performers/catalog",
         "POST /api/v2/performers/proposals/{proposal_id}",
         "GET /api/v2/performers/fuzzy",
-    "GET /api/v2/organize/people",
-    "GET /api/v2/organize/people/{name}",
+        "GET /api/v2/organize/people",
+        "GET /api/v2/organize/people/{name}",
         "POST /api/v2/operations/preview",
         "POST /api/v2/operations/execute"
       ],
@@ -552,15 +551,15 @@
         "TASK-09"
       ],
       "side_effects": "Proposal review changes performer aliases/catalog data; merge queues a non-undoable catalog/file operation.",
-  "acceptance_evidence": "Shared proposal fixture, conflict/rollback tests, explicit merge consent, durable worker result and recovery tests. Organize → People searches both provider bio aliases and explicit local mappings, displays deduplicated aliases, and keeps paginated filmography; PostgreSQL/API and browser contracts cover alias search/rendering and stale alias-merge rejection. Chromium keyboard acceptance covers transient execute retry, stale-plan 409 invalidation, renewed irreversible-action consent, and accepted task feedback; see docs/admin-v2/visual-acceptance-2026-10-07/performer-merge-conflict-keyboard.mjs. Live upstream effects and target-runtime acceptance remain pending.",
+      "acceptance_evidence": "Shared proposal fixture, conflict/rollback tests, explicit merge consent, durable worker result and recovery tests. Organize → People searches both provider bio aliases and explicit local mappings, displays deduplicated aliases, and keeps paginated filmography; PostgreSQL/API and browser contracts cover alias search/rendering and stale alias-merge rejection. Chromium keyboard acceptance covers transient execute retry, stale-plan 409 invalidation, renewed irreversible-action consent, and accepted task feedback; see docs/admin-v2/visual-acceptance-2026-10-07/performer-merge-conflict-keyboard.mjs. Live upstream effects and target-runtime acceptance remain pending.",
       "parity_tests": [
         "tests/test_performer_proposals_integration.py",
         "tests/test_admin_v2_performers.py",
         "tests/admin_v2_performers_contract.cjs",
-    "tests/test_performer_proposals_service.py",
-    "tests/test_http_api.py",
-    "tests/admin_v2_operation_races.cjs",
-    "tests/test_admin_operations.py"
+        "tests/test_performer_proposals_service.py",
+        "tests/test_http_api.py",
+        "tests/admin_v2_operation_races.cjs",
+        "tests/test_admin_operations.py"
       ]
     },
     {
@@ -577,9 +576,7 @@
         "GET /api/v2/status",
         "GET /api/v2/status/jellyfin",
         "GET /api/v2/sources/sync-history",
-        "GET /api/v2/sync/activity",
         "GET /api/v2/sources/list",
-        "GET /api/v2/sources/search",
         "GET /api/v2/backups",
         "GET /api/v2/capabilities"
       ],
@@ -591,16 +588,41 @@
         "TASK-12"
       ],
       "side_effects": "Read-only status/config/inventory; backup verification reads archives without restoring them.",
-      "acceptance_evidence": "Shared V1/V2 status/source fixture; GET-only release smoke compares Home metrics and the Sources configuration/revisions plus latest sync outcome, timing, counts, and retry/429 aggregates in memory without exposing channel IDs; bounded command-palette source lookup returns only provider, ID, label, enabled state and never secret config; missing/error/stale semantics; redacted per-provider link-check summary and bounded individual sample results; safe sync activity summaries for source failures; write/retention/availability progress; backup inventory and verification contracts.",
+      "acceptance_evidence": "Shared status/source fixture; Sources shows configuration, revisions, sync history, timing, counts, retry/429 aggregates; service and backup status remain. Manual link-check reports, sync activity log views, and command-palette source lookup are retired.",
       "parity_tests": [
         "tests/test_admin_v2_status.py",
         "tests/test_admin_v2_backups.py",
-        "tests/test_admin_v2_release_smoke.py",
         "tests/admin_v2_sources_pagination.cjs",
         "tests/test_managed_sources.py",
         "tests/test_http_api.py",
         "tests/test_backup_db.py"
       ]
     }
+  ],
+  "retired_admin_v2_routes": [
+    "DELETE /api/v2/diagnostics/playback/reports",
+    "GET /api/v2/activity",
+    "GET /api/v2/activity/changes",
+    "GET /api/v2/audits",
+    "GET /api/v2/audits/{job_id}",
+    "GET /api/v2/diagnostics/playback/export",
+    "GET /api/v2/diagnostics/playback/reports",
+    "GET /api/v2/diagnostics/playback/reports/{report_id}",
+    "GET /api/v2/diagnostics/playback/status",
+    "GET /api/v2/diagnostics/playback/summary",
+    "GET /api/v2/linkcheck",
+    "GET /api/v2/metadata/enrichment",
+    "GET /api/v2/quality/items",
+    "GET /api/v2/quality/summary",
+    "GET /api/v2/sources/search",
+    "GET /api/v2/sync/activity",
+    "POST /api/v2/audits/execute",
+    "POST /api/v2/audits/{job_id}/reimports/preview",
+    "POST /api/v2/audits/{job_id}/repairs/preview",
+    "POST /api/v2/diagnostics/playback/disable",
+    "POST /api/v2/diagnostics/playback/enable",
+    "POST /api/v2/metadata/enrichment/scan",
+    "POST /api/v2/quality/acknowledge",
+    "POST /api/v2/quality/reopen"
   ]
 }

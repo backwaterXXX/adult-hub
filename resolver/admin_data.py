@@ -19,7 +19,6 @@ import admin_data_runtime_files as runtime_files
 
 # Reports analyzed by the seven-day summary. `PlaybackDiagnostics.list_reports`
 # caps results, so the summary must disclose when more rows exist.
-PLAYBACK_ANALYSIS_LIMIT = 200
 
 
 def trim_channel_name(name: str, max_len: int = 25) -> str:
@@ -252,8 +251,6 @@ def backup_status(backup_dir: Path | str) -> dict:
     return runtime_files.backup_status(backup_dir)
 
 
-def linkcheck_tail(log_path: Path | str, n: int = 20) -> dict:
-    return runtime_files.linkcheck_tail(log_path, n)
 
 
 def unavailable_videos(db_url: str | None, limit: int = 100, offset: int = 0) -> dict:
@@ -363,36 +360,3 @@ def quarantine_report(db_url: str | None, limit: int = 200, offset: int = 0) -> 
         return empty
     finally:
         conn.close()
-
-
-def playback_summary(reports: list[dict], available: int,
-                     analysis_limit: int = PLAYBACK_ANALYSIS_LIMIT, days: int = 7) -> dict:
-    """Group recent playback reports and disclose the analysis bound."""
-    cutoff = time.time() - days * 86400
-    grouped: dict[str, list] = {}
-    for report in reports:
-        if report.get("active") or (report.get("started_epoch") or 0) < cutoff:
-            continue
-        grouped.setdefault(str(report.get("provider") or "unknown"), []).append(report)
-    summary = []
-    for provider, rows in sorted(grouped.items()):
-        durations = sorted(int(row.get("elapsed_ms") or 0) for row in rows)
-        starts = sorted(int(row.get("upstream_first_byte_ms") or 0) for row in rows if row.get("upstream_first_byte_ms") is not None)
-        gaps = sorted(int(row.get("downstream_max_gap_ms") or 0) for row in rows)
-        failures = sum(1 for row in rows if row.get("outcome") == "error" or int(row.get("status_code") or 0) >= 400)
-        summary.append({
-            "provider": provider, "requests": len(rows), "failures": failures,
-            "median_elapsed_ms": durations[len(durations) // 2] if durations else None,
-            "median_start_ms": starts[len(starts) // 2] if starts else None,
-            "median_downstream_gap_ms": gaps[len(gaps) // 2] if gaps else None,
-        })
-    analyzed = sum(len(rows) for rows in grouped.values())
-    return {
-        "days": days,
-        "analysis_limit": analysis_limit,
-        "analyzed": analyzed,
-        "available": int(available),
-        "truncated": int(available) > analyzed,
-        "by_provider": summary,
-        "reports": analyzed,
-    }

@@ -31,7 +31,7 @@ const routes = [
   { hash: 'organize', view: 'library', active: 'library' },
   { hash: 'sources?tab=history', view: 'operational', active: 'sources' },
   { hash: 'jobs?tab=history', view: 'operational', active: 'jobs' },
-  ...(['stage4', 'stage5'].includes(process.env.ADMIN_SMOKE_FIXTURES) ? [
+  ...(['stage4', 'stage5', 'stage6'].includes(process.env.ADMIN_SMOKE_FIXTURES) ? [
   { hash: 'jobs', query: 'job_id=qa-queued', name: 'task-queued', view: 'operational', active: 'jobs' },
   { hash: 'jobs', query: 'job_id=qa-processing', name: 'task-running', view: 'operational', active: 'jobs' },
   { hash: 'jobs?tab=history', query: 'job_id=qa-done', name: 'task-succeeded', view: 'operational', active: 'jobs' },
@@ -49,7 +49,7 @@ const statuses = { total: 0, ok: 0, redirects: 0, clientError: 0, serverError: 0
 const methods = new Set();
 const apiPaths = new Set();
 const allowQueueSync = process.env.ADMIN_SMOKE_ALLOW_QUEUE_SYNC === '1';
-if (allowQueueSync && (!['stage4', 'stage5'].includes(process.env.ADMIN_SMOKE_FIXTURES) || upstreamUrl.hostname !== '127.0.0.1' || upstreamUrl.port !== '18093')) throw new Error('Sync admission smoke requires the isolated fixture server.');
+if (allowQueueSync && (!['stage4', 'stage5', 'stage6'].includes(process.env.ADMIN_SMOKE_FIXTURES) || upstreamUrl.hostname !== '127.0.0.1' || upstreamUrl.port !== '18093')) throw new Error('Sync admission smoke requires the isolated fixture server.');
 let queuedSyncRequests = 0;
 const pixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/XioAAAAASUVORK5CYII=', 'base64');
 function send(res, code, body, type = 'text/plain; charset=utf-8') {
@@ -148,13 +148,16 @@ await cmd('Page.addScriptToEvaluateOnNewDocument', {
   source: "localStorage.setItem('adminV2Theme',new URLSearchParams(location.search).get('qaTheme')||'light');",
 }, sessionId);
 let jsErrors = 0;
+let consoleErrors = 0;
 let loadResolve = null;
 on('Runtime.exceptionThrown', () => { jsErrors += 1; }, sessionId);
+on('Runtime.consoleAPICalled', event => { if (event.params.type === 'error') consoleErrors += 1; }, sessionId);
 on('Page.loadEventFired', () => { if (loadResolve) { loadResolve(); loadResolve = null; } }, sessionId);
 
 const results = [];
 for (const route of routes) for (const width of widths) for (const theme of themes) {
   const errorsBefore = jsErrors;
+  const consoleErrorsBefore = consoleErrors;
   const height = width === 390 ? 844 : width === 768 ? 1024 : 1000;
   await cmd('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width <= 600 }, sessionId);
   await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] }, sessionId);
@@ -167,22 +170,14 @@ for (const route of routes) for (const width of widths) for (const theme of them
   loadError = await loaded || '';
   await sleep(800);
   const evaluated = await cmd('Runtime.evaluate', {
-    expression: "JSON.stringify({visible:[...document.querySelectorAll('.view')].filter(v=>!v.hidden).map(v=>v.dataset.view),activeRoute:document.querySelector('.primary-nav a[aria-current=page]')?.dataset.route||'',innerWidth,documentWidth:document.documentElement.scrollWidth,openTaskIds:[...document.querySelectorAll('.job-detail-row')].filter(row=>!row.hidden).map(row=>row.dataset.jobId),search:location.search,sourceTab:document.querySelector('[data-sources-tab][aria-current=page]')?.dataset.sourcesTab,serviceState:document.querySelector('#serviceStatus')?.dataset.state||'',overviewTiles:[...document.querySelectorAll('#statusCards .metric-top > span:first-child')].map(node=>node.textContent),enrichmentRows:[...document.querySelectorAll('#enrichmentRows .enrichment-source-heading strong')].map(node=>node.textContent),enrichmentFreshness:document.querySelector('#enrichmentFreshness')?.dataset.state||'',enrichmentFeedback:document.querySelector('#enrichmentFeedback')?.textContent||''})",
+    expression: "JSON.stringify({visible:[...document.querySelectorAll('.view')].filter(v=>!v.hidden).map(v=>v.dataset.view),activeRoute:document.querySelector('.primary-nav a[aria-current=page]')?.dataset.route||'',innerWidth,documentWidth:document.documentElement.scrollWidth,openTaskIds:[...document.querySelectorAll('.job-detail-row')].filter(row=>!row.hidden).map(row=>row.dataset.jobId),search:location.search,sourceTab:document.querySelector('[data-sources-tab][aria-current=page]')?.dataset.sourcesTab,serviceState:document.querySelector('#serviceStatus')?.dataset.state||'',overviewTiles:[...document.querySelectorAll('#statusCards .metric-top > span:first-child')].map(node=>node.textContent)})",
     returnByValue: true,
   }, sessionId);
   let view = {};
   try { view = JSON.parse(evaluated.result.value || '{}'); } catch {}
-  if (width !== 768) {
-    const screenshot = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, sessionId);
-    const routeName = (route.name || route.hash).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-|-$/g, '');
-    fs.writeFileSync(`${outputDir}/${routeName}-${width}-${theme}.png`, Buffer.from(screenshot.data, 'base64'));
-  }
-  const expectedEmptyEnrichment = view.enrichmentRows?.length === 0 &&
-    view.enrichmentFeedback.includes('No external metadata attempts have been recorded yet.');
-  const enrichmentLabelsSafe = Array.isArray(view.enrichmentRows) && view.enrichmentRows.every(label =>
-    !/(?:lukayan|telegram)_/i.test(label));
-  const enrichmentLoaded = !route.enrichment || (view.enrichmentFreshness === 'fresh' &&
-    (view.enrichmentRows.length > 0 ? enrichmentLabelsSafe : expectedEmptyEnrichment));
+  const screenshot = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, sessionId);
+  const routeName = (route.name || route.hash).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-|-$/g, '');
+  fs.writeFileSync(`${outputDir}/${routeName}-${width}-${theme}.png`, Buffer.from(screenshot.data, 'base64'));
   const overviewMatches = !route.hash.startsWith('start') ||
     (view.overviewTiles || []).join('|') === overviewTiles.join('|');
   const serviceStateKnown = ['checking', 'ok', 'attention', 'partial', 'unknown', 'error'].includes(view.serviceState);
@@ -193,18 +188,13 @@ for (const route of routes) for (const width of widths) for (const theme of them
     route: route.hash, ...(route.query ? { query: route.query } : {}), width, theme,
     ok: !loadError && view.visible?.length === 1 && view.visible[0] === route.view &&
       view.activeRoute === route.active && view.innerWidth === width && view.documentWidth <= width &&
-      jsErrors === errorsBefore && serviceStateKnown && overviewMatches &&
-      enrichmentLoaded && enrichmentLabelsSafe && taskMatches && sourceTabMatches,
+      jsErrors === errorsBefore && consoleErrors === consoleErrorsBefore && serviceStateKnown && overviewMatches &&
+      taskMatches && sourceTabMatches,
     overflow: view.documentWidth > width,
     errors: jsErrors - errorsBefore,
+    consoleErrors: consoleErrors - consoleErrorsBefore,
     serviceState: view.serviceState,
     overviewMatches, taskMatches, sourceTabMatches,
-    ...(route.enrichment ? {
-      enrichmentRows: view.enrichmentRows?.length || 0,
-      enrichmentLabelsSafe,
-      expectedEmptyEnrichment,
-      enrichmentLoaded,
-    } : {}),
   };
   results.push(result);
   console.log((result.ok ? 'PASS ' : 'FAIL ') + route.hash + '-' + width + '-' + theme +
@@ -337,7 +327,7 @@ const summary = {
   count: results.length, passed: results.filter(result => result.ok).length,
   failed: results.filter(result => !result.ok).length,
   apiRequests: statuses.total, api2xx: statuses.ok, api3xx: statuses.redirects,
-  api4xx: statuses.clientError, api5xx: statuses.serverError, imageResponsesReplaced: statuses.images,
+  api4xx: statuses.clientError, api5xx: statuses.serverError, imageResponsesReplaced: statuses.images, consoleErrors,
   apiPaths: [...apiPaths].sort(), scheduleEditor,
   removedViewRequests: [...apiPaths].filter(path => /\/(?:audits|activity|linkcheck|playback-diagnostics|quality\/(?!proposals(?:\/|$))|metadata\/enrichment|enrichment\/progress)(?:\/|$)/.test(path)),
   writeMethods: [...methods].filter(method => method !== 'GET'), queuedSync, modalKeyboard, libraryHistory, results,
@@ -349,4 +339,4 @@ console.log('SUMMARY ' + summary.passed + '/' + summary.count + '; API=' + statu
 ws.close();
 chrome.kill('SIGTERM');
 server.close();
-if (summary.failed || !modalKeyboard.ok || !libraryHistory.ok || !scheduleEditor.visible || !scheduleEditor.open || summary.removedViewRequests.length || summary.writeMethods.some(method => method !== 'POST' || !allowQueueSync) || (allowQueueSync && !queuedSync?.ok) || summary.count !== routes.length * widths.length * themes.length) process.exitCode = 1;
+if (summary.failed || summary.consoleErrors || !modalKeyboard.ok || !libraryHistory.ok || !scheduleEditor.visible || !scheduleEditor.open || summary.removedViewRequests.length || summary.writeMethods.some(method => method !== 'POST' || !allowQueueSync) || (allowQueueSync && !queuedSync?.ok) || summary.count !== routes.length * widths.length * themes.length) process.exitCode = 1;

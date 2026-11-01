@@ -2,7 +2,6 @@
 import json
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -77,29 +76,6 @@ class TestConfiguredSources(unittest.TestCase):
             data = admin_data.configured_sources(config)
         self.assertFalse(data["available"])
         self.assertEqual(data["sources"], [])
-
-
-class TestPlaybackSummary(unittest.TestCase):
-    def test_discloses_analysis_bound(self):
-        now = time.time()
-        reports = [{"provider": "telegram", "started_epoch": now,
-                    "outcome": "ok", "elapsed_ms": 10, "active": False}]
-        summary = admin_data.playback_summary(reports, available=350)
-        self.assertEqual(summary["reports"], 1)
-        self.assertEqual(summary["analyzed"], 1)
-        self.assertEqual(summary["available"], 350)
-        self.assertTrue(summary["truncated"])
-        self.assertEqual(summary["analysis_limit"], admin_data.PLAYBACK_ANALYSIS_LIMIT)
-
-    def test_ignores_reports_outside_window_without_marking_truncated(self):
-        now = time.time()
-        reports = [
-            {"provider": "telegram", "started_epoch": now, "active": False},
-            {"provider": "telegram", "started_epoch": now - 10 * 86400, "active": False},
-        ]
-        summary = admin_data.playback_summary(reports, available=1)
-        self.assertEqual(summary["analyzed"], 1)
-        self.assertFalse(summary["truncated"])
 
 
 class TestPerformerQualityMetrics(unittest.TestCase):

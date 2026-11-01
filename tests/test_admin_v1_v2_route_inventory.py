@@ -105,6 +105,25 @@ class TestAdminV1V2RouteInventory(unittest.TestCase):
                        "admin_maintenance.py", "admin_jobs.py", "admin_performers.py"):
             self.assertFalse((ROOT / "resolver" / module).exists(), module)
 
+    def test_stage6_retired_routes_are_unmounted_and_required_routes_remain(self):
+        routes = declared_routes(sorted((ROOT / "resolver").glob("admin*.py")), v2=True)
+        fixture_retired = set(self.inventory["retired_admin_v2_routes"])
+        self.assertTrue(fixture_retired)
+        for route in fixture_retired:
+            with self.subTest(retired=route):
+                self.assertNotIn(route, routes)
+        retained = {
+            "GET /api/v2/status", "GET /api/v2/diagnostics/probes",
+            "GET /api/v2/quality/proposals", "POST /api/v2/quality/proposals/{proposal_id}/refresh",
+            "POST /api/v2/quality/proposals/{proposal_id}/reject",
+            "GET /api/v2/sources/sync-history", "GET /api/v2/schedules",
+        }
+        self.assertTrue(retained <= routes)
+        self.assertIn("import admin_v2_schedules", (ROOT / "resolver/admin.py").read_text())
+        self.assertFalse((ROOT / "resolver/playback_diagnostics.py").exists())
+        for module in ("admin_v2_audits.py", "admin_v2_activity.py", "admin_v2_enrichment.py"):
+            self.assertFalse((ROOT / "resolver" / module).exists(), module)
+
     def test_classic_ui_and_assets_are_absent(self):
         self.assertFalse((ROOT / "resolver/templates/admin.html").exists())
         self.assertFalse((ROOT / "resolver/static/admin").exists())

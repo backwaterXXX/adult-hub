@@ -553,7 +553,7 @@ class TestJobProgressProjection(unittest.TestCase):
         })
         self.assertEqual(safe["action"], "audit_import_refresh")
         self.assertEqual(safe["result_summary"],
-                         "Jellyfin accepted the refresh request; run a new audit to confirm the import.")
+                         "Jellyfin accepted the refresh request; check the library after its next refresh.")
         self.assertNotIn("jellyfin_import_confirmed_at", safe)
 
     def test_cancelled_job_has_safe_terminal_summary(self):

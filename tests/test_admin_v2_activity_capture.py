@@ -17,7 +17,7 @@ import admin_v2_errors
 
 
 class TestAdminActivityCapture(unittest.TestCase):
-    def _request(self, method="POST", path="/admin/api/v2/audits/execute", route="/api/v2/audits/execute"):
+    def _request(self, method="POST", path="/admin/api/v2/sources/save", route="/api/v2/sources/save"):
         return SimpleNamespace(
             method=method,
             url=SimpleNamespace(path=path),
@@ -36,7 +36,7 @@ class TestAdminActivityCapture(unittest.TestCase):
              patch.object(admin_v2_errors.asyncio, "to_thread", inline_to_thread):
             asyncio.run(admin_v2_errors._record_mutation(self._request(), self._response()))
         record.assert_called_once_with(
-            "test-db", method="POST", route="/admin/api/v2/audits/execute",
+            "test-db", method="POST", route="/admin/api/v2/sources/save",
             status_code=202, correlation_id="b" * 32,
         )
 

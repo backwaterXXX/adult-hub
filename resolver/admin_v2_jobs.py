@@ -139,7 +139,7 @@ def _result_summary(job: dict) -> str | None:
         if result.get("jellyfin_refresh") == "failed":
             return "Local result saved; Jellyfin refresh failed."
         if result.get("refresh_requested") is True:
-            return "Jellyfin accepted the refresh request; run a new audit to confirm the import."
+            return "Jellyfin accepted the refresh request; check the library after its next refresh."
         if result.get("jellyfin_import") == "not_confirmed":
             return "Local metadata saved; Jellyfin accepted the refresh request, but import is not confirmed."
         if result.get("jellyfin_import") == "confirmed":

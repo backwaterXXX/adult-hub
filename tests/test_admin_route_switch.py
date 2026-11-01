@@ -66,11 +66,11 @@ class AdminRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_admin_v2_assets_are_never_cached(self):
-        response = self.request("/admin/assets-v2/enrichment.js")
+        response = self.request("/admin/assets-v2/quality.js")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers.get("cache-control"), "no-store")
-        self.assertIn("Scene fingerprint", response.text)
-        self.assertIn(".trim().toLowerCase()", response.text)
+        self.assertIn("Metadata suggestions", response.text)
+        self.assertIn("quality/proposals", response.text)
 
     def test_admin_v2_api_responses_are_never_cached(self):
         with patch.object(admin_module, "ADMIN_PUBLIC", False), \

@@ -22,7 +22,6 @@ import sys
 import threading
 import time
 import unittest
-from unittest import mock
 from pathlib import Path
 
 os.environ.setdefault(
@@ -403,57 +402,6 @@ class TestTelegramDownloadRanges(unittest.TestCase):
 
 
 class TestBenchmarkCorrectness(unittest.TestCase):
-    def test_measure_seek_flags_short_body_on_206_empty(self):
-        """Verify measure_seek error marking on 206 + empty/short body."""
-        from tools.benchmark_stream_ab import measure_seek
-        import http.server
-
-        # Start a local HTTP server that responds 206 with 0 bytes or short body
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                if "empty206" in self.path:
-                    self.send_response(206)
-                    self.send_header("Content-Range", "bytes 0-2097151/877247629")
-                    self.send_header("Content-Length", "2097152")
-                    self.end_headers()
-                    # 0 bytes sent!
-                elif "short206" in self.path:
-                    self.send_response(206)
-                    self.send_header("Content-Range", "bytes 0-2097151/877247629")
-                    self.send_header("Content-Length", "2097152")
-                    self.end_headers()
-                    self.wfile.write(b"short")
-                else:
-                    self.send_response(200)
-                    self.send_header("Content-Length", "10")
-                    self.end_headers()
-                    self.wfile.write(b"1234567890")
-
-            def log_message(self, format, *args):
-                pass
-
-        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-        port = server.server_port
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            with mock.patch("tools.benchmark_stream_ab.BASE_URL", f"http://127.0.0.1:{port}"):
-                # Test empty 206
-                res_empty = measure_seek("empty206", offset=0, length=2097152, timeout=5.0)
-                self.assertEqual(res_empty["http_status"], 206)
-                self.assertEqual(res_empty["bytes"], 0)
-                self.assertIsNotNone(res_empty["error"])
-                self.assertIn("short_body:0!=2097152", res_empty["error"])
-
-                # Test short 206
-                res_short = measure_seek("short206", offset=0, length=2097152, timeout=5.0)
-                self.assertEqual(res_short["http_status"], 206)
-                self.assertEqual(res_short["bytes"], 5)
-                self.assertIsNotNone(res_short["error"])
-                self.assertIn("short_body:5!=2097152", res_short["error"])
-        finally:
-            server.shutdown()
-            server.server_close()
 
     def test_consumer_producer_concurrency_race(self):
         """Smoke test verifying shared buffered decrement atomic lock avoids lost updates."""

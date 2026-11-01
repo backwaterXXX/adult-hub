@@ -27,8 +27,6 @@ ADMIN_WRITE_TOKEN = os.getenv("ADMIN_WRITE_TOKEN", "")
 ADMIN_DUPLICATE_TOKEN = os.getenv("ADMIN_DUPLICATE_TOKEN", "")
 PUBLIC_DOMAIN = os.getenv("PUBLIC_DOMAIN", "media.example.org").strip().lower()
 HUB_DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None
-LINKCHECK_LOG_PATH = Path(os.getenv("LINKCHECK_LOG_PATH", "/data/linkcheck.log"))
-SYNC_ACTIVITY_LOG_PATH = Path(os.getenv("SYNC_ACTIVITY_LOG_PATH", "/data/cache/sync_activity.log"))
 CACHE_DIR = Path(os.getenv("CACHE_DIR", "/cache"))
 SYNC_STATUS_FILE = CACHE_DIR / "sync_status.json"
 WORKER_CAPABILITIES_FILE = Path(os.getenv(
@@ -39,52 +37,6 @@ SYNC_HISTORY_FILE = CACHE_DIR / "sync_history.json"
 BACKUP_DIR = Path(os.getenv("BACKUP_DIR", "/data/backups"))
 BACKUP_RESTORE_DATABASE_URL = os.getenv("BACKUP_RESTORE_DATABASE_URL", "").strip()
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "/media/adult"))
-
-
-def _playback_diagnostics():
-    """Import lazily so an optional diagnostics backend cannot break the panel."""
-    from playback_diagnostics import diagnostics
-    return diagnostics
-
-
-_DIAGNOSTIC_REPORT_FIELDS = {
-    "report_id", "started_at", "started_epoch", "ended_at", "provider", "video_key",
-    "method", "range", "status_code", "outcome", "error_type", "elapsed_ms",
-    "file_size_ms", "upstream_first_byte_ms", "downstream_first_byte_ms",
-    "upstream_bytes", "downstream_bytes", "upstream_max_gap_ms",
-    "downstream_max_gap_ms", "upstream_idle_ms", "downstream_idle_ms",
-    "phase", "phase_idle_ms",
-    "upstream_samples", "downstream_samples", "samples_truncated", "active",
-    "enabled", "enabled_until", "active_count", "saved_count", "retention_days",
-    "days", "analysis_limit", "analyzed", "available", "truncated", "by_provider", "reports",
-    "requests", "failures", "median_elapsed_ms", "median_start_ms", "median_downstream_gap_ms",
-}
-_DIAGNOSTIC_EVENT_FIELDS = {"t_s", "bytes"}
-
-
-def _safe_diagnostic_value(value, *, event=False):
-    """Allow only known report fields; never expose exception strings or credentials."""
-    allowed = _DIAGNOSTIC_EVENT_FIELDS if event else _DIAGNOSTIC_REPORT_FIELDS
-    if isinstance(value, dict):
-        return {
-            str(key): _safe_diagnostic_value(
-                item, event=(key in {"events", "requests", "upstream_samples", "downstream_samples"})
-            )
-            for key, item in value.items()
-            if key in allowed
-        }
-    if isinstance(value, list):
-        return [_safe_diagnostic_value(item, event=event) for item in value[:500]]
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        if isinstance(value, str):
-            return value[:500]
-        return value
-    return None
-
-
-def _diagnostic_failure():
-    # Backend errors can contain URLs, Telegram references, or tokens.
-    return JSONResponse({"error": "Playback diagnostics operation failed."}, status_code=500)
 
 
 def _via_public_domain(request: Request) -> bool:
@@ -113,24 +65,6 @@ def _sync_history(limit: int = 30, offset: int = 0) -> dict:
 
 def _backup_status() -> dict:
     return admin_data.backup_status(BACKUP_DIR)
-
-
-def _playback_summary() -> dict:
-    diagnostics = _playback_diagnostics()
-    reports = diagnostics.list_reports(limit=admin_data.PLAYBACK_ANALYSIS_LIMIT)
-    try:
-        available = int(diagnostics.status().get("saved_count") or 0)
-    except Exception:
-        available = len(reports)
-    return admin_data.playback_summary(reports, available)
-
-
-def _linkcheck_tail(n: int = 20) -> dict:
-    return admin_data.linkcheck_tail(LINKCHECK_LOG_PATH, n)
-
-
-def _sync_activity_tail(n: int = 80) -> dict:
-    return admin_data.linkcheck_tail(SYNC_ACTIVITY_LOG_PATH, n)
 
 
 def _attention_summary() -> dict:
@@ -252,17 +186,14 @@ import admin_v2_operations  # noqa: E402
 import admin_v2_metadata  # noqa: E402
 import admin_v2_organize  # noqa: E402
 import admin_v2_availability  # noqa: E402
-import admin_v2_audits  # noqa: E402
 import admin_v2_backups  # noqa: E402
 import admin_v2_diagnostics  # noqa: E402
 import admin_v2_schedules  # noqa: E402
 import admin_v2_sources  # noqa: E402
-import admin_v2_activity  # noqa: E402
 import admin_v2_performers  # noqa: E402
 import admin_v2_maintenance  # noqa: E402
 import admin_v2_status  # noqa: E402
 import admin_v2_quality  # noqa: E402
-import admin_v2_enrichment  # noqa: E402
 import admin_v2_phash  # noqa: E402
 import admin_v2_phash_jobs  # noqa: E402
 import admin_v2_tasks  # noqa: E402
@@ -275,17 +206,14 @@ router.include_router(admin_v2_operations.build_router(_self))
 router.include_router(admin_v2_metadata.build_router(_self))
 router.include_router(admin_v2_organize.build_router(_self))
 router.include_router(admin_v2_availability.build_router(_self))
-router.include_router(admin_v2_audits.build_router(_self))
 router.include_router(admin_v2_backups.build_router(_self))
 router.include_router(admin_v2_diagnostics.build_router(_self))
 router.include_router(admin_v2_schedules.build_router(_self))
 router.include_router(admin_v2_sources.build_router(_self))
-router.include_router(admin_v2_activity.build_router(_self))
 router.include_router(admin_v2_performers.build_router(_self))
 router.include_router(admin_v2_maintenance.build_router(_self))
 router.include_router(admin_v2_status.build_router(_self))
 router.include_router(admin_v2_quality.build_router(_self))
-router.include_router(admin_v2_enrichment.build_router(_self))
 router.include_router(admin_v2_phash.build_router(_self))
 router.include_router(admin_v2_phash_jobs.build_router(_self))
 router.include_router(admin_v2_tasks.build_router(_self))

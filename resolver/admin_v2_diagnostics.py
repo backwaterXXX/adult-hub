@@ -1,13 +1,13 @@
-"""Playback diagnostics views and opt-in controls for Admin v2."""
+"""Basic service probes for Admin v2."""
 
 from __future__ import annotations
 
 import asyncio
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Request
 from admin_v2_errors import V2ErrorRoute
 
 
@@ -167,124 +167,5 @@ def build_router(admin):
                         _safe_probe_row("phash_worker", "pHash worker", "unknown"),
                         _safe_probe_row("jellyfin", "Jellyfin", "unknown"),
                     ]}
-
-    @router.get("/api/v2/diagnostics/playback/export")
-    async def export_reports(request: Request, days: int = Query(7, ge=1, le=30),
-                             limit: int = Query(100, ge=1, le=100)):
-        if admin._admin_blocked(request):
-            return admin.JSONResponse({"ok": False, "error": "Admin is only available locally."}, status_code=403)
-        try:
-            values = await admin.asyncio.to_thread(
-                admin._playback_diagnostics().list_reports, limit=limit
-            )
-            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
-            fields = {
-                "report_id", "started_at", "started_epoch", "ended_at", "provider", "method",
-                "range", "status_code", "outcome", "error_type", "elapsed_ms", "file_size_ms",
-                "upstream_first_byte_ms", "downstream_first_byte_ms", "upstream_bytes",
-                "downstream_bytes", "upstream_max_gap_ms", "downstream_max_gap_ms",
-                "upstream_idle_ms", "downstream_idle_ms", "phase", "phase_idle_ms",
-            }
-            reports = []
-            for value in values:
-                if not isinstance(value, dict):
-                    continue
-                try:
-                    started = float(value.get("started_epoch"))
-                except (TypeError, ValueError, OverflowError):
-                    continue
-                if started < cutoff:
-                    continue
-                reports.append({key: admin._safe_diagnostic_value({key: value[key]}).get(key)
-                                for key in fields if key in value})
-            payload = {
-                "ok": True,
-                "scope": {"days": days, "limit": limit, "generated_at": datetime.now(timezone.utc).isoformat()},
-                "truncated": len(values) >= limit,
-                "reports": reports,
-            }
-            filename = f"adult-hub-playback-diagnostics-{datetime.now(timezone.utc):%Y%m%d}.json"
-            return admin.JSONResponse(
-                payload,
-                headers={"Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="{filename}"'},
-            )
-        except Exception:
-            return admin._diagnostic_failure()
-
-    @router.get("/api/v2/diagnostics/playback/summary")
-    async def summary(request: Request):
-        if admin._admin_blocked(request):
-            return admin.JSONResponse({"ok": False, "error": "Admin is only available locally."}, status_code=403)
-        try:
-            return {"ok": True, **admin._safe_diagnostic_value(await admin.asyncio.to_thread(admin._playback_summary))}
-        except Exception:
-            return admin._diagnostic_failure()
-
-    @router.get("/api/v2/diagnostics/playback/status")
-    async def status(request: Request):
-        if admin._admin_blocked(request):
-            return admin.JSONResponse({"ok": False, "error": "Admin is only available locally."}, status_code=403)
-        try:
-            value = await admin.asyncio.to_thread(admin._playback_diagnostics().status)
-            return {"ok": True, **admin._safe_diagnostic_value(value)}
-        except Exception:
-            return admin._diagnostic_failure()
-
-    @router.get("/api/v2/diagnostics/playback/reports")
-    async def reports(request: Request, limit: int = Query(50, ge=1, le=100)):
-        if admin._admin_blocked(request):
-            return admin.JSONResponse({"ok": False, "error": "Admin is only available locally."}, status_code=403)
-        try:
-            values = await admin.asyncio.to_thread(admin._playback_diagnostics().list_reports, limit=limit)
-            return {"ok": True, "items": [admin._safe_diagnostic_value(item) for item in values], "limit": limit}
-        except Exception:
-            return admin._diagnostic_failure()
-
-    @router.get("/api/v2/diagnostics/playback/reports/{report_id}")
-    async def report(request: Request, report_id: str):
-        if admin._admin_blocked(request):
-            return admin.JSONResponse({"ok": False, "error": "Admin is only available locally."}, status_code=403)
-        try:
-            value = await admin.asyncio.to_thread(admin._playback_diagnostics().get_report, report_id)
-            if value is None:
-                return admin.JSONResponse({"ok": False, "error": "Playback report was not found."}, status_code=404)
-            return {"ok": True, "report": admin._safe_diagnostic_value(value)}
-        except Exception:
-            return admin._diagnostic_failure()
-
-    @router.post("/api/v2/diagnostics/playback/enable")
-    async def enable(request: Request):
-        denied = admin._write_denied(request)
-        if denied is not None:
-            return denied
-        try:
-            result = await admin.asyncio.to_thread(admin._playback_diagnostics().set_enabled, hours=24)
-            return {"ok": True, **admin._safe_diagnostic_value(result)}
-        except Exception:
-            return admin._diagnostic_failure()
-
-    @router.post("/api/v2/diagnostics/playback/disable")
-    async def disable(request: Request):
-        denied = admin._write_denied(request)
-        if denied is not None:
-            return denied
-        try:
-            result = await admin.asyncio.to_thread(admin._playback_diagnostics().disable)
-            return {"ok": True, **admin._safe_diagnostic_value(result)}
-        except Exception:
-            return admin._diagnostic_failure()
-
-    @router.delete("/api/v2/diagnostics/playback/reports")
-    async def clear_reports(request: Request):
-        denied = admin._write_denied(request)
-        if denied is not None:
-            return denied
-        try:
-            cleared = await admin.asyncio.to_thread(
-                admin._playback_diagnostics().clear_reports
-            )
-            return {"ok": True, "cleared": max(0, int(cleared or 0))}
-        except Exception:
-            return admin._diagnostic_failure()
 
     return router

@@ -1023,10 +1023,9 @@
     $('#issuesLoadMore').disabled = state.issueLoading;
   }
   const ISSUE_ROUTE_PATTERNS = [
-    /^\/?(?:admin\/v2\/)?#(?:library|quality|sources|jobs|system|performers|schedules)(?:[?&/]|$)/,
+    /^\/?(?:admin\/v2\/)?#(?:library|sources|jobs|system|performers|schedules)(?:[?&/]|$)/,
     /^\/admin\/v2\/\?source_id=[A-Za-z0-9%._~-]+#sources$/,
     /^\/admin\/v2\/\?job_id=[A-Za-z0-9%._~-]{1,128}#jobs$/,
-    /^\/admin\/v2\/\?quality_kind=(?:missing_metadata|missing_nfo|invalid_nfo|nfo_metadata_mismatch|missing_artwork)#quality$/,
     /^\/admin\/v2\/\?job_state=(?:active|queued|processing|done|failed|cancelled)#jobs$/,
     /^\/admin\/v2\/\?job_state=(?:active|queued|processing|done|failed|cancelled)&job_action=[A-Za-z0-9%._~-]{1,64}#jobs$/
   ];

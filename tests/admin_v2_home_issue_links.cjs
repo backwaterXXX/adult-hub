@@ -231,7 +231,7 @@ const issues = [
   { kind: 'job_stalled', severity: 'high', title: 'Task may be stalled', action: { label: 'Open task details', route: '/admin/v2/?job_id=task-10#jobs' } },
   { kind: 'unavailable_video', severity: 'medium', title: 'Unavailable video', action: { label: 'Review unavailable', route: '/admin/v2/#library?availability=unavailable' } },
   { kind: 'quality_finding', severity: 'medium', title: 'NFO metadata differs', count: 7,
-    action: { label: 'Review findings', route: '/admin/v2/?quality_kind=nfo_metadata_mismatch#quality' } },
+    action: { label: 'Open System status', route: '/admin/v2/#system' } },
   { kind: 'backup', severity: 'high', title: 'Database backup is overdue', action: { label: 'Review backups', route: '/admin/v2/#system?tab=backups' } },
   { kind: 'system', severity: 'low', title: 'Unsafe external issue', action: { label: 'Open external site', route: 'https://example.invalid/' } },
 ];
@@ -252,7 +252,7 @@ const problemSummary = {
       action: { label: 'Review backups', route: '/admin/v2/#system?tab=backups' } },
     { kind: 'quality_finding', operation_id: 'video-9', severity: 'medium', label: 'NFO metadata differs',
       occurrences: 7, objects: 7, last_seen: '2026-10-14T07:00:00+00:00',
-      action: { label: 'Review findings', route: '/admin/v2/?quality_kind=nfo_metadata_mismatch#quality' } },
+      action: { label: 'Open System status', route: '/admin/v2/#system' } },
     { kind: 'sync_backlog', operation_id: 'sync', severity: 'medium', label: 'Sync queue is old',
       occurrences: 40, objects: 1, last_seen: '2026-10-14T06:00:00+00:00',
       action: { label: 'Review queue', route: '/admin/v2/?job_state=queued&job_action=sync#jobs' } },
@@ -451,7 +451,7 @@ const context = {
     ['Open task: Task failed', '/admin/v2/?job_id=task-9#jobs'],
     ['Open task details: Task may be stalled', '/admin/v2/?job_id=task-10#jobs'],
     ['Review unavailable: Unavailable video', '/admin/v2/#library?availability=unavailable'],
-    ['Review findings: NFO metadata differs', '/admin/v2/?quality_kind=nfo_metadata_mismatch#quality'],
+    ['Open System status: NFO metadata differs', '/admin/v2/#system'],
     ['Review backups: Database backup is overdue', '/admin/v2/#system?tab=backups'],
   ], 'unsafe external actions must not become links');
   assert.equal(elements.get('issueCount').textContent, `Showing ${issues.length} issues.`,
