@@ -12,15 +12,12 @@
   <script defer src="/admin/assets-v2/jobs.js"></script>
   <script defer src="/admin/assets-v2/performers.js"></script>
   <script defer src="/admin/assets-v2/sources.js"></script>
-  <script defer src="/admin/assets-v2/audits.js"></script>
+  <script defer src="/admin/assets-v2/backups.js"></script>
   <script defer src="/admin/assets-v2/quality.js"></script>
   <script defer src="/admin/assets-v2/diagnostics.js"></script>
   <script defer src="/admin/assets-v2/maintenance.js"></script>
   <script defer src="/admin/assets-v2/quarantine.js"></script>
   <script defer src="/admin/assets-v2/schedules.js"></script>
-  <script defer src="/admin/assets-v2/activity.js"></script>
-  <script defer src="/admin/assets-v2/linkcheck.js"></script>
-  <script defer src="/admin/assets-v2/enrichment.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -57,6 +54,8 @@
 
       <div class="content-wrap">
         <div id="liveMessage" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+        <div id="taskReceipt" class="state-banner" role="status" hidden></div>
+        <div id="legacyScreenNotice" class="state-banner" role="status" hidden></div>
         <section class="view" data-view="start" aria-labelledby="pageTitle">
           <div class="page-heading">
             <div><p class="eyebrow">OVERVIEW</p><h1 id="pageTitle">Overview</h1><p class="page-intro">Catalog size, synchronization, tasks and open problems at a glance.</p></div>
@@ -212,155 +211,45 @@
         <section class="view" data-view="operational" hidden aria-labelledby="operationalTitle">
           <div class="page-heading"><div><p class="eyebrow" id="operationalEyebrow">OPERATIONS</p><h1 id="operationalTitle">Sources</h1><p class="page-intro" id="operationalIntro"></p></div></div>
           <nav class="section-tabs" id="systemSectionTabs" aria-label="System" hidden>
-            <a href="#system?tab=maintenance" data-system-tab="maintenance">Maintenance</a>
-            <a href="#system?tab=diagnostics" data-system-tab="diagnostics">Diagnostics</a>
+            <a href="#system" data-system-tab="status">Status</a>
             <a href="#system?tab=backups" data-system-tab="backups">Backups</a>
-            <a href="#system?tab=activity" data-system-tab="activity">Audit Log</a>
+            <a href="#system?tab=maintenance" data-system-tab="maintenance">Maintenance</a>
           </nav>
-          <details id="systemMoreTools" class="panel more-tools-panel" hidden>
-            <summary>More tools</summary>
-            <p class="page-intro">Administrative reports keep their current screens until the later stages move or remove them.</p>
-            <div class="more-tools-links">
-              <a href="#quality">Catalog Health reports</a>
-              <a href="#quality?tab=enrichment-progress">Enrichment progress</a>
-              <a href="#system?tab=linkcheck">Link-check report</a>
-            </div>
-          </details>
-          <section id="qualityView" class="panel operation-history-panel" hidden aria-labelledby="qualityTitle">
-            <nav class="section-tabs catalog-health-tabs" aria-label="Catalog Health">
-              <a href="#quality?tab=issues" data-section-tab="issues">Overview</a>
-              <a href="#quality?tab=enrichment-progress" data-section-tab="enrichment-progress">Enrichment progress</a>
-              <a href="#library?tab=duplicates" class="section-tab-crosslink">Duplicates</a>
-              <a href="#library?tab=quarantine" class="section-tab-crosslink">Quarantine</a>
-              <a href="#performers?tab=directory" class="section-tab-crosslink">Performer Directory</a>
-            </nav>
-            <section id="qualityOverview" class="quality-overview" aria-labelledby="qualityOverviewTitle"><div class="panel-heading"><div><p class="eyebrow">LATEST CHECK</p><h2 id="qualityOverviewTitle">Catalog status</h2><p id="qualityOverviewStatus" class="page-intro" role="status">Loading the latest complete audit…</p><p class="catalog-feedback">Daily metadata and file audits run automatically. Missing NFO files and available artwork are repaired in batches.</p></div><div class="diagnostics-actions"><button class="button button-primary" type="button" id="qualityRunOverviewAudit">Run full audit</button></div></div><div id="qualityOverviewCards" class="quality-summary" aria-label="Catalog findings summary"></div></section>
-            <details id="qualityAdvanced" class="quality-advanced"><summary>Audit details, metadata proposals and diagnostic tools</summary>
-            <div id="qualityIssuesPane">
-            <div class="panel-heading"><div><p class="eyebrow">CATALOG QUALITY</p><h2 id="qualityTitle">Metadata and file health</h2><p class="page-intro">Review missing catalog fields, NFO differences, missing artwork, and fingerprint coverage. PHASH is computed for only a subset of videos.</p></div><div class="diagnostics-actions"><label for="qualityAuditMode">Audit mode</label><select id="qualityAuditMode"><option value="metadata_quality">Metadata quality</option><option value="file_consistency">File consistency</option><option value="full" selected>Full audit</option></select><button class="button button-quiet" type="button" id="qualityRefresh">Refresh</button> <button class="button button-primary" type="button" id="qualityRunAudit">Run selected audit</button></div></div>
-            <div id="qualityFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading the latest complete audit…</div>
-            <div id="qualitySummary" class="quality-summary" aria-label="Quality issue counts"></div>
-            <section class="quality-history" aria-labelledby="qualityHistoryTitle">
-              <div class="quality-history-heading"><div><h3 id="qualityHistoryTitle">Quality trend</h3><p class="catalog-feedback">Compare the latest complete audits to track progress over time.</p></div></div>
-              <div id="qualityTrend" role="status" aria-live="polite"></div>
-              <div id="qualityHistory" class="quality-history-list" aria-label="Recent complete audits"></div>
-            </section>
-            <form id="qualityFilters" class="filter-bar quality-filter-bar">
-              <div class="filter-field"><label for="qualityKind">Category</label><select id="qualityKind"><option value="">All categories</option><option value="missing_metadata">Missing catalog fields</option><option value="missing_nfo">Missing NFO</option><option value="invalid_nfo">Invalid NFO</option><option value="nfo_metadata_mismatch">NFO metadata mismatch</option><option value="missing_artwork">Missing artwork</option></select></div>
-              <div class="filter-field"><label for="qualityField">Missing field</label><select id="qualityField"><option value="">All fields</option><option value="title">Title</option><option value="performers">Performers</option><option value="studio">Studio</option><option value="plot">Description</option><option value="thumbnail">Artwork</option></select></div>
-              <div class="filter-field"><label for="qualityStatus">Status</label><select id="qualityStatus"><option value="open" selected>Open</option><option value="acknowledged">Acknowledged</option><option value="resolved">Resolved</option><option value="all">All statuses</option></select></div>
-              <div class="jobs-filter-actions"><button class="button button-quiet" type="reset" id="qualityClear">Clear filters</button></div>
-            </form>
-            <div id="qualityActionFeedback" class="catalog-feedback" role="status" aria-live="polite" hidden></div>
-            <div id="qualityRows" class="operation-history-list" aria-live="polite"></div>
-            <nav id="qualityPagination" class="pagination" aria-label="Quality issue pages" hidden></nav>
-            <section id="catalogAuditHistory" class="quality-history" aria-labelledby="auditTitle">
-              <div class="panel-heading"><div><p class="eyebrow">AUDIT HISTORY</p><h2 id="auditTitle" tabindex="-1">Audit runs and file findings</h2><p class="page-intro">Review metadata and file consistency runs. Full audits consist of separate metadata and file jobs, shown with their scope and job IDs.</p></div><button class="button button-quiet" type="button" id="auditRefresh">Refresh audit history</button></div>
-              <div id="auditFeedback" class="catalog-feedback" role="status">Audit history will appear here.</div>
-              <div id="auditActionFeedback" class="catalog-feedback" role="status" aria-live="polite" hidden></div>
-              <div id="auditRows" class="operation-history-list" aria-live="polite"></div>
-              <div id="auditFindings" class="operation-history-list" aria-live="polite"></div>
-            </section>
-            <section class="panel operation-history-panel" aria-labelledby="linkcheckTitle">
-              <div class="panel-heading"><div><p class="eyebrow">STREAM HEALTH</p><h2 id="linkcheckTitle">Link-check report</h2><p class="page-intro">The report summarizes sampled stream checks. It does not run during a regular sync.</p></div><button class="button button-quiet" type="button" id="linkcheckRefresh">Refresh report</button></div>
-              <div id="linkcheckFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading link-check report…</div>
-              <div id="linkcheckRows" class="operation-history-list" aria-live="polite"></div>
-              <details id="linkcheckSamples" class="linkcheck-samples" hidden>
-                <summary id="linkcheckSamplesSummary">Recent sample results</summary>
-                <div id="linkcheckSampleRows" class="operation-history-list" aria-live="polite"></div>
-              </details>
-              <p class="panel-footnote">Run a report from the sync container: <code>docker compose exec sync python linkcheck.py</code>. Optional: <code>docker compose exec sync python linkcheck.py --sample 5 --provider telegram</code>.</p>
-            </section>
-            </div>
-            </details>
-            <div id="qualityEnrichmentPane" hidden>
-              <section class="panel operation-history-panel" aria-labelledby="enrichmentTitle">
-                <div class="panel-heading"><div><p class="eyebrow">AUTOMATED CATALOG</p><h2 id="enrichmentTitle">External metadata progress</h2><p class="page-intro">See how much of the catalog the external sources have checked. Suggestions they produced are reviewed in <a href="#library?tab=suggestions">Library → Metadata suggestions</a>.</p></div><div class="diagnostics-actions"><button class="button button-primary" type="button" id="enrichmentScan">Run bounded scan</button><button class="button button-quiet" type="button" id="enrichmentRefresh">Refresh progress</button></div></div>
-                <div class="enrichment-guide" aria-label="How enrichment works">
-                  <div><strong>1. Check progress</strong><span>See how much of the catalog each source has checked and whether any lookups need attention.</span></div>
-                  <div><strong>2. Run a scan</strong><span>Start a scan now, or let the active sync runner continue automatically on its configured schedule.</span></div>
-                  <div><strong>3. Review suggestions</strong><span>Open <a href="#library?tab=suggestions">Library → Metadata suggestions</a> to compare proposed video metadata, edit it, preview the changes, and approve or reject each suggestion.</span></div>
-                </div>
-                <div id="enrichmentFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading metadata progress…</div>
-                <p id="enrichmentFreshness" class="page-intro enrichment-freshness" role="note" data-state="unknown">Waiting for first progress refresh.</p>
-                <p id="enrichmentFreshnessAnnouncement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
-                <div id="enrichmentSummary" class="quality-summary" aria-label="External metadata queue totals"></div>
-                <div class="enrichment-schedule"><p id="enrichmentSchedule" class="page-intro" role="note"></p>
-                <p id="enrichmentBatchLimits" class="page-intro" role="note"></p>
-                </div>
-                <div class="enrichment-list-heading"><h3>Progress by source</h3><p>Checked counts are per source, so the same item can appear in more than one row.</p></div>
-                <div id="enrichmentRows" class="enrichment-source-list" aria-live="polite"></div>
-                <details class="enrichment-help"><summary>How to read these numbers</summary><p>One scan processes one bounded batch per provider. The configured sync cadence is shown below; when the sync runner is active, later runs continue the queues automatically. Remaining counts are estimates because provider eligibility and retries vary.</p><p><strong>Found</strong> means a match was returned; <strong>no match</strong> means none was found; <strong>errors</strong> are current failed outcomes. <strong>Due</strong> counts source attempts ready for retry or refresh. Checked includes attempts regardless of outcome. Progress refreshes every 15 seconds while this view is active. Entity names and source error details are not shown.</p></details>
-              </section>
-            </div>
+          <section id="systemStatusView" class="panel operation-history-panel" hidden aria-labelledby="systemStatusTitle">
+            <div class="panel-heading"><div><p class="eyebrow">SYSTEM STATUS</p><h2 id="systemStatusTitle">Service status</h2><p class="page-intro">Current checks for the database, resolver, workers and Jellyfin.</p></div><button class="button button-quiet" type="button" id="systemStatusRefresh">Refresh status</button></div>
+            <div id="writeAccessNotice" class="state-banner" hidden role="status"></div>
+            <p id="systemStatusChecked" class="panel-footnote">Last checked: Unavailable</p>
+            <div id="systemProbeRows" class="operation-history-list" aria-live="polite"></div>
+            <section class="system-failures" aria-labelledby="systemFailuresTitle"><div class="panel-heading"><div><p class="eyebrow">RECENT TASK ERRORS</p><h3 id="systemFailuresTitle">Unresolved failures</h3><p class="page-intro">The ten latest failed tasks, when available.</p></div></div><div id="systemRecentFailures" class="operation-history-list" aria-live="polite"></div></section>
           </section>
           <section id="systemBackupView" class="panel operation-history-panel" hidden aria-labelledby="backupTitle">
-            <div class="panel-heading"><div><p class="eyebrow">DATABASE BACKUPS</p><h2 id="backupTitle">Backup inventory</h2><p class="page-intro">Database snapshots do not include the media library, NFO artwork, or application settings.</p></div><div><button class="button button-quiet" type="button" id="backupRefresh">Refresh backups</button> <button class="button button-primary" type="button" id="backupCreate">Create database backup</button></div></div>
+            <div class="panel-heading"><div><p class="eyebrow">DATABASE BACKUPS</p><h2 id="backupTitle">Backups</h2><p class="page-intro">Database snapshots do not include the media library, artwork, or application configuration.</p></div><div><button class="button button-quiet" type="button" id="backupRefresh">Refresh backups</button> <button class="button button-primary" type="button" id="backupCreate">Create database backup</button></div></div>
             <div id="backupFeedback" class="catalog-feedback" role="status">Loading backup inventory…</div>
             <div id="backupRows" class="operation-history-list" aria-live="polite"></div>
           </section>
-          <section id="systemDiagnosticsView" class="panel operation-history-panel" hidden aria-labelledby="diagnosticsTitle">
-            <div class="panel-heading"><div><p class="eyebrow">PLAYBACK DIAGNOSTICS</p><h2 id="diagnosticsTitle">Resolver playback reports</h2><p class="page-intro">A resolver probe describes the server-side path; it does not prove playback on a particular device.</p></div><div class="diagnostics-actions"><label for="diagnosticsExportDays">Export range</label><select id="diagnosticsExportDays"><option value="1">Last 24 hours</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option></select><button class="button button-quiet" type="button" id="diagnosticsExport">Download report</button><button class="button button-quiet" type="button" id="diagnosticsEnable">Enable for 24 hours</button> <button class="button button-quiet" type="button" id="diagnosticsDisable">Disable</button> <button class="button button-quiet" type="button" id="diagnosticsClear">Clear reports</button> <button class="button button-quiet" type="button" id="diagnosticsRefresh">Refresh</button></div></div>
-            <div id="diagnosticsFeedback" class="catalog-feedback" role="status">Loading diagnostic status…</div>
-            <section class="diagnostics-probe-section" aria-labelledby="serviceProbeTitle"><h3 id="serviceProbeTitle">Service and HTTP probes</h3><p class="detail-muted">Bounded checks for configured dependencies. Probe output excludes response bodies, credentials, and target URLs.</p><div id="diagnosticsProbeRows" class="operation-history-list" aria-live="polite"></div></section>
-            <div id="diagnosticsSummary" class="operation-history-list"></div>
-            <div id="diagnosticsRows" class="operation-history-list" aria-live="polite"></div>
-            <pre id="diagnosticsDetail" class="diagnostic-detail" hidden></pre>
-          </section>
-
           <section id="systemMaintenanceView" class="panel operation-history-panel" hidden aria-labelledby="maintenanceTitle">
-            <div class="panel-heading"><div><p class="eyebrow">QUICK ACTIONS</p><h2 id="maintenanceTitle">Maintenance actions</h2><p class="page-intro">Clear resolver cache or request a Jellyfin refresh. A refresh request does not confirm that Jellyfin imported the changes.</p></div></div>
+            <div class="panel-heading"><div><p class="eyebrow">MAINTENANCE</p><h2 id="maintenanceTitle">Maintenance</h2><p class="page-intro">Jellyfin refresh is an accepted request; it does not confirm that an import completed.</p></div></div>
             <div class="diagnostics-actions">
-              <a class="button button-quiet" href="#quality?tab=issues">Catalog Health audits</a>
-              <a class="button button-quiet" href="#schedules">Manage schedules</a>
               <button class="button button-primary" type="button" id="triggerFullSync">Run full sync</button>
               <button class="button button-quiet" type="button" id="clearResolverCache">Clear resolver cache</button>
-              <button class="button button-quiet" type="button" id="refreshJellyfinLibrary">Refresh Jellyfin library</button>
+              <button class="button button-quiet" type="button" id="refreshJellyfinLibrary">Request Jellyfin refresh</button>
               <button class="button button-quiet" type="button" id="refreshJellyfinCollections">Update collections</button>
             </div>
             <div id="maintenanceFeedback" class="catalog-feedback" role="status" aria-live="polite">Choose an action to continue.</div>
-            <div id="writeAccessNotice" class="state-banner" hidden role="status"></div>
-            <section class="panel service-panel" aria-labelledby="systemServiceTitle">
-              <div class="panel-heading"><div><p class="eyebrow">SERVICES</p><h3 id="systemServiceTitle">Connections</h3></div><span class="panel-icon" aria-hidden="true">⌁</span></div>
-              <div id="serviceList" class="service-list"></div>
-              <p class="panel-footnote">Data is from the latest admin status check.</p>
-            </section>
           </section>
-
-          <section id="systemActivityView" class="panel operation-history-panel" hidden aria-labelledby="activityTitle">
-            <div class="panel-heading"><div><p class="eyebrow">ADMIN HISTORY</p><h2 id="activityTitle">Audit Log</h2><p class="page-intro">Successful administrative write requests and allowlisted applied field changes. Accepted tasks may still be running. Shared access does not identify an individual operator. Request bodies and credentials are never stored.</p></div><button class="button button-quiet" type="button" id="activityRefresh">Refresh activity</button></div>
-            <form id="activityFilters" class="filter-bar">
-              <div class="filter-field"><label for="activityMethod">Method</label><select id="activityMethod"><option value="">All methods</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="PATCH">PATCH</option><option value="DELETE">DELETE</option></select></div>
-              <div class="filter-field"><label for="activityOutcome">Result</label><select id="activityOutcome"><option value="">All results</option><option value="accepted">Accepted by queue</option><option value="completed">Request completed</option></select></div>
-              <div class="filter-field"><label for="activityArea">Section</label><select id="activityArea"><option value="">All sections</option><option value="library">Library</option><option value="performers">Performers</option><option value="quality">Catalog Health</option><option value="sources">Sources</option><option value="jobs">Jobs &amp; Automation</option><option value="system">System</option></select></div>
-            </form>
-            <div id="activityFeedback" class="catalog-feedback" role="status">Loading admin activity…</div>
-            <div id="activityRows" class="operation-history-list" aria-live="polite"></div>
-            <div id="activityPagination" class="pagination" hidden><button class="button button-quiet" type="button" id="activityPrev">← Previous</button><span id="activityPageInfo">Page 1</span><button class="button button-quiet" type="button" id="activityNext">Next →</button></div>
-            <div class="panel-heading"><div><p class="eyebrow">FIELD HISTORY</p><h3>Applied changes</h3><p class="page-intro">Metadata changes are recorded when the worker commits them. Source settings, queued operation plans and schedule changes are recorded with their state update.</p></div><button class="button button-quiet" type="button" id="activityChangeRefresh">Refresh changes</button></div>
-            <form id="activityChangeFilters" class="filter-bar">
-              <div class="filter-field"><label for="activityChangeType">Change type</label><select id="activityChangeType"><option value="">All changes</option><option value="metadata_update">Metadata revision</option><option value="source_settings_update">Source settings</option><option value="admin_operation_queued">Bulk operation plan</option><option value="schedule_created">Schedule created</option><option value="schedule_enabled">Schedule updated</option><option value="performer_profile_update">Performer profile</option></select></div>
-              <div class="filter-field"><label for="activityObjectType">Object</label><select id="activityObjectType"><option value="">All objects</option><option value="video">Video</option><option value="source_configuration">Source configuration</option><option value="operation_plan">Operation plan</option><option value="schedule">Schedule</option><option value="performer">Performer</option></select></div>
-              <div class="filter-search"><label for="activityChangeQuery">Object or task ID</label><input id="activityChangeQuery" type="search" maxlength="100" autocomplete="off"></div>
-              <div class="jobs-filter-actions"><button class="button button-quiet" type="submit">Apply filters</button><button class="button button-quiet" type="reset" id="activityChangeClear">Clear</button></div>
-            </form>
-            <div id="activityChangeFeedback" class="catalog-feedback" role="status">Loading applied changes…</div>
-            <div id="activityChangeRows" class="operation-history-list" aria-live="polite"></div>
-            <div id="activityChangePagination" class="pagination" hidden><button class="button button-quiet" type="button" id="activityChangePrev">← Previous</button><span id="activityChangePageInfo">Page 1</span><button class="button button-quiet" type="button" id="activityChangeNext">Next →</button></div>
-          </section>
-
           <div id="jobsView" hidden>
             <div id="jobsNotice" class="state-banner jobs-notice" hidden role="status"></div>
-            <nav class="section-tabs" aria-label="Jobs &amp; Automation">
-              <a href="#jobs?tab=tasks" data-jobs-tab="tasks">Tasks</a>
+            <nav class="section-tabs" aria-label="Tasks">
+              <a href="#jobs?tab=tasks" data-jobs-tab="tasks">Active</a>
+              <a href="#jobs?tab=history" data-jobs-tab="history">History</a>
               <a href="#jobs?tab=bulk" data-jobs-tab="bulk">Bulk Operations</a>
             </nav>
             <div data-jobs-pane="tasks">
             <section class="panel jobs-panel">
               <form id="jobsFilters" class="filter-bar jobs-filter-bar">
-                <div class="filter-field"><label for="jobQueueFilter">Queue</label><select id="jobQueueFilter" name="queue"><option value="all">All task queues</option><option value="jobs">Admin tasks</option><option value="phash">pHash and thumbnails</option></select></div>
-                <div class="filter-field"><label for="jobStateFilter">State</label><select id="jobStateFilter" name="state"><option value="">All states</option><option value="active">Active</option><option value="queued">Queued</option><option value="processing">Processing</option><option value="done">Done</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></div>
-                <div class="filter-field"><label for="jobActionFilter">Action</label><select id="jobActionFilter" name="action"><option value="">All actions</option><option value="phash_generation">Generate pHash</option><option value="thumbnail_generation">Generate thumbnail</option><option value="phash_thumbnail_legacy">pHash and thumbnail (legacy)</option><option value="duplicate_reconcile">Duplicate reconciliation</option><option value="hide">Hide duplicates</option><option value="dismiss">Dismiss pair</option><option value="undo">Undo hide</option><option value="undismiss">Undo dismissal</option><option value="performer_merge">Merge performers</option><option value="performer_refresh">Refresh performer metadata</option><option value="metadata_backfill">External metadata scan</option><option value="telegram_fingerprint_scan">Scene fingerprint scan</option><option value="artwork_download">Download artwork</option><option value="artwork_generate">Generate artwork</option><option value="collections_refresh">Update collections</option><option value="quarantine">Quarantine</option><option value="orphan_file_operation">Orphan file quarantine or restore</option><option value="metadata_update">Update metadata</option><option value="availability_check">Check availability</option><option value="catalog_full_audit">Catalog health audit schedule</option><option value="consistency_audit">Consistency audit</option><option value="metadata_quality_audit">Metadata quality audit</option><option value="audit_repair_nfo">Repair audit files</option><option value="audit_import_refresh">Request Jellyfin reimport</option><option value="backup_create">Create backup</option><option value="backup_restore_test">Test backup restore</option><option value="history_cleanup">Backup history cleanup</option><option value="performer_catalog">StashDB performer catalog</option><option value="scene_backfill">Scene identification</option><option value="telegram_title_cleanup">Telegram title cleanup</option><option value="sync">Sync</option></select></div>
+                <div class="filter-field"><label for="jobQueueFilter">Queue</label><select id="jobQueueFilter" name="queue"><option value="all">All task queues</option><option value="jobs">Admin tasks</option><option value="phash">pHash and thumbnails</option><option value="visual">Visual comparisons</option></select></div>
+                <div class="filter-field"><label for="jobStateFilter">State</label><select id="jobStateFilter" name="state"><option value="active">All active</option><option value="history">All history</option><option value="queued">Queued</option><option value="processing">Running</option><option value="done">Succeeded</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></div>
+                <div class="filter-field"><label for="jobActionFilter">Action</label><select id="jobActionFilter" name="action"><option value="">All actions</option><option value="phash_generation">Generate pHash</option><option value="thumbnail_generation">Generate thumbnail</option><option value="phash_thumbnail_legacy">pHash and thumbnail (legacy)</option><option value="duplicate_reconcile">Duplicate reconciliation</option><option value="hide">Hide duplicates</option><option value="dismiss">Dismiss pair</option><option value="undo">Undo hide</option><option value="undismiss">Undo dismissal</option><option value="performer_merge">Merge performers</option><option value="performer_refresh">Refresh performer metadata</option><option value="metadata_backfill">External metadata scan</option><option value="telegram_fingerprint_scan">Scene fingerprint scan</option><option value="artwork_download">Download artwork</option><option value="artwork_generate">Generate artwork</option><option value="collections_refresh">Update collections</option><option value="quarantine">Quarantine</option><option value="orphan_file_operation">Orphan file quarantine or restore</option><option value="metadata_update">Update metadata</option><option value="availability_check">Check availability</option><option value="catalog_full_audit">Full catalog audit</option><option value="consistency_audit">Consistency audit</option><option value="metadata_quality_audit">Metadata quality audit</option><option value="audit_repair_nfo">Repair audit files</option><option value="audit_import_refresh">Request Jellyfin reimport</option><option value="backup_create">Create backup</option><option value="backup_restore_test">Test backup restore</option><option value="history_cleanup">Backup history cleanup</option><option value="performer_catalog">StashDB performer catalog</option><option value="scene_backfill">Scene identification</option><option value="telegram_title_cleanup">Telegram title cleanup</option><option value="visual_compare">Compare video frames</option><option value="visual_signature">Build frame signatures</option><option value="sync">Sync</option></select></div>
                 <div class="jobs-filter-actions"><button class="button button-quiet" type="button" id="jobsRefresh"><span aria-hidden="true">↻</span> Refresh</button><button class="button button-quiet" type="button" id="jobsClearFilters">Clear filters</button></div>
               </form>
               <div class="catalog-toolbar"><div id="jobsFeedback" class="catalog-feedback" role="status">Ready to load jobs.</div></div>
@@ -400,8 +289,9 @@
             </section>
 
           <div id="sourcesView" hidden>
+            <nav class="section-tabs" aria-label="Sources"><a href="#sources" data-sources-tab="channels">Channels</a><a href="#sources?tab=history" data-sources-tab="history">Sync history</a></nav>
             <div id="sourcesNotice" class="state-banner sources-notice" hidden role="status"></div>
-            <section class="panel sources-panel">
+            <section class="panel sources-panel" id="sourceChannelsPane">
               <form id="sourcesFilters" class="filter-bar sources-filter-bar">
                 <div class="filter-search"><label for="sourcesQuery">Search</label><div class="input-with-icon"><span aria-hidden="true">⌕</span><input id="sourcesQuery" type="search" name="q" placeholder="Channel, studio, or provider" autocomplete="off"></div></div>
                 <div class="filter-field"><label for="sourcesStatusFilter">Status</label><select id="sourcesStatusFilter" name="status"><option value="">All statuses</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="succeeded">Latest run succeeded</option><option value="failed">Latest run failed</option><option value="never">Never synced</option></select></div>
@@ -413,7 +303,6 @@
                 <table class="video-table sources-table">
                   <thead><tr>
                     <th aria-sort="ascending"><button class="table-sort-button" type="button" data-source-sort="channel">Channel <span class="table-sort-indicator" aria-hidden="true">↑</span></button></th>
-                    <th aria-sort="none"><button class="table-sort-button" type="button" data-source-sort="provider">Provider <span class="table-sort-indicator" aria-hidden="true">↕</span></button></th>
                     <th aria-sort="none"><button class="table-sort-button" type="button" data-source-sort="status">Status <span class="table-sort-indicator" aria-hidden="true">↕</span></button></th>
                     <th aria-sort="none"><button class="table-sort-button" type="button" data-source-sort="videos">Videos <span class="table-sort-indicator" aria-hidden="true">↕</span></button></th>
                     <th aria-sort="none"><button class="table-sort-button" type="button" data-source-sort="latest">Latest result <span class="table-sort-indicator" aria-hidden="true">↕</span></button></th>
@@ -425,8 +314,8 @@
               </div>
               <nav id="sourcesPagination" class="pagination" aria-label="Source pages" hidden></nav>
             </section>
-            <section class="panel source-run-history-panel" aria-labelledby="sourceRunHistoryTitle">
-              <div class="panel-heading"><div><p class="eyebrow">SYNCHRONIZATION</p><h2 id="sourceRunHistoryTitle">Recent sync runs</h2><p class="page-intro">Review recent outcomes, timing, source failures, and HTTP retry counts.</p></div></div>
+            <section class="panel source-run-history-panel" id="sourceHistoryPane" hidden aria-labelledby="sourceRunHistoryTitle">
+              <div class="panel-heading"><div><p class="eyebrow">SYNCHRONIZATION</p><h2 id="sourceRunHistoryTitle">Recent sync runs</h2><p class="page-intro">Review recent outcomes, timing, source failures, and HTTP retry counts.</p></div><button class="button button-quiet" type="button" id="sourcesHistoryRefresh">Refresh</button></div>
               <div id="sourcesHistoryFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading sync history…</div>
               <div id="sourcesHistoryRows" class="operation-history-list" aria-live="polite"></div>
               <nav id="sourcesHistoryPagination" class="pagination" aria-label="Sync history pages" hidden></nav>

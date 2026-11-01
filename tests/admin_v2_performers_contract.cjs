@@ -59,7 +59,7 @@ function find(root, predicate) {
 function deferred() { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; }
 
 (async () => {
-  const ids = ['performerReviewPane', 'performersFeedback', 'performerProposalRows', 'performersCount', 'performersState', 'performersRefresh', 'performersReconcile', 'performerProposalPagination',
+  const ids = ['taskReceipt', 'performerReviewPane', 'performersFeedback', 'performerProposalRows', 'performersCount', 'performersState', 'performersRefresh', 'performersReconcile', 'performerProposalPagination',
     'fuzzyCategory', 'fuzzyRows', 'fuzzyPagination', 'fuzzyPageInfo', 'fuzzyPrev', 'fuzzyNext', 'fuzzyFeedback',
     'fuzzyThreshold', 'fuzzyScan', 'fuzzyReviewSelected', 'fuzzySelectionStatus', 'fuzzyMergeDialog', 'fuzzyMergeContent', 'fuzzyMergeActions', 'fuzzyMergeClose'];
   const elements = Object.fromEntries(ids.map(id => [id, new Element(id === 'fuzzyMergeDialog' ? 'dialog' : 'div')]));
@@ -119,7 +119,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
           const groupKey = decodeURIComponent(groupMatch[2]);
           const index = proposals.findIndex(item => item.key === groupKey);
           if (index >= 0) proposals.splice(index, 1);
-          return { ok: true, reviewed: 1 };
+          return { ok: true, reviewed: 1, refresh_job_ids: payload.action === 'approve' ? ['performer-refresh-job'] : [] };
         }
         const reviewMatch = path.match(/\/proposals\/(\d+)$/);
         if (reviewMatch) {
@@ -181,6 +181,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   const approve = card.querySelectorAll('button').find(button => button.textContent.startsWith('Apply to next'));
   approve.focus();
   await approve.listeners.click();
+  assert.ok(find(elements.taskReceipt, item => item.tagName === 'a' && item.href.includes('job_id=performer-refresh-job')), 'recognition approval exposes its background refresh task');
   assert.match(calls.find(call => call.path.includes('/proposal-groups/uncatalogued_credit/group-51')).path, /\/proposal-groups\/uncatalogued_credit\/group-51$/);
   assert.equal(calls.find(call => call.path.includes('/proposal-groups/uncatalogued_credit/group-51')).payload.canonical, 'Local performer');
   card = elements.performerProposalRows.children.at(-1);
@@ -302,9 +303,9 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   selectedCheckbox.checked = true; selectedCheckbox.listeners.change();
   await elements.fuzzyReviewSelected.listeners.click();
   assert.match(elements.fuzzyFeedback.textContent, /1 of 1 selected merges queued/);
-  const queuedBadge = find(elements.fuzzyRows, item => item.className.includes('pill-good'));
+  const queuedBadge = find(elements.fuzzyRows, item => item.className.includes('status-pill') && item.textContent === 'Queued');
   assert.ok(queuedBadge, 'a reviewed selection renders a queued status badge');
-  assert.match(queuedBadge.textContent, /job-direct/);
+  assert.ok(find(elements.fuzzyRows, item => item.tagName === 'a' && item.href.includes('job_id=job-direct')), 'the queued merge links to its task');
 
   await elements.fuzzyScan.listeners.click();
   const dismissTarget = find(elements.fuzzyRows, item => item.tagName === 'button' && item.textContent === 'Dismiss');

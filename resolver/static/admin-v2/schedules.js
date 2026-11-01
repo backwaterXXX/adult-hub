@@ -30,7 +30,7 @@
 
   function timeNode(value, timezone = 'Europe/Warsaw') {
     const date = value ? new Date(value) : null;
-    if (!date || Number.isNaN(date.getTime())) return node('span', 'schedule-unknown', '—');
+    if (!date || Number.isNaN(date.getTime())) return node('span', 'schedule-unknown', 'Unavailable');
     const time = node('time', '', date.toLocaleString('en-GB', { timeZone: timezone }));
     time.dateTime = date.toISOString();
     return time;
@@ -89,7 +89,7 @@
   }
 
   function makeScheduleEditor(item, feedback, editorRow, editButton) {
-    const cell = node('td'); cell.colSpan = 6;
+    const cell = node('td'); cell.colSpan = 5;
     const editor = node('div', 'schedule-editor');
     const heading = node('div', 'schedule-editor-heading');
     heading.append(node('strong', '', 'Edit cron schedule'), node('span', 'schedule-timezone', item.timezone || 'Europe/Warsaw'));
@@ -229,27 +229,39 @@
     const taskCell = node('td', 'schedule-task-cell');
     taskCell.dataset.label = 'Task';
     const taskName = node('strong', 'schedule-task-name', item.name);
-    const label = group === 'system' ? 'System task' : (taskNames[item.action] || item.action || 'Admin task');
     taskCell.append(taskName);
-    if (item.task_description) taskCell.append(node('small', 'schedule-task-description', item.task_description));
-    taskCell.append(node('small', 'schedule-task-kind', label));
-    if (item.needs_conversion) taskCell.append(node('span', 'schedule-conversion', 'Conversion needed'));
-    if (item.video_count) taskCell.append(node('small', 'schedule-task-kind', `${item.video_count} video IDs`));
-    if (item.last_job_id && /^[A-Za-z0-9_-]{1,128}$/.test(item.last_job_id)) {
-      const link = node('a', 'schedule-task-link', 'Open latest task');
-      link.href = `/admin/v2/?job_id=${encodeURIComponent(item.last_job_id)}#jobs`;
-      link.setAttribute('aria-label', `Open task for ${item.name}`);
-      taskCell.append(link);
-    }
-    const cronCell = node('td', 'schedule-cron-cell');
-    cronCell.dataset.label = 'Cron';
+    const enabledCell = node('td', 'schedule-enabled-cell');
+    enabledCell.dataset.label = 'Enabled';
+    enabledCell.append(node('span', `schedule-status ${item.enabled === false ? 'is-disabled' : 'is-ok'}`, item.enabled === false ? 'Disabled' : 'Enabled'));
+    if (item.status === 'running') enabledCell.append(node('small', 'schedule-task-kind', 'Running'));
+    const descriptionCell = node('td', 'schedule-description-cell');
+    descriptionCell.dataset.label = 'Description';
+    descriptionCell.append(node('span', 'schedule-task-description', item.task_description || taskNames[item.action] || (group === 'system' ? 'System task' : item.action || 'Scheduled task')));
+    const detail = node('details', 'schedule-row-details');
+    detail.append(node('summary', '', 'Details'));
+    const detailList = node('dl', 'schedule-detail-list');
     const scheduleZone = item.timezone || 'Europe/Warsaw';
-    if (item.cron_expression) cronCell.append(node('code', '', item.cron_expression), node('small', '', scheduleZone));
-    else cronCell.append(node('span', 'schedule-unknown', 'Requires conversion'));
-    const statusCell = node('td');
-    statusCell.dataset.label = 'Status';
-    statusCell.append(node('span', `schedule-status ${statusClass(item)}`, statusName(item)));
-    if (item.details) statusCell.append(node('small', 'schedule-task-kind', item.details));
+    const addDetail = (label, value) => {
+      if (value === undefined || value === null || value === '') return;
+      detailList.append(node('dt', '', label), node('dd', '', String(value)));
+    };
+    addDetail('Task type', group === 'system' ? item.action || item.id : taskNames[item.action] || item.action);
+    addDetail('Schedule', item.cron_expression || cadence(item));
+    addDetail('Time zone', scheduleZone);
+    addDetail('Video IDs', Array.isArray(item.video_ids) ? item.video_ids.join(', ') : item.video_count ? `${item.video_count} video IDs` : 'None');
+    addDetail('Last result', resultNames[item.last_result] || item.last_result || item.status);
+    if (item.details) addDetail('Details', item.details);
+    if (item.progress_details) addDetail('Progress', item.progress_details);
+    if (item.error || item.last_error) addDetail('Last error', item.error || item.last_error);
+    if (item.last_run_at) addDetail('Last started', new Date(item.last_run_at).toLocaleString('en-GB', { timeZone: scheduleZone }));
+    if (item.last_finished_at) addDetail('Last finished', new Date(item.last_finished_at).toLocaleString('en-GB', { timeZone: scheduleZone }));
+    if (item.last_job_id && /^[A-Za-z0-9_-]{1,128}$/.test(item.last_job_id)) {
+      const taskLink = node('a', 'schedule-task-link', 'Open latest task');
+      taskLink.href = `/admin/v2/?job_id=${encodeURIComponent(item.last_job_id)}#jobs`;
+      taskLink.setAttribute('aria-label', `Open task for ${item.name}`);
+      detail.append(taskLink);
+    }
+    detail.append(detailList); taskCell.append(detail);
     const nextCell = node('td', 'schedule-time-cell'); nextCell.append(timeNode(item.next_run_at, scheduleZone));
     nextCell.dataset.label = 'Next run';
     const actionCell = node('td', 'schedule-actions-cell');
@@ -288,7 +300,7 @@
       } catch (error) { feedback.textContent = `Could not run the schedule. ${error.message}`; run.disabled = false; }
     });
     actionCell.append(editButton, toggle, run);
-    row.append(taskCell, cronCell, statusCell, nextCell, finishedCell(item, scheduleZone), actionCell);
+    row.append(taskCell, enabledCell, descriptionCell, nextCell, actionCell);
     const editorRow = node('tr', 'schedule-editor-row'); editorRow.hidden = true;
     const editor = makeScheduleEditor({ ...item, group }, feedback, editorRow, editButton);
     return { row, editorRow, editor };
@@ -299,7 +311,7 @@
     const table = node('table', 'schedule-table');
     const head = node('thead');
     const header = node('tr');
-    ['Task', 'Cron', 'Status', 'Next run', 'Finished', 'Actions'].forEach(label => header.append(node('th', '', label)));
+    ['Task', 'Enabled', 'Description', 'Next run', 'Actions'].forEach(label => header.append(node('th', '', label)));
     head.append(header);
     const body = node('tbody');
     for (const item of items) {
@@ -321,21 +333,23 @@
     // give the room to their own description instead of repeating the expression.
     const taskCell = node('td', 'schedule-task-cell');
     taskCell.dataset.label = 'Task';
-    taskCell.colSpan = 2;
     taskCell.append(node('strong', 'schedule-task-name', item.name));
     const description = item.task_description || item.details;
     if (description) taskCell.append(node('small', 'schedule-task-kind', description));
     else taskCell.append(node('small', 'schedule-task-kind', `Runs with ${parent.name}`));
     const statusCell = node('td');
-    statusCell.dataset.label = 'Status';
-    statusCell.append(node('span', `schedule-status ${statusClass(item)}`, statusName(item)));
-    if (item.progress_details) statusCell.append(node('small', 'schedule-task-kind', item.progress_details));
+    statusCell.dataset.label = 'Enabled';
+    statusCell.append(node('span', `schedule-status ${item.enabled === false ? 'is-disabled' : 'is-ok'}`, item.enabled === false ? 'Disabled' : 'Enabled'));
+    if (item.status === 'running') statusCell.append(node('small', 'schedule-task-kind', 'Running'));
+    const descriptionCell = node('td', 'schedule-description-cell');
+    descriptionCell.dataset.label = 'Description';
+    descriptionCell.append(node('small', 'schedule-task-kind', item.task_description || item.details || `Runs with ${parent.name}`));
+    if (item.progress_details) descriptionCell.append(node('small', 'schedule-task-kind', item.progress_details));
     const stageProblem = item.error || item.last_error;
-    if (stageProblem) statusCell.append(node('small', 'schedule-task-kind', stageProblem));
+    if (stageProblem) descriptionCell.append(node('small', 'schedule-task-kind', stageProblem));
     const nextCell = node('td', 'schedule-time-cell');
     nextCell.dataset.label = 'Next run';
     nextCell.append(timeNode(item.enabled === false ? null : parent.next_run_at, scheduleZone));
-    const finished = finishedCell(item, scheduleZone);
     const actionCell = node('td', 'schedule-actions-cell');
     actionCell.dataset.label = 'Actions';
     const run = node('button', 'button button-quiet schedule-run', 'Run');
@@ -378,7 +392,7 @@
       }
     });
     actionCell.append(run, toggle);
-    row.append(taskCell, statusCell, nextCell, finished, actionCell);
+    row.append(taskCell, statusCell, descriptionCell, nextCell, actionCell);
     return row;
   }
 

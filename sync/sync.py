@@ -735,10 +735,11 @@ def sync_jellyfin_titles(hub_db_url=None):
 
 
 
-def sync_jellyfin_telegram_metadata():
+def sync_jellyfin_telegram_metadata(*, limit=200):
     result = _sync_jellyfin_telegram_metadata(
         JELLYFIN_URL, JELLYFIN_API_KEY, MEDIA_DIR,
         state_path=DATA_DIR / "telegram-metadata-state.json", logger=logger,
+        limit=limit,
     )
     confirmed_files = result.pop("_confirmed_file_hashes", {}) if isinstance(result, dict) else {}
     if confirmed_files:
@@ -942,6 +943,7 @@ def _duplicate_job_services() -> DuplicateJobServices:
         load_performer_thumbs=load_performer_thumbs,
         resolve_media_path=resolve_media_path,
         trigger_jellyfin_refresh=trigger_jellyfin_refresh,
+        sync_jellyfin_telegram_metadata=sync_jellyfin_telegram_metadata,
         probe_stream=probe_stream_via_resolver,
         logger=logger,
         probe_stream_detailed=probe_stream_via_resolver_outcome,

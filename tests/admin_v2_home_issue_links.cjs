@@ -113,10 +113,13 @@ assert.match(html, /href="#performers\?tab=review" id="performerReviewTab"[^\n]*
   'the Review matches tab keeps its own address and pane pairing');
 assert.match(html, /id="performerReviewPane"[\s\S]{0,4000}id="performerProposalsPane"[\s\S]{0,4000}id="performerNameMatchingPane"/,
   'Review matches holds both the recognition proposals and the name variants');
-assert.match(html, /<details id="systemMoreTools" class="panel more-tools-panel" hidden>/,
-  'System exposes the remaining administrative tools as collapsed More tools');
+assert.doesNotMatch(html, /systemMoreTools|systemActivityView|diagnostics\/playback|linkcheckRows|enrichmentRows/,
+  'retired reports and their panels are absent from the System interface');
+assert.match(html, /data-system-tab="status"/, 'System has a Status tab');
+assert.match(html, /data-system-tab="backups"/, 'System has a Backups tab');
+assert.match(html, /data-system-tab="maintenance"/, 'System has a Maintenance tab');
 assert.match(html, /id="writeAccessNotice"/, 'System reports why writes are limited');
-assert.match(html, /id="serviceList"/, 'System hosts the aggregated service state');
+assert.match(html, /id="systemProbeRows"/, 'System retains the bounded service probes');
 
 const elements = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => [id, new Element('div')]));
 const serviceChip = elements.get('serviceStatus');
@@ -144,7 +147,7 @@ const metadataDialog = elements.get('metadataDialog');
 const detailOverlay = elements.get('detailOverlay');
 const openDialogs = [operationDialog, metadataDialog, detailOverlay];
 let detailDrawer = null;
-const expectedRoutes = ['start', 'library', 'quality', 'sources', 'performers', 'jobs', 'schedules', 'system'];
+const expectedRoutes = ['start', 'library', 'sources', 'performers', 'jobs', 'schedules', 'system'];
 assert.deepEqual(navLinks.map(link => link.dataset.route),
   ['start', 'library', 'performers', 'sources', 'jobs', 'schedules', 'system'],
   'the primary navigation must expose exactly the seven Stage 2 destinations in order');
@@ -166,18 +169,16 @@ assert.match(detailRenderer, /Availability history could not be loaded/,
   'availability history exposes a recoverable read error');
 assert.match(detailRenderer, /create\('button', 'button button-quiet', 'Edit metadata'\)/,
   'the metadata action label describes all supported editor fields');
-assert.match(detailRenderer, /Open file consistency audits[\s\S]*?go\('quality', \{ tab: 'issues' \}\)/,
-  'file repair discovery navigates to the primary Issues & Audits tab');
-assert.match(html, /id="auditTitle" tabindex="-1"/,
-  'the file-audit destination has a programmatically focusable heading');
+assert.doesNotMatch(detailRenderer, /Open file consistency audits|go\('quality'/,
+  'removed manual audit screens are not linked from video details');
 for (const route of expectedRoutes) {
   assert.match(routerSource, new RegExp(`\\b${route}:\\s*\\{\\s*title:`),
     `the Admin v2 router must define the ${route} destination`);
 }
 assert.match(routerSource, /jobs: \{ title: 'Tasks'/, 'the queue destination is named Tasks');
 assert.match(routerSource, /start: \{ title: 'Overview'/, 'the landing destination is named Overview');
-assert.match(routerSource, /const navOwner = route => \(route === 'quality' \? 'library' : route\)/,
-  'legacy Catalog Health screens are owned by the Library menu entry');
+assert.match(routerSource, /const navOwner = route => route;/,
+  'retired Catalog Health reports no longer own a navigation section');
 
 const document = {
   hidden: false,
@@ -599,9 +600,6 @@ const context = {
   assert.equal(chipLabelWrites, chipWritesBefore + 1, 'only the changed service state is re-announced');
   assert.match(textOf(elements.get('writeAccessNotice')), /Access unavailable/i,
     'an unverified permission check is reported instead of assumed read-only');
-  const panelAccess = elements.get('serviceList').children.find(row => row.children[0].textContent === 'Panel access');
-  assert.match(panelAccess.children[1].textContent, /unavailable.*writes need verification/i,
-    'Home must not imply read-only or writable access when capability state is unknown');
   failCapabilities = false;
   writableCapabilities = true;
   await refresh();
@@ -624,11 +622,10 @@ const context = {
   await refresh();
 
   const routeTitles = {
-    start: 'Overview', library: 'Library', sources: 'Sources', organize: 'Catalog Health',
-    quality: 'Catalog Health', performers: 'Performers', jobs: 'Tasks', schedules: 'Schedules', system: 'System',
+    start: 'Overview', library: 'Library', sources: 'Sources', performers: 'Performers', jobs: 'Tasks', schedules: 'Schedules', system: 'System',
   };
   const navOwners = {
-    start: 'start', library: 'library', performers: 'performers', quality: 'library', organize: 'library',
+    start: 'start', library: 'library', performers: 'performers',
     sources: 'sources', jobs: 'jobs', schedules: 'schedules', system: 'system',
   };
   const onHashChange = windowListeners.get('hashchange');
@@ -643,7 +640,7 @@ const context = {
     assert.deepEqual(navLinks.filter(link => link.getAttribute('aria-current') === 'page').map(link => link.dataset.route), [navOwners[route]],
       `${route} must activate the Stage 2 section that owns it`);
     assert.equal(elements.get('crumbCurrent').textContent, routeTitles[route], `${route} must update the breadcrumb`);
-    if (['quality', 'sources', 'jobs', 'schedules', 'system'].includes(route)) {
+    if (['sources', 'jobs', 'schedules', 'system'].includes(route)) {
       assert.equal(elements.get('operationalTitle').textContent, routeTitles[route],
         `${route} must name the shared operational view after navigation`);
     }
@@ -655,14 +652,11 @@ const context = {
     'the migrated Schedules address activates the Schedules menu entry');
   location.hash = '#library';
   onHashChange();
-  assert.equal(elements.get('systemMoreTools').hidden, true, 'System More tools stays hidden outside System');
   location.hash = '#system';
   onHashChange();
-  assert.equal(elements.get('systemMoreTools').hidden, false,
-    'System maintenance exposes the temporary More tools list for screens that have not moved');
-  location.hash = '#system?tab=diagnostics';
-  onHashChange();
-  assert.equal(elements.get('systemMoreTools').hidden, true, 'More tools is scoped to the System maintenance tab');
+  assert.equal(elements.get('systemStatusView').hidden, false, 'System opens Status by default');
+  assert.equal(elements.get('systemBackupView').hidden, true);
+  assert.equal(elements.get('systemMaintenanceView').hidden, true);
 
   // Stage 3 keeps every old catalog address working from the new Library/Performers hosts.
   location.hash = '#quality?tab=duplicates';
@@ -708,15 +702,9 @@ const context = {
   assert.equal(elements.get('librarySuggestionsPane').hidden, false);
   location.hash = '#quality?tab=enrichment-progress';
   onHashChange();
-  assert.equal(location.hash, '#quality?tab=enrichment-progress',
-    'enrichment progress keeps its own Catalog Health address');
-  assert.equal(elements.get('qualityEnrichmentPane').hidden, false);
-  assert.equal(elements.get('qualityIssuesPane').hidden, true);
-  assert.equal(lastAdminNavigation.detail.tab, 'enrichment-progress',
-    'route events carry the selected Catalog Health tab to its controllers');
-  assert.equal(sectionTabLinks.filter(link => link.className.includes('catalog-health-tabs')
-    && link.dataset.sectionTab === 'enrichment-progress' && link.getAttribute('aria-current') === 'page').length, 1,
-    'the active Catalog Health tab is marked in its tab bar');
+  assert.equal(location.hash, '#system', 'retired enrichment progress opens System Status');
+  assert.equal(elements.get('systemStatusView').hidden, false);
+  assert.equal(elements.get('legacyScreenNotice').hidden, false);
 
   location.hash = '#performers?tab=directory';
   onHashChange();
@@ -922,61 +910,47 @@ const context = {
   assert.equal(document.activeElement, detailOverlay);
   detailOverlay.open = false;
 
-  // Service state now belongs to System: its reads start there and survive partial failures.
+  // Stage 5 routes retired reports to Status while preserving the three System panes.
   resetHistory('http://localhost/admin/v2/#system');
   onHashChange();
   await flush(6);
-  assert(calls.includes('/admin/api/v2/quality/summary'), 'System loads the latest-audit Jellyfin evidence');
-  assert(calls.includes('/admin/api/v2/status/jellyfin'), 'System loads the bounded Jellyfin health probe');
-  const serviceValues = new Map(elements.get('serviceList').children.map(row =>
-    [row.children[0].textContent, row.children[1].textContent]));
-  assert.equal(serviceValues.get('Library database'), 'Operational', 'System preserves the database health row');
-  assert.equal(serviceValues.get('Synchronization'), 'Last run succeeded', 'System preserves the sync status row');
-  assert.equal(serviceValues.get('Panel access'), 'Read-only', 'System names the read-only access state');
-  assert.equal(serviceValues.get('Resolver'), 'Operational', 'System shows resolver status');
-  assert.equal(serviceValues.get('Background worker'), 'Operational', 'System reflects worker capability state');
-  assert.equal(serviceValues.get('Application version'), '1.2.3', 'System preserves the application version row');
-  assert.equal(serviceValues.get('Jellyfin connection'), 'Reachable', 'System shows the sanitized Jellyfin reachability probe');
-  assert.match(serviceValues.get('Jellyfin import check (latest audit)'), /^Checked in latest audit/,
-    'System describes Jellyfin evidence as coming from the latest audit, not a live probe');
+  assert.equal(elements.get('systemStatusView').hidden, false, 'System defaults to Status');
+  assert.equal(elements.get('systemBackupView').hidden, true);
+  assert.equal(elements.get('systemMaintenanceView').hidden, true);
+  assert.equal(calls.some(url => url.includes('/quality/summary') || url.includes('/status/jellyfin')
+    || url.includes('/diagnostics/playback') || url.includes('/activity')),
+    false, 'System status avoids the retired catalog and admin history reports');
   assert.match(textOf(elements.get('writeAccessNotice')), /Read-only: Writes are disabled/,
-    'System states the write restriction cause for operators');
+    'System status includes the verified write restriction');
 
-  failQualitySummary = true;
-  failJellyfinStatus = true;
-  resetHistory('http://localhost/admin/v2/#library');
-  onHashChange();
-  resetHistory('http://localhost/admin/v2/#system');
-  onHashChange();
-  await flush(6);
-  assert.equal(elements.get('serviceList').children.length > 0, true,
-    'service status remains available when the audit evidence cannot be loaded');
-  const unavailableServiceValues = new Map(elements.get('serviceList').children.map(row =>
-    [row.children[0].textContent, row.children[1].textContent]));
-  assert.equal(unavailableServiceValues.get('Jellyfin import check (latest audit)'), 'No data',
-    'System does not claim current Jellyfin health when the quality summary is unavailable');
-  assert.equal(unavailableServiceValues.get('Jellyfin connection'), 'No data',
-    'A failed Jellyfin probe becomes No data without hiding the service list');
-  failQualitySummary = false;
-  failJellyfinStatus = false;
-
-  assert.deepEqual(systemTabLinks.map(link => link.dataset.systemTab), ['maintenance', 'diagnostics', 'backups', 'activity']);
-  const activityUrl = new URL(location.href); activityUrl.hash = '#system?tab=activity';
-  history.pushState({}, '', activityUrl); windowListeners.get('popstate')?.();
-  assert.equal(elements.get('systemActivityView').hidden, false, 'System activity is reachable as a bookmarkable tab');
-  assert.equal(elements.get('systemMaintenanceView').hidden, true, 'System shows only the selected tab');
-  assert.equal(systemTabLinks.find(link => link.dataset.systemTab === 'activity').getAttribute('aria-current'), 'page');
+  const tabs = systemTabLinks.map(link => link.dataset.systemTab);
+  assert.deepEqual(tabs, ['status', 'backups', 'maintenance']);
   const backupUrl = new URL(location.href); backupUrl.hash = '#system?tab=backups';
   history.pushState({}, '', backupUrl); windowListeners.get('popstate')?.();
-  assert.equal(elements.get('systemBackupView').hidden, false, 'the Backups tab has a stable route');
-  assert.equal(elements.get('systemActivityView').hidden, true);
+  assert.equal(elements.get('systemBackupView').hidden, false, 'the Backups pane has a stable route');
+  assert.equal(elements.get('systemStatusView').hidden, true);
+  const maintenanceUrl = new URL(location.href); maintenanceUrl.hash = '#system?tab=maintenance';
+  history.pushState({}, '', maintenanceUrl); windowListeners.get('popstate')?.();
+  assert.equal(elements.get('systemMaintenanceView').hidden, false, 'the Maintenance pane has a stable route');
+  assert.equal(elements.get('systemBackupView').hidden, true);
   const legacyLinkcheck = new URL(location.href); legacyLinkcheck.hash = '#system?tab=linkcheck';
   history.pushState({}, '', legacyLinkcheck); windowListeners.get('popstate')?.();
-  assert.equal(elements.get('qualityView').hidden, false, 'the old System link-check route redirects to Catalog Health');
-  assert.match(routerSource, /\['linkcheck', 'links', 'availability'\]\.includes\(tab\)[\s\S]*?qualityTab: 'issues'[\s\S]*?focusTarget: '#linkcheckTitle'/,
-    'the old link-check route opens the authoritative Catalog Health issues tab and focus target');
+  assert.equal(location.hash, '#system', 'the old Link-check address redirects to System Status');
+  assert.equal(elements.get('systemStatusView').hidden, false);
+  assert.equal(elements.get('legacyScreenNotice').hidden, false, 'a retired report displays its one-time notice');
+  assert.match(routerSource, /system.*linkcheck[\s\S]*?return retired\(\)/,
+    'legacy report routes are rewritten without activating their former controllers');
   assert.match(fs.readFileSync('resolver/static/admin-v2/sources.js', 'utf8'),
     /route === 'system' && \['sync', 'sync-activity', 'sync_activity', 'history'\]\.includes\(tab\)/,
     'the old global sync-history hashes still render the Sources history view');
+  const oldAutomation = new URL(location.href); oldAutomation.hash = '#system?tab=automation';
+  history.pushState({}, '', oldAutomation); windowListeners.get('popstate')?.();
+  assert.equal(location.hash, '#schedules', 'the old System Automation tab redirects to Schedules');
+  assert.deepEqual(navLinks.filter(link => link.getAttribute('aria-current') === 'page').map(link => link.dataset.route), ['schedules']);
+  assert.equal(elements.get('legacyScreenNotice').hidden, false);
+  const oldAdminHistory = new URL(location.href); oldAdminHistory.hash = '#system?tab=activity';
+  history.pushState({}, '', oldAdminHistory); windowListeners.get('popstate')?.();
+  assert.equal(location.hash, '#system', 'the old administrative history link opens System Status');
+  assert.equal(elements.get('systemStatusView').hidden, false);
   process.stdout.write('PASS: seven-section navigation, Overview tiles, grouped problems, System service state, legacy deep links, Library history, and modal focus boundaries\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

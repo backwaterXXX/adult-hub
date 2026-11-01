@@ -39,6 +39,8 @@ def safe_sync_history(report):
                 safe_run[key] = value
         if type(run.get("success")) is bool:
             safe_run["success"] = run["success"]
+        if type(run.get("interrupted")) is bool:
+            safe_run["interrupted"] = run["interrupted"]
         mode = run.get("sync_mode")
         if isinstance(mode, str) and mode in {"scheduled", "new", "backfill"}:
             safe_run["sync_mode"] = mode

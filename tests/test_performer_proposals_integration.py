@@ -395,5 +395,26 @@ class TestPerformerProposalIntegration(PgTestCase):
         self.assertEqual(queued_refreshes, 1 if status == "approved" else 0)
 
 
+    def test_group_review_and_reconciliation_expose_refresh_task_references(self):
+        self.add_proposal("Alias Name")
+        self.conn.commit()
+        grouped = performer_proposals.review_proposal_group(
+            self.db_url, "aliasname", "possible_typo", {"action": "approve", "performer_id": "p1"},
+            wake_worker=lambda *_: None,
+        )
+        self.assertEqual(grouped["reviewed"], 1)
+        self.assertEqual(len(grouped["refresh_job_ids"]), 1)
+        self.assertEqual(read_job(self.db_url, grouped["refresh_job_ids"][0])["action"], "performer_refresh")
+        self.conn.execute("INSERT INTO videos(id,provider,title,performers,source_text) VALUES ('telegram:proposal-2','telegram','Reconcile fixture','[]','Cast: Rowan Example')")
+        proposal_id = self.add_proposal("Rowan Example", video_id="telegram:proposal-2")
+        self.conn.execute("UPDATE telegram_performer_proposals SET reason='uncatalogued_credit' WHERE id=%s", (proposal_id,))
+        self.conn.commit()
+        reconciled = performer_proposals.reconcile_clear_matches(self.db_url, wake_worker=lambda *_: None)
+        self.assertEqual(reconciled["resolved"], 1)
+        self.assertTrue(reconciled["refresh_job_ids"])
+        for job_id in reconciled["refresh_job_ids"]:
+            self.assertEqual(read_job(self.db_url, job_id)["state"], "queued")
+
+
 if __name__ == "__main__":
     unittest.main()

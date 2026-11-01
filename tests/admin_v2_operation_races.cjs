@@ -65,6 +65,7 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
   };
   const announcements = [];
   const context = vm.createContext({
+    showQueued(payload, message) { announcements.push('Queued ' + (payload.jobs?.[0]?.job_id || payload.job_id || '') + ' ' + message); }, taskLink() { return null; },
     state, V2_API: '/admin/api/v2', DUPLICATE_PAGE_SIZE: 25, DUPLICATE_SCAN_BATCH_SIZE: 200,
     DUPLICATE_SCAN_CACHE_TTL_MS: 30_000,
     window: { AdminV2: {} },
@@ -497,7 +498,7 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
   assert.equal(get('#operationDialog').open, false, 'batch duplicate merge does not open a confirmation screen');
   assert.equal(state.operationPlan.plan_id, 'exact-batch-1', 'the current server preview is used for execution');
   assert.ok(duplicateCalls.some(options => options?.refresh === true), 'the duplicate list refreshes after queue acceptance');
-  assert.match(announcements.slice(announcementsBeforeExactMerge).join(' '), /queued/);
+  assert.match(announcements.slice(announcementsBeforeExactMerge).join(' '), /queued/i);
 
   const queuedMergeResponse = deferred();
   context.window.AdminV2.postJson = () => queuedMergeResponse.promise;
@@ -545,7 +546,7 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
   metadataExecuteA.resolve({ jobs: [{ job_id: 'metadata-job-A' }] });
   await oldMetadataExecution;
   assert.equal(get('#metadataDialog').open, true, 'a stale metadata execution must not close the currently open editor');
-  assert.match(announcements.at(-1), /metadata-job-A/, 'the operator is notified when the submitted metadata task completes');
+  assert.doesNotMatch(announcements.at(-1), /metadata-job-A/, 'a metadata receipt must not overwrite the reopened editor after navigation');
 
   // Bulk metadata preview is bound to its selection and queues only the reviewed selection.
   state.route = 'library';

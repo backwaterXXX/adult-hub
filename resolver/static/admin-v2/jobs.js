@@ -6,9 +6,9 @@
   const $ = (selector, root = document) => root.querySelector(selector);
 
   const state = {
-    entered: false, activeTab: '', offset: 0, total: null, nextOffset: null, truncated: false,
+    viewSeq: 0, entered: false, activeTab: '', offset: 0, total: null, nextOffset: null, truncated: false,
     list: [], filter: { queue: 'all', state: '', action: '' }, directJobId: '', directJobQueue: 'jobs', seq: 0, abort: null,
-    workers: {},
+    workers: {}, pendingActions: new Set(),
     access: { checked: false, ready: false, actionsEnabled: false, tokenRequired: false }, accessPromise: null,
     pollTimer: null, operationOffset: 0, operationTotal: 0, operationSeq: 0,
     operationDetailSeq: 0, openOperationId: null
@@ -20,7 +20,7 @@
     phash_generation: 'Generate pHash', thumbnail_generation: 'Generate thumbnail',
     phash_thumbnail_legacy: 'pHash and thumbnail (legacy)',
     duplicate_reconcile: 'Duplicate reconciliation', hide: 'Hide duplicates', dismiss: 'Dismiss pair', undo: 'Undo hide', undismiss: 'Undo dismissal',
-    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Catalog health audit schedule', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', history_cleanup: 'Backup history cleanup', performer_catalog: 'StashDB performer catalog', scene_backfill: 'Scene identification', telegram_title_cleanup: 'Telegram title cleanup', sync: 'Sync'
+    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Full catalog audit', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', history_cleanup: 'Backup history cleanup', performer_catalog: 'StashDB performer catalog', scene_backfill: 'Scene identification', telegram_title_cleanup: 'Telegram title cleanup', visual_compare: 'Compare video frames', visual_signature: 'Build frame signatures', sync: 'Sync'
   };
   const HISTORICAL_ACTION_LABELS = {
     lukayan_fingerprint: 'Scene fingerprint · legacy',
@@ -52,9 +52,9 @@
   }
   function statePill(value) {
     const raw = safeId(value).toLowerCase();
-    if (raw === 'done') return ['Done', 'pill-good'];
+    if (raw === 'done') return ['Succeeded', 'pill-good'];
     if (raw === 'failed') return ['Failed', 'pill-danger'];
-    if (raw === 'processing') return ['Processing', 'pill-warning'];
+    if (raw === 'processing') return ['Running', 'pill-warning'];
     if (raw === 'queued') return ['Queued', 'pill-neutral'];
     if (raw === 'cancelled') return ['Cancelled', 'pill-neutral'];
     return [raw ? titleCase(raw) : 'Unknown', 'pill-neutral'];
@@ -140,33 +140,33 @@
   }
   function jobError(job) { return scrub(job.error || job.error_message); }
   function isJobsRoute() {
-    return location.hash.replace(/^#/, '').split(/[?&]/, 1)[0] === 'jobs';
+    const [route, query = ''] = location.hash.replace(/^#/, '').split('?', 2);
+    return route === 'jobs' && new URLSearchParams(query).get('tab') !== 'schedules';
   }
   function jobsTab() {
     const hashQuery = location.hash.includes('?') ? location.hash.slice(location.hash.indexOf('?') + 1) : '';
     const requested = new URLSearchParams(hashQuery).get('tab');
-    return ['tasks', 'bulk'].includes(requested) ? requested : 'tasks';
+    if (requested === 'bulk' || requested === 'history') return requested;
+    if (requested === 'tasks') return 'tasks';
+    const status = new URLSearchParams(location.search).get('job_state');
+    return ['done', 'failed', 'cancelled', 'history'].includes(status) ? 'history' : 'tasks';
   }
   function readFiltersFromUrl() {
     const params = new URLSearchParams(location.search);
     const requestedJobId = params.get('job_id') || '';
     state.directJobId = /^[A-Za-z0-9_-]{1,128}$/.test(requestedJobId) ? requestedJobId : '';
-    state.directJobQueue = params.get('job_queue') === 'phash' ? 'phash' : 'jobs';
-    if (state.directJobId) {
-      params.delete('job_id');
-      const url = new URL(location.href);
-      url.search = params.toString();
-      history.replaceState({}, '', url);
-    }
+    state.directJobQueue = ['phash', 'visual'].includes(params.get('job_queue')) ? params.get('job_queue') : 'jobs';
     const requestedState = params.get('job_state') || '';
     const requestedAction = params.get('job_action') || '';
     state.filter = {
-      queue: ['all', 'jobs', 'phash'].includes(params.get('job_queue')) ? params.get('job_queue') : 'all',
-      state: ['active', 'queued', 'processing', 'done', 'failed', 'cancelled'].includes(requestedState) ? requestedState : '',
+      queue: ['all', 'jobs', 'phash', 'visual'].includes(params.get('job_queue')) ? params.get('job_queue') : 'all',
+      state: ['active', 'history', 'queued', 'processing', 'done', 'failed', 'cancelled'].includes(requestedState) ? requestedState : (jobsTab() === 'history' ? 'history' : 'active'),
       action: Object.hasOwn(ACTION_LABELS, requestedAction) ? requestedAction : ''
     };
     const requestedOffset = Number(params.get('job_offset'));
     state.offset = Number.isSafeInteger(requestedOffset) && requestedOffset > 0 ? requestedOffset : 0;
+    if (jobsTab() === 'history' && ['active', 'queued', 'processing'].includes(state.filter.state)) state.filter.state = 'history';
+    if (jobsTab() === 'tasks' && ['history', 'done', 'failed', 'cancelled'].includes(state.filter.state)) state.filter.state = 'active';
     const form = $('#jobsFilters');
     form.elements.namedItem('state').value = state.filter.state;
     form.elements.namedItem('action').value = state.filter.action;
@@ -178,6 +178,7 @@
       if (value) url.searchParams.set(key, value);
       else url.searchParams.delete(key);
     }
+    if (jobsTab() !== 'bulk') url.hash = ['history', 'done', 'failed', 'cancelled'].includes(state.filter.state) ? 'jobs?tab=history' : 'jobs';
     if (url.href === location.href) return;
     history[replace ? 'replaceState' : 'pushState']({}, '', url);
   }
@@ -190,6 +191,7 @@
       return;
     }
     readFiltersFromUrl();
+    if (state.activeTab !== jobsTab()) { sync(); return; }
     setNotice('', '');
     loadJobs();
   }
@@ -289,16 +291,23 @@
     $('#jobsPagination').hidden = true;
   }
   let detailCounter = 0;
+  function progressText(job) {
+    const progress = job.progress || {};
+    if (Number.isInteger(progress.completed) && Number.isInteger(progress.total) && progress.total > 0 && progress.completed >= 0 && progress.completed <= progress.total) {
+      return `${progress.completed} / ${progress.total} · ${Math.floor(progress.completed * 100 / progress.total)}%`;
+    }
+    return job.state === 'processing' ? stageLabel(job.stage) : job.state === 'queued' ? 'Waiting for worker' : '';
+  }
   function appendJobRow(tbody, job) {
     const id = safeId(job.id);
-    const queue = job.queue === 'phash' ? 'phash' : 'jobs';
+    const queue = ['phash', 'visual'].includes(job.queue) ? job.queue : 'jobs';
     const row = create('tr', 'job-row');
     row.dataset.jobQueue = queue;
     const jobCell = create('td');
     if (queue === 'phash') {
-      jobCell.append(create('strong', 'job-action', safeId(job.title) || 'Video fingerprint and thumbnail'), create('small', 'job-id', `pHash · ${scrub(safeId(job.video_id)) || 'Video ID unavailable'}`));
+      jobCell.append(create('strong', 'job-action', safeId(job.title) || 'Video fingerprint and thumbnail'), create('small', 'job-id', actionLabel(job.action)));
     } else {
-      jobCell.append(create('strong', 'job-action', actionLabel(job.action, job.audit_mode)), create('code', 'job-id', scrub(id) || '—'));
+      jobCell.append(create('strong', 'job-action', actionLabel(job.action, job.audit_mode)), create('small', 'job-id', progressText(job)));
     }
     row.append(jobCell);
 
@@ -332,7 +341,7 @@
     detailButton.dataset.jobDetail = id;
     detailButton.dataset.jobQueue = queue;
     actionCell.append(detailButton);
-    if (jobState === 'failed' || jobState === 'cancelled') {
+    if (queue !== 'visual' && (jobState === 'failed' || jobState === 'cancelled')) {
       const retry = create('button', 'button button-quiet job-retry', 'Retry');
       retry.type = 'button';
       retry.dataset.jobRetry = id;
@@ -340,7 +349,7 @@
       retry.dataset.jobQueue = queue;
       actionCell.append(retry);
     }
-    if (jobState === 'queued' || (queue === 'phash' && jobState === 'processing')) {
+    if (queue !== 'visual' && (jobState === 'queued' || (queue === 'phash' && jobState === 'processing'))) {
       const cancel = create('button', 'button button-quiet job-retry', 'Cancel');
       cancel.type = 'button';
       cancel.dataset.jobCancel = id;
@@ -384,9 +393,12 @@
       const sourceLink = create('a', 'button button-quiet', sourceId ? 'Open this source’s sync history' : 'Open Sources sync history');
       sourceLink.href = sourceId
         ? `/admin/v2/?source_id=${encodeURIComponent(sourceId)}#sources`
-        : '#sources';
+        : '#sources?tab=history';
       meta.append(sourceLink);
     }
+    const technical = create('details', 'task-technical');
+    technical.append(create('summary', '', 'Technical parameters'), create('pre', '', JSON.stringify({ queue: job.queue || 'jobs', action: job.action, ...(job.parameters || {}) }, null, 2)));
+    meta.append(technical);
     const activityWarning = processingActivityWarning(job);
     if (activityWarning) meta.append(create('p', 'detail-description job-stale-warning', activityWarning));
     wrap.append(meta);
@@ -455,7 +467,7 @@
       actions.append(undo);
       wrap.append(actions);
     }
-    if (jobState === 'failed' || jobState === 'cancelled' || jobState === 'queued') {
+    if (job.queue !== 'visual' && (jobState === 'failed' || jobState === 'cancelled' || jobState === 'queued')) {
       const actions = create('div', 'job-detail-actions');
       if (jobState === 'failed' || jobState === 'cancelled') {
         const retry = create('button', 'button button-quiet', 'Retry job');
@@ -587,13 +599,13 @@
     const wanted = new Set(ids);
     const buttons = [...document.querySelectorAll('[data-job-detail]')]
       .filter(button => wanted.has(`${button.dataset.jobQueue || 'jobs'}:${button.dataset.jobDetail}`));
-    await Promise.all(buttons.map(button => toggleDetail(button)));
+    await Promise.all(buttons.filter(button => button.getAttribute('aria-expanded') !== 'true').map(button => toggleDetail(button, { persist: false })));
   }
 
   function scheduleJobsPoll(delay = POLL_INTERVAL_MS) {
     clearTimeout(state.pollTimer);
     state.pollTimer = null;
-    if (!state.entered || state.activeTab !== 'tasks' || !isJobsRoute() || document.hidden) return;
+    if (!state.entered || !['tasks', 'history'].includes(state.activeTab) || !isJobsRoute() || document.hidden) return;
     state.pollTimer = setTimeout(() => {
       state.pollTimer = null;
       loadJobs({ background: true });
@@ -601,7 +613,7 @@
   }
 
   async function loadJobs({ background = false } = {}) {
-    if (!isJobsRoute() || (background && document.hidden)) return;
+    if (!isJobsRoute() || jobsTab() === 'bulk' || (background && document.hidden)) return;
     writeFiltersToUrl();
     const expandedIds = expandedJobIds();
     if (state.abort) state.abort.abort();
@@ -618,12 +630,12 @@
     if (!background) setFeedback('Loading jobs…');
     try {
       let payload = await getJson(`${V2_API}/tasks?${params.toString()}`, controller.signal);
-      if (sequence !== state.seq) return;
+      if (sequence !== state.seq || !isJobsRoute() || jobsTab() === 'bulk') return;
       const linkedJobId = state.directJobId;
       if (linkedJobId) {
         try {
           const detailPayload = await getJson(`${V2_API}/tasks/${state.directJobQueue}/${encodeURIComponent(linkedJobId)}`, controller.signal);
-          if (sequence !== state.seq) return;
+          if (sequence !== state.seq || !isJobsRoute() || jobsTab() === 'bulk') return;
           const linkedJob = detailPayload.task;
           if (linkedJob && safeId(linkedJob.id) === linkedJobId) {
             const tasks = Array.isArray(payload.tasks) ? [...payload.tasks] : [];
@@ -636,19 +648,19 @@
             setNotice('warning', 'The linked task is no longer available. Showing the task list.');
           }
         } catch {
-          if (sequence !== state.seq) return;
+          if (sequence !== state.seq || !isJobsRoute() || jobsTab() === 'bulk') return;
           setNotice('warning', 'The linked task could not be loaded. Showing the task list.');
         }
         // Consume the one-shot deep link only after the current request has
         // resolved it. If a refresh supersedes this request, the replacement
         // load must still fetch the linked job.
-        if (sequence === state.seq) state.directJobId = '';
+        // Keep the selected task in the URL and across polling/reloads.
       }
       renderJobs(payload);
       if (linkedJobId && state.list.some(job => safeId(job.id) === linkedJobId && job.queue === state.directJobQueue)) {
         const button = [...document.querySelectorAll('[data-job-detail]')]
           .find(item => item.dataset.jobDetail === linkedJobId && (item.dataset.jobQueue || 'jobs') === state.directJobQueue);
-        if (button) await toggleDetail(button);
+        if (button) await toggleDetail(button, { persist: false });
       }
       if (background) {
         setFeedback(`${$('#jobsFeedback').textContent} · Updated ${displayTime(Date.now())}`);
@@ -656,7 +668,7 @@
       await restoreExpandedJobs(expandedIds);
       scheduleJobsPoll();
     } catch (error) {
-      if (error.name === 'AbortError' || sequence !== state.seq) return;
+      if (error.name === 'AbortError' || sequence !== state.seq || !isJobsRoute() || jobsTab() === 'bulk') return;
       if (background && state.list.length) {
         setFeedback('Live refresh failed. Showing the last loaded data.');
         scheduleJobsPoll(30_000);
@@ -766,10 +778,19 @@
     }
   }
 
-  async function toggleDetail(button) {
+  async function toggleDetail(button, { persist = true } = {}) {
+    const viewSequence = state.seq;
     const row = document.getElementById(button.getAttribute('aria-controls'));
     if (!row) return;
     const expanded = button.getAttribute('aria-expanded') === 'true';
+    if (persist) {
+      const url = new URL(location.href);
+      if (expanded) url.searchParams.delete('job_id');
+      else { url.searchParams.set('job_id', button.dataset.jobDetail); url.searchParams.set('job_queue', button.dataset.jobQueue || 'jobs'); }
+      history.replaceState({}, '', url);
+      state.directJobId = expanded ? '' : button.dataset.jobDetail;
+      state.directJobQueue = button.dataset.jobQueue || 'jobs';
+    }
     if (expanded) {
       row.dataset.detailRequestSeq = String((Number(row.dataset.detailRequestSeq) || 0) + 1);
       row.hidden = true;
@@ -785,16 +806,16 @@
     row.dataset.detailRequestSeq = String(requestSeq);
     const cell = row.firstElementChild;
     cell.replaceChildren(create('p', 'job-detail-loading', 'Loading job details…'));
-    const queue = row.dataset.jobQueue === 'phash' ? 'phash' : 'jobs';
+    const queue = ['phash', 'visual'].includes(row.dataset.jobQueue) ? row.dataset.jobQueue : 'jobs';
     try {
       const payload = await getJson(`${V2_API}/tasks/${queue}/${encodeURIComponent(row.dataset.jobId)}`);
-      if (requestSeq !== Number(row.dataset.detailRequestSeq)) return;
+      if (requestSeq !== Number(row.dataset.detailRequestSeq) || viewSequence !== state.seq || !isJobsRoute() || jobsTab() === 'bulk') return;
       const job = payload.task || payload.job || payload.item || payload.data || payload;
       if (queue === 'phash') renderPhashJobDetail(cell, job);
       else renderJobDetail(cell, job);
       row.dataset.loaded = 'true';
     } catch (error) {
-      if (requestSeq !== Number(row.dataset.detailRequestSeq)) return;
+      if (requestSeq !== Number(row.dataset.detailRequestSeq) || viewSequence !== state.seq || !isJobsRoute() || jobsTab() === 'bulk') return;
       const fallback = state.list.find(item => safeId(item.id) === row.dataset.jobId && (item.queue || 'jobs') === queue);
       if (fallback) {
         if (queue === 'phash') renderPhashJobDetail(cell, fallback);
@@ -807,8 +828,15 @@
     }
   }
 
+  function beginTaskAction(queue, id) {
+    const key = `${queue}:${id}`;
+    if (state.pendingActions.has(key)) return false;
+    state.pendingActions.add(key);
+    return true;
+  }
   async function retryJob(id, queue = 'jobs') {
-    if (!id) return;
+    const viewSequence = state.viewSeq;
+    if (!id || !beginTaskAction(queue, id)) return;
     const isPhash = queue === 'phash';
     const controls = [...document.querySelectorAll('[data-job-retry]')].filter(button => button.dataset.jobRetry === id && (button.dataset.jobQueue || 'jobs') === queue);
     const focusedControl = captureActionFocus(controls);
@@ -819,24 +847,29 @@
     try {
       const path = isPhash ? 'phash-jobs' : 'jobs';
       const payload = await postJson(`${V2_API}/${path}/${encodeURIComponent(id)}/retry`, 'Retry');
+      if (viewSequence !== state.viewSeq || !isJobsRoute()) return;
+      helpers().showQueued(payload, 'Task retry', $('#jobsNotice'), queue);
       const message = scrub(payload.message) || 'Task re-queued.';
       const newId = scrub(safeId(payload.job_id));
-      setNotice('success', `${message}${newId ? ` New job: ${newId}.` : ''}`);
+      // The task is queued; only its worker can complete the operation.
       announce(message);
       focusAfter = { action: 'detail', id: newId || id };
       await loadJobs();
     } catch (error) {
+      if (viewSequence !== state.viewSeq || !isJobsRoute()) return;
       setNotice('error', error.message);
       announce(error.message);
     } finally {
+      state.pendingActions.delete(`${queue}:${id}`);
       controls.forEach((button, index) => { delete button.dataset.busy; if (button.isConnected) button.textContent = labels[index]; });
       updateRetryControls();
-      restoreActionFocus(focusedControl, focusAfter.action, focusAfter.id, queue);
+      if (viewSequence === state.viewSeq && isJobsRoute()) restoreActionFocus(focusedControl, focusAfter.action, focusAfter.id, queue);
     }
   }
 
   async function cancelJob(id, queue = 'jobs') {
-    if (!id || !window.confirm('Cancel this queued job? It can be retried later.')) return;
+    const viewSequence = state.viewSeq;
+    if (!id || state.pendingActions.has(`${queue}:${id}`) || !window.confirm('Cancel this task?') || !beginTaskAction(queue, id)) return;
     const isPhash = queue === 'phash';
     const controls = [...document.querySelectorAll('[data-job-cancel]')].filter(button => button.dataset.jobCancel === id && (button.dataset.jobQueue || 'jobs') === queue);
     const focusedControl = captureActionFocus(controls);
@@ -847,23 +880,27 @@
     try {
       const path = isPhash ? 'phash-jobs' : 'jobs';
       const payload = await postJson(`${V2_API}/${path}/${encodeURIComponent(id)}/cancel`, 'Cancel');
+      if (viewSequence !== state.viewSeq || !isJobsRoute()) return;
       const message = scrub(payload.message) || 'Task cancelled.';
       setNotice('success', message);
       announce(message);
       focusAfter = { action: 'retry', id };
       await loadJobs();
     } catch (error) {
+      if (viewSequence !== state.viewSeq || !isJobsRoute()) return;
       setNotice('error', error.message);
       announce(error.message);
     } finally {
+      state.pendingActions.delete(`${queue}:${id}`);
       controls.forEach((button, index) => { delete button.dataset.busy; if (button.isConnected) button.textContent = labels[index]; });
       updateRetryControls();
-      restoreActionFocus(focusedControl, focusAfter.action, focusAfter.id, queue);
+      if (viewSequence === state.viewSeq && isJobsRoute()) restoreActionFocus(focusedControl, focusAfter.action, focusAfter.id, queue);
     }
   }
 
   async function undoDismissal(id) {
-    if (!id || !window.confirm('Undo this dismissed suggestion? It will appear in Organize again.')) return;
+    const viewSequence = state.viewSeq;
+    if (!id || state.pendingActions.has(`jobs:${id}`) || !window.confirm('Undo this dismissed suggestion? It will appear in Library again.') || !beginTaskAction('jobs', id)) return;
     const controls = [...document.querySelectorAll('[data-job-undo-dismiss]')]
       .filter(button => button.dataset.jobUndoDismiss === id);
     const focusedControl = captureActionFocus(controls);
@@ -875,19 +912,22 @@
       const payload = await postJson(`${V2_API}/duplicates/actions`, 'Undo dismissal', {
         action: 'undismiss', operation_id: id
       });
+      if (viewSequence !== state.viewSeq || !isJobsRoute()) return;
+      helpers().showQueued(payload, 'Undo dismissal', $('#jobsNotice'));
       const jobId = scrub(safeId(payload.job_id));
       const message = `Dismissal undo queued.${jobId ? ` New task: ${jobId}.` : ''}`;
-      setNotice('success', message);
       announce(message);
       focusAfter = { action: 'detail', id: jobId || id };
       await loadJobs();
     } catch (error) {
+      if (viewSequence !== state.viewSeq || !isJobsRoute()) return;
       setNotice('error', `Could not undo dismissal. ${error.message}`);
       announce(error.message);
     } finally {
+      state.pendingActions.delete(`jobs:${id}`);
       controls.forEach((button, index) => { delete button.dataset.busy; if (button.isConnected) button.textContent = labels[index]; });
       updateRetryControls();
-      restoreActionFocus(focusedControl, focusAfter.action, focusAfter.id);
+      if (viewSequence === state.viewSeq && isJobsRoute()) restoreActionFocus(focusedControl, focusAfter.action, focusAfter.id);
     }
   }
 
@@ -897,12 +937,13 @@
     const active = isJobsRoute();
     const tab = active ? jobsTab() : '';
     view.hidden = !active;
-    document.querySelectorAll('[data-jobs-pane]').forEach(pane => { pane.hidden = !active || pane.dataset.jobsPane !== tab; });
+    document.querySelectorAll('[data-jobs-pane]').forEach(pane => { pane.hidden = !active || pane.dataset.jobsPane !== (tab === 'history' ? 'tasks' : tab); });
     document.querySelectorAll('[data-jobs-tab]').forEach(link => {
       if (link.dataset.jobsTab === tab) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     });
     if (!active) {
+      state.viewSeq += 1; state.seq += 1; state.operationSeq += 1; state.operationDetailSeq += 1;
       state.entered = false;
       state.activeTab = '';
       clearTimeout(state.pollTimer);
@@ -910,7 +951,7 @@
       if (state.abort) state.abort.abort();
       return;
     }
-    setText($('#crumbCurrent'), 'Jobs & Automation');
+    setText($('#crumbCurrent'), 'Tasks');
     setText($('#operationalEyebrow'), 'OPERATIONS');
     setText($('#operationalTitle'), tab === 'bulk' ? 'Bulk Operations' : 'Tasks');
     setText($('#operationalIntro'), tab === 'bulk'
@@ -919,11 +960,12 @@
     clearTimeout(state.pollTimer);
     state.pollTimer = null;
     const changedTab = state.activeTab !== tab;
+    if (changedTab) { state.viewSeq += 1; state.seq += 1; state.operationSeq += 1; state.operationDetailSeq += 1; }
     state.entered = true;
     state.activeTab = tab;
-    if (tab !== 'tasks' && state.abort) state.abort.abort();
+    if (tab === 'bulk' && state.abort) state.abort.abort();
     if (!changedTab) return;
-    if (tab === 'tasks') {
+    if (tab === 'tasks' || tab === 'history') {
       readFiltersFromUrl();
       loadAccess();
       loadJobs();
@@ -942,7 +984,7 @@
       state.offset = 0;
       setNotice('', '');
       commitFiltersToUrl();
-      loadJobs();
+      if (state.activeTab !== jobsTab()) sync(); else loadJobs();
     });
     $('#jobsClearFilters').addEventListener('click', () => {
       form.reset();
@@ -950,7 +992,7 @@
       state.offset = 0;
       setNotice('', '');
       commitFiltersToUrl();
-      loadJobs();
+      if (state.activeTab !== jobsTab()) sync(); else loadJobs();
     });
     $('#jobsRefresh').addEventListener('click', () => { setNotice('', ''); loadJobs(); });
     $('#jobsPrev').addEventListener('click', () => {
@@ -981,9 +1023,9 @@
       if (details) toggleOperationDetails(details);
     });
 
-    document.addEventListener('adminv2:navigate', () => helpers().scheduleSync(sync));
+    document.addEventListener('adminv2:navigate', sync);
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && state.entered && state.activeTab === 'tasks') loadJobs({ background: true });
+      if (!document.hidden && state.entered && ['tasks', 'history'].includes(state.activeTab)) loadJobs({ background: true });
       else scheduleJobsPoll();
     });
     addEventListener('hashchange', () => helpers().scheduleSync(sync));

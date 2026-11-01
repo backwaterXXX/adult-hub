@@ -305,6 +305,21 @@ def _execute(action, conn, job_id, payload, media_dir, services):
             from telegram_title_cleanup import cleanup_telegram_titles
         _core._record_job_progress(conn, job_id, "cleaning_telegram_titles")
         result = cleanup_telegram_titles(conn, media_dir, logger=services.logger)
+        reconcile = getattr(services, "sync_jellyfin_telegram_metadata", None)
+        if callable(reconcile):
+            _core._record_job_progress(conn, job_id, "reconciling_jellyfin_metadata")
+            reconciliation = reconcile(limit=200)
+            if not isinstance(reconciliation, dict):
+                raise RuntimeError("Jellyfin metadata reconciliation returned an invalid result.")
+            result["jellyfin_metadata_reconciliation"] = {
+                key: value for key, value in reconciliation.items()
+                if not str(key).startswith("_")
+            }
+            if int(reconciliation.get("failed") or 0):
+                raise RuntimeError(
+                    "Jellyfin metadata reconciliation failed for "
+                    f"{int(reconciliation['failed'])} item(s)."
+                )
         result["local_state"] = "telegram_title_cleanup_completed"
         return result, False
 

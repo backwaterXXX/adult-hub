@@ -14,7 +14,7 @@
   const $ = (selector, root = document) => root.querySelector(selector);
 
   const state = {
-    entered: false, loading: false, seq: 0, abort: null, items: [], page: 0, historyPage: 0, historySeq: 0,
+    entered: false, activeTab: '', pendingSync: new Set(), loading: false, seq: 0, abort: null, items: [], page: 0, historyPage: 0, historySeq: 0,
     configAvailable: true, historyAvailable: true, settingsAvailable: false, auditPending: false, overrides: {},
     configRevision: null, appliedRevision: null,
     editorCandidate: null,
@@ -37,6 +37,10 @@
     const [route, query = ''] = location.hash.replace(/^#/, '').split('?', 2);
     const tab = new URLSearchParams(query).get('tab') || '';
     return route === 'sources' || (route === 'system' && ['sync', 'sync-activity', 'sync_activity', 'history'].includes(tab));
+  }
+  function sourcesTab() {
+    const [route, query = ''] = location.hash.replace(/^#/, '').split('?', 2);
+    return route === 'system' || new URLSearchParams(query).get('tab') === 'history' ? 'history' : 'channels';
   }
   function displayTime(value) {
     if (value === null || value === undefined || value === '') return '—';
@@ -158,7 +162,7 @@
         items.push({
           provider,
           providerLabel: titleCase(provider || 'source'),
-          studio: scrub(channel.studio) || scrub(id),
+          studio: scrub(channel.studio) || 'Unnamed channel',
           id,
           channelEnabled,
           sourceEnabled,
@@ -285,7 +289,6 @@
     if (link) {
       const anchor = create('a', 'notice-link', link.label);
       anchor.href = link.href;
-      anchor.setAttribute('data-route', 'jobs');
       children.push(anchor);
     }
     node.replaceChildren(...children);
@@ -311,10 +314,8 @@
 
     const channelCell = create('td');
     channelCell.append(create('strong', 'source-name', item.studio));
-    channelCell.append(create('code', 'source-id', scrub(item.id)));
     row.append(channelCell);
 
-    row.append(create('td', '', item.providerLabel));
 
     const [statusLabel, statusClass] = statusFor(item);
     const statusCell = create('td');
@@ -563,8 +564,8 @@
     for (const run of runs) {
       const row = create('article', 'operation-history-row source-sync-run');
       const copy = create('div', 'source-sync-run-copy');
-      const started = run.ended_at ?? run.started_at;
-      const outcome = run.success === true ? 'Succeeded' : run.success === false ? 'Partial / failed' : 'Unknown';
+      const started = run.started_at;
+      const outcome = run.interrupted === true ? 'Interrupted' : run.success === true ? 'Succeeded' : run.success === false ? 'Partial / failed' : 'Unknown';
       const pill = run.success === true ? 'pill-good' : run.success === false ? 'pill-danger' : 'pill-warning';
       copy.append(create('strong', '', `${outcome} · ${displayTime(started)}`));
       const sourceFilter = scrub(run.source_filter);
@@ -578,11 +579,13 @@
         `${channels.length} source${channels.length === 1 ? '' : 's'}`,
         `${added.toLocaleString('en-US')} added · ${removed.toLocaleString('en-US')} removed`,
         isCount(run.duration_seconds) ? `${Number(run.duration_seconds).toFixed(1)} s` : null,
-        mode ? `${mode} mode` : null,
-        sourceFilter ? `Filter: ${sourceFilter}` : null,
-        Number.isInteger(run.managed_config_revision) ? `Config revision ${run.managed_config_revision}` : null,
       ].filter(Boolean);
       copy.append(create('p', 'source-sync-run-facts', facts.join(' · ')));
+      const technical = create('details', 'source-run-details');
+      const technicalCopy = create('div');
+      technical.append(create('summary', '', 'Channels and HTTP retries'), technicalCopy);
+      technicalCopy.append(create('p', 'source-sync-run-details', [mode ? `${mode} mode` : '', sourceFilter ? `Filter: ${sourceFilter}` : '', Number.isInteger(run.managed_config_revision) ? `Config revision ${run.managed_config_revision}` : ''].filter(Boolean).join(' · ')));
+      for (const channel of channels) technicalCopy.append(historyItem({ ...channel, when: run.started_at }));
       if (failed.length) {
         const failureText = failed.map(source => {
           const label = scrub(source.label) || scrub(source.source) || 'Source';
@@ -590,18 +593,18 @@
           const detail = scrub(source.detail);
           return `${label}${error ? ` · ${error}` : ''}${detail ? ` — ${detail}` : ''}`;
         }).join('; ');
-        copy.append(create('p', 'source-sync-run-failures', `Failed sources: ${failureText}`));
+        technicalCopy.append(create('p', 'source-sync-run-failures', `Failed sources: ${failureText}`));
       }
       if (deferred.length) {
         const labels = deferred.map(source => scrub(source.label) || scrub(source.source) || 'Source').join(', ');
-        copy.append(create('p', 'source-sync-run-details', `History deferred; will resume: ${labels}. Cleanup skipped for these sources.`));
+        technicalCopy.append(create('p', 'source-sync-run-details', `History deferred; will resume: ${labels}. Cleanup skipped for these sources.`));
       }
       const stages = run.stages && typeof run.stages === 'object'
         ? Object.entries(run.stages).filter(([, value]) => isCount(value && value.calls) || isCount(value && value.total_seconds))
           .sort((left, right) => Number(right[1].total_seconds || 0) - Number(left[1].total_seconds || 0)).slice(0, 3)
         : [];
       if (stages.length) {
-        copy.append(create('p', 'source-sync-run-details', `Slowest stages: ${stages.map(([name, value]) =>
+        technicalCopy.append(create('p', 'source-sync-run-details', `Slowest stages: ${stages.map(([name, value]) =>
           `${name.replaceAll('_', ' ')} ${Number(value.total_seconds || 0).toFixed(1)} s (${Number(value.calls || 0)} calls)`
         ).join(' · ')}`));
       }
@@ -611,7 +614,7 @@
         isCount(http.retries) ? `${Number(http.retries)} retries` : null,
         isCount(http.rate_limited) ? `${Number(http.rate_limited)} rate limits` : null,
       ].filter(Boolean);
-      if (httpFacts.length) copy.append(create('p', 'source-sync-run-details', `HTTP: ${httpFacts.join(' · ')}`));
+      if (httpFacts.length) technicalCopy.append(create('p', 'source-sync-run-details', `HTTP: ${httpFacts.join(' · ')}`));
       const jellyfinPoll = run.jellyfin_refresh_poll && typeof run.jellyfin_refresh_poll === 'object'
         ? run.jellyfin_refresh_poll : {};
       const pollFacts = [
@@ -620,9 +623,10 @@
         isCount(jellyfinPoll.total_seconds) ? `${Number(jellyfinPoll.total_seconds).toFixed(1)} s total` : null,
         isCount(jellyfinPoll.max_seconds) ? `${Number(jellyfinPoll.max_seconds).toFixed(1)} s max` : null,
       ].filter(Boolean);
-      copy.append(create('p', 'source-sync-run-details', pollFacts.length
+      technicalCopy.append(create('p', 'source-sync-run-details', pollFacts.length
         ? `Jellyfin refresh polling: ${pollFacts.join(' · ')}`
         : 'Jellyfin refresh polling: not recorded for this run'));
+      copy.append(technical);
       row.append(copy, create('span', `status-pill ${pill}`, outcome));
       host.append(row);
     }
@@ -1077,12 +1081,12 @@
     const sequence = ++state.historySeq;
     try {
       const payload = await window.AdminV2.getJson(`${V2_API}/sources/sync-history?limit=10&offset=${state.historyPage * 10}`);
-      if (sequence !== state.historySeq) return;
+      if (sequence !== state.historySeq || !isSourcesRoute() || sourcesTab() !== 'history') return;
       if (!payload.runs?.length && state.historyPage > 0 && payload.total >= 0) {
         state.historyPage = Math.max(0, Math.ceil(payload.total / 10) - 1); return loadHistoryPage();
       }
       renderSyncRuns(payload);
-    } catch (error) { if (sequence === state.historySeq) renderSyncRuns(null); }
+    } catch (error) { if (sequence === state.historySeq && isSourcesRoute() && sourcesTab() === 'history') renderSyncRuns(null); }
   }
 
   async function loadSources() {
@@ -1101,9 +1105,9 @@
         window.AdminV2.getJson(HISTORY_URL, controller.signal),
         window.AdminV2.getJson(SOURCE_SETTINGS_URL, controller.signal)
       ]);
-      if (sequence !== state.seq) return;
+      if (sequence !== state.seq || !isSourcesRoute() || sourcesTab() !== 'channels') return;
       const historyPayload = historyResult.status === 'fulfilled' ? historyResult.value : null;
-      loadHistoryPage();
+      if (sourcesTab() === 'history') loadHistoryPage();
       if (sourcesResult.status === 'rejected') throw sourcesResult.reason;
       const sourcesPayload = sourcesResult.value;
       const settingsPayload = settingsResult.status === 'fulfilled' ? settingsResult.value : null;
@@ -1133,7 +1137,7 @@
         setNotice('warning', 'Source changes are saved and will be applied by the next sync.');
       render();
     } catch (error) {
-      if (error.name === 'AbortError' || sequence !== state.seq) return;
+      if (error.name === 'AbortError' || sequence !== state.seq || !isSourcesRoute() || sourcesTab() !== 'channels') return;
       setSourcesState('error', 'Could not load sources', `${scrub(error.message) || 'The request failed.'} Please try again.`);
       setFeedback('Source list unavailable.');
     } finally {
@@ -1143,7 +1147,9 @@
 
   async function syncNow(id, mode, button) {
     const item = state.items.find(candidate => candidate.id === id);
-    if (!item || !item.enabled) return;
+    if (!item || !item.enabled || state.pendingSync.has(id)) return;
+    state.pendingSync.add(id);
+    const sequence = state.seq;
     const original = button.textContent;
     button.disabled = true;
     button.dataset.busy = 'true';
@@ -1151,13 +1157,16 @@
     setNotice('', '');
     try {
       const payload = await window.AdminV2.postJson(TRIGGER_URL, { source: id, sync_mode: mode });
-      const message = scrub(payload && payload.message) || 'Sync was requested.';
-      setNotice('success', message, { label: 'Open jobs →', href: '#jobs' });
-      announce(message);
+      if (sequence !== state.seq || !isSourcesRoute()) return;
+      if (!helpers().taskLink(payload?.job_id)) throw new Error('The server did not return a task reference.');
+      helpers().showQueued(payload, 'Synchronization', $('#sourcesNotice'));
+      // Keep the receipt visible when the originating dialog closes.
     } catch (error) {
+      if (sequence !== state.seq || !isSourcesRoute()) return;
       setNotice('error', scrub(error.message) || 'Could not queue the sync.');
       announce('Could not queue the sync.');
     } finally {
+      state.pendingSync.delete(id);
       delete button.dataset.busy;
       if (button.isConnected) { button.disabled = false; button.textContent = original; }
     }
@@ -1299,23 +1308,33 @@
     const view = $('#sourcesView');
     if (!view) return;
     const active = isSourcesRoute();
+    const tab = active ? sourcesTab() : '';
+    const changed = state.activeTab !== tab;
     view.hidden = !active;
-    if (!active) {
-      state.entered = false;
-      if (state.urlTimer) commitSourceUrl();
+    if (changed) {
+      state.seq += 1; state.historySeq += 1;
+      state.abort?.abort();
       const dialog = $('#sourceDetailDialog');
-      if (dialog && dialog.open) closeSourceDetail(false);
-      return;
+      if (dialog?.open) closeSourceDetail(false);
     }
+    state.activeTab = tab;
+    const channels = $('#sourceChannelsPane'), history = $('#sourceHistoryPane');
+    if (channels) channels.hidden = !active || tab !== 'channels';
+    if (history) history.hidden = !active || tab !== 'history';
+    document.querySelectorAll('[data-sources-tab]').forEach(link => {
+      if (link.dataset.sourcesTab === tab) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    });
+    if (!active) { state.entered = false; return; }
     setText($('#crumbCurrent'), 'Sources');
     setText($('#operationalEyebrow'), 'SOURCES');
     setText($('#operationalTitle'), 'Sources');
-    setText($('#operationalIntro'), 'Configured channels, their enabled state, and recent synchronization history.');
-    if (!state.entered) {
+    setText($('#operationalIntro'), tab === 'history' ? 'Synchronization outcomes and details.' : 'Manage channels and request synchronization.');
+    if (!state.entered || changed) {
       state.entered = true;
       restoreSourceUrl();
-      state.items = [];
-      loadSources();
+      if (tab === 'history') loadHistoryPage();
+      else loadSources();
     }
   }
 
@@ -1362,6 +1381,7 @@
       button.focus({ preventScroll: true });
     });
     window.addEventListener('popstate', restoreSourceStateFromHistory);
+    $('#sourcesHistoryRefresh')?.addEventListener('click', () => loadHistoryPage());
     $('#sourcesRefresh').addEventListener('click', () => { setNotice('', ''); loadSources(); });
     $('#sourcesAddChannel').addEventListener('click', event => openAddChannel(event.currentTarget));
     $('#sourcesRows').addEventListener('click', event => {
@@ -1404,7 +1424,7 @@
       dialog.addEventListener('cancel', event => { event.preventDefault(); closeSourceDetail(); });
       dialog.addEventListener('click', event => { if (event.target === dialog) closeSourceDetail(); });
     }
-    document.addEventListener('adminv2:navigate', () => helpers().scheduleSync(sync));
+    document.addEventListener('adminv2:navigate', sync);
   }
 
   setupEvents();

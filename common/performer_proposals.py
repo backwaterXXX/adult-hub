@@ -131,10 +131,14 @@ def review_proposal_group(db_url: str | None, key: str, reason: str, body: dict,
             conn.close()
         decision = {"action": "approve", "performer_id": performer_id}
     reviewed = 0
+    refresh_job_ids = []
     for proposal_id in ids:
-        review_proposal(db_url, proposal_id, decision, wake_worker=wake_worker)
+        result = review_proposal(db_url, proposal_id, decision, wake_worker=wake_worker)
+        if result.get("refresh_job_id"):
+            refresh_job_ids.append(result["refresh_job_id"])
         reviewed += 1
-    return {"ok": True, "reviewed": reviewed, "limit": 100}
+    return {"ok": True, "reviewed": reviewed, "limit": 100,
+            "refresh_job_ids": list(dict.fromkeys(refresh_job_ids))}
 
 
 def reconcile_clear_matches(db_url: str | None, after_id: int = 0, limit: int = 1000, *,
@@ -242,18 +246,20 @@ def reconcile_clear_matches(db_url: str | None, after_id: int = 0, limit: int = 
     finally:
         conn.close()
     refresh_queued = 0
+    refresh_job_ids = []
     refresh_error = False
     if refreshed:
         try:
             from video_duplicates import enqueue_job
             for offset in range(0, len(refreshed), 50):
-                enqueue_job(db_url, "performer_refresh", {"video_ids": refreshed[offset:offset + 50]})
+                refresh_job_ids.append(enqueue_job(db_url, "performer_refresh", {"video_ids": refreshed[offset:offset + 50]}))
                 refresh_queued += min(50, len(refreshed) - offset)
             wake_worker("jobs")
         except Exception:
             refresh_error = True
     return {"processed": len(rows), "resolved": resolved, "after_id": cursor, "has_more": has_more,
-            "refresh_queued": refresh_queued, "refresh_error": refresh_error}
+            "refresh_queued": refresh_queued, "refresh_error": refresh_error,
+            "refresh_job_ids": list(dict.fromkeys(refresh_job_ids))}
 
 
 def search_catalog(db_url: str | None, query: str = "", limit: int = 100) -> dict:

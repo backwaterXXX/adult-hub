@@ -47,7 +47,7 @@ function walk(root, output = []) {
     'operationHistoryState', 'operationHistoryTableWrap', 'operationHistoryPagination', 'operationHistoryPageInfo', 'jobQueueFilter',
   ];
   const elements = Object.fromEntries(ids.map(id => [id, new Element(id === 'jobsFilters' ? 'form' : 'div')]));
-  const jobsTabs = ['tasks', 'bulk'].map(tab => { const item = new Element('a'); item.dataset.jobsTab = tab; return item; });
+  const jobsTabs = ['tasks', 'history', 'bulk'].map(tab => { const item = new Element('a'); item.dataset.jobsTab = tab; return item; });
   const jobsPanes = ['tasks', 'bulk'].map(tab => { const item = new Element('section'); item.dataset.jobsPane = tab; return item; });
   const filterValues = { queue: 'all', state: '', action: '' };
   elements.jobsFilters.elements = { namedItem: name => ({ get value() { return filterValues[name]; }, set value(value) { filterValues[name] = value; } }) };
@@ -206,7 +206,7 @@ function walk(root, output = []) {
   await new Promise(resolve => setTimeout(resolve, 0));
   await new Promise(resolve => setTimeout(resolve, 0));
 
-  assert.equal(location.search, '', 'the one-shot task ID is removed after it is consumed');
+  assert.equal(new URLSearchParams(location.search).get('job_id'), 'target-7', 'the selected task remains linkable after opening');
   assert(calls.some(url => url.endsWith('/tasks/jobs/target-7')), 'Tasks must fetch the linked task even when it is not in the current page');
   const detailsButton = document.querySelectorAll('[data-job-detail]').find(button => button.dataset.jobDetail === 'target-7');
   assert.ok(detailsButton, 'the linked task must be included in the visible task page');
@@ -372,7 +372,7 @@ function walk(root, output = []) {
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(jobsPanes[0].hidden, true, 'Bulk Operations hides the Tasks pane');
   assert.equal(jobsPanes[1].hidden, false, 'Bulk Operations shows its own pane');
-  assert.equal(jobsTabs[1].attributes['aria-current'], 'page');
+  assert.equal(jobsTabs[2].attributes['aria-current'], 'page');
   assert(calls.some(url => url.includes('/operations?')), 'Bulk Operations loads operation history on entry');
   assert.equal(calls.filter(url => url.includes('/tasks?queue=')).length, taskListRequestsBeforeBulk,
     'entering Bulk Operations does not refetch the task queue');
@@ -414,7 +414,7 @@ function walk(root, output = []) {
   assert.equal(new URLSearchParams(location.search).get('job_offset'), '4', 'Forward restores the next Jobs page');
   elements.jobsClearFilters.listeners.click();
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(new URLSearchParams(location.search).get('job_state'), null, 'Clear filters removes Jobs filter state');
+  assert.equal(new URLSearchParams(location.search).get('job_state'), 'active', 'Clear filters returns to Active tasks');
   assert.equal(new URLSearchParams(location.search).get('job_offset'), null, 'Clear filters removes Jobs pagination state');
   assert.equal(new URLSearchParams(location.search).get('home_panel'), 'issues', 'Clear filters preserves unrelated Home URL state');
   assert.equal(new URLSearchParams(location.search).get('issue_type'), 'job_stalled', 'Clear filters preserves unrelated issue deep links');
@@ -452,5 +452,9 @@ function walk(root, output = []) {
   await new Promise(resolve => setTimeout(resolve, 0));
   assert(writes.includes('/admin/api/v2/phash-jobs/p-hash-1/cancel'),
     'pHash task cancellation uses the existing pHash action endpoint');
+  location.hash = '#jobs?tab=schedules';
+  documentListeners.get('adminv2:navigate')?.({ detail: { route: 'schedules' } });
+  assert.equal(elements.jobsView.hidden, true,
+    'the legacy Jobs/Schedules hash must not reactivate the Tasks view while the router redirects it');
   process.stdout.write('PASS: Jobs tab routing, task deep links, operation-history stale-detail races, off-page details, and filter/page Back/Forward history\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

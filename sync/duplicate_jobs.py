@@ -371,6 +371,7 @@ class DuplicateJobServices:
     download_image_if_missing: Callable | None = None
     external_metadata_backfill: Callable | None = None
     telegram_fingerprint_scan: Callable | None = None
+    sync_jellyfin_telegram_metadata: Callable | None = None
 
 
 def _performer_refresh(conn: db.Connection, job_id: str, payload: dict,

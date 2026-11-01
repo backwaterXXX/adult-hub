@@ -37,11 +37,12 @@ function descendants(root, predicate) {
     'sourcesStatusFilter',
     'sourcesRows', 'sourcesPagination', 'sourceDetailDialog', 'sourcesNotice', 'sourcesFeedback',
     'sourceDetailContent',
-    'sourcesHistoryFeedback', 'sourcesHistoryRows', 'sourcesHistoryPagination',
+    'sourceChannelsPane', 'sourceHistoryPane', 'sourcesHistoryFeedback', 'sourcesHistoryRows', 'sourcesHistoryPagination',
     'sourcesRevision', 'sourcesState', 'sourcesTableWrap', 'sourcesQuery', 'liveMessage', 'crumbCurrent',
     'operationalEyebrow', 'operationalTitle', 'operationalIntro',
   ];
   const elements = Object.fromEntries(ids.map(id => [id, new Element(id === 'sourcesFilters' ? 'form' : 'div')]));
+  const documentListeners = {};
   const document = {
     get activeElement() { return activeElement; },
     querySelector(selector) {
@@ -52,7 +53,7 @@ function descendants(root, predicate) {
     },
     querySelectorAll: () => [],
     createElement: tag => new Element(tag),
-    addEventListener() {},
+    addEventListener(type, callback) { documentListeners[type] = callback; },
   };
   const channels = Array.from({ length: 1201 }, (_, index) => ({
     id: String(index + 1), studio: `Channel ${String(index + 1).padStart(4, '0')}`, enabled: true,
@@ -122,10 +123,15 @@ function descendants(root, predicate) {
   };
   vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/sources.js', 'utf8'), context);
   await new Promise(resolve => setTimeout(resolve, 0));
+  const selectTab = async tab => {
+    location.hash = tab === 'history' ? '#sources?tab=history' : '#sources';
+    documentListeners['adminv2:navigate']();
+    await new Promise(resolve => setTimeout(resolve, 0));
+  };
 
   assert.equal(elements.sourcesRows.children.length, 50);
-  assert.equal(elements.sourcesRows.children[0].children[2].children[0].textContent, 'Disabled');
-  assert.equal(elements.sourcesRows.children[0].children[4].children[0].children[0].textContent, 'Never synced');
+  assert.equal(elements.sourcesRows.children[0].children[1].children[0].textContent, 'Disabled');
+  assert.equal(elements.sourcesRows.children[0].children[3].children[0].children[0].textContent, 'Never synced');
   const pageInfo = () => elements.sourcesPagination.children.find(child => child.tagName === 'span');
   assert.equal(pageInfo().textContent, 'Page 1 of 25');
   assert.match(elements.sourcesFeedback.textContent, /Showing 1–50 of 1202 matching channels/);
@@ -137,7 +143,7 @@ function descendants(root, predicate) {
   assert.equal(new URLSearchParams(location.search).get('source_page'), '1', 'the current page is linkable');
   assert.equal(document.activeElement.dataset.sourcePage, 'next');
   assert.match(elements.sourcesRows.children[0].children[0].children[0].textContent, /Channel 0051/);
-  const sourceActionGroup = elements.sourcesRows.children[0].children[6].children[0];
+  const sourceActionGroup = elements.sourcesRows.children[0].children[5].children[0];
   const syncButtons = sourceActionGroup.children.filter(button => button.dataset.syncSource);
   assert.deepEqual(syncButtons.map(button => button.dataset.syncMode), ['scheduled', 'new', 'backfill']);
   assert.deepEqual(syncButtons.map(button => button.getAttribute('aria-label')),
@@ -170,9 +176,9 @@ function descendants(root, predicate) {
   assert.equal(elements.sourcesRows.children.length, 2);
   assert.equal(pageInfo().textContent, 'Page 25 of 25');
   assert.match(elements.sourcesRows.children[0].children[0].children[0].textContent, /Channel 1201/);
-  assert.equal(elements.sourcesRows.children[0].children[2].children[0].textContent, 'Source disabled');
+  assert.equal(elements.sourcesRows.children[0].children[1].children[0].textContent, 'Source disabled');
   assert.match(elements.sourcesRows.children[1].children[0].children[0].textContent, /Secondweb configuration/);
-  assert.equal(elements.sourcesRows.children[1].children[6].children[0].children.length, 1);
+  assert.equal(elements.sourcesRows.children[1].children[5].children[0].children.length, 1);
   assert.equal(document.activeElement.dataset.sourcePage, 'previous');
 
   for (let page = 25; page > 2; page--) {
@@ -181,9 +187,9 @@ function descendants(root, predicate) {
   }
   assert.equal(pageInfo().textContent, 'Page 2 of 25');
   assert.equal(document.activeElement.dataset.sourcePage, 'previous');
-  const returnedCheckButton = elements.sourcesRows.children[0].children[6].children[0].children.find(
+  const returnedCheckButton = elements.sourcesRows.children[0].children[5].children[0].children.find(
     button => button.dataset.checkSource === '51');
-  const returnedOutcome = elements.sourcesRows.children[0].children[6].children[0].children.find(
+  const returnedOutcome = elements.sourcesRows.children[0].children[5].children[0].children.find(
     node => node.dataset.accessOutcome === '51');
   assert.equal(returnedCheckButton.textContent, 'Check access');
   assert.equal(returnedOutcome.dataset.accessStatus, 'accessible', 'the last result survives paging');
@@ -250,14 +256,18 @@ function descendants(root, predicate) {
   }] };
   await elements.sourcesRefresh.listeners.click();
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(elements.sourcesRows.children[1].children[4].children[0].children[0].textContent, 'Failed');
+  assert.equal(elements.sourcesRows.children[1].children[3].children[0].children[0].textContent, 'Failed');
   const textOf = node => [node.textContent, ...node.children.map(textOf)].join(' ');
+  await selectTab('history');
+  assert.equal(elements.sourceChannelsPane.hidden, true);
+  assert.equal(elements.sourceHistoryPane.hidden, false);
   const runText = textOf(elements.sourcesHistoryRows.children[0]);
   assert.match(runText, /Partial \/ failed/);
   assert.match(runText, /Failed sources: Channel 02 · Sync failed \(TimeoutError\)\./);
   assert.match(runText, /telegram history 4\.3 s \(2 calls\)/);
   assert.match(runText, /HTTP: 1 failed attempts · 1 retries · 1 rate limits/);
   assert.match(elements.sourcesHistoryFeedback.textContent, /Showing 1–2 of 2 sync runs/);
+  await selectTab('channels');
   const channelDetailButton = descendants(elements.sourcesRows,
     node => node.dataset.sourceDetail === 'telegram::2')[0];
   elements.sourcesRows.listeners.click({ target: { closest: selector =>
@@ -297,21 +307,25 @@ function descendants(root, predicate) {
   historyFails = true;
   await elements.sourcesRefresh.listeners.click();
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(elements.sourcesRows.children[1].children[4].children[0].children[0].textContent, 'History unavailable');
+  assert.equal(elements.sourcesRows.children[1].children[3].children[0].children[0].textContent, 'History unavailable');
   assert.match(elements.sourcesNotice.children.map(child => child.textContent).join(' '), /Sync history is unavailable/);
+  await selectTab('history');
   assert.match(elements.sourcesHistoryFeedback.textContent, /Sync history is unavailable/);
   assert.equal(elements.sourcesHistoryRows.children.length, 0);
 
+  await selectTab('channels');
   historyFails = false;
   sourcesFail = true;
   historyPayload = { runs: [] };
   await elements.sourcesRefresh.listeners.click();
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.match(elements.sourcesFeedback.textContent, /Source list unavailable/);
+  await selectTab('history');
   assert.match(elements.sourcesHistoryFeedback.textContent, /No sync runs have been recorded yet/,
     'sync-history state resolves even when configured-source loading fails');
 
   sourcesFail = false;
+  await selectTab('channels');
   location.hash = '#sources';
   location.search = '?source_id=telegram%3A2';
   location.href = 'http://localhost/admin/v2/?source_id=telegram%3A2#sources';
@@ -342,8 +356,7 @@ function descendants(root, predicate) {
   historyPayload = { available: true, total: 65, runs: Array.from({ length: 65 }, (_, index) => ({
     started_at: 1700000000 - index, success: true, sources: []
   })) };
-  elements.sourcesRefresh.listeners.click();
-  await new Promise(resolve => setTimeout(resolve, 20));
+  await selectTab('history');
   assert.match(elements.sourcesHistoryFeedback.textContent, /Showing 1–10 of 65/);
   for (let page = 0; page < 6; page++) {
     elements.sourcesHistoryPagination.children[2].listeners.click();
@@ -354,5 +367,28 @@ function descendants(root, predicate) {
   elements.sourcesHistoryPagination.children[0].listeners.click();
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.match(elements.sourcesHistoryFeedback.textContent, /Showing 51–60 of 65/);
+  // A repeated click shares one pending request, and a late receipt cannot replace another section.
+  await selectTab('channels');
+  const pendingSyncButton = descendants(elements.sourcesRows, node => node.dataset.syncSource)[0];
+  let finishSync, pendingPosts = 0;
+  window.AdminV2.postJson = () => { pendingPosts++; return new Promise(resolve => { finishSync = resolve; }); };
+  const clickSync = () => elements.sourcesRows.listeners.click({ target: { closest: selector => selector === '[data-sync-source]' ? pendingSyncButton : null } });
+  clickSync(); clickSync();
+  assert.equal(pendingPosts, 1, 'double-clicking sync sends one request');
+  const noticeBeforeLeaving = textOf(elements.sourcesNotice);
+  location.hash = '#library';
+  documentListeners['adminv2:navigate']();
+  finishSync({ ok: true, job_id: 'late-sync-job', state: 'queued' });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(textOf(elements.sourcesNotice), noticeBeforeLeaving, 'a late sync receipt cannot repaint the next section');
+  await selectTab('channels');
+  for (const message of ['This panel is read-only.', 'Sync worker unavailable.', 'Could not queue the sync.']) {
+    window.AdminV2.postJson = async () => { throw new Error(message); };
+    const button = descendants(elements.sourcesRows, node => node.dataset.syncSource)[0];
+    elements.sourcesRows.listeners.click({ target: { closest: selector => selector === '[data-sync-source]' ? button : null } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.match(textOf(elements.sourcesNotice), new RegExp(message.replaceAll('.', '\\.')));
+    assert.equal(descendants(elements.sourcesNotice, node => node.tagName === 'a').length, 0, 'failed admission does not advertise a queued task');
+  }
   process.stdout.write('PASS: Sources URL state, redacted sync history, and persistent access-check outcomes\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

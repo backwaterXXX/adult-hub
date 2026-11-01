@@ -95,3 +95,41 @@ class TestAdminTaskProjection(PgTestCase):
             page = _list_tasks(self.db_url, queue="all", state="", action=action, offset=0, limit=10)
             self.assertEqual([task["id"] for task in page["tasks"]], [expected])
             self.assertEqual((page["total"], page["active_total"]), (1, 1))
+
+    def test_history_and_visual_projection_keep_existing_states_and_hide_private_data(self):
+        self.add_video("visual-task-video")
+        for status in ("queued", "processing", "done", "failed", "cancelled"):
+            self.conn.execute(
+                "INSERT INTO video_duplicate_jobs(id,action,state,payload,created_at,updated_at) "
+                "VALUES (%s,'sync',%s,%s,now(),now())",
+                (f"admin-{status}", status, '{"source":"-1001","sync_mode":"new","token":"private-token"}'),
+            )
+            self.conn.execute(
+                "INSERT INTO video_visual_jobs(id,dedupe_key,kind,video_id,algorithm_version,state,lease_token,lease_until,error_code,error_detail,source_key) "
+                "VALUES (%s,%s,'signature','visual-task-video','test',%s,%s,%s,%s,'private-error-detail','private-source-url')",
+                (f"visual-{status}", f"dedupe-{status}", status,
+                 "lease" if status == "processing" else None,
+                 int(time.time()) + 30 if status == "processing" else None,
+                 "decode_failed" if status == "failed" else None),
+            )
+        self.conn.commit()
+        history = _list_tasks(self.db_url, queue="all", state="history", action="", offset=0, limit=20)
+        self.assertEqual(history["total"], 6)
+        self.assertEqual({job["state"] for job in history["tasks"]}, {"done", "failed", "cancelled"})
+        self.assertNotIn("private-token", str(history))
+        self.assertNotIn("private-error-detail", str(history))
+        self.assertNotIn("private-source-url", str(history))
+        general = next(job for job in history["tasks"] if job["queue"] == "jobs")
+        self.assertEqual(general["parameters"], {"source": "-1001", "sync_mode": "new"})
+        visual = _list_tasks(self.db_url, queue="visual", state="", action="visual_signature", offset=0, limit=2)
+        self.assertEqual((visual["total"], visual["active_total"], visual["truncated"]), (5, 2, True))
+        selected = _list_tasks(self.db_url, queue="visual", state="", action="", offset=0, limit=1, job_id="visual-failed")
+        self.assertEqual(selected["tasks"][0]["id"], "visual-failed")
+        self.assertIn("Visual processing failed", selected["tasks"][0]["error"])
+        self.assertEqual(self.conn.execute("SELECT state FROM video_visual_jobs WHERE id='visual-failed'").fetchone()[0], "failed")
+
+    def test_interrupted_sync_history_preserves_its_recorded_outcome(self):
+        from admin_v2_sync_history import safe_sync_history
+        report = safe_sync_history({"runs": [{"started_at": 1700000000, "success": False,
+                                               "interrupted": True, "sources": []}]})
+        self.assertTrue(report["runs"][0]["interrupted"])

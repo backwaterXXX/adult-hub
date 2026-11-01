@@ -147,6 +147,7 @@
     try {
       const result = await post(`${API}/proposal-groups/${encodeURIComponent(item.reason)}/${encodeURIComponent(item.key)}`, body);
       if (sequence !== state.loadSeq || !reviewVisible()) return;
+      if (result.refresh_job_ids?.length) helpers().showQueued({ job_ids: result.refresh_job_ids }, 'Performer metadata refresh');
       const shouldRestoreFocus = focusedBeforeRequest
         && (card.contains(document.activeElement) || document.activeElement === document.body);
       state.pendingTotal = Math.max(0, Number(state.pendingTotal || 0) - Number(result.reviewed || 0));
@@ -217,6 +218,8 @@
     const button = $('#performersReconcile');
     if (button.disabled) return;
     button.disabled = true;
+    const sequence = state.loadSeq;
+    const refreshJobs = new Set();
     let afterId = 0;
     let processed = 0;
     let resolved = 0;
@@ -225,6 +228,9 @@
     try {
       while (true) {
         const result = await post(`${API}/proposals/reconcile`, { after_id: afterId });
+        if (sequence !== state.loadSeq || !reviewVisible()) return;
+        for (const id of result.refresh_job_ids || []) refreshJobs.add(id);
+        if (refreshJobs.size) helpers().showQueued({ job_ids: [...refreshJobs] }, 'Performer metadata refresh');
         processed += Number(result.processed || 0);
         resolved += Number(result.resolved || 0);
         refreshError = refreshError || result.refresh_error === true;
@@ -232,9 +238,12 @@
         if (!result.has_more || !result.processed) break;
         message(`Checked ${processed.toLocaleString('en-US')} proposals; resolved ${resolved.toLocaleString('en-US')} clear matches…`);
       }
+      const expectedSequence = state.loadSeq + 1;
       await load();
+      if (state.loadSeq !== expectedSequence || !reviewVisible()) return;
       message(`Checked ${processed.toLocaleString('en-US')} proposals and resolved ${resolved.toLocaleString('en-US')} clear matches.${refreshError ? ' Some metadata refresh jobs could not be queued.' : ''} Ambiguous names remain grouped for review.`, refreshError ? 'warning' : 'status');
     } catch (error) {
+      if (!reviewVisible()) return;
       message(`Reconciliation stopped after ${processed.toLocaleString('en-US')} proposals. ${errorText(error)}`, 'error');
       await load().catch(() => {});
     } finally { button.disabled = false; }
@@ -312,10 +321,11 @@
           if (!Array.isArray(preview.items) || preview.items.length !== 1 || typeof preview.plan_id !== 'string' || !preview.plan_id) throw new Error('Invalid merge preview.');
           executing = true;
           const result = await post('/admin/api/v2/operations/execute', { plan_id: preview.plan_id });
-          const jobId = /^[A-Za-z0-9_-]{1,128}$/.test(String(result?.job_id || '')) ? result.job_id : '';
+          const jobId = /^[A-Za-z0-9_-]{1,128}$/.test(String(result?.job_id || result?.jobs?.[0]?.job_id || '')) ? (result.job_id || result.jobs?.[0]?.job_id) : '';
           state.fuzzyQueued.set(pairKey, jobId);
           state.fuzzySelected.delete(pairKey);
           queuedCount += 1;
+          if (reviewVisible()) helpers().showQueued(result, 'Performer merge');
         } catch (error) {
           const uncertain = executing && error.status !== 409;
           if (uncertain) {
@@ -329,10 +339,11 @@
       state.fuzzyBatchRunning = false;
       $('#fuzzyScan').disabled = false;
       renderFuzzy();
-      window.AdminV2.setFeedback($('#fuzzyFeedback'), `${queuedCount} of ${selected.length} selected merges queued.${failures.length ? ` ${failures.join(' · ')}` : ' Follow their progress in Jobs.'}`, failures.length ? 'error' : 'status');
+      if (reviewVisible()) window.AdminV2.setFeedback($('#fuzzyFeedback'), `${queuedCount} of ${selected.length} selected merges queued.${failures.length ? ` ${failures.join(' · ')}` : ' Follow their progress in Jobs.'}`, failures.length ? 'error' : 'status');
     }
   }
   function renderFuzzy() {
+    if (!reviewVisible()) return;
     const host = $('#fuzzyRows');
     const rows = fuzzyRows();
     host.replaceChildren();
@@ -359,7 +370,7 @@
       const isQueued = state.fuzzyQueued.has(pairKey) || state.fuzzyQueued.has(`${defaultCanonical}::${defaultAlias}`);
       const jobId = state.fuzzyQueued.get(pairKey) || state.fuzzyQueued.get(`${defaultCanonical}::${defaultAlias}`);
 
-      const row = node('article', isQueued ? 'operation-history-row is-completed' : 'operation-history-row');
+      const row = node('article', isQueued ? 'operation-history-row is-queued' : 'operation-history-row');
       row.dataset.fuzzyPair = pairKey;
       row.className += ' fuzzy-row';
 
@@ -405,7 +416,8 @@
       review.addEventListener('click', () => mergeFuzzy(currentAlias, currentCanonical, review));
 
       if (isQueued) {
-        actions.append(review, node('span', 'status-pill pill-good', `✓ Queued (${jobId || 'job'})`));
+        actions.append(review, node('span', 'status-pill pill-neutral', 'Queued'));
+        const link = helpers().taskLink(jobId); if (link) actions.append(link);
       } else {
         const swap = node('button', 'button button-quiet', '⇄ Swap');
         swap.type = 'button';
@@ -505,13 +517,16 @@
       }
       executing = true;
       const result = await post('/admin/api/v2/operations/execute', { plan_id: preview.plan_id });
-      const jobId = /^[A-Za-z0-9_-]{1,128}$/.test(String(result?.job_id || '')) ? result.job_id : '';
+      const jobId = /^[A-Za-z0-9_-]{1,128}$/.test(String(result?.job_id || result?.jobs?.[0]?.job_id || '')) ? (result.job_id || result.jobs?.[0]?.job_id) : '';
       state.fuzzyQueued.set(key, jobId);
       state.fuzzyMerging.delete(key);
       state.fuzzySelected.delete(`${alias}::${canonical}`);
       state.fuzzySelected.delete(`${canonical}::${alias}`);
       renderFuzzy();
-      window.AdminV2.setFeedback($('#fuzzyFeedback'), `Merge queued${jobId ? ` as job ${jobId}` : ''}. Follow its progress in Jobs.`);
+      if (reviewVisible()) {
+        window.AdminV2.setFeedback($('#fuzzyFeedback'), `Queued${jobId ? ` as task ${jobId}` : ''}.`);
+        helpers().showQueued(result, 'Performer merge');
+      }
     } catch (error) {
       const uncertain = executing && error.status !== 409;
       window.AdminV2.setFeedback($('#fuzzyFeedback'), uncertain
@@ -533,6 +548,6 @@
     reviewActive = detail?.route === 'performers' && detail.performersTab === 'review';
     state.loadSeq += 1;
     state.proposalSeq += 1;
-    if (reviewActive) load();
+    if (reviewActive) { load(); renderFuzzy(); }
   });
 })();

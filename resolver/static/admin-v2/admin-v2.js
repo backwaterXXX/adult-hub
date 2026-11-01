@@ -35,20 +35,17 @@
   const routeInfo = {
     start: { title: 'Overview', intro: 'Catalog size, synchronization, tasks and open problems at a glance.' },
     library: { title: 'Library', intro: 'Find videos and check their source and availability.' },
-    quality: { title: 'Catalog Health', intro: 'Review catalog metadata and local file issues.' },
     sources: { title: 'Sources', intro: 'Channels and synchronization history.' },
     performers: { title: 'Performers', intro: 'Browse the performer catalog, or review the names that still need a decision.' },
     jobs: { title: 'Tasks', intro: 'The operation queue and history.' },
     schedules: { title: 'Schedules', intro: 'Recurring tasks and their schedules.' },
-    system: { title: 'System', intro: 'Run consistency audits and review service maintenance.' }
+    system: { title: 'System', intro: 'Service status, backups and maintenance.' }
   };
   const LIBRARY_TABS = ['videos', 'duplicates', 'suggestions', 'quarantine'];
   const PERFORMER_TABS = ['directory', 'review'];
   const PERFORMER_AREAS = ['proposals', 'name-variants'];
   const DUPLICATE_MATCHES = ['catalog', 'visual'];
-  // Catalog review screens are reached through Library until they move there,
-  // so the menu highlights Library while their own screen title is shown.
-  const navOwner = route => (route === 'quality' ? 'library' : route);
+  const navOwner = route => route;
 
   function safeText(value, fallback = '—') {
     if (value === null || value === undefined || value === '') return fallback;
@@ -86,6 +83,7 @@
   }
   // Stage 3 moved screens into Library and Performers tabs; old addresses are
   // rewritten to the canonical one so bookmarks and issue links keep working.
+  let legacyScreenNotice = '';
   function legacyHashRewrite(hash) {
     if (hash.startsWith('film/')) return null;
     const [route, query = ''] = hash.split('?', 2);
@@ -97,6 +95,14 @@
       for (const [key, value] of Object.entries(extra || {})) params.set(key, value);
       return `#${nextRoute}${params.toString() ? `?${params}` : ''}`;
     };
+    const retired = (nextRoute = 'system', nextTab = 'status') => {
+      legacyScreenNotice = 'This screen has been retired. The related automatic work continues in the background.';
+      return target(nextRoute, nextTab === 'status' ? '' : nextTab);
+    };
+    if (route === 'jobs' && tab === 'schedules') {
+      legacyScreenNotice = 'Schedules now have their own section.';
+      return target('schedules');
+    }
     if (route === 'organize') {
       return tab === 'people' ? target('performers', 'directory')
         : target('library', tab === 'quarantine' ? 'quarantine' : 'duplicates');
@@ -104,9 +110,11 @@
     if (route === 'library' && tab === 'visual') return target('library', 'duplicates', { match: 'visual' });
     if (route === 'library' && tab === 'proposals') return target('library', 'suggestions');
     if (route === 'quality' && tab === 'visual') return target('library', 'duplicates', { match: 'visual' });
-    if (route === 'quality' && ['duplicates', 'quarantine', 'enrichment'].includes(tab)) {
-      return target('library', tab === 'enrichment' ? 'suggestions' : tab);
-    }
+    if (route === 'quality' && tab === 'enrichment') return target('library', 'suggestions');
+    if (route === 'quality' && ['duplicates', 'quarantine'].includes(tab)) return target('library', tab);
+    if (route === 'quality' || ['catalog-health', 'cataloghealth', 'diagnostics', 'playback-diagnostics', 'admin-history', 'activity', 'linkcheck', 'enrichment-progress', 'audit-history', 'trends'].includes(route)) return retired();
+    if (route === 'system' && ['diagnostics', 'playback', 'playback-diagnostics', 'activity', 'admin-history', 'audit', 'audits', 'audit-history', 'consistency', 'linkcheck', 'links', 'availability', 'enrichment-progress', 'trends'].includes(tab)) return retired();
+    if (route === 'system' && tab === 'automation') { legacyScreenNotice = 'Schedules are available in their own section.'; return '#schedules'; }
     if (route === 'performers' && ['proposals', 'matching'].includes(tab)) {
       return target('performers', 'review', { area: tab === 'matching' ? 'name-variants' : 'proposals' });
     }
@@ -131,25 +139,12 @@
     const [route, query = ''] = hash.split('?', 2);
     const params = new URLSearchParams(query);
     const tab = params.get('tab') || '';
-    if (route === 'jobs' && tab === 'schedules') {
-      const rest = new URLSearchParams(query); rest.delete('tab');
-      history.replaceState({}, '', '#schedules' + (rest.toString() ? '?' + rest : ''));
-      return { route: 'schedules', primaryRoute: 'schedules', detailId: null };
-    }
-    if (route === 'system' && ['audit', 'audits', 'consistency'].includes(tab)) {
-      return { route: 'quality', primaryRoute: 'quality', qualityTab: 'issues', detailId: null };
-    }
-    if (route === 'system' && ['linkcheck', 'links', 'availability'].includes(tab)) {
-      return { route: 'quality', primaryRoute: 'quality', qualityTab: 'issues', detailId: null, focusTarget: '#linkcheckTitle' };
-    }
     if (route === 'system' && ['sync', 'sync-activity', 'sync_activity', 'history'].includes(tab)) {
+      history.replaceState({}, '', '#sources?tab=history');
       return { route: 'sources', primaryRoute: 'sources', sourcesTab: 'history', detailId: null };
     }
     if (route === 'system') {
-      return { route, primaryRoute: route, systemTab: ['diagnostics', 'backups', 'activity'].includes(tab) ? tab : 'maintenance', detailId: null };
-    }
-    if (route === 'quality') {
-      return { route, primaryRoute: 'quality', detailId: null, qualityTab: tab === 'enrichment-progress' ? 'enrichment-progress' : 'issues' };
+      return { route, primaryRoute: route, systemTab: ['backups', 'maintenance'].includes(tab) ? tab : 'status', detailId: null };
     }
     if (route === 'library') {
       const libraryTab = LIBRARY_TABS.includes(tab) ? tab : 'videos';
@@ -250,6 +245,7 @@
   }
   function renderLocation() {
     const next = currentRoute();
+    setHidden('#taskReceipt', true);
     const routeChanged = next.route !== state.route;
     const detailChanged = next.detailId !== state.detailId;
     const libraryTabChanged = (next.libraryTab || 'videos') !== state.libraryTab;
@@ -313,23 +309,11 @@
       if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
     });
     setText($('#crumbCurrent'), next.detailId ? 'Video details' : routeInfo[next.primaryRoute || state.route].title);
-    const catalogTab = next.route === 'quality' ? (next.qualityTab || 'issues') : '';
-    $$('.catalog-health-tabs [data-section-tab]').forEach(link => {
-      if (link.dataset.sectionTab === catalogTab) link.setAttribute('aria-current', 'page');
-      else link.removeAttribute('aria-current');
-    });
-    $$('.catalog-health-tabs').forEach(nav => { nav.hidden = next.primaryRoute !== 'quality'; });
     $('#systemSectionTabs').hidden = next.route !== 'system';
-    setHidden('#systemMoreTools', !(next.route === 'system'
-      && (next.systemTab || 'maintenance') === 'maintenance'));
     $$('#systemSectionTabs [data-system-tab]').forEach(link => {
-      if (link.dataset.systemTab === (next.systemTab || 'maintenance')) link.setAttribute('aria-current', 'page');
+      if (link.dataset.systemTab === (next.systemTab || 'status')) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     });
-    $('#qualityIssuesPane').hidden = next.route === 'quality' && next.qualityTab !== 'issues';
-    $('#qualityEnrichmentPane').hidden = next.route === 'quality' && next.qualityTab !== 'enrichment-progress';
-    $('#qualityOverview').hidden = next.route === 'quality' && next.qualityTab === 'enrichment-progress';
-    $('#qualityAdvanced').hidden = next.route === 'quality' && next.qualityTab === 'enrichment-progress';
     syncSectionTabs('libraryTabList', state.libraryTab);
     setHidden('#librarySummary', state.libraryTab !== 'videos');
     syncSectionTabs('performersTabList', state.performersTab);
@@ -349,7 +333,11 @@
       loadIssues();
     }
     // The service-state panel lives in System, so its own read starts there.
-    if (next.route === 'system' && (next.systemTab || 'maintenance') === 'maintenance'
+    if (legacyScreenNotice) {
+      const notice = $('#legacyScreenNotice'); notice.hidden = false; notice.textContent = legacyScreenNotice;
+      legacyScreenNotice = '';
+    } else setHidden('#legacyScreenNotice', true);
+    if (next.route === 'system' && (next.systemTab || 'status') === 'status'
       && (routeChanged || systemTabChanged)) void loadSystemStatus();
     if (next.route === 'library') {
       syncFiltersFromUrl();
@@ -405,13 +393,11 @@
     setText($('#operationalTitle'), routeInfo[route].title);
     setText($('#operationalIntro'), routeInfo[route].intro);
     setText($('#operationalEyebrow'), routeInfo[route].title.toUpperCase());
-    $('#qualityView').hidden = route !== 'quality';
     $('#systemSchedulesView').hidden = route !== 'schedules';
-    const systemTab = routeState.systemTab || 'maintenance';
+    const systemTab = routeState.systemTab || 'status';
+    $('#systemStatusView').hidden = route !== 'system' || systemTab !== 'status';
     $('#systemBackupView').hidden = route !== 'system' || systemTab !== 'backups';
-    $('#systemDiagnosticsView').hidden = route !== 'system' || systemTab !== 'diagnostics';
     $('#systemMaintenanceView').hidden = route !== 'system' || systemTab !== 'maintenance';
-    $('#systemActivityView').hidden = route !== 'system' || systemTab !== 'activity';
   }
   function syncFiltersFromUrl() {
     const params = routeQueryParams();
@@ -634,7 +620,9 @@
   const dialogOpeners = new WeakMap();
   const dialogCloseHandlers = new WeakSet();
   function openDialog(dialog, opener = document.activeElement) {
-    if (!dialog || dialog.open) return;
+    if (!dialog) return;
+    dialog.querySelector?.('.task-receipt')?.remove();
+    if (dialog.open) return;
     if (opener && typeof opener.focus === 'function') dialogOpeners.set(dialog, opener);
     if (!dialogCloseHandlers.has(dialog)) {
       dialog.addEventListener('close', () => {
@@ -756,10 +744,42 @@
     if (previous !== undefined) clearTimeout(previous);
     syncTimers.set(callback, setTimeout(callback, 0));
   }
+  function taskLink(id, queue = 'jobs') {
+    const value = String(id || '');
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) return null;
+    const link = create('a', 'notice-link', 'View task');
+    link.href = `/admin/v2/?job_id=${encodeURIComponent(value)}${['phash', 'visual'].includes(queue) ? '&job_queue=' + queue : ''}#jobs`;
+    return link;
+  }
+  function showQueued(payload, message = '', target = $('#taskReceipt'), queue = 'jobs') {
+    const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+    const ids = [...new Set([payload?.job_id, ...(payload?.job_ids || []), ...jobs.map(job => job.job_id)].filter(Boolean))];
+    const label = `Queued${message ? ' · ' + message : ''}`;
+    const targets = target ? [target] : [];
+    const dialog = document.querySelector('dialog[open]');
+    if (dialog && !dialog.contains(target)) {
+      let receipt = dialog.querySelector('.task-receipt');
+      if (!receipt) {
+        receipt = create('div', 'state-banner task-receipt');
+        receipt.setAttribute('role', 'status');
+        (dialog.firstElementChild || dialog).append(receipt);
+      }
+      targets.push(receipt);
+    }
+    for (const node of targets) {
+      node.hidden = false;
+      node.classList?.remove?.('state-error', 'state-success', 'state-warning');
+      node.setAttribute?.('role', 'status');
+      node.replaceChildren(create('span', '', label));
+      for (const id of ids) { const link = taskLink(id, queue); if (link) node.append(link); }
+    }
+    targets.at(-1)?.scrollIntoView?.({ block: 'nearest' });
+    announce(label);
+  }
   window.AdminV2 = Object.freeze({
     requestJson, getJson, postJson, putJson, deleteJson, openDialog, closeDialog, setFeedback, downloadBlob,
     create, el: create, setText, announce, safeId, scrub, titleCase, detailField, formatDuration, scheduleSync,
-    currentRoute
+    currentRoute, taskLink, showQueued
   });
   function renderServiceChip() {
     const element = $('#serviceStatus');
@@ -884,7 +904,6 @@
       const capabilityData = capabilitiesPayload(capabilityResult.value);
       if (statusResult.error) {
         // Never show the previous service rows as current after a failed read.
-        renderServicePanel({}, capabilityData, statusResult.error);
         renderWriteAccessNotice(capabilityData, capabilityResult.error || statusResult.error);
         updateServices({ connection: false, capabilities: capabilityData });
         return;
@@ -893,14 +912,12 @@
       state.status = status;
       state.statusLoaded = true;
       updateServices({ connection: true, capabilities: capabilityData, sync: (status && status.sync) || null });
-      renderServicePanel(status, capabilityData);
       renderWriteAccessNotice(capabilityData, capabilityResult.error);
-      void loadQualitySummary(sequence);
-      void loadJellyfinStatus(sequence);
     } finally {
       state.systemStatusInFlight = false;
     }
   }
+  document.addEventListener('adminv2:refresh-system-status', () => { if (state.route === 'system' && state.systemTab === 'status') void loadSystemStatus(); });
   function capabilitiesPayload(payload) {
     if (!payload) return null;
     return payload.capabilities || payload;
@@ -957,89 +974,6 @@
   }
   function renderStatus(data, capabilities) {
     renderOverviewCards(data);
-    renderServicePanel(data, capabilities);
-  }
-  function renderServicePanel(data, capabilities, error) {
-    const services = $('#serviceList');
-    if (!services) return;
-    const db = data.db || {};
-    const sync = data.sync || {};
-    services.replaceChildren();
-    const dbAvailable = first(db, ['db_ok', 'available', 'connected', 'ok']);
-    const syncState = error ? 'Status unavailable' : window.AdminV2HeaderStatus.syncStatusText(sync);
-    const accessState = !capabilities
-      ? 'Access status unavailable · writes need verification'
-      : capabilities.actions_enabled
-      ? (capabilities.token_required ? 'Writes require a token' : 'Read and write enabled')
-      : capabilities && ['worker_unavailable', 'worker_incompatible'].includes(capabilities.read_only_reason)
-        ? 'Read-only · Sync worker unavailable or incompatible' : 'Read-only';
-    services.append(serviceRow('Library database', stateWord(dbAvailable)), serviceRow('Synchronization', syncState), serviceRow('Panel access', accessState));
-    const runtime = data.runtime || {};
-    const workerStatus = capabilities?.worker?.available === true
-      ? (capabilities.worker_ready === true ? 'Operational' : 'Issue')
-      : capabilities?.worker?.available === false ? 'Issue' : 'No data';
-    const jellyfinProbeRow = serviceRow('Jellyfin connection', 'Checking…');
-    jellyfinProbeRow.children[1].id = 'jellyfinIntegrationState';
-    const jellyfinAuditRow = serviceRow('Jellyfin import check (latest audit)', 'No data');
-    jellyfinAuditRow.children[1].id = 'jellyfinAuditState';
-    services.append(
-      serviceRow('Resolver', stateWord(runtime.status)),
-      serviceRow('Background worker', workerStatus),
-      jellyfinProbeRow,
-      jellyfinAuditRow,
-      serviceRow('Available providers', safeText(runtime.providers && runtime.providers.length, 'No data')),
-      serviceRow('Stream cache entries', safeText(runtime.cache_entries, 'No data')),
-      serviceRow('Application version', safeText(runtime.version, 'No data'))
-    );
-  }
-  async function loadQualitySummary(sequence) {
-    // Only the latest-audit Jellyfin import row needs this read; the Quality
-    // screen reads fingerprint coverage for itself.
-    const auditState = $('#jellyfinAuditState');
-    if (!auditState) return;
-    const unavailable = () => {
-      auditState.textContent = 'No data';
-      auditState.className = 'service-result unknown';
-      auditState.title = 'No Jellyfin import check is available from the latest audit.';
-    };
-    try {
-      const summary = await getJson(`${V2_API}/quality/summary`);
-      if (sequence !== state.statusRequestSeq) return;
-      const importState = summary?.latest_audit?.jellyfin_import_state;
-      const auditDate = summary?.latest_audit?.created_at;
-      const baseLabel = importState === 'checked' ? 'Checked in latest audit'
-        : importState === 'partial' ? 'Partially checked in latest audit'
-          : 'No data';
-      if (baseLabel === 'No data') unavailable();
-      else {
-        auditState.textContent = auditDate ? `${baseLabel} · ${displayTime(auditDate)}` : baseLabel;
-        auditState.className = 'service-result unknown';
-        auditState.title = '';
-      }
-    } catch {
-      if (sequence !== state.statusRequestSeq) return;
-      unavailable();
-    }
-  }
-  async function loadJellyfinStatus(sequence) {
-    const target = $('#jellyfinIntegrationState');
-    if (!target) return;
-    try {
-      const result = await getJson(`${V2_API}/status/jellyfin`);
-      if (sequence !== state.statusRequestSeq) return;
-      const stateLabels = {
-        reachable: 'Reachable', unavailable: 'Unavailable', not_configured: 'Not configured', unknown: 'No data',
-      };
-      const label = stateLabels[result.status] || 'No data';
-      target.textContent = label;
-      target.className = `service-result${label === 'Unavailable' ? ' is-error' : label === 'Reachable' ? '' : ' unknown'}`;
-      target.title = result.checked_at ? `Last checked ${displayTime(result.checked_at)}.` : 'Jellyfin connection status is not available.';
-    } catch {
-      if (sequence !== state.statusRequestSeq) return;
-      target.textContent = 'No data';
-      target.className = 'service-result unknown';
-      target.title = 'Jellyfin connection status is not available.';
-    }
   }
   function renderIssues(payload, error, append = false) {
     const completeness = $('#issueCompleteness');
@@ -1204,20 +1138,7 @@
       }
     }
   }
-  function stateWord(value) {
-    if (value === true || value === 'ok' || value === 'healthy' || value === 'running' || value === 'enabled') return 'Operational';
-    if (value === false || value === 'error' || value === 'failed' || value === 'unavailable' || value === 'disabled') return 'Issue';
-    return 'No data';
-  }
-  function serviceRow(label, value) {
-    const row = create('div', 'service-row'); row.append(create('span', 'service-name', label));
-    const text = String(value ?? 'No data');
-    const normalized = text.toLocaleLowerCase();
-    const stateClass = /failed|unavailable|incompatible|\bissue\b|mismatch|error/.test(normalized)
-      ? ' is-error' : /no data|unknown|stale|partial|not checked|no completed|read-only|checking|checked in latest/.test(normalized)
-        ? ' unknown' : '';
-    row.append(create('span', `service-result${stateClass}`, text)); return row;
-  }
+
   function setLibraryState(kind, title, description) {
     const node = $('#libraryState'); node.hidden = false; node.className = `catalog-state${kind === 'error' ? ' state-error' : ''}`; node.replaceChildren();
     node.append(create('span', 'empty-icon', kind === 'loading' ? '◌' : kind === 'error' ? '!' : kind === 'empty' ? '⌕' : '▤'), create('strong', '', title), create('span', '', description));
@@ -1426,7 +1347,7 @@
       }
       state.operationId = plan.plan_id;
       loadDuplicateCandidates({ refresh: true });
-      announce(`Exact-file duplicate merge queued (${result.jobs?.length || 0} tasks). No source files were deleted.`);
+      showQueued(result, 'Exact-file duplicates');
       await refreshOperationStatus();
     } catch (error) { if (operationRequestIsCurrent(sequence, route)) announce(error.message); }
     finally { if (button && operationRequestIsCurrent(sequence, route)) button.disabled = false; }
@@ -1493,13 +1414,13 @@
       if (plan.operation_type === 'quarantine') {
         for (const videoId of request?.video_ids || []) state.selectedVideos.delete(videoId);
         updateBulkSelection();
-        announce('Quarantine tasks queued.');
+        showQueued(result, 'Quarantine');
       } else {
         if (plan.operation_type === 'restore') {
-          state.quarantineOffset = 0; loadQuarantine(); announce('Restore task queued.');
+          state.quarantineOffset = 0; loadQuarantine(); showQueued(result, 'Restore');
         } else {
           loadDuplicateCandidates({ refresh: true });
-          announce(plan.operation_type === 'hide' ? 'Duplicate hide task queued.' : 'Exact duplicate merge tasks queued.');
+          showQueued(result, 'Duplicate review');
         }
       }
       await refreshOperationStatus();
@@ -1586,7 +1507,7 @@
       }
       closeDialog($('#operationDialog')); state.availabilityRequest = null;
       if (videoIds.length > 1) { state.selectedVideos.clear(); updateBulkSelection(); }
-      announce(`Availability check task ${result.job_id} queued.`);
+      showQueued(result, 'Availability check');
     } catch (error) {
       if (!operationRequestIsCurrent(sequence) || state.availabilityRequest !== videoIds) {
         announce(`The previous availability request could not be confirmed. Check Tasks before retrying. ${error.message}`);
@@ -1639,6 +1560,7 @@
           ? (plan?.items?.find(entry => entry.video_id === item.video_id)?.title || item.video_id)
           : `${payload.operation.items.length} recorded item${payload.operation.items.length === 1 ? '' : 's'}`;
         row.append(create('strong', '', title), create('span', '', `${safeText(item.state)} · Task ${item.job_id}`));
+        const link = taskLink(item.job_id); if (link) row.append(link);
         list.append(row);
       }
       const pending = payload.operation.jobs.some(item => ['queued', 'processing'].includes(item.state));
@@ -1755,6 +1677,7 @@
     return ({ present: 'Present', missing: 'Missing', unknown: 'Unknown' })[value] || 'Unknown';
   }
   function renderDetail(video) {
+    const isCurrentDetail = () => state.detailVideo === video && (state.detailId === video.id || state.sideDetailId === video.id);
     state.availabilityHistorySeq += 1;
     state.detailVideo = video;
     stopDetailPlayback();
@@ -1896,13 +1819,14 @@
     genArtwork.id = 'detailGenerateArtwork';
     genArtwork.type = 'button';
     genArtwork.addEventListener('click', async () => {
+      if (genArtwork.disabled) return;
       genArtwork.disabled = true;
       const prevText = genArtwork.textContent;
       genArtwork.textContent = 'Queueing artwork generation…';
       try {
         const result = await postJson(`${V2_API}/library/videos/${encodeURIComponent(video.id)}/generate-artwork`, { offset_seconds: 60 });
         genArtwork.textContent = 'Artwork generation queued';
-        announce(`Artwork generation task ${result.job_id} queued. Open Jobs to check when it finishes.`);
+        if (isCurrentDetail()) showQueued(result, 'Artwork generation');
       } catch (err) {
         alert(`Failed to generate artwork: ${err.message || err}`);
         genArtwork.disabled = false;
@@ -1914,13 +1838,14 @@
     downloadArtwork.id = 'detailDownloadArtwork';
     downloadArtwork.type = 'button';
     downloadArtwork.addEventListener('click', async () => {
+      if (downloadArtwork.disabled) return;
       downloadArtwork.disabled = true;
       const prevText = downloadArtwork.textContent;
       downloadArtwork.textContent = 'Queueing artwork download…';
       try {
         const result = await postJson(`${V2_API}/library/videos/${encodeURIComponent(video.id)}/download-artwork`, {});
         downloadArtwork.textContent = 'Artwork download queued';
-        announce(`Artwork download task ${result.job_id} queued. Open Tasks to check when it finishes.`);
+        if (isCurrentDetail()) showQueued(result, 'Artwork download');
       } catch (err) {
         alert(`Failed to download artwork: ${err.message || err}`);
         downloadArtwork.disabled = false;
@@ -1932,6 +1857,7 @@
     genPhash.id = 'detailGeneratePhash';
     genPhash.type = 'button';
     genPhash.addEventListener('click', async () => {
+      if (genPhash.disabled) return;
       genPhash.disabled = true;
       const prevText = genPhash.textContent;
       genPhash.textContent = 'Queueing pHash…';
@@ -1941,7 +1867,7 @@
         if (res.already_computed) {
           announce('pHash is already computed.');
         } else if (res.job_id) {
-          announce(`pHash task ${res.job_id} queued.`);
+          if (isCurrentDetail()) showQueued(res, 'pHash generation', undefined, 'phash');
         } else {
           announce('pHash task queued.');
         }
@@ -1958,14 +1884,8 @@
       }
     });
 
-    const fileAudit = create('button', 'button button-quiet', 'Open file consistency audits');
-    fileAudit.type = 'button';
-    fileAudit.addEventListener('click', () => {
-      go('quality', { tab: 'issues' });
-      requestAnimationFrame(() => $('#auditTitle')?.focus({ preventScroll: true }));
-    });
     const filesActions = create('div', 'detail-actions');
-    filesActions.append(genArtwork, downloadArtwork, genPhash, fileAudit);
+    filesActions.append(genArtwork, downloadArtwork, genPhash);
     files.append(filesActions);
     host.append(files);
 
@@ -2138,8 +2058,9 @@
     actions.querySelectorAll('button').forEach(button => { button.disabled = true; });
     try {
       const payload = await window.AdminV2.postJson(`${V2_API}/operations/execute`, { plan_id: planId });
-      if (sequence === state.metadataDialogSeq && String(state.detailVideo?.id ?? '') === videoId && $('#metadataDialog').open) closeDialog($('#metadataDialog'));
-      announce(`Metadata update task ${payload.jobs?.[0]?.job_id || ''} queued.`);
+      if (sequence !== state.metadataDialogSeq || String(state.detailVideo?.id ?? '') !== videoId || !$('#metadataDialog').open) return;
+      closeDialog($('#metadataDialog'));
+      showQueued(payload, 'Metadata update');
     } catch (error) {
       if (sequence !== state.metadataDialogSeq || String(state.detailVideo?.id ?? '') !== videoId || !$('#metadataDialog').open) return;
       announce(error.message);
@@ -2301,7 +2222,7 @@
         for (const videoId of videoIds) state.selectedVideos.delete(videoId);
         updateBulkSelection(); closeDialog($('#metadataDialog'));
       }
-      announce(`Metadata update tasks queued for ${result.jobs?.length || videoIds.length} videos.`);
+      if (current) showQueued(result, `Bulk metadata update for ${result.jobs?.length || videoIds.length} videos`);
     } catch (error) {
       if (sequence !== state.metadataDialogSeq || !$('#metadataDialog').open) return;
       announce(error.message); actions.querySelectorAll('button').forEach(button => { button.disabled = false; });
@@ -2490,7 +2411,7 @@
             try {
               const result = await postJson(`${V2_API}/duplicates/visual/verify`, { left_id: item.left_id, right_id: item.right_id });
               if (!result?.ok) throw new Error(responseError(result, 'Could not queue comparison.'));
-              announce('Visual comparison queued.');
+              if (duplicateGroupIsVisible('visual') && card.isConnected) showQueued(result, 'Visual comparison', undefined, 'visual');
               setTimeout(loadVisualDuplicateResults, 1500);
             } catch (error) { announce(error.message); }
             finally { button.disabled = false; }
@@ -2617,8 +2538,9 @@
         action: 'undo', operation_id: group.operation_id,
       });
       const jobId = String(result.job_id || '');
-      feedback.className = 'duplicate-action-feedback is-success';
+      feedback.className = 'duplicate-action-feedback is-queued';
       feedback.textContent = `Undo queued${jobId ? ` as task ${jobId}` : ''}. The linked items will return after the task completes.`;
+      showQueued(result, 'Undo duplicate link');
       button.textContent = 'Undo queued';
       announce(feedback.textContent);
     } catch (error) {
@@ -2899,6 +2821,7 @@
   async function queuePersonMerge() {
     const merge = state.pendingPersonMerge; if (!merge || !$('#personMergeUndoConfirm')?.checked) return;
     const requestSeq = state.personMergePreviewSeq;
+    const route = state.route;
     const dialog = $('#personDetailDialog');
     if (!dialog.open) return;
     const button = $('#personMergeQueue');
@@ -2906,8 +2829,8 @@
     button.disabled = true;
     try {
       const result = await window.AdminV2.postJson(`${V2_API}/operations/execute`, { plan_id: merge.plan_id });
-      const jobId = result.jobs?.[0]?.job_id;
-      announce(`Performer merge task ${jobId || ''} queued.`);
+      if (state.route !== route) return;
+      showQueued(result, 'Performer merge');
       if (requestSeq !== state.personMergePreviewSeq || !dialog.open) { loadPeople(); return; }
       closeDialog(dialog); loadPeople();
     } catch (error) {
@@ -2988,7 +2911,7 @@
       if (!window.confirm(`Restore ${plan.items.length} quarantined file(s) to their original library paths? Existing paths are never overwritten.\n\n${paths}`)) return;
       const queued = await window.AdminV2.postJson(`${V2_API}/operations/execute`, { plan_id: plan.plan_id });
       if (!operationRequestIsCurrent(sequence, route)) return;
-      announce(`File restore queued (${queued.jobs?.[0]?.job_id || 'queued'}). Refresh Quarantine after the worker finishes.`);
+      showQueued(queued, 'File restore');
     } catch (error) {
       if (operationRequestIsCurrent(sequence, route)) announce(`Could not preview or queue file restore. ${error.message}`);
     }
@@ -3037,15 +2960,15 @@
       const jobId = result.jobs?.find(job => typeof job.job_id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(job.job_id))?.job_id || '';
       const message = `Hide queued for ${loser.title || loser.id}; ${keeper.title || keeper.id} stays in the catalog. No files were deleted.${jobId ? ` Task ${jobId}.` : ' See Jobs & Automation for progress.'}`;
       if (feedback) {
-        feedback.className = 'duplicate-action-feedback is-success';
+        feedback.className = 'duplicate-action-feedback is-queued';
         feedback.textContent = message;
         if (jobId) {
-          const taskLink = create('a', 'text-link', ' Open task');
+          const taskLink = create('a', 'text-link', 'View task');
           taskLink.href = `/admin/v2/?job_id=${encodeURIComponent(jobId)}#jobs`;
           feedback.append(taskLink);
         }
       }
-      announce(message);
+      showQueued(result, 'Duplicate decision');
       loadDuplicateCandidates({ refresh: true });
       loadVisualDuplicateResults();
     } catch (error) {
@@ -3079,14 +3002,14 @@
       const jobId = typeof result.job_id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(result.job_id) ? result.job_id : '';
       const message = `Decision queued: different videos.${jobId ? ` Task ${jobId}.` : ''}`;
       feedback.hidden = false;
-      feedback.className = 'duplicate-action-feedback is-success';
+      feedback.className = 'duplicate-action-feedback is-queued';
       feedback.textContent = message;
       if (jobId) {
-        const taskLink = create('a', 'text-link', ' Open task');
+        const taskLink = create('a', 'text-link', 'View task');
         taskLink.href = `/admin/v2/?job_id=${encodeURIComponent(jobId)}#jobs`;
         if (typeof feedback?.append === 'function') feedback.append(taskLink);
       }
-      announce(message);
+      showQueued(result, 'Duplicate decision');
       loadDuplicateCandidates({ refresh: true });
       loadVisualDuplicateResults();
     } catch (error) {

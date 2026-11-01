@@ -15,7 +15,7 @@ function createAdminV2Helpers(document, timers = {}) {
   const schedule = timers.setTimeout || setTimeout;
   const cancel = timers.clearTimeout || clearTimeout;
   const build = new Function('document', '$', 'setTimeout', 'clearTimeout', `${source.slice(start, end)}
-    return { create, el: create, setText, announce, safeId, scrub, titleCase, detailField, formatDuration, scheduleSync };`);
+    return { create, el: create, setText, announce, safeId, scrub, titleCase, detailField, formatDuration, scheduleSync, taskLink, showQueued };`);
   return build(document, (selector, root = document) => root.querySelector(selector), schedule, cancel);
 }
 

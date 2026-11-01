@@ -258,6 +258,16 @@ def _safe_job(job: dict, *, now=None) -> dict:
         "result_summary": _result_summary(job),
         "undo_available": bool(job.get("undo_available")) if job.get("undo_available") is not None else None,
     }
+    parameters = {}
+    for key in ("video_id", "source"):
+        value = payload.get(key)
+        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9:@+_.-]{1,250}", value):
+            parameters[key] = value
+    if isinstance(payload.get("sync_mode"), str) and payload["sync_mode"] in {"scheduled", "new", "backfill"}:
+        parameters["sync_mode"] = payload["sync_mode"]
+    if type(job.get("attempts")) is int:
+        parameters["attempts"] = job["attempts"]
+    safe_job["parameters"] = parameters
     source_id = result.get("source")
     if (job.get("action") == "sync" and isinstance(source_id, str)
             and re.fullmatch(r"telegram:[A-Za-z0-9@+_.-]{1,250}", source_id)):

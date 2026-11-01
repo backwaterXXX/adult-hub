@@ -128,33 +128,28 @@ const context = {
   staleList.resolve({ items: [{ id: 'stale', name: 'Stale schedule', action: 'backup_create', enabled: true }] });
   await oldRefresh;
   function currentBody() { return elements.schedulesRows.children[0].children[0].children[1]; }
-  assert.equal(currentBody().children[0].children[0].children[0].textContent, 'Current schedule',
+  const initialScheduleRow = currentBody().children[0];
+  assert.equal(initialScheduleRow.children[0].children[0].textContent, 'Current schedule',
     'a stale schedule read must not replace the latest list');
-  assert.equal(currentBody().children[0].children[0].children[1].textContent, 'Database backup');
-  const currentCopy = currentBody().children[0];
-  assert.equal(currentCopy.children[3].children[0].tagName, 'TIME');
-  assert.equal(currentCopy.children[3].children[0].dateTime, '2026-10-11T01:30:00.000Z',
-    'next run timestamps must use semantic, machine-readable time markup');
-  assert.equal(currentCopy.children[4].children[0].tagName, 'TIME');
-  assert.equal(currentCopy.children[4].children[0].dateTime, '2026-10-10T01:42:00.000Z',
-    'the finished column must carry the real end time, not the task start');
-  assert.equal(currentCopy.children[4].children.length, 1,
-    'a finished run must not add a start-time line');
-  assert.match(currentCopy.children[2].children[0].textContent, /Completed/,
-    'schedule history must include the last run result');
-  assert.equal(currentCopy.children[0].children[2].tagName, 'A');
-  assert.equal(currentCopy.children[0].children[2].textContent, 'Open latest task');
-  assert.equal(currentCopy.children[0].children[2].href, '/admin/v2/?job_id=job_123#jobs');
-  assert.equal(currentCopy.children[0].children[2].attributes['aria-label'], 'Open task for Current schedule');
+  assert.equal(initialScheduleRow.children[2].children[0].textContent, 'Database backup',
+    'the primary list keeps the friendly task description');
+  assert.equal(initialScheduleRow.children[3].children[0].tagName, 'TIME');
+  assert.equal(initialScheduleRow.children[3].children[0].dateTime, '2026-10-11T01:30:00.000Z',
+    'next run timestamps use the API-provided time');
+  const scheduleDetails = initialScheduleRow.children[0].children[1];
+  assert.equal(scheduleDetails.children[1].textContent, 'Open latest task');
+  const scheduleDetailText = scheduleDetails.children[2].children.map(item => item.textContent).join(' ');
+  assert.match(scheduleDetailText, /Europe\/Warsaw/);
+  assert.match(scheduleDetailText, /Last finished/);
   assert.equal(currentBody().children[2].children[0].children.length, 2,
-    'an invalid job ID must not produce a task link');
-  assert.equal(currentBody().children[2].children[4].children[0].textContent, '—',
-    'an unavailable finish timestamp must not render Invalid Date');
+    'an invalid task ID must not produce a task link');
+  assert.equal(currentBody().children[2].children[3].children[0].textContent, 'Unavailable',
+    'an unavailable next run is explicit and not calculated in the browser');
   const inFlight = currentBody().children[4];
-  assert.equal(inFlight.children[4].children[0].textContent, '—',
-    'a run that has not finished has no end time');
-  assert.equal(inFlight.children[4].children[1].children[0].dateTime, '2026-10-10T01:30:00.000Z',
-    'an in-flight run states when it started instead of an end time');
+  assert.equal(inFlight.children[3].children[0].textContent, 'Unavailable',
+    'an unavailable next run stays unavailable');
+  assert.match(inFlight.children[0].children[1].children[1].children.map(item => item.textContent).join(' '), /Last started/,
+    'details retain the start time of an unfinished run');
   context.window.AdminV2.getJson = async path => path.includes('cron-preview?')
     ? { next_runs: ['2026-11-01T02:00:00Z', '2026-11-02T02:00:00Z', '2026-11-03T02:00:00Z'] }
     : ({ items: [{ id: 'duplicate-reconcile', name: 'Duplicate reconciliation',
@@ -167,7 +162,7 @@ const context = {
   const wrap = body.children[1];
   const editor = wrap.children[0].children[0];
   assert.equal(wrap.hidden, true, 'editor is compact until opened');
-  currentRow.children[5].children[0].listeners.click();
+  currentRow.children[4].children[0].listeners.click();
   const frequency = editor.children[1].children[0].children[0];
   const cronInput = editor.children[1].children[3].children[0];
   assert.equal(cronInput.value, '*/15 * * * *');
@@ -180,7 +175,7 @@ const context = {
     payload: { cron_expression: '0 3 * * *', revision: 4 } });
   const auditRow = currentBody().children[2];
   const auditWrap = currentBody().children[3];
-  auditRow.children[5].children[0].listeners.click();
+  auditRow.children[4].children[0].listeners.click();
   const auditEditor = auditWrap.children[0].children[0];
   assert.equal(auditEditor.children[1].children[0].children[0].value, 'daily');
   assert.equal(auditEditor.children[1].children[1].children[0].value, '03:00');
@@ -344,44 +339,40 @@ const context = {
   await elements.schedulesRefresh.listeners.click();
   const grouped = currentBody();
   assert.equal(grouped.children[0].children[0].children[0].textContent, 'Library sync');
-  assert.equal(grouped.children[0].children[4].children[0].dateTime, '2026-10-31T02:34:00.000Z',
-    'a parent row reports when the pass actually finished');
+  assert.match(grouped.children[0].children[0].children[1].children[1].children.map(item => item.textContent).join(' '), /Last finished/,
+    'a parent row keeps completion timing inside its details');
   const artworkRow = [...grouped.children].find(row => row.dataset.scheduleId === 'artwork-generation');
   assert.equal(artworkRow.children[0].children[0].textContent, 'Daily artwork generation');
-  assert.equal(artworkRow.children[0].children[1].textContent,
+  assert.equal(artworkRow.children[2].children[0].textContent,
     'Queues artwork generation for up to 100 recent items when artwork is missing.',
-    'the artwork task description appears in the first Task column below its name');
+    'the task description appears in its own primary list column');
   const dependentRow = grouped.children[2];
   assert.match(dependentRow.className, /schedule-dependent-row/, 'dependent tasks follow their parent');
   assert.equal(dependentRow.children.length, 5, 'a dependent row drops the inherited Cron column');
   assert.deepEqual([...dependentRow.children].map(cell => cell.dataset.label),
-    ['Task', 'Status', 'Next run', 'Finished', 'Actions']);
-  assert.equal(dependentRow.children[0].colSpan, 2, 'the stage name and description take the Cron column');
+    ['Task', 'Enabled', 'Description', 'Next run', 'Actions']);
+  assert.equal(dependentRow.children[0].colSpan, undefined, 'dependent rows use the same simplified columns');
   assert.equal(dependentRow.children[0].children[0].textContent, 'Scene identification');
   assert.equal(dependentRow.children[0].children[1].textContent,
     'Backfills scene fingerprints when work is available.',
-    'the description sits under the name, not in the status column');
-  assert.equal(dependentRow.children[1].children[0].textContent, 'Completed',
-    'each stage reports its own result rather than the parent cadence');
-  assert.match(dependentRow.children[1].children[0].className, /is-ok/);
-  assert.equal(dependentRow.children[2].children[0].dateTime, '2026-11-01T02:00:00.000Z',
+    'the description stays under the dependent task name');
+  assert.equal(dependentRow.children[1].children[0].textContent, 'Enabled');
+  assert.equal(dependentRow.children[2].children[0].textContent, 'Backfills scene fingerprints when work is available.');
+  assert.equal(dependentRow.children[3].children[0].dateTime, '2026-11-01T02:00:00.000Z',
     'a dependent row shows when the parent will next run');
-  assert.equal(dependentRow.children[3].children[0].dateTime, '2026-10-31T02:19:00.000Z',
-    'a dependent row shows the stage finish time, not its start');
   const failedRow = grouped.children[3];
-  assert.equal(failedRow.children[1].children[0].textContent, 'Failed');
-  assert.match(failedRow.children[1].children[0].className, /is-failed/);
-  assert.equal(failedRow.children[1].children[1].textContent, 'One or more sources reported a failure');
+  assert.equal(failedRow.children[1].children[0].textContent, 'Enabled');
+  assert.equal(failedRow.children[2].children[1].textContent, 'One or more sources reported a failure');
   const triggerlessRun = failedRow.children[4].children[0];
   assert.equal(triggerlessRun.textContent, 'Run');
   const cleanupRow = [...grouped.children].find(row => row.dataset.stageId === 'telegram-title-cleanup');
   assert.equal(cleanupRow.children[0].children[1].textContent,
     'Up to 500 stored Telegram videos per library sync.',
     'the cleanup task description stays generic below the task name');
-  assert.equal(cleanupRow.children[1].children[0].textContent, 'Completed');
-  assert.equal(cleanupRow.children[1].children[1].textContent,
+  assert.equal(cleanupRow.children[1].children[0].textContent, 'Enabled');
+  assert.equal(cleanupRow.children[2].children[1].textContent,
     '16903/16903 scanned; 167 titles cleaned; 0 tags added; 0 categories added.',
-    'cleanup progress appears in Status rather than the description');
+    'cleanup progress remains available under Description');
   assert.equal(triggerlessRun.disabled, true);
   assert.equal(triggerlessRun.title, 'Runs only inside a locked sync pass.');
   const dependentRun = dependentRow.children[4].children[0];
@@ -399,7 +390,7 @@ const context = {
     method: 'POST', path: '/admin/api/v2/schedules/system/library-sync/stages/scene-identification/enabled',
     payload: { enabled: false, revision: 1 }
   });
-  const runButton = currentBody().children[0].children[5].children[2];
+  const runButton = currentBody().children[0].children[4].children[2];
   assert.equal(runButton.textContent, 'Run');
   await runButton.listeners.click();
   assert.deepEqual(calls.filter(call => call.method === 'POST').at(-1), {

@@ -6,8 +6,7 @@ const port = Number(process.env.ADMIN_SMOKE_PORT || 4173);
 const upstreamUrl = new URL(process.env.ADMIN_SMOKE_UPSTREAM || 'http://adult-resolver:8090');
 const outputDir = process.env.ADMIN_SMOKE_OUTPUT || '/output';
 fs.mkdirSync(outputDir, { recursive: true });
-// "active" is the primary-navigation entry the panel must mark as current, so
-// the legacy Catalog Health and Organize addresses report under Library.
+// "active" is the primary-navigation entry the panel must mark as current.
 const routes = [
   { hash: 'start', view: 'start', active: 'start' },
   { hash: 'library', view: 'library', active: 'library' },
@@ -18,21 +17,40 @@ const routes = [
   { hash: 'performers?tab=review', view: 'performers', active: 'performers' },
   { hash: 'performers', view: 'performers', active: 'performers' },
   { hash: 'performers?tab=directory', view: 'performers', active: 'performers' },
-  { hash: 'quality?tab=issues', view: 'operational', active: 'library' },
+  { hash: 'quality?tab=issues', view: 'operational', active: 'system' },
   { hash: 'quality?tab=duplicates', view: 'library', active: 'library' },
   { hash: 'quality?tab=quarantine', view: 'library', active: 'library' },
   { hash: 'quality?tab=enrichment', view: 'library', active: 'library' },
+  { hash: 'quality?tab=enrichment-progress', view: 'operational', active: 'system' },
+  { hash: 'system', view: 'operational', active: 'system' },
+  { hash: 'system?tab=backups', view: 'operational', active: 'system' },
+  { hash: 'system?tab=maintenance', view: 'operational', active: 'system' },
+  { hash: 'system?tab=automation', view: 'operational', active: 'schedules' },
+  { hash: 'system?tab=activity', view: 'operational', active: 'system' },
+  { hash: 'jobs?tab=schedules', view: 'operational', active: 'schedules' },
   { hash: 'organize', view: 'library', active: 'library' },
+  { hash: 'sources?tab=history', view: 'operational', active: 'sources' },
+  { hash: 'jobs?tab=history', view: 'operational', active: 'jobs' },
+  ...(['stage4', 'stage5'].includes(process.env.ADMIN_SMOKE_FIXTURES) ? [
+  { hash: 'jobs', query: 'job_id=qa-queued', name: 'task-queued', view: 'operational', active: 'jobs' },
+  { hash: 'jobs', query: 'job_id=qa-processing', name: 'task-running', view: 'operational', active: 'jobs' },
+  { hash: 'jobs?tab=history', query: 'job_id=qa-done', name: 'task-succeeded', view: 'operational', active: 'jobs' },
+  { hash: 'jobs?tab=history', query: 'job_id=qa-failed', name: 'task-failed', view: 'operational', active: 'jobs' },
+  { hash: 'jobs', query: 'job_id=qa-visual&job_queue=visual', name: 'task-visual', view: 'operational', active: 'jobs' },
+  ] : []),
   { hash: 'sources', view: 'operational', active: 'sources' },
   { hash: 'jobs', view: 'operational', active: 'jobs' },
   { hash: 'schedules', view: 'operational', active: 'schedules' },
-  { hash: 'system', view: 'operational', active: 'system' },
 ];
 const overviewTiles = ['Videos in library', 'Last sync', 'Active tasks', 'Problems'];
 const widths = [390, 768, 1440];
 const themes = ['light', 'dark'];
 const statuses = { total: 0, ok: 0, redirects: 0, clientError: 0, serverError: 0, images: 0 };
 const methods = new Set();
+const apiPaths = new Set();
+const allowQueueSync = process.env.ADMIN_SMOKE_ALLOW_QUEUE_SYNC === '1';
+if (allowQueueSync && (!['stage4', 'stage5'].includes(process.env.ADMIN_SMOKE_FIXTURES) || upstreamUrl.hostname !== '127.0.0.1' || upstreamUrl.port !== '18093')) throw new Error('Sync admission smoke requires the isolated fixture server.');
+let queuedSyncRequests = 0;
 const pixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/XioAAAAASUVORK5CYII=', 'base64');
 function send(res, code, body, type = 'text/plain; charset=utf-8') {
   res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' });
@@ -41,16 +59,20 @@ function send(res, code, body, type = 'text/plain; charset=utf-8') {
 
 const server = http.createServer((req, res) => {
   methods.add(req.method || 'GET');
-  if (req.method !== 'GET') return send(res, 405, 'Writes blocked by live visual smoke.');
+  if (req.method !== 'GET') {
+    if (!allowQueueSync || req.method !== 'POST' || req.url !== '/admin/api/v2/maintenance/sync') return send(res, 405, 'Writes blocked by live visual smoke.');
+    queuedSyncRequests += 1;
+  }
   if (/^image\//.test(req.headers.accept || '')) {
     statuses.images += 1;
     return send(res, 200, pixel, 'image/png');
   }
   const upstream = http.request({
-    host: upstreamUrl.hostname, port: upstreamUrl.port || 80, path: req.url, method: 'GET',
-    headers: { 'x-forwarded-host': `127.0.0.1:${port}`, accept: req.headers.accept || '*/*' },
+    host: upstreamUrl.hostname, port: upstreamUrl.port || 80, path: req.url, method: req.method,
+    headers: { host: `127.0.0.1:${port}`, 'x-forwarded-host': `127.0.0.1:${port}`, accept: req.headers.accept || '*/*', ...(req.headers.origin ? { origin: req.headers.origin } : {}), ...(req.headers['content-type'] ? { 'content-type': req.headers['content-type'] } : {}) },
   }, up => {
     if ((req.url || '').startsWith('/admin/api/')) {
+      apiPaths.add((req.url || '').split('?')[0]);
       statuses.total += 1;
       if (up.statusCode >= 200 && up.statusCode < 300) statuses.ok += 1;
       else if (up.statusCode >= 300 && up.statusCode < 400) statuses.redirects += 1;
@@ -140,19 +162,19 @@ for (const route of routes) for (const width of widths) for (const theme of them
     const timer = setTimeout(() => { loadResolve = null; resolve('page load timeout'); }, 45000);
     loadResolve = () => { clearTimeout(timer); resolve(); };
   });
-  await cmd('Page.navigate', { url: 'http://127.0.0.1:' + port + '/admin/v2/?qaTheme=' + theme + '#' + route.hash }, sessionId);
+  await cmd('Page.navigate', { url: 'http://127.0.0.1:' + port + '/admin/v2/?qaTheme=' + theme + (route.query ? '&' + route.query : '') + '#' + route.hash }, sessionId);
   let loadError = '';
   loadError = await loaded || '';
   await sleep(800);
   const evaluated = await cmd('Runtime.evaluate', {
-    expression: "JSON.stringify({visible:[...document.querySelectorAll('.view')].filter(v=>!v.hidden).map(v=>v.dataset.view),activeRoute:document.querySelector('.primary-nav a[aria-current=page]')?.dataset.route||'',innerWidth,documentWidth:document.documentElement.scrollWidth,serviceState:document.querySelector('#serviceStatus')?.dataset.state||'',overviewTiles:[...document.querySelectorAll('#statusCards .metric-top > span:first-child')].map(node=>node.textContent),enrichmentRows:[...document.querySelectorAll('#enrichmentRows .enrichment-source-heading strong')].map(node=>node.textContent),enrichmentFreshness:document.querySelector('#enrichmentFreshness')?.dataset.state||'',enrichmentFeedback:document.querySelector('#enrichmentFeedback')?.textContent||''})",
+    expression: "JSON.stringify({visible:[...document.querySelectorAll('.view')].filter(v=>!v.hidden).map(v=>v.dataset.view),activeRoute:document.querySelector('.primary-nav a[aria-current=page]')?.dataset.route||'',innerWidth,documentWidth:document.documentElement.scrollWidth,openTaskIds:[...document.querySelectorAll('.job-detail-row')].filter(row=>!row.hidden).map(row=>row.dataset.jobId),search:location.search,sourceTab:document.querySelector('[data-sources-tab][aria-current=page]')?.dataset.sourcesTab,serviceState:document.querySelector('#serviceStatus')?.dataset.state||'',overviewTiles:[...document.querySelectorAll('#statusCards .metric-top > span:first-child')].map(node=>node.textContent),enrichmentRows:[...document.querySelectorAll('#enrichmentRows .enrichment-source-heading strong')].map(node=>node.textContent),enrichmentFreshness:document.querySelector('#enrichmentFreshness')?.dataset.state||'',enrichmentFeedback:document.querySelector('#enrichmentFeedback')?.textContent||''})",
     returnByValue: true,
   }, sessionId);
   let view = {};
   try { view = JSON.parse(evaluated.result.value || '{}'); } catch {}
   if (width !== 768) {
     const screenshot = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, sessionId);
-    const routeName = route.hash.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-|-$/g, '');
+    const routeName = (route.name || route.hash).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-|-$/g, '');
     fs.writeFileSync(`${outputDir}/${routeName}-${width}-${theme}.png`, Buffer.from(screenshot.data, 'base64'));
   }
   const expectedEmptyEnrichment = view.enrichmentRows?.length === 0 &&
@@ -164,16 +186,19 @@ for (const route of routes) for (const width of widths) for (const theme of them
   const overviewMatches = !route.hash.startsWith('start') ||
     (view.overviewTiles || []).join('|') === overviewTiles.join('|');
   const serviceStateKnown = ['checking', 'ok', 'attention', 'partial', 'unknown', 'error'].includes(view.serviceState);
+  const expectedTask = new URLSearchParams(route.query || '').get('job_id');
+  const taskMatches = !expectedTask || (view.openTaskIds?.includes(expectedTask) && new URLSearchParams(view.search).get('job_id') === expectedTask);
+  const sourceTabMatches = !route.hash.startsWith('sources') || view.sourceTab === (route.hash.includes('tab=history') ? 'history' : 'channels');
   const result = {
-    route: route.hash, width, theme,
+    route: route.hash, ...(route.query ? { query: route.query } : {}), width, theme,
     ok: !loadError && view.visible?.length === 1 && view.visible[0] === route.view &&
       view.activeRoute === route.active && view.innerWidth === width && view.documentWidth <= width &&
       jsErrors === errorsBefore && serviceStateKnown && overviewMatches &&
-      enrichmentLoaded && enrichmentLabelsSafe,
+      enrichmentLoaded && enrichmentLabelsSafe && taskMatches && sourceTabMatches,
     overflow: view.documentWidth > width,
     errors: jsErrors - errorsBefore,
     serviceState: view.serviceState,
-    overviewMatches,
+    overviewMatches, taskMatches, sourceTabMatches,
     ...(route.enrichment ? {
       enrichmentRows: view.enrichmentRows?.length || 0,
       enrichmentLabelsSafe,
@@ -185,6 +210,22 @@ for (const route of routes) for (const width of widths) for (const theme of them
   console.log((result.ok ? 'PASS ' : 'FAIL ') + route.hash + '-' + width + '-' + theme +
     ' overflow=' + result.overflow + ' jsErrors=' + result.errors + (loadError ? ' load=' + loadError : ''));
 }
+// Capture the Schedules create editor independently of the route matrix.
+await cmd('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false }, sessionId);
+await cmd('Page.navigate', { url: 'http://127.0.0.1:' + port + '/admin/v2/?qaTheme=light#schedules' }, sessionId);
+await sleep(800);
+const editor = await cmd('Runtime.evaluate', {
+  expression: `(() => {
+    const panel = document.querySelector('#scheduleCreatePanel');
+    if (panel) panel.open = true;
+    return JSON.stringify({ visible: !document.querySelector('#systemSchedulesView')?.hidden,
+      open: !!panel?.open, fields: [...(panel?.querySelectorAll('label') || [])].map(label => label.textContent.trim()) });
+  })()`, returnByValue: true,
+}, sessionId);
+let scheduleEditor = {};
+try { scheduleEditor = JSON.parse(editor.result.value || '{}'); } catch {}
+const editorScreenshot = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, sessionId);
+fs.writeFileSync(`${outputDir}/schedules-editor-1440-light.png`, Buffer.from(editorScreenshot.data, 'base64'));
 // Opening and closing a film must retain filters, page, selection and More filters.
 await cmd('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false }, sessionId);
 await cmd('Page.navigate', { url: 'http://127.0.0.1:' + port + '/admin/v2/?sort=title&offset=50#library' }, sessionId);
@@ -259,12 +300,47 @@ const modalKeyboard = {
 modalKeyboard.ok = modalKeyboard.opened && modalKeyboard.focusableCount > 0 && modalKeyboard.tabStayedInDialog &&
   modalKeyboard.escapeClosed && modalKeyboard.focusRestored;
 console.log((modalKeyboard.ok ? 'PASS ' : 'FAIL ') + 'Performer detail modal keyboard focus ' + JSON.stringify(modalKeyboard));
+let queuedSync = null;
+if (allowQueueSync) {
+  await cmd('Page.navigate', { url: `http://127.0.0.1:${port}/admin/v2/?qaTheme=light#sources` }, sessionId);
+  await sleep(1000);
+  await cmd('Runtime.evaluate', { expression: `(() => {
+    const button = document.querySelector('[data-sync-source="-1001"][data-sync-mode="scheduled"]');
+    if (button) { button.focus(); button.click(); button.click(); }
+  })()` }, sessionId);
+  await sleep(1000);
+  const receipt = await cmd('Runtime.evaluate', {
+    expression: `(() => { const notice = document.querySelector('#sourcesNotice'); const link = notice.querySelector('a'); return { text: notice.textContent, href: link?.href || '' }; })()`, returnByValue: true,
+  }, sessionId);
+  const taskId = receipt.result.value.href ? new URL(receipt.result.value.href).searchParams.get('job_id') : '';
+  const sourceScreen = await cmd('Page.captureScreenshot', { format: 'png' }, sessionId);
+  fs.writeFileSync(`${outputDir}/sources-queued-1440-light.png`, Buffer.from(sourceScreen.data, 'base64'));
+  await cmd('Runtime.evaluate', { expression: "document.querySelector('#sourcesNotice a')?.click()" }, sessionId);
+  await sleep(1000);
+  const selected = async () => {
+    const value = await cmd('Runtime.evaluate', { expression: "({id:new URLSearchParams(location.search).get('job_id'),open:[...document.querySelectorAll('.job-detail-row')].filter(row=>!row.hidden).map(row=>row.dataset.jobId)})", returnByValue: true }, sessionId);
+    return value.result.value;
+  };
+  const first = await selected();
+  await cmd('Page.reload', {}, sessionId);
+  await sleep(1000);
+  const reloaded = await selected();
+  queuedSync = { taskId, queued: receipt.result.value.text.includes('Queued'), viewTask: receipt.result.value.text.includes('View task'), requests: queuedSyncRequests,
+    opened: !!taskId && first.id === taskId && first.open.includes(taskId),
+    reloadPreserved: !!taskId && reloaded.id === taskId && reloaded.open.includes(taskId) };
+  queuedSync.ok = queuedSync.queued && queuedSync.viewTask && queuedSync.opened && queuedSync.reloadPreserved && queuedSync.requests === 1;
+  const taskScreen = await cmd('Page.captureScreenshot', { format: 'png' }, sessionId);
+  fs.writeFileSync(`${outputDir}/queued-task-1440-light.png`, Buffer.from(taskScreen.data, 'base64'));
+  console.log((queuedSync.ok ? 'PASS ' : 'FAIL ') + 'Sync queues once, links its task, and retains selection after reload ' + JSON.stringify(queuedSync));
+}
 const summary = {
   count: results.length, passed: results.filter(result => result.ok).length,
   failed: results.filter(result => !result.ok).length,
   apiRequests: statuses.total, api2xx: statuses.ok, api3xx: statuses.redirects,
   api4xx: statuses.clientError, api5xx: statuses.serverError, imageResponsesReplaced: statuses.images,
-  writeMethods: [...methods].filter(method => method !== 'GET'), modalKeyboard, libraryHistory, results,
+  apiPaths: [...apiPaths].sort(), scheduleEditor,
+  removedViewRequests: [...apiPaths].filter(path => /\/(?:audits|activity|linkcheck|playback-diagnostics|quality\/(?!proposals(?:\/|$))|metadata\/enrichment|enrichment\/progress)(?:\/|$)/.test(path)),
+  writeMethods: [...methods].filter(method => method !== 'GET'), queuedSync, modalKeyboard, libraryHistory, results,
 };
 fs.writeFileSync(`${outputDir}/live-results.json`, JSON.stringify(summary, null, 2));
 console.log('SUMMARY ' + summary.passed + '/' + summary.count + '; API=' + statuses.total +
@@ -273,4 +349,4 @@ console.log('SUMMARY ' + summary.passed + '/' + summary.count + '; API=' + statu
 ws.close();
 chrome.kill('SIGTERM');
 server.close();
-if (summary.failed || !modalKeyboard.ok || !libraryHistory.ok || summary.writeMethods.length || summary.count !== routes.length * widths.length * themes.length) process.exitCode = 1;
+if (summary.failed || !modalKeyboard.ok || !libraryHistory.ok || !scheduleEditor.visible || !scheduleEditor.open || summary.removedViewRequests.length || summary.writeMethods.some(method => method !== 'POST' || !allowQueueSync) || (allowQueueSync && !queuedSync?.ok) || summary.count !== routes.length * widths.length * themes.length) process.exitCode = 1;

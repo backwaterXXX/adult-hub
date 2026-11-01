@@ -44,6 +44,7 @@ let resultTotal = 1200;
 let currentTrigger = null;
 const operationPosts = [];
 const context = vm.createContext({
+  showQueued() {}, taskLink() { return null; },
   state,
   V2_API: '/admin/api/v2',
   DUPLICATE_PAGE_SIZE: 25,
@@ -210,9 +211,9 @@ context.loadVisualDuplicateResults = (...args) => {
     url: '/admin/api/v2/operations/execute',
     body: { plan_id: 'plan-1' },
   }], 'one clearly labeled duplicate action previews and queues the reversible hide without a confirmation screen');
-  assert.equal(cardFeedback.className, 'duplicate-action-feedback is-success');
+  assert.equal(cardFeedback.className, 'duplicate-action-feedback is-queued');
   assert.match(cardFeedback.textContent, /No files were deleted/);
-  assert.equal(cardFeedback.appended[0]?.textContent, ' Open task');
+  assert.equal(cardFeedback.appended[0]?.textContent, 'View task');
   assert.equal(cardFeedback.appended[0]?.href, '/admin/v2/?job_id=job-1#jobs');
   assert.equal(state.duplicatePending, null, 'duplicate action lock is released after the request completes');
 
