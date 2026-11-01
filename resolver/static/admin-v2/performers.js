@@ -7,6 +7,7 @@
   const state = { loading: false, loadSeq: 0, rows: [], proposalOffset: 0, proposalTotal: 0, proposalSeq: 0, busy: new Set(), fuzzyGroups: [], fuzzyOffset: 0, fuzzyLoading: false, fuzzyScanned: false, fuzzyBatchRunning: false, fuzzyMerging: new Set(), fuzzyQueued: new Map(), fuzzyDismissed: new Set(), fuzzySwapped: new Map(), fuzzySelected: new Map() };
   const MAX_SELECTED_MERGES = 10;
   let reviewActive = false;
+  let nameVariantsActive = false;
 
   // Shared helpers live in admin-v2.js and are published through window.AdminV2.
   const helpers = () => window.AdminV2 || {};
@@ -174,7 +175,7 @@
   function focusProposal(index) {
     const cards = $('#performerProposalRows').querySelectorAll('.performer-proposal');
     const card = index >= 0 ? cards[index] : null;
-    const target = card?.querySelector('input,select,button:not(:disabled)') || $('#performersRefresh');
+    const target = card?.querySelector('input,select,button:not(:disabled)');
     target?.focus({ preventScroll: true });
   }
   // Recognition proposals live in Performers → Review matches; a response that
@@ -182,6 +183,10 @@
   function reviewVisible() {
     const pane = $('#performerReviewPane');
     return reviewActive && Boolean(pane) && !pane.hidden;
+  }
+  function nameVariantsVisible() {
+    const pane = $('#performerNameVariantsPane');
+    return nameVariantsActive && Boolean(pane) && !pane.hidden;
   }
   async function load() {
     const sequence = ++state.loadSeq;
@@ -273,11 +278,9 @@
   }
   function updateSelectedMergeButton() {
     const button = $('#fuzzyReviewSelected');
-    const status = $('#fuzzySelectionStatus');
     if (!button) return;
     button.disabled = state.fuzzyBatchRunning || state.fuzzySelected.size === 0 || state.fuzzySelected.size > MAX_SELECTED_MERGES;
     button.textContent = `Merge selected (${state.fuzzySelected.size})`;
-    if (status) status.textContent = `Select up to ${MAX_SELECTED_MERGES} pairs. Merges are queued immediately; there is no one-click undo.`;
   }
   function normalizedPerformerName(value) {
     return String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
@@ -325,7 +328,7 @@
           state.fuzzyQueued.set(pairKey, jobId);
           state.fuzzySelected.delete(pairKey);
           queuedCount += 1;
-          if (reviewVisible()) helpers().showQueued(result, 'Performer merge');
+          if (nameVariantsVisible()) helpers().showQueued(result, 'Performer merge');
         } catch (error) {
           const uncertain = executing && error.status !== 409;
           if (uncertain) {
@@ -339,11 +342,11 @@
       state.fuzzyBatchRunning = false;
       $('#fuzzyScan').disabled = false;
       renderFuzzy();
-      if (reviewVisible()) window.AdminV2.setFeedback($('#fuzzyFeedback'), `${queuedCount} of ${selected.length} selected merges queued.${failures.length ? ` ${failures.join(' · ')}` : ' Follow their progress in Jobs.'}`, failures.length ? 'error' : 'status');
+      if (nameVariantsVisible()) window.AdminV2.setFeedback($('#fuzzyFeedback'), `${queuedCount} of ${selected.length} selected merges queued.${failures.length ? ` ${failures.join(' · ')}` : ' Follow their progress in Jobs.'}`, failures.length ? 'error' : 'status');
     }
   }
   function renderFuzzy() {
-    if (!reviewVisible()) return;
+    if (!nameVariantsVisible()) return;
     const host = $('#fuzzyRows');
     const rows = fuzzyRows();
     host.replaceChildren();
@@ -480,7 +483,7 @@
     window.AdminV2.setFeedback($('#fuzzyFeedback'), 'Scanning performer names…');
     try {
       const result = await get(`${API}/fuzzy?threshold=${encodeURIComponent(threshold)}`);
-      if (sequence !== state.loadSeq || !reviewVisible()) return;
+      if (sequence !== state.loadSeq || !nameVariantsVisible()) return;
       state.fuzzyGroups = Array.isArray(result.groups) ? result.groups : [];
       state.fuzzyScanned = true;
       state.fuzzyOffset = 0;
@@ -492,7 +495,7 @@
       window.AdminV2.setFeedback($('#fuzzyFeedback'), `${stats.total_unique_performers ?? '—'} unique performer names scanned; ${stats.total_groups ?? state.fuzzyGroups.length} candidate groups found. Review both names before merging.`);
       renderFuzzy();
     } catch (error) {
-      if (sequence !== state.loadSeq || !reviewVisible()) return;
+      if (sequence !== state.loadSeq || !nameVariantsVisible()) return;
       state.fuzzyGroups = [];
       state.fuzzyScanned = false;
       state.fuzzyQueued.clear();
@@ -523,7 +526,7 @@
       state.fuzzySelected.delete(`${alias}::${canonical}`);
       state.fuzzySelected.delete(`${canonical}::${alias}`);
       renderFuzzy();
-      if (reviewVisible()) {
+      if (nameVariantsVisible()) {
         window.AdminV2.setFeedback($('#fuzzyFeedback'), `Queued${jobId ? ` as task ${jobId}` : ''}.`);
         helpers().showQueued(result, 'Performer merge');
       }
@@ -536,7 +539,6 @@
       if (!uncertain) { state.fuzzyMerging.delete(key); button.disabled = false; renderFuzzy(); }
     }
   }
-  $('#performersRefresh')?.addEventListener('click', load);
   $('#performersReconcile')?.addEventListener('click', reconcileClearMatches);
   $('#fuzzyScan')?.addEventListener('click', scanFuzzy);
   $('#fuzzyReviewSelected')?.addEventListener('click', mergeSelected);
@@ -546,8 +548,10 @@
   document.addEventListener('adminv2:navigate', event => {
     const detail = event.detail;
     reviewActive = detail?.route === 'performers' && detail.performersTab === 'review';
+    nameVariantsActive = detail?.route === 'performers' && detail.performersTab === 'name-variants';
     state.loadSeq += 1;
     state.proposalSeq += 1;
-    if (reviewActive) { load(); renderFuzzy(); }
+    if (reviewActive) load();
+    if (nameVariantsActive) renderFuzzy();
   });
 })();

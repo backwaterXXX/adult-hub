@@ -241,7 +241,7 @@ def build_router(admin):
         if isinstance(db, dict):
             if db.get("database_backend") == "PostgreSQL":
                 db_result["database_backend"] = "PostgreSQL"
-            for key in ("videos_total", "files_total", "telegram_total", "fresh_24h", "photos_total",
+            for key in ("videos_total", "artwork_total", "oshash_total", "phash_total", "files_total", "telegram_total", "fresh_24h", "photos_total",
                         "bios_total", "aliases_total", "dead_streams_total", "unplayable_total"):
                 value = db.get(key)
                 if type(value) is int and value >= 0:

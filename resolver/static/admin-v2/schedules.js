@@ -221,7 +221,7 @@
   }
 
   function makeMainRow(item, group, feedback) {
-    const row = node('tr', 'schedule-row');
+    const row = node('tr', 'schedule-row schedule-parent-row');
     row.dataset.scheduleId = item.id;
     if (group === 'admin' && typeof item.id === 'string' && /^(?:[a-f0-9]{32}|catalog-health-full)$/.test(item.id)) {
       row.id = 'schedule-' + item.id; row.tabIndex = -1;
@@ -247,10 +247,11 @@
     };
     addDetail('Task type', group === 'system' ? item.action || item.id : taskNames[item.action] || item.action);
     addDetail('Schedule', item.cron_expression || cadence(item));
-    addDetail('Time zone', scheduleZone);
-    addDetail('Video IDs', Array.isArray(item.video_ids) ? item.video_ids.join(', ') : item.video_count ? `${item.video_count} video IDs` : 'None');
     addDetail('Last result', resultNames[item.last_result] || item.last_result || item.status);
-    if (item.details) addDetail('Details', item.details);
+    const detailResult = /^Last result:\s*(.+?)\.?$/i.exec(String(item.details || '').trim());
+    const repeatsLastResult = detailResult && item.last_result
+      && detailResult[1].toLocaleLowerCase() === String(item.last_result).trim().toLocaleLowerCase();
+    if (item.details && !repeatsLastResult) addDetail('Details', item.details);
     if (item.progress_details) addDetail('Progress', item.progress_details);
     if (item.error || item.last_error) addDetail('Last error', item.error || item.last_error);
     if (item.last_run_at) addDetail('Last started', new Date(item.last_run_at).toLocaleString('en-GB', { timeZone: scheduleZone }));
@@ -334,9 +335,6 @@
     const taskCell = node('td', 'schedule-task-cell');
     taskCell.dataset.label = 'Task';
     taskCell.append(node('strong', 'schedule-task-name', item.name));
-    const description = item.task_description || item.details;
-    if (description) taskCell.append(node('small', 'schedule-task-kind', description));
-    else taskCell.append(node('small', 'schedule-task-kind', `Runs with ${parent.name}`));
     const statusCell = node('td');
     statusCell.dataset.label = 'Enabled';
     statusCell.append(node('span', `schedule-status ${item.enabled === false ? 'is-disabled' : 'is-ok'}`, item.enabled === false ? 'Disabled' : 'Enabled'));
@@ -344,9 +342,6 @@
     const descriptionCell = node('td', 'schedule-description-cell');
     descriptionCell.dataset.label = 'Description';
     descriptionCell.append(node('small', 'schedule-task-kind', item.task_description || item.details || `Runs with ${parent.name}`));
-    if (item.progress_details) descriptionCell.append(node('small', 'schedule-task-kind', item.progress_details));
-    const stageProblem = item.error || item.last_error;
-    if (stageProblem) descriptionCell.append(node('small', 'schedule-task-kind', stageProblem));
     const nextCell = node('td', 'schedule-time-cell');
     nextCell.dataset.label = 'Next run';
     nextCell.append(timeNode(item.enabled === false ? null : parent.next_run_at, scheduleZone));
@@ -406,28 +401,13 @@
       const result = await window.AdminV2.getJson(endpoint);
       if (sequence !== loadSeq) return null;
       const host = $('#schedulesRows'); host.replaceChildren();
-      const filter = $('#scheduleFilter')?.value || 'all';
       const admin = Array.isArray(result.items) ? result.items.map(item => ({ ...item, group: 'admin' })) : [];
       const systemAll = Array.isArray(result.system_items) ? result.system_items : [];
       const system = systemAll.filter(item => item.group === 'system');
       const dependent = systemAll.filter(item => item.group === 'dependent');
-      const parents = new Map([...admin, ...system].map(item => [item.id, item]));
-      const problems = item => item.problem || ['failed', 'skipped_overlap'].includes(item.last_result)
-        || (item.group === 'dependent' && Boolean(parents.get(item.parent_id)?.problem));
-      let mainItems = [...admin, ...system];
-      let dependentItems = dependent;
-      if (filter === 'admin') { mainItems = admin; dependentItems = []; }
-      else if (filter === 'system') { mainItems = system; }
-      else if (filter === 'dependent') { mainItems = system.filter(item => dependent.some(child => child.parent_id === item.id)); }
-      else if (filter === 'problems') {
-        mainItems = mainItems.filter(problems);
-        dependentItems = dependentItems.filter(problems);
-        mainItems = [...mainItems, ...system.filter(item => dependentItems.some(child => child.parent_id === item.id) && !mainItems.includes(item))];
-      }
-      let visibleCount = mainItems.length + dependentItems.length;
-      if (mainItems.length) host.append(makeTable(mainItems, feedback, dependentItems));
-      if (!visibleCount) host.append(node('p', 'schedule-empty', filter === 'problems'
-        ? 'No schedule problems are currently reported.' : 'No schedules match this filter.'));
+      const mainItems = [...admin, ...system];
+      if (mainItems.length) host.append(makeTable(mainItems, feedback, dependent));
+      else host.append(node('p', 'schedule-empty', 'No schedules configured.'));
       const selectedId = new URLSearchParams(location.hash.split('?')[1] || '').get('schedule_id') || '';
       let selectedMessage = '';
       if (selectedId && /^(?:[a-f0-9]{32}|catalog-health-full)$/.test(selectedId)) {
@@ -436,10 +416,10 @@
           if (focusedScheduleId !== selectedId) {
             selected.scrollIntoView({ block: 'nearest' }); selected.focus({ preventScroll: true }); focusedScheduleId = selectedId;
           }
-        } else selectedMessage = ' The schedule from this audit record is no longer available.';
+        } else selectedMessage = 'The schedule from this audit record is no longer available.';
       } else focusedScheduleId = '';
       if (!silent || feedback.textContent.startsWith("Schedules may be out of date."))
-        feedback.textContent = `${visibleCount} schedule entr${visibleCount === 1 ? 'y' : 'ies'} shown · ${admin.length} admin · ${system.length} independent · ${dependent.length} dependent.${selectedMessage}`;
+        feedback.textContent = selectedMessage;
       return true;
     } catch (error) {
       if (sequence !== loadSeq) return null;
@@ -478,7 +458,6 @@
     }, 250);
   }
 
-  $('#scheduleFilter')?.addEventListener('change', () => load());
   $('#scheduleAction')?.addEventListener('change', () => {
     $('#scheduleVideosField').hidden = $('#scheduleAction').value !== 'availability_check';
   });
@@ -517,8 +496,6 @@
       if (restoreFocus && button.isConnected && document.activeElement === document.body) button.focus({ preventScroll: true });
     }
   });
-  $('#schedulesRefresh')?.addEventListener('click', load);
-
   function syncSchedules(route) {
     schedulesActive = route === 'schedules';
     if (pollTimer !== null) clearInterval(pollTimer);

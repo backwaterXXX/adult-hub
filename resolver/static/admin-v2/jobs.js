@@ -110,7 +110,8 @@
     const numeric = typeof value === 'number' && value < 100000000000 ? value * 1000 : value;
     const date = new Date(numeric);
     if (Number.isNaN(date.getTime())) return scrub(value);
-    return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+    const dateLabel = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    return `${dateLabel} ${new Intl.DateTimeFormat('en-US', { timeStyle: 'short' }).format(date)}`;
   }
   function processingActivityWarning(job) {
     if (safeId(job.state).toLowerCase() !== 'processing' || job.activity_stale !== true) return '';
@@ -580,10 +581,8 @@
 
     const notes = [];
     if (!available) notes.push('Data may be unavailable');
-    if (incomplete) notes.push('partial list');
-    const totalText = state.total === null ? `${jobs.length} jobs on this page` : `${state.total.toLocaleString('en-US')} jobs`;
-    const prefix = notes.length ? `${notes.join(' · ')} · ` : '';
-    setFeedback(`${prefix}${totalText}${state.truncated ? ' · more results available' : ''}`);
+    if (incomplete) notes.push('Partial list');
+    setFeedback(notes.join(' · '));
     if (!available) announce('Showing the last available job data.');
   }
 
@@ -994,7 +993,6 @@
       commitFiltersToUrl();
       if (state.activeTab !== jobsTab()) sync(); else loadJobs();
     });
-    $('#jobsRefresh').addEventListener('click', () => { setNotice('', ''); loadJobs(); });
     $('#jobsPrev').addEventListener('click', () => {
       if (state.offset > 0) { state.offset = Math.max(0, state.offset - LIMIT); commitFiltersToUrl(); loadJobs(); }
     });
@@ -1011,7 +1009,6 @@
       const undoDismiss = event.target.closest('[data-job-undo-dismiss]');
       if (undoDismiss) undoDismissal(undoDismiss.dataset.jobUndoDismiss);
     });
-    $('#operationHistoryRefresh').addEventListener('click', () => loadOperationHistory());
     $('#operationHistoryPrev').addEventListener('click', () => {
       if (state.operationOffset > 0) { state.operationOffset = Math.max(0, state.operationOffset - OPERATION_LIMIT); loadOperationHistory(); }
     });

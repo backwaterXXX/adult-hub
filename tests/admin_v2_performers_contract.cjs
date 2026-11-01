@@ -61,7 +61,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
 (async () => {
   const ids = ['taskReceipt', 'performerReviewPane', 'performersFeedback', 'performerProposalRows', 'performersCount', 'performersState', 'performersRefresh', 'performersReconcile', 'performerProposalPagination',
     'fuzzyCategory', 'fuzzyRows', 'fuzzyPagination', 'fuzzyPageInfo', 'fuzzyPrev', 'fuzzyNext', 'fuzzyFeedback',
-    'fuzzyThreshold', 'fuzzyScan', 'fuzzyReviewSelected', 'fuzzySelectionStatus', 'fuzzyMergeDialog', 'fuzzyMergeContent', 'fuzzyMergeActions', 'fuzzyMergeClose'];
+    'fuzzyThreshold', 'fuzzyScan', 'fuzzyReviewSelected', 'fuzzyMergeDialog', 'fuzzyMergeContent', 'fuzzyMergeActions', 'fuzzyMergeClose'];
   const elements = Object.fromEntries(ids.map(id => [id, new Element(id === 'fuzzyMergeDialog' ? 'dialog' : 'div')]));
   elements.fuzzyThreshold.value = '0.88';
   const calls = [];

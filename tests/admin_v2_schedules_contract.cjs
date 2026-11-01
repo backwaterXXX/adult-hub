@@ -39,7 +39,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
 const template = fs.readFileSync('resolver/templates/admin_v2.html', 'utf8');
 const ids = ['schedulesFeedback', 'schedulesRows', 'scheduleCreateForm', 'scheduleCreate',
   'scheduleCreatePanel', 'scheduleCreatePreview', 'scheduleName', 'scheduleAction', 'scheduleCron',
-  'scheduleVideosField', 'scheduleVideoIds', 'scheduleFilter', 'schedulesRefresh'];
+  'scheduleVideosField', 'scheduleVideoIds', 'schedulesRefresh'];
 const elements = Object.fromEntries(ids.map(id => [id, new Element(id === 'scheduleCreateForm' ? 'form' : 'div')]));
 const documentListeners = {};
 const document = {

@@ -355,7 +355,7 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
   const newPeople = loadPeople();
   peopleB.resolve({ ok: true, status: 200, json: async () => ({ ok: true, available: true, items: [], total: 2 }) }); await newPeople;
   peopleA.resolve({ ok: true, status: 200, json: async () => ({ ok: true, available: true, items: [], total: 9 }) }); await oldPeople;
-  assert.equal(get('#peopleFeedback').textContent, '2 people');
+  assert.equal(get('#peopleFeedback').textContent, '');
 
   context.fetch = async () => ({ ok: true, status: 200, json: async () => ({
     ok: true, available: false,

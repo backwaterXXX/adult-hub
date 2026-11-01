@@ -88,10 +88,6 @@
       if (seq === requestSeq) host.replaceChildren(el('p', 'catalog-state', 'Service status is unknown. The latest check could not be completed.'));
     }
   }
-  $('#systemStatusRefresh')?.addEventListener('click', () => {
-    document.dispatchEvent(new CustomEvent('adminv2:refresh-system-status'));
-  });
-  document.addEventListener('adminv2:refresh-system-status', () => { void loadSystemStatus(); });
   document.addEventListener('adminv2:navigate', event => {
     if (event.detail?.route === 'system' && event.detail?.systemTab === 'status') void loadSystemStatus();
     else requestSeq += 1;

@@ -8,6 +8,8 @@ identified by their stable channel ID; the studio is only a display label.
 from __future__ import annotations
 
 import json
+import os
+import stat
 import time
 from datetime import datetime
 from pathlib import Path
@@ -106,7 +108,44 @@ def configured_sources(config_path: Path | str) -> dict:
             "managed_revision": int(getattr(config, "managed_revision", 0))}
 
 
-def db_stats(db_url: str | None, config_path: Path | str) -> dict:
+def _local_artwork_count(conn, media_dir: Path | str) -> int | None:
+    """Count catalog videos with a regular, non-empty local artwork sidecar."""
+    try:
+        root = Path(media_dir).resolve()
+        if not root.is_dir():
+            return None
+        with os.scandir(root) as entries:
+            artwork_stems = set()
+            for entry in entries:
+                if not entry.name.lower().endswith(".jpg"):
+                    continue
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISREG(info.st_mode) and info.st_size > 0:
+                    artwork_stems.add(entry.name[:-4])
+        rows = conn.execute(
+            "SELECT sf.video_id, sf.file_path FROM synced_files sf "
+            "JOIN videos v ON v.id=sf.video_id"
+        ).fetchall()
+    except (OSError, TypeError, ValueError, db.DatabaseError):
+        return None
+
+    covered = set()
+    for row in rows:
+        video_id, file_path = row[0], row[1]
+        if (not isinstance(video_id, str) or not video_id or not isinstance(file_path, str)
+                or not file_path or "/" in file_path or "\\" in file_path
+                or not file_path.lower().endswith(".strm")):
+            continue
+        if file_path[:-5] in artwork_stems:
+            covered.add(video_id)
+    return len(covered)
+
+
+def db_stats(db_url: str | None, config_path: Path | str,
+             media_dir: Path | str | None = None) -> dict:
     out: dict = {
         "db_ok": False,
         "db_path": "(postgresql)",
@@ -115,6 +154,9 @@ def db_stats(db_url: str | None, config_path: Path | str) -> dict:
         "database_backend": "PostgreSQL",
         "db_size_mb": None,
         "videos_total": None,
+        "artwork_total": None,
+        "oshash_total": None,
+        "phash_total": None,
         "files_total": None,
         "by_provider": {},
         "telegram_total": None,
@@ -142,6 +184,8 @@ def db_stats(db_url: str | None, config_path: Path | str) -> dict:
             pass
         try:
             out["videos_total"] = conn.execute("SELECT count(*) FROM videos").fetchone()[0]
+            if media_dir is not None:
+                out["artwork_total"] = _local_artwork_count(conn, media_dir)
             try:
                 out["files_total"] = conn.execute("SELECT count(*) FROM synced_files").fetchone()[0]
             except Exception:
@@ -202,6 +246,12 @@ def db_stats(db_url: str | None, config_path: Path | str) -> dict:
                 pass
 
             tables = db.table_names(conn)
+            if "video_fingerprints" in tables:
+                coverage = conn.execute(
+                    "SELECT count(*) FILTER (WHERE algorithm = 'OSHASH'), "
+                    "count(*) FILTER (WHERE algorithm = 'PHASH') FROM video_fingerprints"
+                ).fetchone()
+                out["oshash_total"], out["phash_total"] = coverage
             if "performer_photos" in tables:
                 out["photos_total"] = conn.execute(
                     "SELECT count(*) FROM performer_photos "

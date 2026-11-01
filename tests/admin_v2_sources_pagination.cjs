@@ -38,7 +38,7 @@ function descendants(root, predicate) {
     'sourcesRows', 'sourcesPagination', 'sourceDetailDialog', 'sourcesNotice', 'sourcesFeedback',
     'sourceDetailContent',
     'sourceChannelsPane', 'sourceHistoryPane', 'sourcesHistoryFeedback', 'sourcesHistoryRows', 'sourcesHistoryPagination',
-    'sourcesRevision', 'sourcesState', 'sourcesTableWrap', 'sourcesQuery', 'liveMessage', 'crumbCurrent',
+    'sourcesState', 'sourcesTableWrap', 'sourcesQuery', 'liveMessage', 'crumbCurrent',
     'operationalEyebrow', 'operationalTitle', 'operationalIntro',
   ];
   const elements = Object.fromEntries(ids.map(id => [id, new Element(id === 'sourcesFilters' ? 'form' : 'div')]));
@@ -134,7 +134,7 @@ function descendants(root, predicate) {
   assert.equal(elements.sourcesRows.children[0].children[3].children[0].children[0].textContent, 'Never synced');
   const pageInfo = () => elements.sourcesPagination.children.find(child => child.tagName === 'span');
   assert.equal(pageInfo().textContent, 'Page 1 of 25');
-  assert.match(elements.sourcesFeedback.textContent, /Showing 1–50 of 1202 matching channels/);
+  assert.equal(elements.sourcesFeedback.textContent, '');
 
   const next = elements.sourcesPagination.children.find(button => button.dataset.sourcePage === 'next');
   elements.sourcesPagination.listeners.click({ target: { closest: () => next } });
@@ -234,7 +234,7 @@ function descendants(root, predicate) {
   elements.sourcesFilters.listeners.input({ target: query });
   assert.equal(elements.sourcesRows.children.length, 1);
   assert.equal(elements.sourcesPagination.hidden, true);
-  assert.match(elements.sourcesFeedback.textContent, /Showing 1–1 of 1 matching channels/);
+  assert.equal(elements.sourcesFeedback.textContent, '');
   assert.equal(new URLSearchParams(location.search).get('source_q'), 'Channel 0051', 'reload context is persisted immediately');
   await new Promise(resolve => setTimeout(resolve, 350));
   assert.equal(new URLSearchParams(location.search).get('source_q'), 'Channel 0051', 'search is persisted to the URL');

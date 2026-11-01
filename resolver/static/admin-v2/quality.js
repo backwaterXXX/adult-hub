@@ -171,7 +171,6 @@
     }
   }
 
-  $('#metadataProposalsRefresh')?.addEventListener('click', () => { state.proposalOffset = 0; loadProposals(); });
   function syncSuggestions(detail) {
     if (!detail) return;
     suggestionsActive = detail.route === 'library' && detail.libraryTab === 'suggestions';

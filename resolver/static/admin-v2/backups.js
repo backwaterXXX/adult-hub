@@ -90,13 +90,12 @@
     feedback.textContent = 'Queueing database backup…';
     try {
       const queued = await window.AdminV2.postJson('/admin/api/v2/backups/create', {});
-      feedback.textContent = `Database backup queued (${queued.job_id}). Check Jobs for completion, then refresh this inventory.`;
+      feedback.textContent = `Database backup queued (${queued.job_id}). Check Jobs for completion; Backups reloads when you reopen the tab.`;
     } catch (error) {
       feedback.textContent = `Could not queue database backup. ${error.message}`;
     } finally { button.disabled = false; }
   }
 
-  $('#backupRefresh')?.addEventListener('click', loadBackups);
   $('#backupCreate')?.addEventListener('click', createBackup);
   document.addEventListener('adminv2:navigate', event => {
     if (event.detail?.route === 'system' && event.detail?.systemTab === 'backups') loadBackups();

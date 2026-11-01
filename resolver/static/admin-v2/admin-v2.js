@@ -11,7 +11,7 @@
   const ISSUE_KINDS = new Set(['sync_failure', 'sync_never_run', 'sync_backlog', 'job_failure', 'job_stalled', 'unavailable_video', 'missing_metadata', 'missing_nfo', 'invalid_nfo', 'nfo_metadata_mismatch', 'missing_artwork', 'backup', 'quality_finding', 'quality_audit', 'system']);
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const state = { route: 'start', detailId: null, libraryTab: 'videos', duplicateMatch: 'catalog', performersTab: 'review', performerArea: '', qualityTab: null, systemTab: null, peopleDirectoryQuery: '', status: null, statusLoaded: false, statusRequestSeq: 0,
+  const state = { route: 'start', detailId: null, libraryTab: 'videos', duplicateMatch: 'catalog', performersTab: 'review', qualityTab: null, systemTab: null, peopleDirectoryQuery: '', status: null, statusLoaded: false, statusRequestSeq: 0,
     services: { checking: true }, problemSummary: null, systemStatusInFlight: false,
     headerStatusInFlight: false, headerStatusTimer: null, headerSyncInFlight: false, headerSyncTimer: null,
     list: null, lastSuccessfulQuery: null, offset: 0, total: null, nextOffset: null,
@@ -42,8 +42,7 @@
     system: { title: 'System', intro: 'Service status, backups and maintenance.' }
   };
   const LIBRARY_TABS = ['videos', 'duplicates', 'suggestions', 'quarantine'];
-  const PERFORMER_TABS = ['directory', 'review'];
-  const PERFORMER_AREAS = ['proposals', 'name-variants'];
+  const PERFORMER_TABS = ['directory', 'review', 'name-variants'];
   const DUPLICATE_MATCHES = ['catalog', 'visual'];
   const navOwner = route => route;
 
@@ -116,8 +115,10 @@
     if (route === 'system' && ['diagnostics', 'playback', 'playback-diagnostics', 'activity', 'admin-history', 'audit', 'audits', 'audit-history', 'consistency', 'linkcheck', 'links', 'availability', 'enrichment-progress', 'trends'].includes(tab)) return retired();
     if (route === 'system' && tab === 'automation') { legacyScreenNotice = 'Schedules are available in their own section.'; return '#schedules'; }
     if (route === 'performers' && ['proposals', 'matching'].includes(tab)) {
-      return target('performers', 'review', { area: tab === 'matching' ? 'name-variants' : 'proposals' });
+      return target('performers', tab === 'matching' ? 'name-variants' : 'review');
     }
+    if (route === 'performers' && tab === 'review' && params.get('area') === 'name-variants') return target('performers', 'name-variants');
+    if (route === 'performers' && tab === 'review' && params.has('area')) return target('performers', 'review');
     return null;
   }
   function libraryHash(tab, match) {
@@ -154,10 +155,8 @@
     }
     if (route === 'performers') {
       const performersTab = PERFORMER_TABS.includes(tab) ? tab : 'review';
-      const area = params.get('area') || '';
-      const performerArea = performersTab === 'review' && PERFORMER_AREAS.includes(area) ? area : '';
-      return { route, primaryRoute: 'performers', detailId: null, performersTab, performerArea,
-        focusTarget: performerArea === 'name-variants' ? '#fuzzyTitle' : performerArea ? '#performerProposalsTitle' : null };
+      return { route, primaryRoute: 'performers', detailId: null, performersTab,
+        focusTarget: performersTab === 'name-variants' ? '#fuzzyTitle' : null };
     }
     return routeInfo[route] ? { route, primaryRoute: route, detailId: null } : { route: 'start', primaryRoute: 'start', detailId: null };
   }
@@ -199,7 +198,7 @@
   const SECTION_TAB_PANES = {
     libraryTabList: { videos: '#libraryVideosPane', duplicates: '#libraryDuplicatesPane',
       suggestions: '#librarySuggestionsPane', quarantine: '#libraryQuarantinePane' },
-    performersTabList: { directory: '#performerDirectoryPane', review: '#performerReviewPane' }
+    performersTabList: { directory: '#performerDirectoryPane', review: '#performerReviewPane', 'name-variants': '#performerNameVariantsPane' }
   };
   // Each tab anchor keeps its panel id in sync, following the <name>Tab / <name>Pane convention.
   function syncSectionTabs(listId, activeTab) {
@@ -229,19 +228,6 @@
     if (state.duplicateMatch === match) return;
     history.pushState({}, '', urlFor(libraryHash('duplicates', match)));
     renderLocation();
-  }
-  const ADVANCED_FILTER_NAMES = ['studio', 'performer', 'tag', 'missing', 'sort'];
-  function updateMoreFilterCount() {
-    const badge = $('#moreFilterCount');
-    if (!badge) return;
-    const form = $('#libraryFilters');
-    const active = ADVANCED_FILTER_NAMES.filter(name => {
-      const field = form.elements.namedItem(name);
-      const value = field ? field.value.trim() : '';
-      return value && !(name === 'sort' && value === 'first_seen');
-    }).length;
-    badge.hidden = active === 0;
-    badge.textContent = active ? String(active) : '';
   }
   function renderLocation() {
     const next = currentRoute();
@@ -290,7 +276,6 @@
     state.libraryTab = next.libraryTab || 'videos';
     state.duplicateMatch = next.duplicateMatch || 'catalog';
     state.performersTab = next.performersTab || 'review';
-    state.performerArea = next.performerArea || '';
     state.qualityTab = next.qualityTab || null;
     state.systemTab = next.systemTab || null;
     state.peopleDirectoryQuery = peopleDirectoryQuery;
@@ -366,14 +351,15 @@
         libraryTab: state.route === 'library' ? state.libraryTab : null,
         duplicateMatch: state.route === 'library' && state.libraryTab === 'duplicates' ? state.duplicateMatch : null,
         performersTab: state.route === 'performers' ? state.performersTab : null,
-        performerArea: state.route === 'performers' ? state.performerArea : null,
         systemTab: state.systemTab, sourcesTab: next.sourcesTab || null
       }
     }));
     if (next.focusTarget) requestAnimationFrame(() => {
       const target = $(next.focusTarget);
       target?.focus({ preventScroll: true });
-      if (next.duplicateMatch === 'visual') target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (next.duplicateMatch === 'visual' || next.performersTab === 'name-variants') {
+        target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     });
     if (restoreDetailFocus?.isConnected) requestAnimationFrame(() => restoreDetailFocus.focus({ preventScroll: true }));
   }
@@ -409,7 +395,6 @@
     state.offset = Math.max(0, Number(params.get('offset')) || 0);
     state.catalogCursor = params.get('cursor') || null;
     state.catalogCursorDirection = params.get('cursor_direction') === 'before' ? 'before' : 'after';
-    updateMoreFilterCount();
   }
   function routeQueryParams() {
     const params = new URLSearchParams(location.search);
@@ -464,7 +449,6 @@
       if (field) field.value = typeof view.filters[name] === 'string' ? view.filters[name] : '';
     }
     resetCatalogPage();
-    updateMoreFilterCount();
     commitFilterUrl();
     loadVideos();
   }
@@ -917,38 +901,25 @@
       state.systemStatusInFlight = false;
     }
   }
-  document.addEventListener('adminv2:refresh-system-status', () => { if (state.route === 'system' && state.systemTab === 'status') void loadSystemStatus(); });
   function capabilitiesPayload(payload) {
     if (!payload) return null;
     return payload.capabilities || payload;
   }
   function metric(label, value, caption, icon) {
     const card = create('article', 'metric-card');
-    const top = create('div', 'metric-top'); top.append(create('span', '', label), create('span', 'metric-icon', icon));
-    card.append(top, create('strong', 'metric-value', value), create('span', 'metric-caption', caption));
+    const top = create('div', 'metric-top'); top.append(create('span', '', label));
+    if (icon) top.append(create('span', 'metric-icon', icon));
+    card.append(top, create('strong', 'metric-value', value));
+    if (caption) card.append(create('span', 'metric-caption', caption));
     return card;
   }
-  function lastSyncMetric(sync) {
-    if (!sync || sync.available === false) {
-      return metric('Last sync', 'No data', 'The synchronization status could not be read.', '◷');
-    }
-    if (sync.running === true) {
-      return metric('Last sync', 'In progress', 'A synchronization run is executing now.', '◷');
-    }
-    if (sync.history_available === false) {
-      return metric('Last sync', 'No data', 'The synchronization history could not be read.', '◷');
-    }
-    const run = sync.last_run && typeof sync.last_run === 'object' ? sync.last_run : null;
-    const finishedAt = run ? (run.ended_at || run.started_at) : null;
-    if (!finishedAt) {
-      return metric('Last sync', 'No history', 'No completed synchronization run is recorded yet.', '◷');
-    }
-    const outcome = run.interrupted === true ? 'The recorded run was interrupted'
-      : run.success === true ? 'The recorded run completed'
-        : run.success === false ? 'The recorded run failed'
-          : 'The recorded outcome is unknown';
-    return metric('Last sync', displayDateTime(finishedAt),
-      `${outcome}. Started ${run.started_at ? displayDateTime(run.started_at) : 'unknown'}.`, '◷');
+  function coverageLabel(covered, total) {
+    if (!Number.isSafeInteger(covered) || !Number.isSafeInteger(total) || covered < 0 || total < 0) return 'No data';
+    const percent = total > 0 ? Math.round((covered / total) * 100) : 0;
+    return `${covered.toLocaleString('en-US')} (${percent}%)`;
+  }
+  function countLabel(value, fallback = 'No data') {
+    return Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString('en-US') : fallback;
   }
   function renderOverviewCards(data) {
     const db = data.db || {};
@@ -963,13 +934,15 @@
     const cards = $('#statusCards');
     if (!cards) return;
     cards.replaceChildren(
-      metric('Videos in library', safeText(videos), 'Catalog records', '▤'),
-      lastSyncMetric(data.sync || {}),
-      metric('Active tasks', safeText(queue, 'No data'), 'Queued or processing', '◷'),
-      metric('Problems', problemTotal === null ? 'No data' : safeText(problemTotal),
+      metric('Videos in library', countLabel(videos), 'Catalog records', '▤'),
+      metric('Active tasks', countLabel(queue), 'Queued or processing', '◷'),
+      metric('Problems', countLabel(problemTotal),
         problemTotal === null ? 'The problem sources could not be read'
           : problems.incomplete ? 'Unresolved problems; some sources are unavailable'
-            : 'Unresolved problems', '!')
+            : 'Unresolved problems', '!'),
+      metric('Artwork coverage', coverageLabel(db.artwork_total, videos), '', ''),
+      metric('OSHASH coverage', coverageLabel(db.oshash_total, videos), '', ''),
+      metric('pHash coverage', coverageLabel(db.phash_total, videos), '', '')
     );
   }
   function renderStatus(data, capabilities) {
@@ -1149,14 +1122,10 @@
     const dateValue = typeof value === 'number' && value < 100000000000 ? value * 1000 : value;
     const date = new Date(dateValue);
     if (Number.isNaN(date.getTime())) return safeText(value);
-    return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' }).format(date);
+    return isoDate(date);
   }
-  function displayDateTime(value) {
-    if (!value) return '—';
-    const dateValue = typeof value === 'number' && value < 100000000000 ? value * 1000 : value;
-    const date = new Date(dateValue);
-    if (Number.isNaN(date.getTime())) return safeText(value);
-    return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+  function isoDate(date) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   }
   function availability(video) {
     const raw = first(video, ['availability', 'availability_status', 'playback_status', 'status', 'playable']);
@@ -1566,8 +1535,7 @@
       content.append(list, create('p', 'operation-expiry', pending ? 'Status updates automatically while this dialog is open.' : 'All tasks have finished.'));
       const actions = $('#operationDialogActions'); actions.replaceChildren();
       const close = create('button', 'button button-quiet', 'Close'); close.type = 'button'; close.addEventListener('click', () => closeDialog($('#operationDialog')));
-      const refresh = create('button', 'button button-primary', 'Refresh status'); refresh.type = 'button'; refresh.addEventListener('click', refreshOperationStatus);
-      actions.append(close, refresh);
+      actions.append(close);
       if (pending) scheduleOperationPoll();
     } catch (error) {
       if (statusSequence === state.operationStatusSeq && operationRequestIsCurrent(sequence) && state.operationId === operationId
@@ -2594,7 +2562,7 @@
           create('td', '', person.has_bio ? 'Available' : 'Missing'), create('td', '', person.has_photo ? 'Available' : 'Missing'));
         const actionCell = document.createElement('td'); const details = create('button', 'button button-quiet', 'Details'); details.type = 'button'; details.addEventListener('click', () => openPersonDetails(person.name)); actionCell.append(details); row.append(actionCell); rows.append(row);
       }
-      setText($('#peopleFeedback'), `${state.peopleTotal} people`);
+      setText($('#peopleFeedback'), '');
       $('#peoplePageInfo').textContent = state.peopleTotal ? `${state.peopleOffset + 1}–${Math.min(state.peopleOffset + 50, state.peopleTotal)} of ${state.peopleTotal}` : 'No people';
       $('#peoplePrev').disabled = state.peopleOffset <= 0; $('#peopleNext').disabled = state.peopleOffset + 50 >= state.peopleTotal;
       $('#peoplePagination').hidden = state.peopleTotal <= 50;
@@ -2607,7 +2575,8 @@
     const dialog = $('#personDetailDialog'); const content = $('#personDetailContent'); content.replaceChildren();
     state.personMergePreviewSeq += 1;
     state.pendingPersonMerge = null;
-    const heading = create('h2', '', name); heading.id = 'personDetailTitle'; content.append(create('p', 'eyebrow', 'FILMOGRAPHY'), heading, create('p', 'catalog-feedback', 'Loading filmography…')); openDialog(dialog);
+    const heading = create('h2', 'detail-title', name); heading.id = 'personDetailTitle'; content.append(create('p', 'detail-kicker', 'FILMOGRAPHY'), heading, create('p', 'catalog-feedback', 'Loading filmography…')); openDialog(dialog);
+    $('.performer-detail-drawer .detail-drawer').focus({ preventScroll: true });
     dialog.addEventListener('close', () => {
       state.personFilmographySeq += 1;
       state.personMergePreviewSeq += 1;
@@ -3054,7 +3023,6 @@
     $('#issueKind').addEventListener('change', changeIssueFilters);
     $('#issuesLoadMore').addEventListener('click', () => loadIssues({ append: true }));
     $('#duplicateRefresh').addEventListener('click', () => loadDuplicateCandidates({ refresh: true }));
-    $('#visualDuplicateRefresh').addEventListener('click', () => loadVisualDuplicateResults());
     $('#autoMergeExact').addEventListener('click', previewAutoMergeExact);
     $('#duplicateCategory').addEventListener('change', () => {
       state.duplicateOffset = 0;
@@ -3066,14 +3034,12 @@
     $('#duplicateNext').addEventListener('click', () => { state.duplicateOffset += DUPLICATE_PAGE_SIZE; loadDuplicateCandidates(); });
     $('#duplicateMatchCatalog').addEventListener('click', () => selectDuplicateMatch('catalog'));
     $('#duplicateMatchVisual').addEventListener('click', () => selectDuplicateMatch('visual'));
-    $('#peopleRefresh').addEventListener('click', () => loadPeople());
     $('#peopleQuery').addEventListener('input', () => {
       clearTimeout(state.peopleTimer); state.peopleOffset = 0;
       state.peopleTimer = setTimeout(loadPeople, 250);
     });
     $('#peoplePrev').addEventListener('click', () => { state.peopleOffset = Math.max(0, state.peopleOffset - 50); loadPeople(); });
     $('#peopleNext').addEventListener('click', () => { state.peopleOffset += 50; loadPeople(); });
-    $('#quarantineRefresh').addEventListener('click', () => loadQuarantine());
     $('#quarantinePrev').addEventListener('click', () => { state.quarantineOffset = Math.max(0, state.quarantineOffset - 50); loadQuarantine(); });
     $('#quarantineNext').addEventListener('click', () => { state.quarantineOffset += 50; loadQuarantine(); });
     $('#personDetailDialog').addEventListener('click', event => {
@@ -3089,11 +3055,9 @@
       const open = !$('#sidebar').classList.contains('is-open'); $('#sidebar').classList.toggle('is-open', open); $('#menuButton').setAttribute('aria-expanded', String(open));
     });
     $('#libraryFilters').addEventListener('input', event => {
-      updateMoreFilterCount();
       if (event.target.name === 'q' || ['channel_id', 'studio', 'performer', 'tag'].includes(event.target.name)) debounceLoad();
     });
     $('#libraryFilters').addEventListener('change', event => {
-      updateMoreFilterCount();
       if (event.target.tagName === 'SELECT') debounceLoad();
     });
     $('#savedViews').addEventListener('change', event => {
@@ -3128,7 +3092,7 @@
     });
     renderSavedViews();
     $('#clearFilters').addEventListener('click', () => {
-      $('#libraryFilters').reset(); clearLibrarySelection(); resetCatalogPage(); updateMoreFilterCount(); commitFilterUrl(); loadVideos();
+      $('#libraryFilters').reset(); clearLibrarySelection(); resetCatalogPage(); commitFilterUrl(); loadVideos();
     });
     $('#viewToggle').addEventListener('click', event => {
       const button = event.currentTarget; const tableMode = button.getAttribute('aria-pressed') !== 'true'; button.setAttribute('aria-pressed', String(tableMode));
@@ -3156,7 +3120,6 @@
     });
     document.addEventListener('click', event => {
       const action = event.target.closest('[data-action]')?.dataset.action;
-      if (action === 'refresh-status') loadStatus();
       if (action === 'close-detail') closeDetail();
       const link = event.target.closest('a[data-route]');
       if (link && link.hash) {

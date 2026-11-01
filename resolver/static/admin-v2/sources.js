@@ -16,11 +16,11 @@
   const state = {
     entered: false, activeTab: '', pendingSync: new Set(), loading: false, seq: 0, abort: null, items: [], page: 0, historyPage: 0, historySeq: 0,
     configAvailable: true, historyAvailable: true, settingsAvailable: false, auditPending: false, overrides: {},
-    configRevision: null, appliedRevision: null,
+    configRevision: null,
     editorCandidate: null,
-    appliedRevisionAvailable: false, filter: { q: '', status: '', sourceKey: '' },
+    filter: { q: '', status: '', sourceKey: '' },
     sort: { key: 'channel', direction: 'asc' },
-    channelHistory: new Map(), historyTruncated: false, accessChecks: new Map(),
+    channelHistory: new Map(), historyTruncated: false, accessChecks: new Map(), accessFeedback: '',
     detailItem: null, urlTimer: null, urlEditActive: false
   };
 
@@ -47,7 +47,8 @@
     const numeric = typeof value === 'number' && value < 100000000000 ? value * 1000 : value;
     const date = new Date(numeric);
     if (Number.isNaN(date.getTime())) return '—';
-    return new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+    const dateLabel = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    return `${dateLabel} ${new Intl.DateTimeFormat('en-US', { timeStyle: 'short' }).format(date)}`;
   }
 
   function timeStamp(value) {
@@ -277,7 +278,11 @@
     return true;
   }
 
-  function setFeedback(text) { setText($('#sourcesFeedback'), text); }
+  function setFeedback(text) {
+    const feedback = $('#sourcesFeedback');
+    setText(feedback, text);
+    if (feedback) feedback.title = text || '';
+  }
   function setNotice(kind, message, link) {
     const node = $('#sourcesNotice');
     if (!node) return;
@@ -371,12 +376,9 @@
       check.dataset.checkSource = item.id;
       check.setAttribute('aria-label', `Check access for ${sourceLabel}`);
       check.title = 'Checks read access with one message metadata request; no media is downloaded.';
-      const outcome = create('span', 'source-access-outcome');
-      outcome.dataset.accessOutcome = item.id;
       const previousCheck = state.accessChecks.get(itemKey(item));
-      if (previousCheck) renderAccessOutcome(outcome, previousCheck);
-      else outcome.hidden = true;
-      actionGroup.append(check, outcome);
+      if (previousCheck) applyAccessButtonOutcome(check, item, previousCheck);
+      actionGroup.append(check);
     }
     actionCell.append(actionGroup);
     row.append(actionCell);
@@ -1017,22 +1019,8 @@
     if (state.page !== requestedPage) writeSourceUrl(true);
     const startIndex = state.page * SOURCE_PAGE_SIZE;
     const visible = matching.slice(startIndex, startIndex + SOURCE_PAGE_SIZE);
-    const revision = $('#sourcesRevision');
     const addChannel = $('#sourcesAddChannel');
     if (addChannel) addChannel.disabled = !state.settingsAvailable || state.configRevision === null;
-    if (revision) {
-      if (state.configRevision === null) revision.textContent = '';
-      else {
-        const applied = !state.appliedRevisionAvailable
-          ? 'application status unavailable'
-          : state.appliedRevision === null
-            ? 'not applied yet'
-          : state.appliedRevision === state.configRevision
-            ? 'applied'
-            : `pending · last applied ${state.appliedRevision}`;
-        revision.textContent = `Managed configuration revision ${state.configRevision} · ${applied}`;
-      }
-    }
     tbody.replaceChildren();
 
     if (!state.items.length) {
@@ -1055,9 +1043,7 @@
     $('#sourcesState').hidden = true;
     $('#sourcesTableWrap').hidden = false;
     renderPagination(matching.length);
-    const first = startIndex + 1;
-    const last = startIndex + visible.length;
-    setFeedback(`Showing ${first}–${last} of ${matching.length} matching channels (${state.items.length} total) · based on the latest sync history`);
+    setFeedback(state.accessFeedback);
   }
 
   function renderPagination(total) {
@@ -1114,9 +1100,6 @@
       state.configAvailable = !(sourcesPayload && sourcesPayload.available === false);
       state.configRevision = Number.isInteger(sourcesPayload && sourcesPayload.managed_revision)
         ? sourcesPayload.managed_revision : null;
-      state.appliedRevision = Number.isInteger(sourcesPayload && sourcesPayload.applied_revision)
-        ? sourcesPayload.applied_revision : null;
-      state.appliedRevisionAvailable = sourcesPayload?.applied_revision_available !== false;
       state.settingsAvailable = Boolean(settingsPayload
         && settingsPayload.revision === state.configRevision
         && settingsPayload.overrides && typeof settingsPayload.overrides === 'object');
@@ -1132,9 +1115,6 @@
       else if (!state.settingsAvailable) setNotice('warning', 'Source editing is unavailable until settings and revision can be loaded together.');
       else if (state.auditPending) setNotice('warning', 'A source change audit is waiting for the database. It will be retried automatically; new source changes are paused until it is recorded.');
       else if (!state.historyAvailable) setNotice('warning', 'Sync history is unavailable, so the latest results are unknown.');
-      else if (state.configRevision !== null && state.appliedRevisionAvailable
-               && state.appliedRevision !== state.configRevision)
-        setNotice('warning', 'Source changes are saved and will be applied by the next sync.');
       render();
     } catch (error) {
       if (error.name === 'AbortError' || sequence !== state.seq || !isSourcesRoute() || sourcesTab() !== 'channels') return;
@@ -1175,9 +1155,10 @@
   async function checkSourceAccess(id, button) {
     const item = state.items.find(candidate => candidate.provider === 'telegram' && candidate.id === id);
     if (!item || !button) return;
-    const previous = button.textContent;
     button.disabled = true;
-    button.textContent = 'Checking…';
+    button.setAttribute('aria-busy', 'true');
+    state.accessFeedback = `${item.studio}: Checking Telegram read access…`;
+    setFeedback(state.accessFeedback);
     const resultNode = button.parentElement && button.parentElement.querySelector('.source-access-outcome');
     if (resultNode) {
       resultNode.hidden = false;
@@ -1195,6 +1176,9 @@
       };
       state.accessChecks.set(itemKey(item), outcome);
       if (resultNode) renderAccessOutcome(resultNode, outcome);
+      applyAccessButtonOutcome(button, item, outcome);
+      state.accessFeedback = accessFeedbackText(item, outcome);
+      setFeedback(state.accessFeedback);
       announce(`${item.studio}: ${outcome.message} Checked ${displayTime(outcome.checkedAt)}.`);
     } catch (error) {
       const outcome = {
@@ -1204,12 +1188,30 @@
       };
       state.accessChecks.set(itemKey(item), outcome);
       if (resultNode) renderAccessOutcome(resultNode, outcome);
+      applyAccessButtonOutcome(button, item, outcome);
+      state.accessFeedback = accessFeedbackText(item, outcome);
+      setFeedback(state.accessFeedback);
       announce(`${item.studio}: could not check Telegram access. ${outcome.message}`);
     } finally {
       button.disabled = false;
-      if (!button.isConnected) return;
-      if (button.textContent === 'Checking…') button.textContent = previous;
+      button.removeAttribute('aria-busy');
     }
+  }
+
+  function accessStatusLabel(outcome) {
+    return ({ accessible: 'Accessible', inaccessible: 'No access', unknown: 'Unknown', error: 'Check failed' })[outcome.status] || 'Unknown';
+  }
+
+  function accessFeedbackText(item, outcome) {
+    return `${item.studio}: ${accessStatusLabel(outcome)} · ${outcome.message}`;
+  }
+
+  function applyAccessButtonOutcome(button, item, outcome) {
+    const label = accessStatusLabel(outcome);
+    const checked = displayTime(outcome.checkedAt);
+    button.dataset.accessStatus = outcome.status;
+    button.title = `${label} · ${outcome.message}${checked === '—' ? '' : ` · Checked ${checked}`}`;
+    button.setAttribute('aria-label', `Check access for ${item.studio}. Last result: ${label}. ${outcome.message}`);
   }
 
   function renderAccessOutcome(node, outcome) {
@@ -1381,8 +1383,6 @@
       button.focus({ preventScroll: true });
     });
     window.addEventListener('popstate', restoreSourceStateFromHistory);
-    $('#sourcesHistoryRefresh')?.addEventListener('click', () => loadHistoryPage());
-    $('#sourcesRefresh').addEventListener('click', () => { setNotice('', ''); loadSources(); });
     $('#sourcesAddChannel').addEventListener('click', event => openAddChannel(event.currentTarget));
     $('#sourcesRows').addEventListener('click', event => {
       const detail = event.target.closest('[data-source-detail]');

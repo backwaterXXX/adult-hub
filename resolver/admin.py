@@ -52,7 +52,7 @@ def _admin_blocked(request: Request) -> bool:
 
 
 def _db_stats() -> dict:
-    return admin_data.db_stats(HUB_DB_URL, CONFIG_PATH)
+    return admin_data.db_stats(HUB_DB_URL, CONFIG_PATH, MEDIA_DIR)
 
 
 def _sync_status() -> dict:
