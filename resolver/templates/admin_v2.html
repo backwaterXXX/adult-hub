@@ -57,10 +57,8 @@
         <div id="taskReceipt" class="state-banner" role="status" hidden></div>
         <div id="legacyScreenNotice" class="state-banner" role="status" hidden></div>
         <section class="view" data-view="start" aria-labelledby="pageTitle">
-          <div class="page-heading">
-            <div><p class="eyebrow">OVERVIEW</p><h1 id="pageTitle">Overview</h1><p class="page-intro">Catalog size, synchronization, tasks and open problems at a glance.</p></div>
-            <button class="button button-quiet" type="button" data-action="refresh-status"><span aria-hidden="true">↻</span> Refresh</button>
-          </div>
+          <h1 class="sr-only" id="pageTitle">Overview</h1>
+          <div class="overview-toolbar"><button class="button button-quiet" type="button" data-action="refresh-status"><span aria-hidden="true">↻</span> Refresh</button></div>
           <div id="statusState" class="state-banner state-loading" role="status"><span class="spinner" aria-hidden="true"></span><span>Checking system status…</span></div>
           <div id="statusContent" hidden>
             <div class="status-grid" id="statusCards"></div>
@@ -77,18 +75,12 @@
                 <button class="button button-quiet issues-load-more" type="button" id="issuesLoadMore" hidden>Load more issues</button>
               </details>
             </section>
-            <section class="panel next-panel">
-              <div class="next-copy"><span class="next-icon" aria-hidden="true">✳</span><div><p class="eyebrow">QUICK ACCESS</p><h2>Find an item in your library</h2><p>Search the catalog and view item details without leaving the admin.</p></div></div>
-              <a class="button button-primary" href="#library">Browse library <span aria-hidden="true">→</span></a>
-            </section>
           </div>
         </section>
 
         <section class="view" data-view="library" aria-labelledby="libraryTitle" hidden>
-          <div class="page-heading library-heading">
-            <div><p class="eyebrow">CATALOG</p><h1 id="libraryTitle">Library</h1><p class="page-intro">Find an item and check its source and status.</p></div>
-            <div class="library-summary" id="librarySummary" aria-live="polite"><span class="summary-dot"></span><span>Waiting for catalog</span></div>
-          </div>
+          <h1 class="sr-only" id="libraryTitle">Library</h1>
+          <div class="library-summary sr-only" id="librarySummary" aria-live="polite"><span class="summary-dot"></span><span>Waiting for catalog</span></div>
           <nav class="section-tabs library-section-tabs" id="libraryTabList" role="tablist" aria-label="Library">
             <a href="#library" id="libraryVideosTab" role="tab" aria-selected="true" aria-controls="libraryVideosPane">Videos</a>
             <a href="#library?tab=duplicates" id="libraryDuplicatesTab" role="tab" aria-selected="false" aria-controls="libraryDuplicatesPane">Duplicates</a>
@@ -123,7 +115,7 @@
           </div>
           <div class="library-pane" id="libraryDuplicatesPane" role="tabpanel" aria-labelledby="libraryDuplicatesTab" hidden>
             <section class="panel organize-panel" aria-labelledby="libraryDuplicatesTitle">
-              <div class="panel-heading"><div><p class="eyebrow">REVERSIBLE DECISIONS</p><h2 id="libraryDuplicatesTitle">Duplicates</h2><p class="page-intro">Review matched pairs and choose which record stays visible. Source files are never deleted by these actions.</p></div></div>
+              <div class="panel-heading"><div><h2 class="sr-only" id="libraryDuplicatesTitle">Duplicates</h2><p class="page-intro">Review matched pairs and choose which record stays visible. Source files are never deleted by these actions.</p></div></div>
               <div class="duplicate-match-switch" role="group" aria-label="Duplicate match source">
                 <button class="button button-quiet" type="button" id="duplicateMatchCatalog" aria-pressed="true">Catalog matches</button>
                 <button class="button button-quiet" type="button" id="duplicateMatchVisual" aria-pressed="false">Visual matches</button>
@@ -148,7 +140,7 @@
           </div>
           <div class="library-pane" id="librarySuggestionsPane" role="tabpanel" aria-labelledby="librarySuggestionsTab" hidden>
             <section class="panel metadata-proposals" aria-labelledby="metadataProposalsTitle">
-              <div class="panel-heading"><div><p class="eyebrow">EXTERNAL METADATA</p><h2 id="metadataProposalsTitle" tabindex="-1">Metadata suggestions</h2><p class="page-intro">External matches that differ from existing catalog values. Compare Current with the suggested value, edit it if needed, preview the whole set, then queue the update or reject the suggestion.</p></div><button class="button button-quiet" type="button" id="metadataProposalsRefresh">Refresh suggestions</button></div>
+              <div class="panel-heading"><div><h2 class="sr-only" id="metadataProposalsTitle" tabindex="-1">Metadata suggestions</h2><p class="page-intro">External matches that differ from existing catalog values. Compare Current with the suggested value, edit it if needed, preview the whole set, then queue the update or reject the suggestion.</p></div><button class="button button-quiet" type="button" id="metadataProposalsRefresh">Refresh suggestions</button></div>
               <div id="metadataProposalsFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading metadata suggestions…</div>
               <div id="metadataProposalsRows" class="operation-history-list" aria-live="polite"></div>
               <nav id="metadataProposalsPagination" class="pagination" aria-label="Metadata suggestion pages" hidden></nav>
@@ -170,14 +162,14 @@
         </section>
 
         <section class="view" data-view="performers" aria-labelledby="performersTitle" hidden>
-          <div class="page-heading"><div><p class="eyebrow">CATALOG REVIEW</p><h1 id="performersTitle">Performers</h1><p class="page-intro">Browse the performer catalog, or review the names that still need a decision.</p></div></div>
+          <h1 class="sr-only" id="performersTitle">Performers</h1>
           <nav class="section-tabs performer-section-tabs" id="performersTabList" role="tablist" aria-label="Performers">
             <a href="#performers?tab=directory" id="performerDirectoryTab" role="tab" aria-selected="false" aria-controls="performerDirectoryPane">Directory</a>
             <a href="#performers?tab=review" id="performerReviewTab" role="tab" aria-selected="true" aria-controls="performerReviewPane">Review matches</a>
           </nav>
           <div class="library-pane" id="performerDirectoryPane" role="tabpanel" aria-labelledby="performerDirectoryTab" hidden>
             <section class="panel organize-panel" aria-labelledby="performerDirectoryTitle">
-              <div class="panel-heading"><div><p class="eyebrow">PERFORMER DIRECTORY</p><h2 id="performerDirectoryTitle">Directory</h2><p class="page-intro">Search the canonical performer catalog, review aliases, and open a filmography.</p></div></div>
+              <div class="panel-heading"><div><h2 class="sr-only" id="performerDirectoryTitle">Directory</h2><p class="page-intro">Search the canonical performer catalog, review aliases, and open a filmography.</p></div></div>
               <form id="peopleFilters" class="filter-bar"><div class="filter-search"><label for="peopleQuery">Search people</label><div class="input-with-icon"><span aria-hidden="true">⌕</span><input id="peopleQuery" type="search" maxlength="200" placeholder="Performer name or alias"></div></div><div class="jobs-filter-actions"><button class="button button-quiet" id="peopleRefresh" type="button">Refresh</button></div></form>
               <div id="peopleFeedback" class="catalog-feedback" role="status">Ready to load people.</div>
               <div id="peopleState" class="catalog-state" hidden role="status"></div>
@@ -209,26 +201,26 @@
         </section>
 
         <section class="view" data-view="operational" hidden aria-labelledby="operationalTitle">
-          <div class="page-heading"><div><p class="eyebrow" id="operationalEyebrow">OPERATIONS</p><h1 id="operationalTitle">Sources</h1><p class="page-intro" id="operationalIntro"></p></div></div>
+          <div class="page-heading sr-only"><div><p class="eyebrow" id="operationalEyebrow">OPERATIONS</p><h1 id="operationalTitle">Sources</h1><p class="page-intro" id="operationalIntro"></p></div></div>
           <nav class="section-tabs" id="systemSectionTabs" aria-label="System" hidden>
             <a href="#system" data-system-tab="status">Status</a>
             <a href="#system?tab=backups" data-system-tab="backups">Backups</a>
             <a href="#system?tab=maintenance" data-system-tab="maintenance">Maintenance</a>
           </nav>
           <section id="systemStatusView" class="panel operation-history-panel" hidden aria-labelledby="systemStatusTitle">
-            <div class="panel-heading"><div><p class="eyebrow">SYSTEM STATUS</p><h2 id="systemStatusTitle">Service status</h2><p class="page-intro">Current checks for the database, resolver, workers and Jellyfin.</p></div><button class="button button-quiet" type="button" id="systemStatusRefresh">Refresh status</button></div>
+            <div class="panel-heading"><div><h2 id="systemStatusTitle">Service status</h2><p class="page-intro">Current checks for the database, resolver, workers and Jellyfin.</p></div><button class="button button-quiet" type="button" id="systemStatusRefresh">Refresh status</button></div>
             <div id="writeAccessNotice" class="state-banner" hidden role="status"></div>
             <p id="systemStatusChecked" class="panel-footnote">Last checked: Unavailable</p>
             <div id="systemProbeRows" class="operation-history-list" aria-live="polite"></div>
             <section class="system-failures" aria-labelledby="systemFailuresTitle"><div class="panel-heading"><div><p class="eyebrow">RECENT TASK ERRORS</p><h3 id="systemFailuresTitle">Unresolved failures</h3><p class="page-intro">The ten latest failed tasks, when available.</p></div></div><div id="systemRecentFailures" class="operation-history-list" aria-live="polite"></div></section>
           </section>
           <section id="systemBackupView" class="panel operation-history-panel" hidden aria-labelledby="backupTitle">
-            <div class="panel-heading"><div><p class="eyebrow">DATABASE BACKUPS</p><h2 id="backupTitle">Backups</h2><p class="page-intro">Database snapshots do not include the media library, artwork, or application configuration.</p></div><div><button class="button button-quiet" type="button" id="backupRefresh">Refresh backups</button> <button class="button button-primary" type="button" id="backupCreate">Create database backup</button></div></div>
+            <div class="panel-heading"><div><h2 class="sr-only" id="backupTitle">Backups</h2><p class="page-intro">Database snapshots do not include the media library, artwork, or application configuration.</p></div><div><button class="button button-quiet" type="button" id="backupRefresh">Refresh backups</button> <button class="button button-primary" type="button" id="backupCreate">Create database backup</button></div></div>
             <div id="backupFeedback" class="catalog-feedback" role="status">Loading backup inventory…</div>
             <div id="backupRows" class="operation-history-list" aria-live="polite"></div>
           </section>
           <section id="systemMaintenanceView" class="panel operation-history-panel" hidden aria-labelledby="maintenanceTitle">
-            <div class="panel-heading"><div><p class="eyebrow">MAINTENANCE</p><h2 id="maintenanceTitle">Maintenance</h2><p class="page-intro">Jellyfin refresh is an accepted request; it does not confirm that an import completed.</p></div></div>
+            <div class="panel-heading"><div><h2 class="sr-only" id="maintenanceTitle">Maintenance</h2><p class="page-intro">Jellyfin refresh is an accepted request; it does not confirm that an import completed.</p></div></div>
             <div class="diagnostics-actions">
               <button class="button button-primary" type="button" id="triggerFullSync">Run full sync</button>
               <button class="button button-quiet" type="button" id="clearResolverCache">Clear resolver cache</button>
@@ -272,7 +264,7 @@
             </section>
           </div>
             <section id="systemSchedulesView" class="panel operation-history-panel" hidden aria-labelledby="schedulesTitle">
-              <div class="panel-heading"><div><p class="eyebrow">AUTOMATION</p><h2 id="schedulesTitle">Schedules</h2><p class="page-intro">Cron uses Europe/Warsaw time. Dependent work follows its parent schedule.</p></div><button class="button button-quiet" type="button" id="schedulesRefresh">Refresh</button></div>
+              <div class="panel-heading"><div><h2 class="sr-only" id="schedulesTitle">Schedules</h2><p class="page-intro">Cron uses Europe/Warsaw time. Dependent work follows its parent schedule.</p></div><button class="button button-quiet" type="button" id="schedulesRefresh">Refresh</button></div>
               <details class="schedule-create-panel" id="scheduleCreatePanel">
                 <summary class="button button-primary">Add schedule</summary>
                 <form id="scheduleCreateForm" class="schedule-create-form">
