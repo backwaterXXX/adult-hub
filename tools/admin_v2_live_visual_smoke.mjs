@@ -42,7 +42,7 @@ const routes = [
   { hash: 'jobs', view: 'operational', active: 'jobs' },
   { hash: 'schedules', view: 'operational', active: 'schedules' },
 ];
-const overviewTiles = ['Videos in library', 'Last sync', 'Active tasks', 'Problems'];
+const overviewTiles = ['Videos in library', 'Active tasks', 'Problems', 'Artwork coverage', 'OSHASH coverage', 'pHash coverage'];
 const widths = [390, 768, 1440];
 const themes = ['light', 'dark'];
 const statuses = { total: 0, ok: 0, redirects: 0, clientError: 0, serverError: 0, images: 0 };
@@ -216,18 +216,19 @@ let scheduleEditor = {};
 try { scheduleEditor = JSON.parse(editor.result.value || '{}'); } catch {}
 const editorScreenshot = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, sessionId);
 fs.writeFileSync(`${outputDir}/schedules-editor-1440-light.png`, Buffer.from(editorScreenshot.data, 'base64'));
-// Opening and closing a film must retain filters, page, selection and More filters.
+// Opening and closing a film must retain visible filters, page and selection.
 await cmd('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false }, sessionId);
 await cmd('Page.navigate', { url: 'http://127.0.0.1:' + port + '/admin/v2/?sort=title&offset=50#library' }, sessionId);
 await sleep(1000);
 const libraryBefore = await cmd('Runtime.evaluate', {
   expression: `(() => {
-    document.querySelector('#libraryMoreFilters').open = true;
     const checkbox = document.querySelector('#videoGrid input[type=checkbox]');
     const opener = document.querySelector('#videoGrid .video-open');
     if (!checkbox || !opener) return null;
     checkbox.checked = true; checkbox.dispatchEvent(new Event('change'));
-    const before = { query: location.search, page: document.querySelector('#pageInfo').textContent, selection: document.querySelector('#bulkSelectionCount').textContent };
+    const filters = [...document.querySelectorAll('#libraryFilters input, #libraryFilters select')].map(field => [field.id, field.value]);
+    const before = { query: location.search, page: document.querySelector('#pageInfo').textContent,
+      selection: document.querySelector('#bulkSelectionCount').textContent, filters };
     opener.click(); return before;
   })()`, returnByValue: true,
 }, sessionId);
@@ -239,13 +240,13 @@ const filmOpened = await cmd('Runtime.evaluate', {
 await cmd('Runtime.evaluate', { expression: "document.querySelector('[data-action=close-detail]').click()" }, sessionId);
 await sleep(400);
 const libraryAfter = await cmd('Runtime.evaluate', {
-  expression: "({query:location.search,page:document.querySelector('#pageInfo').textContent,selection:document.querySelector('#bulkSelectionCount').textContent,more:document.querySelector('#libraryMoreFilters').open,closed:!document.querySelector('#detailOverlay').open,hash:location.hash})",
+  expression: "({query:location.search,page:document.querySelector('#pageInfo').textContent,selection:document.querySelector('#bulkSelectionCount').textContent,filters:[...document.querySelectorAll('#libraryFilters input, #libraryFilters select')].map(field=>[field.id,field.value]),advancedVisible:!!document.querySelector('#libraryFilters .library-advanced-filters')&&!document.querySelector('#libraryFilters .library-advanced-filters').hidden,closed:!document.querySelector('#detailOverlay').open,hash:location.hash})",
   returnByValue: true,
 }, sessionId);
 const before = libraryBefore.result.value;
 const after = libraryAfter.result.value;
-const libraryHistory = { ok: Boolean(before) && filmOpened.result.value === true && after.closed && after.more && after.hash === '#library' && before.query === after.query && before.page === after.page && before.selection === after.selection };
-console.log((libraryHistory.ok ? 'PASS ' : 'FAIL ') + 'Library filters, page, selection and More filters survive film details');
+const libraryHistory = { ok: Boolean(before) && filmOpened.result.value === true && after.closed && after.advancedVisible && after.hash === '#library' && before.query === after.query && before.page === after.page && before.selection === after.selection && JSON.stringify(before.filters) === JSON.stringify(after.filters) };
+console.log((libraryHistory.ok ? 'PASS ' : 'FAIL ') + 'Library filters, page and selection survive film details');
 // Exercise native modal focus behavior in a real Chromium runtime, not a
 // showModal()-only unit stub: Tab/Shift+Tab stay inside the performer detail
 // dialog and Escape returns focus to the directory control that opened it.

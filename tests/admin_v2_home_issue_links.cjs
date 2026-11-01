@@ -82,7 +82,7 @@ const startView = html.slice(html.indexOf('data-view="start"'), html.indexOf('da
 assert.match(startView, /id="statusCards"/, 'Overview renders its summary tiles into the metric grid');
 assert.match(startView, /id="problemGroups"/, 'Overview renders grouped problem summaries');
 assert.match(startView, /id="attentionList"/, 'Overview keeps the full filtered problem list reachable');
-assert.doesNotMatch(startView, /catalogHealthCards|pHash|OSHASH|Database size|db_size/,
+assert.doesNotMatch(startView, /catalogHealthCards|Database size|db_size/,
   'Overview drops the detailed catalog health statistics');
 
 // Stage 3 promotes the catalog tools that used to hide behind "More tools" to real Library tabs.
@@ -96,8 +96,11 @@ assert.match(html, /<nav class="section-tabs library-section-tabs" id="libraryTa
 assert.deepEqual([...html.matchAll(/<a href="#library[^"]*" id="library(\w+)Tab" role="tab" aria-selected="(true|false)" aria-controls="library\1Pane"/g)]
   .map(([, tab]) => tab), ['Videos', 'Duplicates', 'Suggestions', 'Quarantine'],
   'every Library tab keeps its own bookmarkable address and pane pairing');
-assert.match(html, /<details class="more-filters" id="libraryMoreFilters">\s*<summary>More filters/,
-  'the remaining Library filters collapse behind More filters');
+const videosPane = html.slice(html.indexOf('id="libraryVideosPane"'), html.indexOf('id="libraryDuplicatesPane"'));
+assert.match(videosPane, /<div class="library-advanced-filters">[\s\S]*id="filterStudio"[\s\S]*id="filterPerformer"[\s\S]*id="filterTag"[\s\S]*id="filterMissing"[\s\S]*id="filterSort"[\s\S]*id="clearFilters"/,
+  'all Library filters, including the advanced fields, are present directly on the Videos pane');
+assert.doesNotMatch(videosPane, /<details[^>]*class="more-filters"/,
+  'Library filters are not hidden behind a disclosure');
 assert.match(html, /id="duplicateMatchCatalog"[^>]*aria-pressed="true"[^>]*>\s*Catalog matches\s*<\/button>[\s\S]{0,160}id="duplicateMatchVisual"[^>]*aria-pressed="false"[^>]*>\s*Visual matches/,
   'the Duplicates tab switches between catalog and visual matches in place');
 assert.doesNotMatch(html, /<section class="view"[^>]*data-view="organize"/, 'the Organize host view must not return');
@@ -272,8 +275,6 @@ const syncFixture = {
   available: true, running: false, freshness: 'fresh', last_success: true, history_available: true,
   last_run: { started_at: '2026-10-14T09:40:00+00:00', ended_at: '2026-10-14T10:00:00+00:00', success: true },
 };
-const expectedSyncTime = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short' })
-  .format(new Date(syncFixture.last_run.ended_at));
 async function fetch(url) {
   calls.push(String(url));
   if (failCapabilities && String(url).endsWith('/capabilities')) return { ok: false, status: 503, json: async () => ({ detail: 'unavailable' }) };
@@ -311,7 +312,7 @@ async function fetch(url) {
   };
   else if (parsedUrl.pathname === '/admin/api/v2/status') payload = {
     ok: true,
-    db: { db_ok: true, database_backend: 'PostgreSQL', videos_total: 1234 },
+    db: { db_ok: true, database_backend: 'PostgreSQL', videos_total: 1234, artwork_total: 987, oshash_total: 1199, phash_total: 321 },
     sync: syncFixture,
     runtime: { status: 'ok', version: '1.2.3', cache_entries: 5, providers: ['telegram'] },
     attention: { pending_tasks: 4 },
@@ -396,20 +397,19 @@ const context = {
   };
   await flush();
 
-  // Overview: exactly four tiles, each backed by an explicit source value.
+  // Overview: six tiles, with compact coverage counts and percentages.
   const tileLabels = () => elements.get('statusCards').children.map(card => card.children[0].children[0].textContent);
   const tileValue = index => elements.get('statusCards').children[index]?.children[1].textContent;
-  const tileCaption = index => elements.get('statusCards').children[index]?.children[2].textContent;
-  assert.deepEqual(tileLabels(), ['Videos in library', 'Last sync', 'Active tasks', 'Problems'],
-    'Overview must show exactly the four Stage 2 summary tiles');
-  assert.equal(tileValue(0), '1234', 'the catalog tile reports the library video count');
-  assert.equal(tileValue(1), expectedSyncTime,
-    'the sync tile reports the recorded run time, not the time the status was read');
-  assert.match(tileCaption(1), /The recorded run completed\. Started .*\./,
-    'the sync tile pairs the run time with its outcome and start');
-  assert.equal(tileValue(2), '4', 'the task tile reports queued or processing work');
-  assert.equal(tileValue(3), '9', 'the problem tile reports unresolved problems');
-  assert.match(tileCaption(3), /Unresolved problems/, 'the problem tile names what it counts');
+  const tileCaption = index => elements.get('statusCards').children[index]?.children[2]?.textContent;
+  assert.deepEqual(tileLabels(), ['Videos in library', 'Active tasks', 'Problems', 'Artwork coverage', 'OSHASH coverage', 'pHash coverage'],
+    'Overview shows the current six summary tiles and no Last sync tile');
+  assert.equal(tileValue(0), '1,234', 'the catalog tile reports the formatted library video count');
+  assert.equal(tileValue(1), '4', 'the task tile reports queued or processing work');
+  assert.equal(tileValue(2), '9', 'the problem tile reports unresolved problems');
+  assert.match(tileCaption(2), /Unresolved problems/, 'the problem tile names what it counts');
+  assert.equal(tileValue(3), '987 (80%)', 'artwork coverage shows a formatted count and percentage');
+  assert.equal(tileValue(4), '1,199 (97%)', 'OSHASH coverage shows a formatted count and percentage');
+  assert.equal(tileValue(5), '321 (26%)', 'pHash coverage shows a formatted count and percentage');
 
   // Grouped problems: five groups maximum, with occurrences, last detection, and a working link.
   const groupRows = elements.get('problemGroups').children;
@@ -458,7 +458,7 @@ const context = {
     'appended pages update the announced count');
   assert.equal(elements.get('issuesLoadMore').hidden, true, 'the last issue page hides Load more');
   const groupSnapshot = textOf(elements.get('problemGroups'));
-  assert.equal(tileValue(3), '9', 'pagination must not change the unfiltered problem total');
+  assert.equal(tileValue(2), '9', 'pagination must not change the unfiltered problem total');
   assert.equal(textOf(elements.get('problemGroups')), groupSnapshot,
     'pagination must not change the grouped problem summary');
 
@@ -473,7 +473,7 @@ const context = {
   assert(calls.includes('/admin/api/v2/issues?limit=50&offset=0&severity=high'), 'Home sends severity to the issues API');
   assert.equal(textOf(elements.get('problemGroups')), groupSnapshot,
     'the problem summary is independent of the list filters');
-  assert.equal(tileValue(3), '9', 'filtering the issue list must not change the Problems tile');
+  assert.equal(tileValue(2), '9', 'filtering the issue list must not change the Problems tile');
   elements.get('issueKind').value = 'job_stalled';
   elements.get('issueKind').listeners.change();
   await flush();
@@ -482,7 +482,7 @@ const context = {
   assert.equal(elements.get('attentionList').children.length, 1, 'Home applies combined severity and type filters');
   assert.equal(elements.get('issueCount').textContent, 'Showing 1 issue.', 'Combined filters update the announced count');
   assert(calls.includes('/admin/api/v2/issues?limit=50&offset=0&severity=high&kind=job_stalled'), 'Home sends both issue filters to the API');
-  assert.equal(tileValue(3), '9', 'combined filters must not change the Problems tile');
+  assert.equal(tileValue(2), '9', 'combined filters must not change the Problems tile');
   history.back();
   await flush();
   assert.equal(elements.get('issueKind').value, '', 'Back restores the previous Home issue filters');
@@ -513,7 +513,7 @@ const context = {
     'A failed refresh preserves the previously loaded issue rows');
   assert.match(textOf(elements.get('problemGroups')), /Problem summaries unavailable\./,
     'a failed issue read removes the unverified problem groups');
-  assert.equal(tileValue(3), 'No data', 'the Problems tile must not present an unverified count as current');
+  assert.equal(tileValue(2), 'No data', 'the Problems tile must not present an unverified count as current');
   failIssueFeed = false;
 
   malformedIssueFeed = true;
@@ -524,7 +524,7 @@ const context = {
     'A malformed issue response preserves the last valid rows');
   malformedIssueFeed = false;
   await refresh();
-  assert.equal(tileValue(3), '9', 'a recovered issue feed restores the unfiltered problem count');
+  assert.equal(tileValue(2), '9', 'a recovered issue feed restores the unfiltered problem count');
 
   // Empty and unreadable sources: the tiles must say which of the two it is.
   const problemSnapshot = JSON.parse(JSON.stringify(problemSummary));
@@ -532,45 +532,12 @@ const context = {
   problemSummary.total_open = 0; problemSummary.groups_total = 0; problemSummary.groups = [];
   issues.length = 0;
   await refresh();
-  assert.equal(tileValue(3), '0', 'a catalog without problems reports zero, not missing data');
+  assert.equal(tileValue(2), '0', 'a catalog without problems reports zero, not missing data');
   assert.match(textOf(elements.get('problemGroups')), /No problems need attention\./,
     'an empty problem set is reported as empty, not as an error');
-  assert.equal(tileCaption(3), 'Unresolved problems', 'the complete zero keeps its plain caption');
+  assert.equal(tileCaption(2), 'Unresolved problems', 'the complete zero keeps its plain caption');
   Object.assign(problemSummary, problemSnapshot);
   issues.push(...issueSnapshot);
-
-  const syncSnapshot = { ...syncFixture };
-  syncFixture.running = true;
-  await refresh();
-  assert.equal(tileValue(1), 'In progress', 'a running synchronization is named as such');
-  assert.match(tileCaption(1), /executing now/, 'the sync tile does not present a past run while one is running');
-  syncFixture.running = false; syncFixture.last_run = null;
-  await refresh();
-  assert.equal(tileValue(1), 'No history', 'a panel without any recorded run says so plainly');
-  assert.match(tileCaption(1), /No completed synchronization run is recorded yet\./);
-  syncFixture.history_available = false;
-  await refresh();
-  assert.equal(tileValue(1), 'No data', 'an unreadable history must not read as "no history"');
-  assert.match(tileCaption(1), /history could not be read/);
-  syncFixture.history_available = true; syncFixture.available = false;
-  await refresh();
-  assert.equal(tileValue(1), 'No data', 'an unavailable sync status has no invented time');
-  assert.match(tileCaption(1), /status could not be read/);
-  Object.assign(syncFixture, syncSnapshot);
-  syncFixture.last_run = {
-    started_at: '2026-10-14T09:40:00+00:00', ended_at: '2026-10-14T10:00:00+00:00',
-    success: false, interrupted: true,
-  };
-  await refresh();
-  assert.match(tileCaption(1), /The recorded run was interrupted\. Started /,
-    'an interrupted run is reported with its outcome and start time');
-  syncFixture.last_run = { started_at: '2026-10-14T09:40:00+00:00', ended_at: '2026-10-14T10:00:00+00:00' };
-  await refresh();
-  assert.match(tileCaption(1), /The recorded outcome is unknown\. Started /,
-    'a run without a recorded outcome is never presented as a success');
-  Object.assign(syncFixture, syncSnapshot);
-  await refresh();
-  assert.equal(tileValue(1), expectedSyncTime, 'a restored status read returns the recorded run time');
 
   // The Overview must not pay for statistics that only System shows.
   assert.equal(calls.some(url => url.includes('/quality/summary')), false,
