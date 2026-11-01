@@ -43,6 +43,7 @@ class Element {
   contains(node) { return this.children.some(child => child === node || child.contains(node)); }
   getClientRects() { return this.hidden ? [] : [{}]; }
   get offsetParent() { return this.hidden ? null : {}; }
+  scrollIntoView() {}
   focus() { if (activeDocument) activeDocument.activeElement = this; }
 }
 const textOf = node => `${node?.textContent || ''} ${(node?.children || []).map(textOf).join(' ')}`.trim();
@@ -84,8 +85,34 @@ assert.match(startView, /id="attentionList"/, 'Overview keeps the full filtered 
 assert.doesNotMatch(startView, /catalogHealthCards|pHash|OSHASH|Database size|db_size/,
   'Overview drops the detailed catalog health statistics');
 
-// Temporary "More tools" hosts keep the not-yet-moved screens reachable.
-assert.match(html, /id="libraryMoreTools"/, 'Library exposes the temporary catalog tool links');
+// Stage 3 promotes the catalog tools that used to hide behind "More tools" to real Library tabs.
+assert.doesNotMatch(html, /id="libraryMoreTools"/, 'Library must not keep the temporary tool list');
+for (const id of ['libraryTabList', 'libraryVideosTab', 'libraryDuplicatesTab', 'librarySuggestionsTab', 'libraryQuarantineTab',
+  'libraryVideosPane', 'libraryDuplicatesPane', 'librarySuggestionsPane', 'libraryQuarantinePane']) {
+  assert.ok(html.includes(`id="${id}"`), `Library must expose ${id}`);
+}
+assert.match(html, /<nav class="section-tabs library-section-tabs" id="libraryTabList" role="tablist"/,
+  'the Library tab strip is an ARIA tablist');
+assert.deepEqual([...html.matchAll(/<a href="#library[^"]*" id="library(\w+)Tab" role="tab" aria-selected="(true|false)" aria-controls="library\1Pane"/g)]
+  .map(([, tab]) => tab), ['Videos', 'Duplicates', 'Suggestions', 'Quarantine'],
+  'every Library tab keeps its own bookmarkable address and pane pairing');
+assert.match(html, /<details class="more-filters" id="libraryMoreFilters">\s*<summary>More filters/,
+  'the remaining Library filters collapse behind More filters');
+assert.match(html, /id="duplicateMatchCatalog"[^>]*aria-pressed="true"[^>]*>\s*Catalog matches\s*<\/button>[\s\S]{0,160}id="duplicateMatchVisual"[^>]*aria-pressed="false"[^>]*>\s*Visual matches/,
+  'the Duplicates tab switches between catalog and visual matches in place');
+assert.doesNotMatch(html, /<section class="view"[^>]*data-view="organize"/, 'the Organize host view must not return');
+assert.match(html, /<nav class="section-tabs performer-section-tabs" id="performersTabList" role="tablist"/,
+  'the Performers tab strip is an ARIA tablist');
+// The router marks each tab selected by deriving "<name>Tab" from "<name>Pane", so the
+// template must keep that convention or aria-selected silently stops updating.
+for (const [, pane] of html.matchAll(/id="([A-Za-z]+)Pane" role="tabpanel"/g)) {
+  assert.ok(html.includes(`id="${pane}Tab"`), `the ${pane}Pane panel needs a matching ${pane}Tab anchor`);
+  assert.ok(html.includes(`aria-labelledby="${pane}Tab"`), `the ${pane}Pane panel must be labelled by ${pane}Tab`);
+}
+assert.match(html, /href="#performers\?tab=review" id="performerReviewTab"[^\n]*aria-controls="performerReviewPane"/,
+  'the Review matches tab keeps its own address and pane pairing');
+assert.match(html, /id="performerReviewPane"[\s\S]{0,4000}id="performerProposalsPane"[\s\S]{0,4000}id="performerNameMatchingPane"/,
+  'Review matches holds both the recognition proposals and the name variants');
 assert.match(html, /<details id="systemMoreTools" class="panel more-tools-panel" hidden>/,
   'System exposes the remaining administrative tools as collapsed More tools');
 assert.match(html, /id="writeAccessNotice"/, 'System reports why writes are limited');
@@ -117,7 +144,7 @@ const metadataDialog = elements.get('metadataDialog');
 const detailOverlay = elements.get('detailOverlay');
 const openDialogs = [operationDialog, metadataDialog, detailOverlay];
 let detailDrawer = null;
-const expectedRoutes = ['start', 'library', 'quality', 'sources', 'organize', 'performers', 'jobs', 'schedules', 'system'];
+const expectedRoutes = ['start', 'library', 'quality', 'sources', 'performers', 'jobs', 'schedules', 'system'];
 assert.deepEqual(navLinks.map(link => link.dataset.route),
   ['start', 'library', 'performers', 'sources', 'jobs', 'schedules', 'system'],
   'the primary navigation must expose exactly the seven Stage 2 destinations in order');
@@ -637,63 +664,108 @@ const context = {
   onHashChange();
   assert.equal(elements.get('systemMoreTools').hidden, true, 'More tools is scoped to the System maintenance tab');
 
+  // Stage 3 keeps every old catalog address working from the new Library/Performers hosts.
   location.hash = '#quality?tab=duplicates';
   onHashChange();
-  assert.deepEqual(views.filter(view => !view.hidden).map(view => view.dataset.view), ['organize'],
-    'Catalog Health duplicate links select the existing organizer view');
-  assert.equal(elements.get('organizeDuplicatesPane').hidden, false);
-  assert.equal(elements.get('organizePeoplePane').hidden, true);
-  assert.equal(elements.get('organizeTabList').hidden, true,
-    'canonical Catalog Health hides the legacy Organize tab bar to avoid duplicate tabs');
+  assert.equal(location.hash, '#library?tab=duplicates',
+    'the legacy Catalog Health duplicate address redirects to Library → Duplicates');
+  assert.deepEqual(views.filter(view => !view.hidden).map(view => view.dataset.view), ['library'],
+    'Library hosts the duplicate screens in its own view');
+  assert.equal(elements.get('libraryDuplicatesPane').hidden, false);
+  assert.equal(elements.get('libraryVideosPane').hidden, true);
+  assert.equal(elements.get('duplicateCatalogGroup').hidden, false);
+  assert.equal(elements.get('duplicateVisualGroup').hidden, true,
+    'visual comparison stays collapsed until the operator switches to it');
+  assert.equal(elements.get('libraryDuplicatesTab').getAttribute('aria-selected'), 'true',
+    'the redirected Library tab is marked selected');
   assert.deepEqual(navLinks.filter(link => link.getAttribute('aria-current') === 'page').map(link => link.dataset.route), ['library'],
-    'Catalog Health subtabs keep the owning Library menu entry active');
-  assert.equal(sectionTabLinks.filter(link => link.className.includes('catalog-health-tabs')
-    && link.dataset.sectionTab === 'duplicates' && link.getAttribute('aria-current') === 'page').length, 2,
-  'the current Catalog Health tab is marked in both legacy and canonical containers');
+    'the duplicate redirect keeps the Library menu entry active');
+  assert.equal(lastAdminNavigation.detail.libraryTab, 'duplicates',
+    'route events carry the Library tab to the controllers that own it');
+
+  location.hash = '#quality?tab=visual';
+  onHashChange();
+  assert.equal(location.hash, '#library?tab=duplicates&match=visual',
+    'the legacy visual address redirects to the Duplicates tab with the visual switch on');
+  assert.equal(elements.get('duplicateVisualGroup').hidden, false, 'the visual group opens for the visual address');
+  assert.equal(elements.get('duplicateCatalogGroup').hidden, true);
+  assert.equal(elements.get('duplicateMatchVisual').getAttribute('aria-pressed'), 'true',
+    'the visual switch reports its pressed state');
+  assert.equal(lastAdminNavigation.detail.duplicateMatch, 'visual',
+    'route events carry the duplicate match mode to the duplicate controllers');
+
   location.hash = '#quality?tab=quarantine';
   onHashChange();
-  assert.equal(elements.get('organizeQuarantinePane').hidden, false,
-    'Catalog Health quarantine deep links select the existing quarantine panel');
+  assert.equal(location.hash, '#library?tab=quarantine',
+    'the legacy Catalog Health quarantine address redirects to Library → Quarantine');
+  assert.equal(elements.get('libraryQuarantinePane').hidden, false);
+  assert.equal(elements.get('libraryDuplicatesPane').hidden, true);
+
   location.hash = '#quality?tab=enrichment';
   onHashChange();
-  assert.equal(elements.get('qualityView').hidden, false);
+  assert.equal(location.hash, '#library?tab=suggestions',
+    'the legacy Enrichment address redirects to the new Library Metadata suggestions tab');
+  assert.equal(elements.get('librarySuggestionsPane').hidden, false);
+  location.hash = '#quality?tab=enrichment-progress';
+  onHashChange();
+  assert.equal(location.hash, '#quality?tab=enrichment-progress',
+    'enrichment progress keeps its own Catalog Health address');
+  assert.equal(elements.get('qualityEnrichmentPane').hidden, false);
   assert.equal(elements.get('qualityIssuesPane').hidden, true);
-  assert.equal(elements.get('qualityEnrichmentPane').hidden, false,
-    'the Enrichment tab opens its single proposal/progress implementation');
+  assert.equal(lastAdminNavigation.detail.tab, 'enrichment-progress',
+    'route events carry the selected Catalog Health tab to its controllers');
   assert.equal(sectionTabLinks.filter(link => link.className.includes('catalog-health-tabs')
-    && link.dataset.sectionTab === 'enrichment' && link.getAttribute('aria-current') === 'page').length, 2,
-  'Catalog Health Enrichment is marked active in both canonical and legacy-compatible tab bars');
-  assert.equal(lastAdminNavigation.detail.tab, 'enrichment',
-    'route events carry the selected Catalog Health tab to its existing controllers');
+    && link.dataset.sectionTab === 'enrichment-progress' && link.getAttribute('aria-current') === 'page').length, 1,
+    'the active Catalog Health tab is marked in its tab bar');
+
   location.hash = '#performers?tab=directory';
   onHashChange();
-  assert.deepEqual(views.filter(view => !view.hidden).map(view => view.dataset.view), ['organize'],
-    'Performer Directory can reuse the current directory implementation');
-  assert.equal(elements.get('organizePeoplePane').hidden, false);
-  assert.equal(elements.get('organizeTitle').textContent, 'Performer Directory');
-  assert.equal(elements.get('organizeTabList').hidden, true,
-    'canonical Performer Directory hides the legacy People/Duplicates tab bar');
+  assert.deepEqual(views.filter(view => !view.hidden).map(view => view.dataset.view), ['performers'],
+    'the Performer Directory has its own view');
+  assert.equal(elements.get('performerDirectoryPane').hidden, false);
+  assert.equal(elements.get('performerReviewPane').hidden, true);
+  assert.equal(elements.get('performerDirectoryTab').getAttribute('aria-selected'), 'true');
   assert.deepEqual(navLinks.filter(link => link.getAttribute('aria-current') === 'page').map(link => link.dataset.route), ['performers'],
     'the Performer Directory deep link activates Performers in the sidebar');
-  assert.equal(sectionTabLinks.filter(link => link.className.includes('performer-section-tabs')
-    && link.dataset.sectionTab === 'directory' && link.getAttribute('aria-current') === 'page').length, 2,
-  'the current Performer tab is marked in both canonical and reused directory containers');
-  location.hash = '#organize?tab=people';
+  location.hash = '#performers?tab=proposals';
   onHashChange();
-  assert.equal(elements.get('organizePeoplePane').hidden, false,
-    'the legacy organizer people tab remains an alias for Performer Directory');
-  assert.deepEqual(navLinks.filter(link => link.getAttribute('aria-current') === 'page').map(link => link.dataset.route), ['performers']);
+  assert.equal(location.hash, '#performers?tab=review&area=proposals',
+    'the legacy proposals address redirects to Review matches with that area selected');
+  assert.equal(elements.get('performerReviewPane').hidden, false);
+  assert.equal(elements.get('performerDirectoryPane').hidden, true);
+  assert.equal(document.activeElement, elements.get('performerProposalsTitle'),
+    'the proposals address focuses the recognition proposals area');
+  assert.equal(lastAdminNavigation.detail.performerArea, 'proposals',
+    'route events carry the selected review area to the performer controllers');
   location.hash = '#performers?tab=matching';
   onHashChange();
-  assert.equal(elements.get('performerProposalsPane').hidden, true);
-  assert.equal(elements.get('performerNameMatchingPane').hidden, false,
-    'Name Matching has a bookmarkable section tab');
+  assert.equal(location.hash, '#performers?tab=review&area=name-variants',
+    'the legacy name-matching address redirects to Review matches with the variants area selected');
+  assert.equal(document.activeElement, elements.get('fuzzyTitle'),
+    'the name-variants address focuses the variants area, which stays beside the proposals');
+
+  location.hash = '#organize?tab=people';
+  onHashChange();
+  assert.equal(location.hash, '#performers?tab=directory',
+    'the legacy organizer people tab redirects to Performer Directory');
+  assert.equal(elements.get('performerDirectoryPane').hidden, false);
+  assert.deepEqual(navLinks.filter(link => link.getAttribute('aria-current') === 'page').map(link => link.dataset.route), ['performers']);
   location.hash = '#organize';
   onHashChange();
-  assert.equal(elements.get('organizeTabList').hidden, true,
-    'legacy organizer URLs still resolve without restoring duplicate canonical tabs');
-  assert.equal(elements.get('organizeDuplicatesPane').hidden, false,
-    'the legacy #organize deep link still opens duplicate suggestions');
+  assert.equal(location.hash, '#library?tab=duplicates',
+    'the legacy #organize address still opens duplicate suggestions');
+  assert.equal(elements.get('libraryDuplicatesPane').hidden, false);
+  location.hash = '#organize?tab=people&person=Taylor';
+  onHashChange();
+  const redirectedParams = new URLSearchParams(location.hash.slice(location.hash.indexOf('?') + 1));
+  assert.equal(location.hash.split('?', 1)[0], '#performers',
+    'the legacy organizer address redirects to the Performers section');
+  assert.equal(redirectedParams.get('tab'), 'directory');
+  assert.equal(redirectedParams.get('person'), 'Taylor',
+    'a redirect keeps the filters and identifiers the target screen supports');
+  assert.equal(lastAdminNavigation.detail.performersTab, 'directory');
+  assert.equal(elements.get('peopleQuery').value, 'Taylor',
+    'the carried person parameter fills the Directory search');
   location.hash = '#unknown-route';
   onHashChange();
   assert.deepEqual(views.filter(view => !view.hidden).map(view => view.dataset.view), ['start'],

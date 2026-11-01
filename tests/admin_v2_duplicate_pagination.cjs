@@ -3,8 +3,13 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const source = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
-assert(source.includes("if (tab === 'duplicates') loadDuplicateCandidates({ refresh: true });"),
-  'returning to Duplicates must refresh the cached candidate snapshot');
+assert(source.includes('function showLibraryTab(tab, match) {'),
+  'the Library tab controller must remain the single owner of catalog screens');
+assert(source.includes('else loadDuplicateCandidates({ cacheOnly: true });'),
+  'opening Duplicates must not start a catalog scan');
+const visibilityStart = source.indexOf('  function duplicateGroupIsVisible(');
+const visibilityEnd = source.indexOf('  function selectDuplicateMatch(', visibilityStart);
+assert(visibilityStart >= 0 && visibilityEnd > visibilityStart, 'duplicate visibility gate must stay readable');
 const start = source.indexOf('  async function loadDuplicateCandidates(');
 const end = source.indexOf('  function renderDuplicateCandidates(', start);
 assert(start >= 0 && end > start, 'duplicate scan loader must remain available for pagination tests');
@@ -13,9 +18,10 @@ const actionEnd = source.indexOf('  function toggleTheme(', actionStart);
 assert(actionStart >= 0 && actionEnd > actionStart, 'duplicate actions must remain available for pagination tests');
 
 const state = {
-  route: 'organize', duplicateOffset: 0, duplicateTotal: 0, duplicateItems: [],
+  route: 'library', libraryTab: 'duplicates', duplicateMatch: 'catalog',
+  duplicateOffset: 0, duplicateTotal: 0, duplicateItems: [],
   duplicateBusy: false, duplicateRequestSeq: 0, duplicateScans: [], duplicateRequests: new Map(),
-  operationRequestSeq: 0, duplicatePending: null, operationRequest: null, operationPlan: null,
+  visualRequestSeq: 0, operationRequestSeq: 0, duplicatePending: null, operationRequest: null, operationPlan: null,
   operationId: null, operationPreviewContext: null,
 };
 const elements = {
@@ -24,7 +30,9 @@ const elements = {
   '#duplicateNotice': { hidden: true, textContent: '' },
   '#duplicateCategory': { value: 'same_file' },
   '#duplicateState': { hidden: true, textContent: '' },
-  '#organizeDuplicatesPane': { hidden: false },
+  '#libraryDuplicatesPane': { hidden: false },
+  '#duplicateCatalogGroup': { hidden: false },
+  '#duplicateVisualGroup': { hidden: true },
   '#operationDialog': { open: false },
 };
 const requests = [];
@@ -95,7 +103,7 @@ const context = vm.createContext({
     },
   },
 });
-vm.runInContext(`${source.slice(start, end)}\n${source.slice(actionStart, actionEnd)}\nglobalThis.loadDuplicateCandidates = loadDuplicateCandidates;\nglobalThis.loadVisualDuplicateResults = loadVisualDuplicateResults;\nglobalThis.previewDuplicate = previewDuplicate;\nglobalThis.dismissDuplicateSuggestion = dismissDuplicateSuggestion;`, context);
+vm.runInContext(`${source.slice(visibilityStart, visibilityEnd)}\n${source.slice(start, end)}\n${source.slice(actionStart, actionEnd)}\nglobalThis.loadDuplicateCandidates = loadDuplicateCandidates;\nglobalThis.loadVisualDuplicateResults = loadVisualDuplicateResults;\nglobalThis.previewDuplicate = previewDuplicate;\nglobalThis.dismissDuplicateSuggestion = dismissDuplicateSuggestion;`, context);
 
 let visualRefreshes = 0;
 const origLoadVisual = context.loadVisualDuplicateResults;
@@ -105,6 +113,8 @@ context.loadVisualDuplicateResults = (...args) => {
 };
 
 (async () => {
+  await context.loadDuplicateCandidates({ cacheOnly: true });
+  assert.equal(requests.length, 0, 'opening an unscanned tab performs no expensive scan');
   await context.loadDuplicateCandidates();
   assert.deepEqual(requests, [{ offset: 0, limit: 200, category: 'same_file' }]);
   assert.deepEqual(rendered.at(-1).ids, Array.from({ length: 25 }, (_item, index) => index));
@@ -206,6 +216,21 @@ context.loadVisualDuplicateResults = (...args) => {
   assert.equal(cardFeedback.appended[0]?.href, '/admin/v2/?job_id=job-1#jobs');
   assert.equal(state.duplicatePending, null, 'duplicate action lock is released after the request completes');
 
+  state.duplicateMatch = 'visual';
+  elements['#duplicateCatalogGroup'].hidden = true;
+  elements['#duplicateVisualGroup'].hidden = false;
+  // Refreshing results is covered separately; this assertion verifies the write flow.
+  const originalVisualLoader = context.loadVisualDuplicateResults;
+  context.loadVisualDuplicateResults = () => {};
+  const beforeVisualChoice = operationPosts.length;
+  await context.previewDuplicate({ left: { id: 'v1' }, right: { id: 'v2' } }, 'right', trigger);
+  assert.equal(operationPosts.length, beforeVisualChoice + 2, 'visual decisions preview and execute');
+  assert.equal(operationPosts.at(-2).body.keeper_id, 'v2');
+  context.loadVisualDuplicateResults = originalVisualLoader;
+  state.duplicateMatch = 'catalog';
+  elements['#duplicateCatalogGroup'].hidden = false;
+  elements['#duplicateVisualGroup'].hidden = true;
+
   context.window.AdminV2.postJson = async () => {
     const error = new Error('Duplicate identity has not been confirmed, or duration/part safeguards failed.');
     error.status = 409;
@@ -222,12 +247,59 @@ context.loadVisualDuplicateResults = (...args) => {
   const initialVisualRefreshes = visualRefreshes;
   await context.dismissDuplicateSuggestion({ left: { id: 'v1' }, right: { id: 'v2' } }, dismissButton, dismissFeedback);
   assert.equal(state.duplicateOffset, 50, 'dismissing/rejecting a duplicate on page 2+ must preserve current page offset');
-  assert.equal(visualRefreshes, initialVisualRefreshes + 2, 'dismissing duplicate suggestion must refresh visual duplicate results');
+  assert.equal(visualRefreshes, initialVisualRefreshes + 1, 'dismissing duplicate suggestion must refresh visual duplicate results');
   assert.equal(dismissButton.disabled, true, 'successful duplicate dismissal keeps button disabled to avoid duplicate execution');
 
   context.window.AdminV2.postJson = async () => { throw new Error('network down'); };
   await context.dismissDuplicateSuggestion({ left: { id: 'v1' }, right: { id: 'v2' } }, dismissButton, dismissFeedback);
   assert.equal(dismissButton.disabled, false, 'failed duplicate dismissal re-enables button for retry');
+
+  // Visual lists use the same stale-response guarantees as catalog lists.
+  state.duplicateMatch = 'visual';
+  elements['#duplicateCatalogGroup'].hidden = true;
+  elements['#duplicateVisualGroup'].hidden = false;
+  const visualRows = { children: [], replaceChildren() { this.children = []; }, append(item) { this.children.push(item); } };
+  elements['#visualDuplicateRows'] = visualRows;
+  elements['#visualDuplicateStatus'] = { textContent: '' };
+  let resolveOldVisual, resolveNewVisual;
+  const oldVisual = new Promise(resolve => { resolveOldVisual = resolve; });
+  const newVisual = new Promise(resolve => { resolveNewVisual = resolve; });
+  let visualCalls = 0;
+  const catalogGet = context.getJson;
+  context.getJson = () => visualCalls++ === 0 ? oldVisual : newVisual;
+  const oldVisualLoad = context.loadVisualDuplicateResults();
+  const newVisualLoad = context.loadVisualDuplicateResults();
+  resolveNewVisual({ ok: true, items: [], queue: { confirmed: 7 } });
+  await newVisualLoad;
+  const visualStatus = elements['#visualDuplicateStatus'].textContent;
+  resolveOldVisual({ ok: true, items: [], queue: { confirmed: 1 } });
+  await oldVisualLoad;
+  assert.equal(elements['#visualDuplicateStatus'].textContent, visualStatus, 'older visual results cannot overwrite the latest response');
+  let resolveHiddenVisual;
+  context.getJson = () => new Promise(resolve => { resolveHiddenVisual = resolve; });
+  const hiddenVisualLoad = context.loadVisualDuplicateResults();
+  elements['#duplicateVisualGroup'].hidden = true;
+  resolveHiddenVisual({ ok: true, items: [], queue: { confirmed: 99 } });
+  await hiddenVisualLoad;
+  assert.equal(elements['#visualDuplicateStatus'].textContent, visualStatus, 'visual results cannot repaint after leaving the group');
+  context.getJson = catalogGet;
+  state.duplicateMatch = 'catalog';
+
+  // A scan that is still running when the operator leaves the tab must not paint it.
+  const renderedBeforeLeaving = rendered.length;
+  const requestsBeforeLeaving = requests.length;
+  elements['#duplicateCatalogGroup'].hidden = false;
+  elements['#duplicateVisualGroup'].hidden = true;
+  holdNextFetch = true;
+  const abandonedScan = context.loadDuplicateCandidates({ refresh: true });
+  assert.equal(requests.length, requestsBeforeLeaving + 1, 'the tab still starts the requested scan');
+  state.libraryTab = 'quarantine';
+  elements['#libraryDuplicatesPane'].hidden = true;
+  elements['#duplicateCatalogGroup'].hidden = true;
+  releaseFetch();
+  await abandonedScan;
+  assert.equal(rendered.length, renderedBeforeLeaving,
+    'a late duplicate scan response must not render after the tab changed');
 
   process.stdout.write('PASS: duplicate results keep 25-card pages while reusing 200-result scan batches\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

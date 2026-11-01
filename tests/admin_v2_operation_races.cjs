@@ -23,6 +23,16 @@ class Element {
   setAttribute(name, value) { this.attributes ||= {}; this.attributes[name] = value; }
   getAttribute(name) { return this.attributes?.[name] ?? null; }
   append(...children) { this.children.push(...children); }
+  insertBefore(child, reference) {
+    const index = reference ? this.children.indexOf(reference) : -1;
+    if (index < 0) this.children.push(child); else this.children.splice(index, 0, child);
+    child.parentNode = this;
+    return child;
+  }
+  get nextSibling() {
+    const siblings = this.parentNode?.children || [];
+    return siblings[siblings.indexOf(this) + 1] || null;
+  }
   contains(child) { return this.children.includes(child); }
   replaceChildren(...children) { this.children = children; }
   after(...children) { this.afterChildren = children; }
@@ -41,7 +51,8 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
     return elements.get(key);
   };
   const state = {
-    route: 'library', statusRequestSeq: 0, operationRequestSeq: 0, operationStatusSeq: 0, issueRequestSeq: 0,
+    route: 'library', libraryTab: 'videos', duplicateMatch: 'catalog', performersTab: 'review',
+    statusRequestSeq: 0, operationRequestSeq: 0, operationStatusSeq: 0, issueRequestSeq: 0,
     issues: [], issueLoading: false, issueFiltersInitialized: false,
     availabilityHistorySeq: 0, detailId: null,
     duplicateRequestSeq: 0, peopleRequestSeq: 0, quarantineRequestSeq: 0,
@@ -90,6 +101,7 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
     bulkMetadataPayloadFromEditor: () => ({ type: 'metadata_update_batch', video_ids: [...(state.metadataBulkVideoIds || [])], changes: { studio: 'Studio' }, reset_fields: [] }),
     renderBulkMetadataPreview: preview => { state.renderedBulkMetadataPreview = preview; },
     updateBulkSelection() {}, loadQuarantine() {}, loadDuplicateCandidates() {}, loadVisualDuplicateResults() {}, refreshOperationStatus: async () => {},
+    loadOrphanFileQuarantine: async () => {},
     fetch: async () => { throw new Error('Unexpected fetch'); },
     clearTimeout() {}, setTimeout: () => 1, encodeURIComponent, AbortController,
   });
@@ -273,7 +285,7 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
   assert.match(textOf(get('#operationDialogContent')), /New video/);
   assert.doesNotMatch(textOf(get('#operationDialogContent')), /Old video/);
 
-  // Fast filter/page changes on Start and Organize keep the latest request result.
+  // Fast filter/page changes on Start and the Library tabs keep the latest request result.
   state.route = 'start';
   const issueA = deferred(), issueB = deferred();
   const issueResponses = [issueA, issueB];
@@ -298,7 +310,14 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
   initialIssues.resolve({ marker: 'initial-home-issues' }); await staleInitialStatus;
   assert.equal(state.renderedIssues.marker, 'filtered-issues', 'late Home status load must not replace the current issue filter result');
 
-  state.route = 'organize';
+  state.route = 'library';
+  state.libraryTab = 'duplicates';
+  state.duplicateMatch = 'catalog';
+  get('#libraryDuplicatesPane').hidden = false;
+  get('#duplicateCatalogGroup').hidden = false;
+  get('#duplicateVisualGroup').hidden = true;
+  context.duplicateGroupIsVisible = runSync('duplicateGroupIsVisible');
+  get('#duplicateCategory').value = 'oshash_linked';
   const duplicateA = deferred(), duplicateB = deferred();
   const duplicateResponses = [duplicateA, duplicateB];
   context.fetch = () => duplicateResponses.shift().promise;
@@ -307,11 +326,24 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
   const oldDuplicates = loadDuplicates();
   state.duplicateOffset = 25;
   const newDuplicates = loadDuplicates();
-  duplicateB.resolve({ ok: true, status: 200, json: async () => ({ ok: true, marker: 'new-duplicates', pairs: [], total: 0, scanned: 0 }) }); await newDuplicates;
-  duplicateA.resolve({ ok: true, status: 200, json: async () => ({ ok: true, marker: 'old-duplicates', pairs: [], total: 0, scanned: 0 }) }); await oldDuplicates;
+  duplicateB.resolve({ ok: true, status: 200, json: async () => ({ ok: true, marker: 'new-duplicates', pairs: [], total: 100, scanned: 0 }) }); await newDuplicates;
+  duplicateA.resolve({ ok: true, status: 200, json: async () => ({ ok: true, marker: 'old-duplicates', pairs: [], total: 100, scanned: 0 }) }); await oldDuplicates;
   assert.equal(state.renderedDuplicates.marker, 'new-duplicates');
 
-  get('#organizePeoplePane').hidden = false;
+  // Switching away from the Duplicates tab must discard a request that lands afterwards.
+  const lateDuplicates = deferred();
+  context.fetch = () => lateDuplicates.promise;
+  const abandonedDuplicates = loadDuplicates();
+  state.libraryTab = 'quarantine';
+  get('#libraryDuplicatesPane').hidden = true;
+  lateDuplicates.resolve({ ok: true, status: 200, json: async () => ({ ok: true, marker: 'late-duplicates', pairs: [], total: 100, scanned: 0 }) });
+  await abandonedDuplicates;
+  assert.equal(state.renderedDuplicates.marker, 'new-duplicates',
+    'a late duplicate result must not render after leaving the Duplicates tab');
+
+  state.route = 'performers';
+  state.performersTab = 'directory';
+  get('#performerDirectoryPane').hidden = false;
   get('#peopleQuery').value = 'old query';
   const peopleA = deferred(), peopleB = deferred();
   const peopleResponses = [peopleA, peopleB];
@@ -370,7 +402,25 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
     'a malformed refresh preserves the previous successful rows instead of leaving an empty visible table');
   assert.equal(get('#peopleTableWrap').hidden, false);
 
-  get('#organizeQuarantinePane').hidden = false;
+  // Switching to Review matches must discard a directory response that lands afterwards.
+  const latePeople = deferred();
+  context.fetch = () => latePeople.promise;
+  const abandonedPeople = loadPeople();
+  state.performersTab = 'review';
+  get('#performerDirectoryPane').hidden = true;
+  latePeople.resolve({ ok: true, status: 200, json: async () => ({
+    ok: true, available: true,
+    items: [{ name: 'Late arrival', aliases: [], video_count: 1, has_bio: false, has_photo: false }], total: 99,
+  }) });
+  await abandonedPeople;
+  assert.doesNotMatch(get('#peopleFeedback').textContent, /99 people/,
+    'a late directory response must not update feedback after leaving the Directory tab');
+  assert.equal(get('#peopleRows').children[0].children[0].textContent, 'Taylor',
+    'a late directory response must not replace the rendered people after leaving the Directory tab');
+
+  state.route = 'library';
+  state.libraryTab = 'quarantine';
+  get('#libraryQuarantinePane').hidden = false;
   const quarantineA = deferred(), quarantineB = deferred();
   const quarantineResponses = [quarantineA, quarantineB];
   context.fetch = () => quarantineResponses.shift().promise;
@@ -382,8 +432,21 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
   quarantineA.resolve({ ok: true, status: 200, json: async () => ({ ok: true, available: true, items: [], total: 10 }) }); await oldQuarantine;
   assert.equal(get('#quarantineFeedback').textContent, '70 active decisions');
 
+  // Switching back to the Videos tab must discard a quarantine list that lands afterwards.
+  const lateQuarantine = deferred();
+  context.fetch = () => lateQuarantine.promise;
+  const abandonedQuarantine = loadQuarantine();
+  state.libraryTab = 'videos';
+  get('#libraryQuarantinePane').hidden = true;
+  lateQuarantine.resolve({ ok: true, status: 200, json: async () => ({ ok: true, available: true, items: [{ id: 'late', title: 'Late decision' }], total: 3 }) });
+  await abandonedQuarantine;
+  assert.doesNotMatch(get('#quarantineFeedback').textContent, /3 active decisions/,
+    'a late quarantine result must not update feedback after leaving the Quarantine tab');
+  assert.equal(get('#quarantineRows').children.length, 0,
+    'a late quarantine result must not render rows after leaving the Quarantine tab');
+
   // A late restore preview cannot replace the more recent restore selection.
-  state.route = 'organize';
+  state.route = 'library';
   const restoreA = deferred(), restoreB = deferred();
   const restoreResponses = [restoreA, restoreB];
   context.window.AdminV2.postJson = () => restoreResponses.shift().promise;
@@ -416,7 +479,8 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
 
   // Exact-file duplicate batching retains a fresh server preview but queues it
   // directly; this matches the no-confirmation preference for duplicate decisions.
-  state.route = 'organize';
+  state.route = 'library';
+  state.libraryTab = 'duplicates';
   const duplicateCalls = [];
   context.loadDuplicateCandidates = options => { duplicateCalls.push(options); };
   context.window.AdminV2.postJson = async (url, payload) => {
@@ -427,6 +491,7 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
     if (url.endsWith('/operations/execute')) return { jobs: [{ job_id: 'job-exact-1' }] };
     throw new Error(`Unexpected operation request ${url}`);
   };
+  get('#operationDialog').open = false;
   const announcementsBeforeExactMerge = announcements.length;
   await run('previewAutoMergeExact')();
   assert.equal(get('#operationDialog').open, false, 'batch duplicate merge does not open a confirmation screen');

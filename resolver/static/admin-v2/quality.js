@@ -11,6 +11,7 @@
   const reviewFieldLabels = { title: 'Title', plot: 'Description', studio: 'Studio', performers: 'Performers', tags: 'Tags', date_released: 'Release date' };
   const state = { summary: null, offset: 0, total: 0, requestId: 0, loadSequence: 0, selected: new Set(), busy: false,
     auditNotice: '', auditStale: false, proposalOffset: 0, proposalTotal: 0, proposalRequestId: 0 };
+  let suggestionsActive = false;
   const el = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -422,6 +423,8 @@
     queue.type = 'button'; queue.addEventListener('click', onQueue); host.append(queue);
   }
   function renderProposal(proposal) {
+    const requestId = state.proposalRequestId;
+    const current = () => requestId === state.proposalRequestId && suggestionsVisible();
     const card = el('article', 'operation-history-row metadata-proposal');
     const heading = el('div', 'quality-item-heading');
     heading.append(el('strong', '', proposal.title || 'Untitled'),
@@ -446,7 +449,8 @@
       if (field === 'date_released') input.type = 'date';
       input.setAttribute('aria-label', `${reviewFieldLabels[field] || field} suggestion`);
       const current = el('p', 'catalog-feedback', `Current: ${display(proposal.current?.[field]) || '(empty)'}`);
-      section.append(label, current, input); form.append(section);
+      const caption = el('p', 'proposal-suggested-caption', 'Suggested:');
+      section.append(label, current, caption, input); form.append(section);
     }
     card.append(form);
     const previewHost = el('div', 'metadata-proposal-preview');
@@ -459,25 +463,34 @@
         let revision = proposal.revision;
         if (proposal.stale) {
           const refreshed = await window.AdminV2.postJson(`/admin/api/v2/quality/proposals/${proposal.id}/refresh`, {});
+          if (!current()) return;
           revision = refreshed.revision;
         }
         const result = await window.AdminV2.postJson('/admin/api/v2/operations/preview', {
           type: 'metadata_update', video_id: proposal.video_id, expected_revision: revision,
           changes: proposalChanges(card, proposal), reset_fields: [], proposal_id: proposal.id,
         });
+        if (!current()) return;
         renderProposalPreview(previewHost, result, async () => {
+          if (!current()) return;
           const queueButton = [...previewHost.querySelectorAll('button')].at(-1);
           if (queueButton) queueButton.disabled = true;
           try {
             const queued = await window.AdminV2.postJson('/admin/api/v2/operations/execute', { plan_id: result.plan_id });
+            if (!current()) return;
             $('#metadataProposalsFeedback').textContent = `Approved metadata update queued (${queued.jobs?.[0]?.job_id || queued.job_id || 'job'}).`;
             await loadProposals();
           } catch (error) {
+            if (!current()) return;
             $('#metadataProposalsFeedback').textContent = `Could not queue the approved metadata update. ${error.message}`;
-            if (queueButton) queueButton.disabled = false;
+            if (error.status === 409) {
+              previewHost.replaceChildren();
+              previewButton.disabled = false;
+            } else if (queueButton) queueButton.disabled = false;
           }
         });
       } catch (error) {
+        if (!current()) return;
         $('#metadataProposalsFeedback').textContent = `Could not create a current metadata preview. ${error.message}`;
         previewButton.disabled = false;
         if (error.status === 409) void loadProposals();
@@ -489,9 +502,11 @@
       reject.disabled = true;
       try {
         await window.AdminV2.postJson(`/admin/api/v2/quality/proposals/${proposal.id}/reject`, {});
+        if (!current()) return;
         $('#metadataProposalsFeedback').textContent = 'Suggestion rejected.';
         await loadProposals();
       } catch (error) {
+        if (!current()) return;
         $('#metadataProposalsFeedback').textContent = `Could not reject this suggestion. ${error.message}`;
         reject.disabled = false;
       }
@@ -511,13 +526,19 @@
     next.addEventListener('click', () => { state.proposalOffset += result.limit; loadProposals(); });
     nav.append(previous, el('span', 'catalog-feedback', `${result.total ? result.offset + 1 : 0}–${Math.min(result.offset + result.items.length, result.total)} of ${result.total}`), next);
   }
+  // Suggestions live in the Library tab; a late response must not repaint it
+  // once another tab is showing.
+  function suggestionsVisible() {
+    const pane = $('#librarySuggestionsPane');
+    return suggestionsActive && Boolean(pane) && !pane.hidden;
+  }
   async function loadProposals() {
     const requestId = ++state.proposalRequestId;
     const host = $('#metadataProposalsRows');
     host.replaceChildren(el('p', 'catalog-feedback', 'Loading metadata suggestions…'));
     try {
       const result = await window.AdminV2.getJson(`/admin/api/v2/quality/proposals?limit=10&offset=${state.proposalOffset}`);
-      if (requestId !== state.proposalRequestId) return;
+      if (requestId !== state.proposalRequestId || !suggestionsVisible()) return;
       state.proposalTotal = result.total;
       host.replaceChildren();
       for (const proposal of result.items || []) host.append(renderProposal(proposal));
@@ -525,7 +546,7 @@
       $('#metadataProposalsFeedback').textContent = `${Number(result.total || 0).toLocaleString('en-US')} suggestion${result.total === 1 ? '' : 's'} waiting for review.`;
       renderProposalPagination(result, requestId);
     } catch (error) {
-      if (requestId !== state.proposalRequestId) return;
+      if (requestId !== state.proposalRequestId || !suggestionsVisible()) return;
       host.replaceChildren(el('p', 'catalog-state', `Metadata suggestions are unavailable. ${error.message}`));
       $('#metadataProposalsPagination').hidden = true;
       $('#metadataProposalsFeedback').textContent = 'Could not load metadata suggestions.';
@@ -604,14 +625,19 @@
   $('#qualityStatus').addEventListener('change', () => { state.offset = 0; state.selected.clear(); writeFiltersToUrl(false); loadItems(); });
   $('#qualityFilters').addEventListener('reset', event => { event.preventDefault(); $('#qualityKind').value = ''; $('#qualityField').value = ''; $('#qualityStatus').value = 'open'; state.offset = 0; state.selected.clear(); writeFiltersToUrl(false); loadItems(); });
   $('#metadataProposalsRefresh').addEventListener('click', () => { state.proposalOffset = 0; loadProposals(); });
-  function syncQuality(route, tab) {
-    if (route !== 'quality') return;
-    if (tab === 'enrichment') void loadProposals();
-    else void load();
+  function syncQuality(detail) {
+    if (!detail) return;
+    suggestionsActive = detail.route === 'library' && detail.libraryTab === 'suggestions';
+    state.proposalRequestId += 1;
+    if (detail.route === 'library') {
+      if (detail.libraryTab === 'suggestions') void loadProposals();
+      return;
+    }
+    if (detail.route !== 'quality') return;
+    if ((detail.tab ?? detail.qualityTab) === 'enrichment-progress') return;
+    void load();
   }
-  document.addEventListener('adminv2:navigate', event => syncQuality(event.detail?.route, event.detail?.tab));
-  const initialQualityRoute = location.hash.replace(/^#/, '').split('?', 2);
-  if (initialQualityRoute[0] === 'quality') {
-    syncQuality('quality', new URLSearchParams(initialQualityRoute[1] || '').get('tab'));
-  }
+  document.addEventListener('adminv2:navigate', event => syncQuality(event.detail));
+  const initial = window.AdminV2.currentRoute();
+  if (initial.route === 'quality' || initial.route === 'library') syncQuality(initial);
 })();

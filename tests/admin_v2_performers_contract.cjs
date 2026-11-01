@@ -59,7 +59,7 @@ function find(root, predicate) {
 function deferred() { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; }
 
 (async () => {
-  const ids = ['performersFeedback', 'performerProposalRows', 'performersCount', 'performersState', 'performersRefresh', 'performersReconcile', 'performerProposalPagination',
+  const ids = ['performerReviewPane', 'performersFeedback', 'performerProposalRows', 'performersCount', 'performersState', 'performersRefresh', 'performersReconcile', 'performerProposalPagination',
     'fuzzyCategory', 'fuzzyRows', 'fuzzyPagination', 'fuzzyPageInfo', 'fuzzyPrev', 'fuzzyNext', 'fuzzyFeedback',
     'fuzzyThreshold', 'fuzzyScan', 'fuzzyReviewSelected', 'fuzzySelectionStatus', 'fuzzyMergeDialog', 'fuzzyMergeContent', 'fuzzyMergeActions', 'fuzzyMergeClose'];
   const elements = Object.fromEntries(ids.map(id => [id, new Element(id === 'fuzzyMergeDialog' ? 'dialog' : 'div')]));
@@ -147,6 +147,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   const context = { window, document, Option: function Option(label, value) { this.textContent = label; this.value = value; },
     location: { hash: '' }, setTimeout, clearTimeout, encodeURIComponent, URLSearchParams };
   vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/performers.js', 'utf8'), context);
+  navigateListener({ detail: { route: 'performers', performersTab: 'review' } });
   await elements.performersRefresh.listeners.click();
   assert.match(calls[0].path, /\/proposal-groups\?limit=50&offset=0$/);
   assert.match(elements.performersCount.textContent, /^51 pending · 51 name groups$/);
@@ -320,10 +321,10 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
     if (path.includes('/catalog?')) return catalogLoadCount++ === 0 ? oldCatalogLoad.promise : currentCatalogLoad.promise;
     throw new Error(`Unexpected performer refresh request: ${path}`);
   };
-  navigateListener({ detail: { route: 'performers' } });
+  navigateListener({ detail: { route: 'performers', performersTab: 'review' } });
   navigateListener({ detail: { route: 'library' } });
-  navigateListener({ detail: { route: 'performers' } });
-  assert.equal(proposalLoadCount, 2, 'returning to Performers starts a fresh proposal request while the old one is pending');
+  navigateListener({ detail: { route: 'performers', performersTab: 'review' } });
+  assert.equal(proposalLoadCount, 2, 'returning to Review matches starts a fresh proposal request while the old one is pending');
   currentProposals.resolve({ items: [{ key: 'group-901', reason: 'uncatalogued_credit', candidate: 'Current re-entry proposal', proposals: 1, videos: 1 }], total: 1, pending: 1, offset: 0, limit: 50 });
   currentCatalogLoad.resolve({ items: [] });
   await new Promise(resolve => setImmediate(resolve));
@@ -334,5 +335,18 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
     'a late proposal load from before navigation cannot overwrite the refreshed queue');
   assert.match(elements.performersFeedback.textContent, /proposals grouped by repeated name/,
     'the stale load cannot replace feedback from the latest queue request');
+
+  // Switching to the Directory tab while a proposal list is in flight must drop the late render.
+  const lateProposals = deferred();
+  window.AdminV2.getJson = path => path.includes('/catalog?')
+    ? Promise.resolve({ items: [] }) : lateProposals.promise;
+  const keyBeforeLate = elements.performerProposalRows.children[0].dataset.proposalKey;
+  const lateReviewPane = elements.performerReviewPane;
+  const lateRefresh = elements.performersRefresh.listeners.click();
+  lateReviewPane.hidden = true;
+  lateProposals.resolve({ items: [{ key: 'group-903', reason: 'uncatalogued_credit', candidate: 'Late proposal', proposals: 1, videos: 1 }], total: 1, pending: 1, offset: 0, limit: 50 });
+  await lateRefresh;
+  assert.equal(elements.performerProposalRows.children[0].dataset.proposalKey, keyBeforeLate,
+    'a late proposal list must not repaint after switching to the Directory tab');
   process.stdout.write('PASS: performer search and paging reject stale responses; review focus and direct fuzzy merges remain verified\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

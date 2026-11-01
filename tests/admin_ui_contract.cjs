@@ -21,3 +21,4 @@ assert(!/^import (admin_status|admin_diagnostics|admin_library|admin_maintenance
 assert.match(adminRoutes, /async def admin_page\(request: Request\):\s+return await admin_v2_page\(request\)/,
   'The root Admin route must always serve V2');
 assert(!v2Script.includes("legacy: '/admin/classic/#"), 'V2 must not keep per-section Classic fallbacks');
+console.log('PASS: the Classic Admin surface stays removed and the root Admin route serves V2');

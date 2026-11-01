@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/admin/assets-v2/admin-v2.css">
   <script defer src="/admin/assets-v2/header-status.js"></script>
   <script defer src="/admin/assets-v2/admin-v2.js"></script>
-  <script defer src="/admin/assets-v2/organize-tabs.js"></script>
+  <script defer src="/admin/assets-v2/section-tabs.js"></script>
   <script defer src="/admin/assets-v2/jobs.js"></script>
   <script defer src="/admin/assets-v2/performers.js"></script>
   <script defer src="/admin/assets-v2/sources.js"></script>
@@ -90,16 +90,28 @@
             <div><p class="eyebrow">CATALOG</p><h1 id="libraryTitle">Library</h1><p class="page-intro">Find an item and check its source and status.</p></div>
             <div class="library-summary" id="librarySummary" aria-live="polite"><span class="summary-dot"></span><span>Waiting for catalog</span></div>
           </div>
+          <nav class="section-tabs library-section-tabs" id="libraryTabList" role="tablist" aria-label="Library">
+            <a href="#library" id="libraryVideosTab" role="tab" aria-selected="true" aria-controls="libraryVideosPane">Videos</a>
+            <a href="#library?tab=duplicates" id="libraryDuplicatesTab" role="tab" aria-selected="false" aria-controls="libraryDuplicatesPane">Duplicates</a>
+            <a href="#library?tab=suggestions" id="librarySuggestionsTab" role="tab" aria-selected="false" aria-controls="librarySuggestionsPane">Metadata suggestions</a>
+            <a href="#library?tab=quarantine" id="libraryQuarantineTab" role="tab" aria-selected="false" aria-controls="libraryQuarantinePane">Quarantine</a>
+          </nav>
+          <div class="library-pane" id="libraryVideosPane" role="tabpanel" aria-labelledby="libraryVideosTab">
           <section class="panel library-panel">
             <form id="libraryFilters" class="filter-bar">
               <div class="filter-search"><label for="libraryQuery">Search</label><div class="input-with-icon"><span aria-hidden="true">⌕</span><input id="libraryQuery" type="search" name="q" placeholder="Title, person, or ID"></div></div>
               <div class="filter-field"><label for="filterChannel">Channel</label><input id="filterChannel" name="channel_id" type="text" placeholder="Channel ID"></div>
-              <div class="filter-field"><label for="filterStudio">Studio</label><input id="filterStudio" name="studio" type="text" placeholder="Any studio"></div>
-              <div class="filter-field"><label for="filterPerformer">Person</label><input id="filterPerformer" name="performer" type="text" placeholder="Any person"></div>
-              <div class="filter-field"><label for="filterTag">Tag</label><input id="filterTag" name="tag" type="text" placeholder="Any tag"></div>
               <div class="filter-field"><label for="filterAvailability">Availability</label><select id="filterAvailability" name="availability"><option value="">All</option><option value="available">Available</option><option value="unavailable">Unavailable</option><option value="unknown">Unknown</option></select></div>
-              <div class="filter-field"><label for="filterMissing">Missing data</label><select id="filterMissing" name="missing"><option value="">Any</option><option value="title">Title</option><option value="performers">People</option><option value="studio">Studio</option><option value="plot">Description</option><option value="thumbnail">Artwork</option></select></div>
-              <div class="filter-field sort-field"><label for="filterSort">Sort by</label><select id="filterSort" name="sort"><option value="first_seen">Recently added</option><option value="last_seen">Recently updated</option><option value="title">Title A–Z</option><option value="duration">Duration</option></select></div>
+              <details class="more-filters" id="libraryMoreFilters">
+                <summary>More filters<span class="more-filter-count" id="moreFilterCount" hidden></span></summary>
+                <div class="more-filters-fields">
+                  <div class="filter-field"><label for="filterStudio">Studio</label><input id="filterStudio" name="studio" type="text" placeholder="Any studio"></div>
+                  <div class="filter-field"><label for="filterPerformer">Person</label><input id="filterPerformer" name="performer" type="text" placeholder="Any person"></div>
+                  <div class="filter-field"><label for="filterTag">Tag</label><input id="filterTag" name="tag" type="text" placeholder="Any tag"></div>
+                  <div class="filter-field"><label for="filterMissing">Missing data</label><select id="filterMissing" name="missing"><option value="">Any</option><option value="title">Title</option><option value="performers">People</option><option value="studio">Studio</option><option value="plot">Description</option><option value="thumbnail">Artwork</option></select></div>
+                  <div class="filter-field sort-field"><label for="filterSort">Sort by</label><select id="filterSort" name="sort"><option value="first_seen">Recently added</option><option value="last_seen">Recently updated</option><option value="title">Title A–Z</option><option value="duration">Duration</option></select></div>
+                </div>
+              </details>
               <button class="button button-quiet clear-filters" type="button" id="clearFilters">Clear filters</button>
             </form>
             <div class="catalog-toolbar"><div id="catalogFeedback" class="catalog-feedback" role="status">Ready to search the catalog.</div><div class="catalog-actions"><label class="saved-view-control" for="savedViews">Saved views<select id="savedViews"><option value="">Choose a saved view</option></select></label><button class="button button-quiet saved-view-button" type="button" id="saveView">Save current view</button><button class="button button-quiet saved-view-button" type="button" id="deleteView" disabled>Delete saved view</button><button type="button" class="view-toggle" id="viewToggle" aria-pressed="false" title="Switch view"><span aria-hidden="true">▦</span><span class="view-toggle-label">Card view</span></button></div></div>
@@ -109,88 +121,82 @@
             <div id="videoTableWrap" class="table-wrap" hidden><table class="video-table"><thead><tr><th><span class="sr-only">Select</span></th><th>Item</th><th>Studio</th><th>Source</th><th>Availability</th><th>Reason</th><th>Last detected</th><th>Added</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="videoRows"></tbody></table></div>
             <div id="pagination" class="pagination" hidden><button class="button button-quiet" type="button" id="pagePrev">← Previous</button><span id="pageInfo">Page 1</span><button class="button button-quiet" type="button" id="pageNext">Next →</button></div>
           </section>
-          <section class="panel more-tools-panel" aria-labelledby="libraryMoreToolsTitle">
-            <details id="libraryMoreTools">
-              <summary id="libraryMoreToolsTitle">More tools</summary>
-              <p class="page-intro">These catalog review screens keep their current location until they move into Library and Performers.</p>
-              <div class="more-tools-links">
-                <a href="#organize?tab=duplicates">Duplicate suggestions</a>
-                <a href="#quality?tab=visual">Visual comparisons</a>
-                <a href="#organize?tab=quarantine">Quarantine review</a>
-                <a href="#quality?tab=enrichment">Metadata suggestions</a>
+          </div>
+          <div class="library-pane" id="libraryDuplicatesPane" role="tabpanel" aria-labelledby="libraryDuplicatesTab" hidden>
+            <section class="panel organize-panel" aria-labelledby="libraryDuplicatesTitle">
+              <div class="panel-heading"><div><p class="eyebrow">REVERSIBLE DECISIONS</p><h2 id="libraryDuplicatesTitle">Duplicates</h2><p class="page-intro">Review matched pairs and choose which record stays visible. Source files are never deleted by these actions.</p></div></div>
+              <div class="duplicate-match-switch" role="group" aria-label="Duplicate match source">
+                <button class="button button-quiet" type="button" id="duplicateMatchCatalog" aria-pressed="true">Catalog matches</button>
+                <button class="button button-quiet" type="button" id="duplicateMatchVisual" aria-pressed="false">Visual matches</button>
               </div>
-            </details>
-          </section>
+              <div class="duplicate-match-group" id="duplicateCatalogGroup" data-duplicate-match="catalog">
+              <form id="duplicateFilters" class="filter-bar">
+                <div class="filter-field"><label for="duplicateCategory">View</label><select id="duplicateCategory"><option value="">Active suggestions</option><option value="same_file">Same file candidates</option><option value="strong">Strong suggestions</option><option value="review">Needs review</option><option value="oshash_linked">Linked by OSHASH</option></select></div>
+                <div class="jobs-filter-actions"><button class="button button-quiet" type="button" id="autoMergeExact" aria-describedby="duplicateBatchHelp">Hide exact-file duplicates</button><button class="button button-quiet" type="button" id="duplicateRefresh">Scan catalog</button></div>
+              </form>
+              <p id="duplicateBatchHelp" class="detail-muted">Queues a bounded batch after a fresh server preview. Duplicate records are hidden; source files are kept.</p>
+              <div id="duplicateNotice" class="state-banner" hidden role="status"></div>
+              <div id="duplicateFeedback" class="catalog-feedback" role="status">Choose Scan catalog to find duplicate candidates.</div>
+              <div id="duplicateRows" class="duplicate-candidate-list"></div>
+              <div id="duplicateState" class="catalog-state" hidden role="status"></div>
+              <div id="duplicatePagination" class="pagination" hidden><button class="button button-quiet" id="duplicatePrev" type="button">← Previous</button><span id="duplicatePageInfo">Page 1</span><button class="button button-quiet" id="duplicateNext" type="button">Next →</button></div>
+              </div>
+              <section class="panel visual-duplicate-section" id="duplicateVisualGroup" data-duplicate-match="visual" aria-labelledby="visualDuplicateTitle" hidden>
+                <div class="panel-heading visual-duplicate-heading"><div><p class="eyebrow">VISUAL SEQUENCE CHECKS</p><h2 id="visualDuplicateTitle" tabindex="-1">Frame comparison results</h2><p class="page-intro" id="visualDuplicateStatus">Building frame signatures for suspected duplicate pairs.</p></div><button class="button button-quiet" id="visualDuplicateRefresh" type="button">Refresh visual results</button></div>
+                <div id="visualDuplicateRows" class="duplicate-candidate-list"></div>
+              </section>
+            </section>
+          </div>
+          <div class="library-pane" id="librarySuggestionsPane" role="tabpanel" aria-labelledby="librarySuggestionsTab" hidden>
+            <section class="panel metadata-proposals" aria-labelledby="metadataProposalsTitle">
+              <div class="panel-heading"><div><p class="eyebrow">EXTERNAL METADATA</p><h2 id="metadataProposalsTitle" tabindex="-1">Metadata suggestions</h2><p class="page-intro">External matches that differ from existing catalog values. Compare Current with the suggested value, edit it if needed, preview the whole set, then queue the update or reject the suggestion.</p></div><button class="button button-quiet" type="button" id="metadataProposalsRefresh">Refresh suggestions</button></div>
+              <div id="metadataProposalsFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading metadata suggestions…</div>
+              <div id="metadataProposalsRows" class="operation-history-list" aria-live="polite"></div>
+              <nav id="metadataProposalsPagination" class="pagination" aria-label="Metadata suggestion pages" hidden></nav>
+            </section>
+          </div>
+          <div class="library-pane" id="libraryQuarantinePane" role="tabpanel" aria-labelledby="libraryQuarantineTab" hidden>
+            <section class="panel organize-panel" aria-labelledby="libraryQuarantineTitle">
+              <div class="panel-heading"><div><p class="eyebrow">REVERSIBLE DECISIONS</p><h2 id="libraryQuarantineTitle">Hidden and quarantined items</h2><p class="page-intro">Review active decisions and restore an item when needed.</p></div><div class="jobs-filter-actions"><button class="button button-quiet" id="quarantineExport" type="button">Export report</button><button class="button button-quiet" id="quarantineRefresh" type="button">Refresh</button></div></div>
+              <div id="quarantineFeedback" class="catalog-feedback" role="status">Ready to load decisions.</div>
+              <div id="quarantineState" class="catalog-state" hidden role="status"></div>
+              <div id="quarantineRows" class="quarantine-review-list"></div>
+              <div id="quarantinePagination" class="pagination" hidden><button class="button button-quiet" type="button" id="quarantinePrev">← Previous</button><span id="quarantinePageInfo">Page 1</span><button class="button button-quiet" type="button" id="quarantineNext">Next →</button></div>
+              <div class="panel-heading"><div><p class="eyebrow">ORPHAN FILES</p><h3>Quarantined library files</h3><p class="page-intro">Files remain here until restored. Paths are relative to the media library.</p></div></div>
+              <div id="orphanQuarantineFeedback" class="catalog-feedback" role="status">Loading file quarantine…</div>
+              <div id="orphanQuarantineRows" class="quarantine-review-list"></div>
+            </section>
+          </div>
           <dialog class="operation-dialog" id="metadataDialog" aria-labelledby="metadataDialogTitle"><section class="operation-dialog-panel"><button class="drawer-close" type="button" aria-label="Close metadata editor" data-close-dialog="metadataDialog">×</button><div id="metadataDialogContent"></div><div class="operation-dialog-actions" id="metadataDialogActions"></div></section></dialog>
         </section>
 
-        <section class="view" data-view="organize" aria-labelledby="organizeTitle" hidden>
-          <div class="page-heading"><div><p class="eyebrow">CATALOG HEALTH</p><h1 id="organizeTitle">Catalog Health</h1><p id="organizeIntro" class="page-intro">Review duplicate candidates and make reversible catalog decisions.</p></div></div>
-          <nav class="section-tabs catalog-health-tabs" aria-label="Catalog Health">
-            <a href="#quality?tab=issues" data-section-tab="issues">Overview</a>
-            <a href="#quality?tab=enrichment" data-section-tab="enrichment">Enrichment</a>
-            <a href="#quality?tab=duplicates" data-section-tab="duplicates">Duplicates</a>
-            <a href="#quality?tab=visual" data-section-tab="visual">Visual comparisons</a>
-            <a href="#quality?tab=quarantine" data-section-tab="quarantine">Quarantine</a>
-            <a href="#performers?tab=directory" class="section-tab-crosslink">Performer Directory</a>
-          </nav>
-          <nav class="section-tabs performer-section-tabs" aria-label="Performers">
-            <a href="#performers?tab=directory" data-section-tab="directory">Directory</a>
-            <a href="#performers?tab=proposals" data-section-tab="proposals">Proposals</a>
-            <a href="#performers?tab=matching" data-section-tab="matching">Name Matching</a>
-          </nav>
-          <div class="organize-tabs" id="organizeTabList" role="tablist" aria-label="Organize tools"><button type="button" class="button button-quiet is-active" id="duplicatesTab" role="tab" aria-selected="true" aria-controls="organizeDuplicatesPane" tabindex="0">Duplicates</button><button type="button" class="button button-quiet" id="peopleTab" role="tab" aria-selected="false" aria-controls="organizePeoplePane" tabindex="-1">People</button><button type="button" class="button button-quiet" id="quarantineTab" role="tab" aria-selected="false" aria-controls="organizeQuarantinePane" tabindex="-1">Quarantine</button></div>
-          <section class="panel organize-panel" id="organizeDuplicatesPane" role="tabpanel" aria-labelledby="duplicatesTab">
-            <form id="duplicateFilters" class="filter-bar">
-              <div class="filter-field"><label for="duplicateCategory">View</label><select id="duplicateCategory"><option value="">Active suggestions</option><option value="same_file">Same file candidates</option><option value="strong">Strong suggestions</option><option value="review">Needs review</option><option value="oshash_linked">Linked by OSHASH</option></select></div>
-              <div class="jobs-filter-actions"><button class="button button-quiet" type="button" id="autoMergeExact" aria-describedby="duplicateBatchHelp">Hide exact-file duplicates</button><button class="button button-quiet" type="button" id="duplicateRefresh">Refresh scan</button></div>
-            </form>
-            <section class="panel visual-duplicate-section" aria-labelledby="visualDuplicateTitle">
-              <div class="panel-heading visual-duplicate-heading"><div><p class="eyebrow">VISUAL SEQUENCE CHECKS</p><h2 id="visualDuplicateTitle" tabindex="-1">Frame comparison results</h2><p class="page-intro" id="visualDuplicateStatus">Building frame signatures for suspected duplicate pairs.</p></div><button class="button button-quiet" id="visualDuplicateRefresh" type="button">Refresh visual results</button></div>
-              <div id="visualDuplicateRows" class="duplicate-candidate-list"></div>
-            </section>
-            <p id="duplicateBatchHelp" class="detail-muted">Queues a bounded batch after a fresh server preview. Duplicate records are hidden; source files are kept.</p>
-            <div id="duplicateNotice" class="state-banner" hidden role="status"></div>
-            <div id="duplicateFeedback" class="catalog-feedback" role="status">Ready to scan duplicate candidates.</div>
-            <div id="duplicateRows" class="duplicate-candidate-list"></div>
-            <div id="duplicateState" class="catalog-state" hidden role="status"></div>
-            <div id="duplicatePagination" class="pagination" hidden><button class="button button-quiet" id="duplicatePrev" type="button">← Previous</button><span id="duplicatePageInfo">Page 1</span><button class="button button-quiet" id="duplicateNext" type="button">Next →</button></div>
-          </section>
-          <section class="panel organize-panel" id="organizePeoplePane" role="tabpanel" aria-labelledby="peopleTab" hidden>
-            <form id="peopleFilters" class="filter-bar"><div class="filter-search"><label for="peopleQuery">Search people</label><div class="input-with-icon"><span aria-hidden="true">⌕</span><input id="peopleQuery" type="search" maxlength="200" placeholder="Performer name or alias"></div></div><div class="jobs-filter-actions"><button class="button button-quiet" id="peopleRefresh" type="button">Refresh</button></div></form>
-            <div id="peopleFeedback" class="catalog-feedback" role="status">Ready to load people.</div>
-            <div id="peopleState" class="catalog-state" hidden role="status"></div>
-            <div id="peopleTableWrap" class="table-wrap" hidden><table class="video-table"><thead><tr><th>Person</th><th>Aliases</th><th>Videos</th><th>Bio</th><th>Photo</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="peopleRows"></tbody></table></div>
-            <div id="peoplePagination" class="pagination" hidden><button class="button button-quiet" type="button" id="peoplePrev">← Previous</button><span id="peoplePageInfo">Page 1</span><button class="button button-quiet" type="button" id="peopleNext">Next →</button></div>
-            <dialog id="personDetailDialog" class="operation-dialog" aria-labelledby="personDetailTitle"><section class="operation-dialog-panel"><button class="drawer-close" type="button" aria-label="Close person details" data-close-dialog="personDetailDialog">×</button><div id="personDetailContent"></div></section></dialog>
-          </section>
-          <section class="panel organize-panel" id="organizeQuarantinePane" role="tabpanel" aria-labelledby="quarantineTab" hidden>
-            <div class="panel-heading"><div><p class="eyebrow">REVERSIBLE DECISIONS</p><h2>Hidden and quarantined items</h2><p class="page-intro">Review active decisions and restore an item when needed.</p></div><div class="jobs-filter-actions"><button class="button button-quiet" id="quarantineExport" type="button">Export report</button><button class="button button-quiet" id="quarantineRefresh" type="button">Refresh</button></div></div>
-            <div id="quarantineFeedback" class="catalog-feedback" role="status">Ready to load decisions.</div>
-            <div id="quarantineState" class="catalog-state" hidden role="status"></div>
-            <div id="quarantineRows" class="quarantine-review-list"></div>
-            <div id="quarantinePagination" class="pagination" hidden><button class="button button-quiet" type="button" id="quarantinePrev">← Previous</button><span id="quarantinePageInfo">Page 1</span><button class="button button-quiet" type="button" id="quarantineNext">Next →</button></div>
-            <div class="panel-heading"><div><p class="eyebrow">ORPHAN FILES</p><h3>Quarantined library files</h3><p class="page-intro">Files remain here until restored. Paths are relative to the media library.</p></div></div>
-            <div id="orphanQuarantineFeedback" class="catalog-feedback" role="status">Loading file quarantine…</div>
-            <div id="orphanQuarantineRows" class="quarantine-review-list"></div>
-          </section>
-        </section>
-
         <section class="view" data-view="performers" aria-labelledby="performersTitle" hidden>
-          <div class="page-heading"><div><p class="eyebrow">CATALOG REVIEW</p><h1 id="performersTitle">Performers</h1><p class="page-intro">Resolve clear matches automatically, then review repeated names together. Ambiguous identities stay queued without guessing.</p></div><div class="jobs-filter-actions"><button class="button button-primary" id="performersReconcile" type="button">Resolve clear matches</button><button class="button button-quiet" id="performersRefresh" type="button">Refresh</button></div></div>
-          <nav class="section-tabs performer-section-tabs" aria-label="Performers">
-            <a href="#performers?tab=directory" data-section-tab="directory">Directory</a>
-            <a href="#performers?tab=proposals" data-section-tab="proposals">Proposals</a>
-            <a href="#performers?tab=matching" data-section-tab="matching">Name Matching</a>
+          <div class="page-heading"><div><p class="eyebrow">CATALOG REVIEW</p><h1 id="performersTitle">Performers</h1><p class="page-intro">Browse the performer catalog, or review the names that still need a decision.</p></div></div>
+          <nav class="section-tabs performer-section-tabs" id="performersTabList" role="tablist" aria-label="Performers">
+            <a href="#performers?tab=directory" id="performerDirectoryTab" role="tab" aria-selected="false" aria-controls="performerDirectoryPane">Directory</a>
+            <a href="#performers?tab=review" id="performerReviewTab" role="tab" aria-selected="true" aria-controls="performerReviewPane">Review matches</a>
           </nav>
-          <section id="performerProposalsPane" class="panel" aria-label="Performer proposal review">
+          <div class="library-pane" id="performerDirectoryPane" role="tabpanel" aria-labelledby="performerDirectoryTab" hidden>
+            <section class="panel organize-panel" aria-labelledby="performerDirectoryTitle">
+              <div class="panel-heading"><div><p class="eyebrow">PERFORMER DIRECTORY</p><h2 id="performerDirectoryTitle">Directory</h2><p class="page-intro">Search the canonical performer catalog, review aliases, and open a filmography.</p></div></div>
+              <form id="peopleFilters" class="filter-bar"><div class="filter-search"><label for="peopleQuery">Search people</label><div class="input-with-icon"><span aria-hidden="true">⌕</span><input id="peopleQuery" type="search" maxlength="200" placeholder="Performer name or alias"></div></div><div class="jobs-filter-actions"><button class="button button-quiet" id="peopleRefresh" type="button">Refresh</button></div></form>
+              <div id="peopleFeedback" class="catalog-feedback" role="status">Ready to load people.</div>
+              <div id="peopleState" class="catalog-state" hidden role="status"></div>
+              <div id="peopleTableWrap" class="table-wrap" hidden><table class="video-table"><thead><tr><th>Person</th><th>Aliases</th><th>Videos</th><th>Bio</th><th>Photo</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="peopleRows"></tbody></table></div>
+              <div id="peoplePagination" class="pagination" hidden><button class="button button-quiet" type="button" id="peoplePrev">← Previous</button><span id="peoplePageInfo">Page 1</span><button class="button button-quiet" type="button" id="peopleNext">Next →</button></div>
+            </section>
+            <dialog id="personDetailDialog" class="operation-dialog" aria-labelledby="personDetailTitle"><section class="operation-dialog-panel"><button class="drawer-close" type="button" aria-label="Close person details" data-close-dialog="personDetailDialog">×</button><div id="personDetailContent"></div></section></dialog>
+          </div>
+          <div class="library-pane" id="performerReviewPane" role="tabpanel" aria-labelledby="performerReviewTab">
+          <section id="performerProposalsPane" class="panel" aria-labelledby="performerProposalsTitle">
+            <div class="panel-heading"><div><p class="eyebrow">RECOGNITION PROPOSALS</p><h2 id="performerProposalsTitle" tabindex="-1">Names detected in titles</h2><p class="page-intro">Repeated names that are not yet matched to a catalogued performer. Resolve clear matches automatically; ambiguous identities stay queued without guessing.</p></div><div class="jobs-filter-actions"><button class="button button-primary" id="performersReconcile" type="button">Resolve clear matches</button><button class="button button-quiet" id="performersRefresh" type="button">Refresh</button></div></div>
             <div class="catalog-toolbar"><div id="performersFeedback" class="catalog-feedback" role="status">Ready to load repeated names.</div><span id="performersCount" class="catalog-feedback"></span></div>
             <div id="performersState" class="catalog-state" hidden role="status"></div>
             <div id="performerProposalRows" class="performer-proposal-list" aria-live="polite"></div>
             <nav id="performerProposalPagination" class="catalog-toolbar" aria-label="Performer proposal pages" hidden></nav>
           </section>
           <section id="performerNameMatchingPane" class="panel operation-history-panel" aria-labelledby="fuzzyTitle">
-            <div class="panel-heading"><div><p class="eyebrow">CATALOG CLEANUP</p><h2 id="fuzzyTitle">Name variants</h2><p class="page-intro">Scan for likely spelling variants. Review suggestions and merge variant names into canonical performers.</p></div></div>
+            <div class="panel-heading"><div><p class="eyebrow">NAME VARIANTS</p><h2 id="fuzzyTitle" tabindex="-1">Name variants</h2><p class="page-intro">Scan for likely spelling variants. Review suggestions and merge variant names into canonical performers.</p></div></div>
             <div class="filter-bar">
               <div class="filter-field"><label for="fuzzyThreshold">Similarity threshold</label><input id="fuzzyThreshold" type="number" min="0.80" max="0.99" step="0.01" value="0.88"></div>
               <div class="filter-field"><label for="fuzzyCategory">Category</label><select id="fuzzyCategory"><option value="">All categories</option><option value="diacritics">Diacritics</option><option value="spacing_case_punct">Case / spacing</option><option value="suffix_nickname">Suffix / nickname</option><option value="similarity">Similarity / typo</option></select></div>
@@ -200,6 +206,7 @@
             <div id="fuzzyRows" class="operation-history-list" aria-live="polite"></div>
             <div id="fuzzyPagination" class="pagination" hidden><button class="button button-quiet" type="button" id="fuzzyPrev">← Previous</button><span id="fuzzyPageInfo">Page 1</span><button class="button button-quiet" type="button" id="fuzzyNext">Next →</button></div>
           </section>
+          </div>
         </section>
 
         <section class="view" data-view="operational" hidden aria-labelledby="operationalTitle">
@@ -215,16 +222,16 @@
             <p class="page-intro">Administrative reports keep their current screens until the later stages move or remove them.</p>
             <div class="more-tools-links">
               <a href="#quality">Catalog Health reports</a>
-              <a href="#quality?tab=enrichment">Enrichment progress</a>
+              <a href="#quality?tab=enrichment-progress">Enrichment progress</a>
               <a href="#system?tab=linkcheck">Link-check report</a>
             </div>
           </details>
           <section id="qualityView" class="panel operation-history-panel" hidden aria-labelledby="qualityTitle">
             <nav class="section-tabs catalog-health-tabs" aria-label="Catalog Health">
               <a href="#quality?tab=issues" data-section-tab="issues">Overview</a>
-              <a href="#quality?tab=enrichment" data-section-tab="enrichment">Enrichment</a>
-              <a href="#quality?tab=duplicates" data-section-tab="duplicates">Duplicates</a>
-              <a href="#quality?tab=quarantine" data-section-tab="quarantine">Quarantine</a>
+              <a href="#quality?tab=enrichment-progress" data-section-tab="enrichment-progress">Enrichment progress</a>
+              <a href="#library?tab=duplicates" class="section-tab-crosslink">Duplicates</a>
+              <a href="#library?tab=quarantine" class="section-tab-crosslink">Quarantine</a>
               <a href="#performers?tab=directory" class="section-tab-crosslink">Performer Directory</a>
             </nav>
             <section id="qualityOverview" class="quality-overview" aria-labelledby="qualityOverviewTitle"><div class="panel-heading"><div><p class="eyebrow">LATEST CHECK</p><h2 id="qualityOverviewTitle">Catalog status</h2><p id="qualityOverviewStatus" class="page-intro" role="status">Loading the latest complete audit…</p><p class="catalog-feedback">Daily metadata and file audits run automatically. Missing NFO files and available artwork are repaired in batches.</p></div><div class="diagnostics-actions"><button class="button button-primary" type="button" id="qualityRunOverviewAudit">Run full audit</button></div></div><div id="qualityOverviewCards" class="quality-summary" aria-label="Catalog findings summary"></div></section>
@@ -268,11 +275,11 @@
             </details>
             <div id="qualityEnrichmentPane" hidden>
               <section class="panel operation-history-panel" aria-labelledby="enrichmentTitle">
-                <div class="panel-heading"><div><p class="eyebrow">AUTOMATED CATALOG</p><h2 id="enrichmentTitle">External metadata progress</h2><p class="page-intro">Find missing information about videos and performers, then review suggested changes to existing video metadata.</p></div><div class="diagnostics-actions"><button class="button button-primary" type="button" id="enrichmentScan">Run bounded scan</button><button class="button button-quiet" type="button" id="enrichmentRefresh">Refresh progress</button></div></div>
+                <div class="panel-heading"><div><p class="eyebrow">AUTOMATED CATALOG</p><h2 id="enrichmentTitle">External metadata progress</h2><p class="page-intro">See how much of the catalog the external sources have checked. Suggestions they produced are reviewed in <a href="#library?tab=suggestions">Library → Metadata suggestions</a>.</p></div><div class="diagnostics-actions"><button class="button button-primary" type="button" id="enrichmentScan">Run bounded scan</button><button class="button button-quiet" type="button" id="enrichmentRefresh">Refresh progress</button></div></div>
                 <div class="enrichment-guide" aria-label="How enrichment works">
                   <div><strong>1. Check progress</strong><span>See how much of the catalog each source has checked and whether any lookups need attention.</span></div>
                   <div><strong>2. Run a scan</strong><span>Start a scan now, or let the active sync runner continue automatically on its configured schedule.</span></div>
-                  <div><strong>3. Review suggestions</strong><span>Compare proposed video metadata below, edit it, preview the changes, and approve or reject each suggestion.</span></div>
+                  <div><strong>3. Review suggestions</strong><span>Open <a href="#library?tab=suggestions">Library → Metadata suggestions</a> to compare proposed video metadata, edit it, preview the changes, and approve or reject each suggestion.</span></div>
                 </div>
                 <div id="enrichmentFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading metadata progress…</div>
                 <p id="enrichmentFreshness" class="page-intro enrichment-freshness" role="note" data-state="unknown">Waiting for first progress refresh.</p>
@@ -284,12 +291,6 @@
                 <div class="enrichment-list-heading"><h3>Progress by source</h3><p>Checked counts are per source, so the same item can appear in more than one row.</p></div>
                 <div id="enrichmentRows" class="enrichment-source-list" aria-live="polite"></div>
                 <details class="enrichment-help"><summary>How to read these numbers</summary><p>One scan processes one bounded batch per provider. The configured sync cadence is shown below; when the sync runner is active, later runs continue the queues automatically. Remaining counts are estimates because provider eligibility and retries vary.</p><p><strong>Found</strong> means a match was returned; <strong>no match</strong> means none was found; <strong>errors</strong> are current failed outcomes. <strong>Due</strong> counts source attempts ready for retry or refresh. Checked includes attempts regardless of outcome. Progress refreshes every 15 seconds while this view is active. Entity names and source error details are not shown.</p></details>
-              </section>
-              <section class="metadata-proposals" aria-labelledby="metadataProposalsTitle">
-                <div class="quality-history-heading"><div><h2 id="metadataProposalsTitle">Metadata suggestions to review</h2><p class="catalog-feedback">External matches that differ from existing catalog values. Edit the suggested fields, preview the whole set, then queue the update or reject the suggestion.</p></div><button class="button button-quiet" type="button" id="metadataProposalsRefresh">Refresh suggestions</button></div>
-                <div id="metadataProposalsFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading metadata suggestions…</div>
-                <div id="metadataProposalsRows" class="operation-history-list" aria-live="polite"></div>
-                <nav id="metadataProposalsPagination" class="pagination" aria-label="Metadata suggestion pages" hidden></nav>
               </section>
             </div>
           </section>

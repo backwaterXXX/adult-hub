@@ -60,10 +60,19 @@ coverage:
 ui-contracts:
 	@set -euo pipefail; \
 	files="$$(mktemp)"; trap 'rm -f -- "$$files"' EXIT; \
-	find tests -type f -name '*.cjs' -print0 | sort -z > "$$files"; \
+	find tests -type f -name '*.cjs' -not -path 'tests/helpers/*' -print0 | sort -z > "$$files"; \
 	mapfile -d '' test_files < "$$files"; \
 	(( $${#test_files[@]} > 0 )) || { echo 'No CommonJS browser contracts found' >&2; exit 1; }; \
-	for test_file in "$${test_files[@]}"; do $(NODE) "$$test_file"; done
+	for test_file in "$${test_files[@]}"; do \
+	  if ! output="$$( $(NODE) "$$test_file" 2>&1 )"; then \
+	    printf '%s\n' "$$output" >&2; echo "FAIL: $$test_file" >&2; exit 1; \
+	  fi; \
+	  printf '%s\n' "$$output"; \
+	  case "$$output" in \
+	    *PASS*|*passed*) ;; \
+	    *) echo "FAIL: $$test_file ended without a completion marker, so it likely stalled on a promise that never settles" >&2; exit 1;; \
+	  esac; \
+	done
 
 js-check:
 	@set -euo pipefail; \

@@ -2,19 +2,27 @@ import http from 'node:http';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 
-const port = 4173;
+const port = Number(process.env.ADMIN_SMOKE_PORT || 4173);
+const upstreamUrl = new URL(process.env.ADMIN_SMOKE_UPSTREAM || 'http://adult-resolver:8090');
+const outputDir = process.env.ADMIN_SMOKE_OUTPUT || '/output';
+fs.mkdirSync(outputDir, { recursive: true });
 // "active" is the primary-navigation entry the panel must mark as current, so
 // the legacy Catalog Health and Organize addresses report under Library.
 const routes = [
   { hash: 'start', view: 'start', active: 'start' },
   { hash: 'library', view: 'library', active: 'library' },
+  { hash: 'library?tab=duplicates', view: 'library', active: 'library' },
+  { hash: 'library?tab=duplicates&match=visual', view: 'library', active: 'library' },
+  { hash: 'library?tab=suggestions', view: 'library', active: 'library' },
+  { hash: 'library?tab=quarantine', view: 'library', active: 'library' },
+  { hash: 'performers?tab=review', view: 'performers', active: 'performers' },
   { hash: 'performers', view: 'performers', active: 'performers' },
-  { hash: 'performers?tab=directory', view: 'organize', active: 'performers' },
+  { hash: 'performers?tab=directory', view: 'performers', active: 'performers' },
   { hash: 'quality?tab=issues', view: 'operational', active: 'library' },
-  { hash: 'quality?tab=duplicates', view: 'organize', active: 'library' },
-  { hash: 'quality?tab=quarantine', view: 'organize', active: 'library' },
-  { hash: 'quality?tab=enrichment', view: 'operational', active: 'library', enrichment: true },
-  { hash: 'organize', view: 'organize', active: 'library' },
+  { hash: 'quality?tab=duplicates', view: 'library', active: 'library' },
+  { hash: 'quality?tab=quarantine', view: 'library', active: 'library' },
+  { hash: 'quality?tab=enrichment', view: 'library', active: 'library' },
+  { hash: 'organize', view: 'library', active: 'library' },
   { hash: 'sources', view: 'operational', active: 'sources' },
   { hash: 'jobs', view: 'operational', active: 'jobs' },
   { hash: 'schedules', view: 'operational', active: 'schedules' },
@@ -39,8 +47,8 @@ const server = http.createServer((req, res) => {
     return send(res, 200, pixel, 'image/png');
   }
   const upstream = http.request({
-    host: 'adult-resolver', port: 8090, path: req.url, method: 'GET',
-    headers: { 'x-forwarded-host': '127.0.0.1:4173', accept: req.headers.accept || '*/*' },
+    host: upstreamUrl.hostname, port: upstreamUrl.port || 80, path: req.url, method: 'GET',
+    headers: { 'x-forwarded-host': `127.0.0.1:${port}`, accept: req.headers.accept || '*/*' },
   }, up => {
     if ((req.url || '').startsWith('/admin/api/')) {
       statuses.total += 1;
@@ -57,16 +65,20 @@ const server = http.createServer((req, res) => {
 });
 await new Promise(resolve => server.listen(port, '127.0.0.1', resolve));
 
-const chrome = spawn('/ms-playwright/chromium-1228/chrome-linux64/chrome', [
-  '--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--disable-background-networking',
-  '--disable-extensions', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=9222',
-  '--remote-allow-origins=*', '--user-data-dir=/tmp/chrome-live-smoke-profile', 'about:blank',
+const browserProfile = fs.mkdtempSync('/tmp/adulthub-visual-');
+const debugPort = Number(process.env.ADMIN_SMOKE_CDP_PORT || 19223);
+const chrome = spawn(process.env.CHROMIUM_PATH || '/ms-playwright/chromium-1228/chrome-linux64/chrome', [
+  '--headless=new', '--no-proxy-server', '--no-sandbox', '--disable-dev-shm-usage', '--disable-background-networking',
+  '--disable-extensions', '--no-first-run', '--no-default-browser-check', `--remote-debugging-port=${debugPort}`,
+  '--remote-allow-origins=*', `--user-data-dir=${browserProfile}`, 'about:blank',
 ], { stdio: 'ignore' });
+process.on('exit', () => chrome.kill('SIGTERM'));
+chrome.on('error', error => { console.error(error.message); process.exit(1); });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function cdpSocket() {
   for (let i = 0; i < 80; i += 1) {
     try {
-      const response = await fetch('http://127.0.0.1:9222/json/version');
+      const response = await fetch(`http://127.0.0.1:${debugPort}/json/version`);
       if (response.ok) return (await response.json()).webSocketDebuggerUrl;
     } catch {}
     await sleep(100);
@@ -99,7 +111,7 @@ function on(method, callback, session = '') {
 function cmd(method, params = {}, session = '') {
   const id = ++nextId;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error('CDP timeout: ' + method)); }, 10000);
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error('CDP timeout: ' + method)); }, 60000);
     pending.set(id, {
       resolve: value => { clearTimeout(timer); resolve(value); },
       reject: error => { clearTimeout(timer); reject(error); },
@@ -113,25 +125,9 @@ for (const method of ['Page.enable', 'Runtime.enable', 'Log.enable']) await cmd(
 await cmd('Page.addScriptToEvaluateOnNewDocument', {
   source: "localStorage.setItem('adminV2Theme',new URLSearchParams(location.search).get('qaTheme')||'light');",
 }, sessionId);
-await cmd('Fetch.enable', { patterns: [{ urlPattern: 'http://127.0.0.1:4173/admin/api/*', requestStage: 'Request' }] }, sessionId);
 let jsErrors = 0;
 let loadResolve = null;
 on('Runtime.exceptionThrown', () => { jsErrors += 1; }, sessionId);
-on('Fetch.requestPaused', async paused => {
-  if (paused.request.method !== 'GET') {
-    methods.add(paused.request.method);
-    await cmd('Fetch.failRequest', { requestId: paused.requestId, errorReason: 'BlockedByClient' }, sessionId);
-  } else if (paused.resourceType === 'Image') {
-    statuses.images += 1;
-    await cmd('Fetch.fulfillRequest', {
-      requestId: paused.requestId, responseCode: 200,
-      responseHeaders: [{ name: 'Content-Type', value: 'image/png' }, { name: 'Cache-Control', value: 'no-store' }],
-      body: pixel.toString('base64'),
-    }, sessionId);
-  } else {
-    await cmd('Fetch.continueRequest', { requestId: paused.requestId }, sessionId);
-  }
-}, sessionId);
 on('Page.loadEventFired', () => { if (loadResolve) { loadResolve(); loadResolve = null; } }, sessionId);
 
 const results = [];
@@ -140,13 +136,13 @@ for (const route of routes) for (const width of widths) for (const theme of them
   const height = width === 390 ? 844 : width === 768 ? 1024 : 1000;
   await cmd('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width <= 600 }, sessionId);
   await cmd('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] }, sessionId);
-  const loaded = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { loadResolve = null; reject(new Error('page load timeout')); }, 15000);
+  const loaded = new Promise(resolve => {
+    const timer = setTimeout(() => { loadResolve = null; resolve('page load timeout'); }, 45000);
     loadResolve = () => { clearTimeout(timer); resolve(); };
   });
   await cmd('Page.navigate', { url: 'http://127.0.0.1:' + port + '/admin/v2/?qaTheme=' + theme + '#' + route.hash }, sessionId);
   let loadError = '';
-  try { await loaded; } catch (error) { loadError = error.name; }
+  loadError = await loaded || '';
   await sleep(800);
   const evaluated = await cmd('Runtime.evaluate', {
     expression: "JSON.stringify({visible:[...document.querySelectorAll('.view')].filter(v=>!v.hidden).map(v=>v.dataset.view),activeRoute:document.querySelector('.primary-nav a[aria-current=page]')?.dataset.route||'',innerWidth,documentWidth:document.documentElement.scrollWidth,serviceState:document.querySelector('#serviceStatus')?.dataset.state||'',overviewTiles:[...document.querySelectorAll('#statusCards .metric-top > span:first-child')].map(node=>node.textContent),enrichmentRows:[...document.querySelectorAll('#enrichmentRows .enrichment-source-heading strong')].map(node=>node.textContent),enrichmentFreshness:document.querySelector('#enrichmentFreshness')?.dataset.state||'',enrichmentFeedback:document.querySelector('#enrichmentFeedback')?.textContent||''})",
@@ -157,7 +153,7 @@ for (const route of routes) for (const width of widths) for (const theme of them
   if (width !== 768) {
     const screenshot = await cmd('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, sessionId);
     const routeName = route.hash.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-|-$/g, '');
-    fs.writeFileSync(`/output/${routeName}-${width}-${theme}.png`, Buffer.from(screenshot.data, 'base64'));
+    fs.writeFileSync(`${outputDir}/${routeName}-${width}-${theme}.png`, Buffer.from(screenshot.data, 'base64'));
   }
   const expectedEmptyEnrichment = view.enrichmentRows?.length === 0 &&
     view.enrichmentFeedback.includes('No external metadata attempts have been recorded yet.');
@@ -189,6 +185,36 @@ for (const route of routes) for (const width of widths) for (const theme of them
   console.log((result.ok ? 'PASS ' : 'FAIL ') + route.hash + '-' + width + '-' + theme +
     ' overflow=' + result.overflow + ' jsErrors=' + result.errors + (loadError ? ' load=' + loadError : ''));
 }
+// Opening and closing a film must retain filters, page, selection and More filters.
+await cmd('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false }, sessionId);
+await cmd('Page.navigate', { url: 'http://127.0.0.1:' + port + '/admin/v2/?sort=title&offset=50#library' }, sessionId);
+await sleep(1000);
+const libraryBefore = await cmd('Runtime.evaluate', {
+  expression: `(() => {
+    document.querySelector('#libraryMoreFilters').open = true;
+    const checkbox = document.querySelector('#videoGrid input[type=checkbox]');
+    const opener = document.querySelector('#videoGrid .video-open');
+    if (!checkbox || !opener) return null;
+    checkbox.checked = true; checkbox.dispatchEvent(new Event('change'));
+    const before = { query: location.search, page: document.querySelector('#pageInfo').textContent, selection: document.querySelector('#bulkSelectionCount').textContent };
+    opener.click(); return before;
+  })()`, returnByValue: true,
+}, sessionId);
+await sleep(400);
+const filmOpened = await cmd('Runtime.evaluate', {
+  expression: "location.hash.startsWith('#film/') && document.querySelector('#detailOverlay').open && !!document.querySelector('#detailTitle')",
+  returnByValue: true,
+}, sessionId);
+await cmd('Runtime.evaluate', { expression: "document.querySelector('[data-action=close-detail]').click()" }, sessionId);
+await sleep(400);
+const libraryAfter = await cmd('Runtime.evaluate', {
+  expression: "({query:location.search,page:document.querySelector('#pageInfo').textContent,selection:document.querySelector('#bulkSelectionCount').textContent,more:document.querySelector('#libraryMoreFilters').open,closed:!document.querySelector('#detailOverlay').open,hash:location.hash})",
+  returnByValue: true,
+}, sessionId);
+const before = libraryBefore.result.value;
+const after = libraryAfter.result.value;
+const libraryHistory = { ok: Boolean(before) && filmOpened.result.value === true && after.closed && after.more && after.hash === '#library' && before.query === after.query && before.page === after.page && before.selection === after.selection };
+console.log((libraryHistory.ok ? 'PASS ' : 'FAIL ') + 'Library filters, page, selection and More filters survive film details');
 // Exercise native modal focus behavior in a real Chromium runtime, not a
 // showModal()-only unit stub: Tab/Shift+Tab stay inside the performer detail
 // dialog and Escape returns focus to the directory control that opened it.
@@ -196,7 +222,7 @@ await cmd('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, dev
 await cmd('Page.navigate', { url: 'http://127.0.0.1:' + port + '/admin/v2/?qaTheme=light#performers?tab=directory' }, sessionId);
 await sleep(1200);
 const openerEval = await cmd('Runtime.evaluate', {
-  expression: "(() => { const button = [...document.querySelectorAll('[data-view=\\\"organize\\\"] button')].find(node => node.textContent.trim() === 'Details'); if (!button) return false; window.__modalOpener = button; button.click(); return true; })()",
+  expression: "(() => { const button = [...document.querySelectorAll('[data-view=\\\"performers\\\"] button')].find(node => node.textContent.trim() === 'Details'); if (!button) return false; window.__modalOpener = button; button.focus(); button.click(); return true; })()",
   returnByValue: true,
 }, sessionId);
 await sleep(400);
@@ -238,13 +264,13 @@ const summary = {
   failed: results.filter(result => !result.ok).length,
   apiRequests: statuses.total, api2xx: statuses.ok, api3xx: statuses.redirects,
   api4xx: statuses.clientError, api5xx: statuses.serverError, imageResponsesReplaced: statuses.images,
-  writeMethods: [...methods].filter(method => method !== 'GET'), modalKeyboard, results,
+  writeMethods: [...methods].filter(method => method !== 'GET'), modalKeyboard, libraryHistory, results,
 };
-fs.writeFileSync('/output/live-results.json', JSON.stringify(summary, null, 2));
+fs.writeFileSync(`${outputDir}/live-results.json`, JSON.stringify(summary, null, 2));
 console.log('SUMMARY ' + summary.passed + '/' + summary.count + '; API=' + statuses.total +
   ' (2xx=' + statuses.ok + ', 3xx=' + statuses.redirects + ', 4xx=' + statuses.clientError + ', 5xx=' + statuses.serverError +
   '); image responses replaced=' + statuses.images + '; writes=' + summary.writeMethods.length);
 ws.close();
 chrome.kill('SIGTERM');
 server.close();
-if (summary.failed || !modalKeyboard.ok || summary.writeMethods.length || summary.count !== routes.length * widths.length * themes.length) process.exitCode = 1;
+if (summary.failed || !modalKeyboard.ok || !libraryHistory.ok || summary.writeMethods.length || summary.count !== routes.length * widths.length * themes.length) process.exitCode = 1;

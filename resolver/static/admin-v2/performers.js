@@ -6,6 +6,7 @@
   const PROPOSAL_PAGE_SIZE = 50;
   const state = { loading: false, loadSeq: 0, rows: [], proposalOffset: 0, proposalTotal: 0, proposalSeq: 0, busy: new Set(), fuzzyGroups: [], fuzzyOffset: 0, fuzzyLoading: false, fuzzyScanned: false, fuzzyBatchRunning: false, fuzzyMerging: new Set(), fuzzyQueued: new Map(), fuzzyDismissed: new Set(), fuzzySwapped: new Map(), fuzzySelected: new Map() };
   const MAX_SELECTED_MERGES = 10;
+  let reviewActive = false;
 
   // Shared helpers live in admin-v2.js and are published through window.AdminV2.
   const helpers = () => window.AdminV2 || {};
@@ -52,11 +53,11 @@
     const previous = node('button', 'button button-quiet', 'Previous');
     previous.type = 'button'; previous.disabled = state.proposalOffset === 0;
     previous.addEventListener('click', () => loadProposalPage(Math.max(0, state.proposalOffset - PROPOSAL_PAGE_SIZE))
-      .then(render).catch(error => message(errorText(error), 'error')));
+      .then(data => { if (data && reviewVisible()) render(); }).catch(error => { if (reviewVisible()) message(errorText(error), 'error'); }));
     const next = node('button', 'button button-quiet', 'Next');
     next.type = 'button'; next.disabled = state.proposalOffset + state.rows.length >= state.proposalTotal;
     next.addEventListener('click', () => loadProposalPage(state.proposalOffset + PROPOSAL_PAGE_SIZE)
-      .then(render).catch(error => message(errorText(error), 'error')));
+      .then(data => { if (data && reviewVisible()) render(); }).catch(error => { if (reviewVisible()) message(errorText(error), 'error'); }));
     host.append(previous, next);
   }
   function renderProposalGroup(item) {
@@ -133,6 +134,7 @@
     return card;
   }
   async function reviewGroup(item, body, card) {
+    const sequence = state.loadSeq;
     const key = `${item.reason}:${item.key}`;
     if (state.busy.has(key)) return;
     const focusedControl = document.activeElement;
@@ -144,11 +146,13 @@
     message(body.action === 'reject' ? 'Rejecting this name group…' : 'Applying the decision to this name group…');
     try {
       const result = await post(`${API}/proposal-groups/${encodeURIComponent(item.reason)}/${encodeURIComponent(item.key)}`, body);
+      if (sequence !== state.loadSeq || !reviewVisible()) return;
       const shouldRestoreFocus = focusedBeforeRequest
         && (card.contains(document.activeElement) || document.activeElement === document.body);
       state.pendingTotal = Math.max(0, Number(state.pendingTotal || 0) - Number(result.reviewed || 0));
       let refreshed = await loadProposalPage(state.proposalOffset);
       if (refreshed && !state.rows.length && state.proposalOffset > 0) refreshed = await loadProposalPage(Math.max(0, state.proposalOffset - PROPOSAL_PAGE_SIZE));
+      if (sequence !== state.loadSeq || !reviewVisible() || !refreshed) return;
       render();
       if (shouldRestoreFocus) {
         const focusIndex = state.proposalOffset < originalOffset
@@ -158,6 +162,7 @@
       }
       message(`${body.action === 'reject' ? 'Rejected' : 'Reviewed'} ${result.reviewed} proposals in this group.`);
     } catch (error) {
+      if (sequence !== state.loadSeq || !reviewVisible()) return;
       const shouldRestoreFocus = focusedBeforeRequest
         && (card.contains(document.activeElement) || document.activeElement === document.body);
       message(errorText(error), 'error');
@@ -171,6 +176,12 @@
     const target = card?.querySelector('input,select,button:not(:disabled)') || $('#performersRefresh');
     target?.focus({ preventScroll: true });
   }
+  // Recognition proposals live in Performers → Review matches; a response that
+  // arrives after the tab changed must not repaint the hidden pane.
+  function reviewVisible() {
+    const pane = $('#performerReviewPane');
+    return reviewActive && Boolean(pane) && !pane.hidden;
+  }
   async function load() {
     const sequence = ++state.loadSeq;
     state.loading = true;
@@ -178,11 +189,11 @@
     try {
       state.proposalOffset = 0;
       const proposalData = await loadProposalPage(0);
-      if (sequence !== state.loadSeq || !proposalData) return;
+      if (sequence !== state.loadSeq || !reviewVisible() || !proposalData) return;
       render();
       message(proposalData.pending ? `${proposalData.pending} proposals grouped by repeated name. Decisions apply to at most 100 proposals at a time.` : 'Proposal queue is up to date.');
     } catch (error) {
-      if (sequence !== state.loadSeq) return;
+      if (sequence !== state.loadSeq || !reviewVisible()) return;
       message(errorText(error), 'error');
       const empty = $('#performersState');
       empty.hidden = false; empty.className = 'catalog-state state-error';
@@ -193,8 +204,8 @@
     const sequence = ++state.proposalSeq;
     let data;
     try { data = await get(`${API}/proposal-groups?limit=${PROPOSAL_PAGE_SIZE}&offset=${offset}`); }
-    catch (error) { if (sequence !== state.proposalSeq) return null; throw error; }
-    if (sequence !== state.proposalSeq) return null;
+    catch (error) { if (sequence !== state.proposalSeq || !reviewVisible()) return null; throw error; }
+    if (sequence !== state.proposalSeq || !reviewVisible()) return null;
     state.rows = Array.isArray(data.items) ? data.items : [];
     state.proposalTotal = Number.isInteger(data.total) ? data.total : state.rows.length;
     state.pendingTotal = Number.isInteger(data.pending) ? data.pending : state.proposalTotal;
@@ -452,10 +463,12 @@
       return;
     }
     state.fuzzyLoading = true;
+    const sequence = state.loadSeq;
     const button = $('#fuzzyScan'); button.disabled = true;
     window.AdminV2.setFeedback($('#fuzzyFeedback'), 'Scanning performer names…');
     try {
       const result = await get(`${API}/fuzzy?threshold=${encodeURIComponent(threshold)}`);
+      if (sequence !== state.loadSeq || !reviewVisible()) return;
       state.fuzzyGroups = Array.isArray(result.groups) ? result.groups : [];
       state.fuzzyScanned = true;
       state.fuzzyOffset = 0;
@@ -467,6 +480,7 @@
       window.AdminV2.setFeedback($('#fuzzyFeedback'), `${stats.total_unique_performers ?? '—'} unique performer names scanned; ${stats.total_groups ?? state.fuzzyGroups.length} candidate groups found. Review both names before merging.`);
       renderFuzzy();
     } catch (error) {
+      if (sequence !== state.loadSeq || !reviewVisible()) return;
       state.fuzzyGroups = [];
       state.fuzzyScanned = false;
       state.fuzzyQueued.clear();
@@ -514,5 +528,11 @@
   $('#fuzzyCategory')?.addEventListener('change', () => { state.fuzzyOffset = 0; renderFuzzy(); });
   $('#fuzzyPrev')?.addEventListener('click', () => { state.fuzzyOffset = Math.max(0, state.fuzzyOffset - 50); renderFuzzy(); });
   $('#fuzzyNext')?.addEventListener('click', () => { state.fuzzyOffset += 50; renderFuzzy(); });
-  document.addEventListener('adminv2:navigate', event => { if (event.detail?.route === 'performers') load(); });
+  document.addEventListener('adminv2:navigate', event => {
+    const detail = event.detail;
+    reviewActive = detail?.route === 'performers' && detail.performersTab === 'review';
+    state.loadSeq += 1;
+    state.proposalSeq += 1;
+    if (reviewActive) load();
+  });
 })();

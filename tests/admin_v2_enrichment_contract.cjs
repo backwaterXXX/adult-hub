@@ -10,12 +10,20 @@ assert.match(template, /configured sync cadence is shown below; when the sync ru
   'the Enrichment tab must show automatic cadence while qualifying that the sync runner must be active');
 assert.match(template, /Remaining counts are estimates because provider eligibility and retries vary/,
   'the Enrichment tab must label remaining-work counts as estimates');
-assert.match(template, /href="#quality\?tab=enrichment"[^>]*data-section-tab="enrichment"/,
-  'Enrichment must be a bookmarkable Catalog Health tab');
-assert.match(fs.readFileSync('resolver/static/admin-v2/admin-v2.css', 'utf8'), /#qualityEnrichmentPane \.metadata-proposal \{ display: grid;/, 'proposal cards must lay out their contents vertically');
-assert.match(fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8'), /\$\('#qualityAdvanced'\)\.hidden = next\.route === 'quality' && next\.qualityTab === 'enrichment'/, 'audit details must be hidden on the enrichment tab');
-assert.match(template, /id="qualityEnrichmentPane"/,
-  'enrichment progress and proposals must share the Catalog Health Enrichment pane');
+assert.match(template, /href="#quality\?tab=enrichment-progress"[^>]*data-section-tab="enrichment-progress"/,
+  'Enrichment progress must be a bookmarkable Catalog Health tab');
+assert.match(fs.readFileSync('resolver/static/admin-v2/admin-v2.css', 'utf8'), /#librarySuggestionsPane \.metadata-proposal \{ display: grid;/, 'proposal cards must lay out their contents vertically');
+assert.match(fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8'), /\$\('#qualityAdvanced'\)\.hidden = next\.route === 'quality' && next\.qualityTab === 'enrichment-progress'/, 'audit details must be hidden on the enrichment progress tab');
+const suggestionsAt = template.indexOf('id="metadataProposalsRows"');
+const enrichmentPaneAt = template.indexOf('id="qualityEnrichmentPane"');
+assert.notEqual(suggestionsAt, -1, 'the suggestion queue must stay reachable in Library → Metadata suggestions');
+assert.notEqual(enrichmentPaneAt, -1, 'enrichment progress must keep its own Catalog Health pane');
+assert.ok(suggestionsAt < enrichmentPaneAt,
+  'the suggestion queue must no longer live inside the enrichment progress pane');
+assert.doesNotMatch(template.slice(0, enrichmentPaneAt), /id="enrichmentScan"/,
+  'the manual enrichment scan must not appear in the Metadata suggestions area');
+assert.match(template, /id="librarySuggestionsPane"/,
+  'metadata suggestions must live in their own Library pane');
 assert.match(template, /id="enrichmentFreshnessAnnouncement"[^>]*role="status"[^>]*aria-live="polite"/,
   'freshness changes must be announced without making every 15-second timestamp update live');
 
@@ -30,7 +38,7 @@ class Element {
 }
 
 const elements = new Map();
-const location = { hash: '#quality?tab=enrichment' };
+const location = { hash: '#quality?tab=enrichment-progress' };
 let navigationListener;
 let visibilityListener;
 let pollCallback;
@@ -56,7 +64,9 @@ const calls = [];
 let responseJobId = 'metadata-job-1';
 let responseJobState = 'queued';
 let failNextGet = false;
-const window = { confirm: () => true, AdminV2: { ...createAdminV2Helpers(document), postJson: async (url, body) => {
+const window = { confirm: () => true, AdminV2: { ...createAdminV2Helpers(document),
+  currentRoute: () => ({ route: 'quality', qualityTab: new URLSearchParams(location.hash.split('?')[1] || '').get('tab') }),
+  postJson: async (url, body) => {
   calls.push({ url, body });
   return { ok: true, job_id: responseJobId, state: responseJobState };
 }, getJson: async url => {
@@ -159,8 +169,15 @@ vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/enrichment.js', 'ut
   assert.strictEqual(feedback.children.length, 0);
   await navigationListener({ detail: { route: 'system' } });
   assert.strictEqual(pollInterval, 30000);
+  const callsBeforeLegacyTab = getCalls;
+  await navigationListener({ detail: { route: 'library', libraryTab: 'suggestions' } });
+  assert.strictEqual(pollCallback(), undefined,
+    'the Library suggestions tab must not keep the enrichment progress poll running');
   await navigationListener({ detail: { route: 'quality', tab: 'enrichment' } });
-  assert.strictEqual(pollInterval, 30000, 'the Enrichment tab starts low-frequency progress polling');
+  assert.strictEqual(getCalls, callsBeforeLegacyTab,
+    'the old Enrichment tab key now points at Library suggestions and must not poll progress');
+  await navigationListener({ detail: { route: 'quality', qualityTab: 'enrichment-progress' } });
+  assert.strictEqual(pollInterval, 30000, 'the Enrichment progress tab starts low-frequency progress polling');
   responseJobId = 'metadata-job-1'; responseJobState = 'queued';
   await elements.get('#enrichmentScan').listeners.click({ currentTarget: elements.get('#enrichmentScan') });
   const beforePoll = getCalls;

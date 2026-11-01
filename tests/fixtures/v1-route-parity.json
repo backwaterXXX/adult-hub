@@ -299,7 +299,7 @@
         "tests/test_video_duplicates.py",
         "tests/test_video_duplicate_jobs.py",
         "tests/admin_v2_jobs_deeplink.cjs",
-        "tests/admin_v2_organize_tabs.cjs",
+        "tests/admin_v2_section_tabs.cjs",
         "tests/admin_ui_contract.cjs",
         "tests/test_admin_operations.py"
       ]

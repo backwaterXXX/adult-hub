@@ -31,7 +31,8 @@ function descendants(root, predicate) {
 (async () => {
   const ids = ['qualityRefresh', 'qualityRunAudit', 'qualityAuditMode', 'qualityFeedback', 'qualitySummary', 'qualityTrend', 'qualityHistory', 'qualityKind',
     'qualityField', 'qualityStatus', 'qualityFilters', 'qualityActionFeedback', 'qualityRows', 'qualityPagination',
-    'metadataProposalsRefresh', 'metadataProposalsFeedback', 'metadataProposalsRows', 'metadataProposalsPagination'];
+    'metadataProposalsRefresh', 'metadataProposalsFeedback', 'metadataProposalsRows', 'metadataProposalsPagination',
+    'librarySuggestionsPane'];
   const elements = Object.fromEntries(ids.map(id => [id, new Element(id === 'qualityFilters' ? 'form' : 'div')]));
   elements.qualityKind.value = '';
   elements.qualityAuditMode.value = 'full';
@@ -63,6 +64,12 @@ function descendants(root, predicate) {
     dispatchEvent(event) { this.dispatched ||= []; this.dispatched.push(event.type); },
   };
   const window = { AdminV2: {
+    // Mirrors the router's hash parsing closely enough for the script's first render.
+    currentRoute: () => {
+      const [route, query] = location.hash.replace(/^#/, '').split('?', 2);
+      const tab = new URLSearchParams(query || '').get('tab');
+      return { route, qualityTab: route === 'quality' ? (tab === 'enrichment-progress' ? tab : 'issues') : null, libraryTab: tab };
+    },
     async getJson(path) {
       gets.push(path);
       if (path.endsWith('/quality/summary')) return ready ? {
@@ -115,6 +122,7 @@ function descendants(root, predicate) {
         if (payload.plan_id === 'metadata-plan') proposalPending = false;
         return { ok: true, job_id: payload.plan_id === 'metadata-plan' ? 'metadata-job' : 'repair-job' };
       }
+      if (path.endsWith('/quality/proposals/12/reject')) { proposalPending = false; return { ok: true }; }
       if (path.endsWith('/quality/proposals/12/refresh')) return { ok: true, revision: 3 };
       if (path.endsWith('/operations/preview')) return { ok: true, plan_id: 'metadata-plan', fields: {
         plot: { before: 'Current description', after: 'Edited suggestion' },
@@ -251,13 +259,19 @@ function descendants(root, predicate) {
   assert.equal(currentUrl.searchParams.get('keep'), '1');
   assert.equal(currentUrl.searchParams.has('quality_offset'), false);
   assert.ok(gets.at(-1).includes('status=open&limit=50&offset=0') || gets.at(-1).includes('limit=50&offset=0&status=open'));
-  currentUrl = new URL('http://localhost/admin/v2/#quality?tab=enrichment');
+  currentUrl = new URL('http://localhost/admin/v2/#library?tab=suggestions');
   const getsBeforeProposalTab = gets.length;
-  await document.listeners['adminv2:navigate']({ detail: { route: 'quality', tab: 'enrichment' } });
+  await document.listeners['adminv2:navigate']({ detail: { route: 'library', libraryTab: 'suggestions' } });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(gets.length, getsBeforeProposalTab + 1,
-    'opening Enrichment loads proposals without refetching the Issues audit');
+    'opening Metadata suggestions loads proposals without refetching the Issues audit');
   assert.match(gets.at(-1), /quality\/proposals\?/);
+  await document.listeners['adminv2:navigate']({ detail: { route: 'quality', qualityTab: 'enrichment-progress' } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(gets.length, getsBeforeProposalTab + 1,
+    'the enrichment progress tab must not load the suggestion queue');
+  await document.listeners['adminv2:navigate']({ detail: { route: 'library', libraryTab: 'suggestions' } });
+  await new Promise(resolve => setImmediate(resolve));
   proposalPending = true;
   await elements.metadataProposalsRefresh.listeners.click();
   await new Promise(resolve => setImmediate(resolve));
@@ -289,5 +303,33 @@ function descendants(root, predicate) {
   assert.equal(posts[start + 1].payload.expected_revision, 3);
   assert.equal(posts[start + 1].payload.changes.plot, 'Edited after stale warning');
   assert.equal(posts.length, start + 2, 'refreshing and previewing does not execute a metadata update');
+
+  // Switching to another tab while a suggestion list is in flight must drop the late result.
+  // A revision conflict invalidates the approved preview; approval must be reviewed again.
+  const originalPost = window.AdminV2.postJson;
+  window.AdminV2.postJson = async (path, payload) => {
+    if (path.endsWith('/operations/execute')) { const error = new Error('Metadata changed concurrently'); error.status = 409; throw error; }
+    return originalPost(path, payload);
+  };
+  const conflictQueue = descendants(elements.metadataProposalsRows, node => node.textContent === 'Queue approved metadata update')[0];
+  await conflictQueue.listeners.click();
+  assert.match(elements.metadataProposalsFeedback.textContent, /Metadata changed concurrently/);
+  assert.equal(descendants(elements.metadataProposalsRows, node => node.textContent === 'Queue approved metadata update').length, 0,
+    'a stale approved plan cannot be executed again without a new preview');
+  window.AdminV2.postJson = originalPost;
+  const rejectProposal = descendants(elements.metadataProposalsRows, node => node.textContent === 'Reject suggestion')[0];
+  await rejectProposal.listeners.click();
+  assert.ok(posts.some(item => item.path.endsWith('/quality/proposals/12/reject')));
+  assert.match(elements.metadataProposalsFeedback.textContent, /0 suggestions/);
+
+  const feedbackBeforeLateLoad = elements.metadataProposalsFeedback.textContent;
+  proposalPending = true; proposalStale = false;
+  elements.librarySuggestionsPane.hidden = true;
+  await elements.metadataProposalsRefresh.listeners.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(elements.metadataProposalsFeedback.textContent, feedbackBeforeLateLoad,
+    'a late suggestion list must not update feedback after leaving the Metadata suggestions tab');
+  assert.deepEqual(descendants(elements.metadataProposalsRows, node => node.dataset.proposalField === 'plot'), [],
+    'a late suggestion list must not render proposal editors after leaving the Metadata suggestions tab');
   process.stdout.write('PASS: Quality findings, field filters, metadata proposal edit/preview/approval, repair, triage, and history\n');
 })().catch(error => { console.error(error); process.exitCode = 1; });

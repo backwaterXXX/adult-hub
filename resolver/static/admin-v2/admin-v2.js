@@ -11,7 +11,7 @@
   const ISSUE_KINDS = new Set(['sync_failure', 'sync_never_run', 'sync_backlog', 'job_failure', 'job_stalled', 'unavailable_video', 'missing_metadata', 'missing_nfo', 'invalid_nfo', 'nfo_metadata_mismatch', 'missing_artwork', 'backup', 'quality_finding', 'quality_audit', 'system']);
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-  const state = { route: 'start', detailId: null, organizeTab: null, performerTab: null, qualityTab: null, systemTab: null, peopleDirectoryQuery: '', status: null, statusLoaded: false, statusRequestSeq: 0,
+  const state = { route: 'start', detailId: null, libraryTab: 'videos', duplicateMatch: 'catalog', performersTab: 'review', performerArea: '', qualityTab: null, systemTab: null, peopleDirectoryQuery: '', status: null, statusLoaded: false, statusRequestSeq: 0,
     services: { checking: true }, problemSummary: null, systemStatusInFlight: false,
     headerStatusInFlight: false, headerStatusTimer: null, headerSyncInFlight: false, headerSyncTimer: null,
     list: null, lastSuccessfulQuery: null, offset: 0, total: null, nextOffset: null,
@@ -24,7 +24,7 @@
     metadataRequest: null, metadataPlanId: null, metadataDialogSeq: 0, metadataBulkVideoIds: null, metadataBulkDraft: null,
     duplicateOffset: 0, duplicateTotal: 0, duplicateItems: [], duplicateBusy: false, duplicateRequestSeq: 0,
     duplicateScans: [], duplicateRequests: new Map(),
-    duplicatePending: null,
+    duplicatePending: null, visualRequestSeq: 0,
     peopleOffset: 0, peopleTotal: 0, peopleBusy: false, peopleRequestSeq: 0, peopleTimer: null,
     quarantineOffset: 0, quarantineTotal: 0, quarantineBusy: false, quarantineRequestSeq: 0,
     pendingPersonMerge: null,
@@ -37,12 +37,15 @@
     library: { title: 'Library', intro: 'Find videos and check their source and availability.' },
     quality: { title: 'Catalog Health', intro: 'Review catalog metadata and local file issues.' },
     sources: { title: 'Sources', intro: 'Channels and synchronization history.' },
-    organize: { title: 'Organize', intro: 'Review duplicates and catalog quality.' },
-    performers: { title: 'Performers', intro: 'Review performer names detected in Telegram titles.' },
+    performers: { title: 'Performers', intro: 'Browse the performer catalog, or review the names that still need a decision.' },
     jobs: { title: 'Tasks', intro: 'The operation queue and history.' },
     schedules: { title: 'Schedules', intro: 'Recurring tasks and their schedules.' },
     system: { title: 'System', intro: 'Run consistency audits and review service maintenance.' }
   };
+  const LIBRARY_TABS = ['videos', 'duplicates', 'suggestions', 'quarantine'];
+  const PERFORMER_TABS = ['directory', 'review'];
+  const PERFORMER_AREAS = ['proposals', 'name-variants'];
+  const DUPLICATE_MATCHES = ['catalog', 'visual'];
   // Catalog review screens are reached through Library until they move there,
   // so the menu highlights Library while their own screen title is shown.
   const navOwner = route => (route === 'quality' ? 'library' : route);
@@ -81,16 +84,56 @@
     history[replace ? 'replaceState' : 'pushState']({}, '', url);
     renderLocation();
   }
+  // Stage 3 moved screens into Library and Performers tabs; old addresses are
+  // rewritten to the canonical one so bookmarks and issue links keep working.
+  function legacyHashRewrite(hash) {
+    if (hash.startsWith('film/')) return null;
+    const [route, query = ''] = hash.split('?', 2);
+    const params = new URLSearchParams(query);
+    const tab = params.get('tab') || '';
+    const target = (nextRoute, nextTab, extra) => {
+      params.delete('tab'); params.delete('match'); params.delete('area');
+      if (nextTab) params.set('tab', nextTab);
+      for (const [key, value] of Object.entries(extra || {})) params.set(key, value);
+      return `#${nextRoute}${params.toString() ? `?${params}` : ''}`;
+    };
+    if (route === 'organize') {
+      return tab === 'people' ? target('performers', 'directory')
+        : target('library', tab === 'quarantine' ? 'quarantine' : 'duplicates');
+    }
+    if (route === 'library' && tab === 'visual') return target('library', 'duplicates', { match: 'visual' });
+    if (route === 'library' && tab === 'proposals') return target('library', 'suggestions');
+    if (route === 'quality' && tab === 'visual') return target('library', 'duplicates', { match: 'visual' });
+    if (route === 'quality' && ['duplicates', 'quarantine', 'enrichment'].includes(tab)) {
+      return target('library', tab === 'enrichment' ? 'suggestions' : tab);
+    }
+    if (route === 'performers' && ['proposals', 'matching'].includes(tab)) {
+      return target('performers', 'review', { area: tab === 'matching' ? 'name-variants' : 'proposals' });
+    }
+    return null;
+  }
+  function libraryHash(tab, match) {
+    const params = new URLSearchParams();
+    if (tab && tab !== 'videos') params.set('tab', tab);
+    if (tab === 'duplicates' && match === 'visual') params.set('match', 'visual');
+    const query = params.toString();
+    return query ? `library?${query}` : 'library';
+  }
   function currentRoute() {
-    const hash = location.hash.replace(/^#/, '');
+    const rawHash = location.hash.replace(/^#/, '');
+    const rewritten = legacyHashRewrite(rawHash);
+    if (rewritten) history.replaceState({}, '', rewritten);
+    const hash = rewritten ? rewritten.slice(1) : rawHash;
+    const previous = { libraryTab: state.libraryTab || 'videos', duplicateMatch: state.duplicateMatch || 'catalog' };
     if (hash.startsWith('film/')) {
-      try { return { route: 'library', detailId: decodeURIComponent(hash.slice(5)) }; } catch { return { route: 'library', detailId: hash.slice(5) }; }
+      try { return { route: 'library', primaryRoute: 'library', detailId: decodeURIComponent(hash.slice(5)), ...previous }; } catch { return { route: 'library', primaryRoute: 'library', detailId: hash.slice(5), ...previous }; }
     }
     const [route, query = ''] = hash.split('?', 2);
-    const tab = new URLSearchParams(query).get('tab') || '';
+    const params = new URLSearchParams(query);
+    const tab = params.get('tab') || '';
     if (route === 'jobs' && tab === 'schedules') {
-      const params = new URLSearchParams(query); params.delete('tab');
-      history.replaceState({}, '', '#schedules' + (params.toString() ? '?' + params : ''));
+      const rest = new URLSearchParams(query); rest.delete('tab');
+      history.replaceState({}, '', '#schedules' + (rest.toString() ? '?' + rest : ''));
       return { route: 'schedules', primaryRoute: 'schedules', detailId: null };
     }
     if (route === 'system' && ['audit', 'audits', 'consistency'].includes(tab)) {
@@ -105,33 +148,23 @@
     if (route === 'system') {
       return { route, primaryRoute: route, systemTab: ['diagnostics', 'backups', 'activity'].includes(tab) ? tab : 'maintenance', detailId: null };
     }
-    if (route === 'quality' && tab === 'enrichment') {
-      return { route: 'quality', primaryRoute: 'quality', qualityTab: 'enrichment', detailId: null };
+    if (route === 'quality') {
+      return { route, primaryRoute: 'quality', detailId: null, qualityTab: tab === 'enrichment-progress' ? 'enrichment-progress' : 'issues' };
     }
-    if (route === 'quality' && tab === 'visual') {
-      return { route: 'organize', primaryRoute: 'quality', qualityTab: 'visual', organizeTab: 'duplicates', detailId: null, focusTarget: '#visualDuplicateTitle' };
-    }
-    if (route === 'quality' && ['duplicates', 'quarantine'].includes(tab)) {
-      return { route: 'organize', primaryRoute: 'quality', organizeTab: tab, detailId: null };
-    }
-    if (route === 'quality') return { route, primaryRoute: route, qualityTab: 'issues', detailId: null };
-    if (route === 'performers' && tab === 'directory') {
-      return { route: 'organize', primaryRoute: 'performers', organizeTab: 'people', detailId: null };
+    if (route === 'library') {
+      const libraryTab = LIBRARY_TABS.includes(tab) ? tab : 'videos';
+      const duplicateMatch = libraryTab === 'duplicates' && params.get('match') === 'visual' ? 'visual' : 'catalog';
+      return { route, primaryRoute: 'library', detailId: null, libraryTab, duplicateMatch,
+        focusTarget: duplicateMatch === 'visual' ? '#visualDuplicateTitle' : null };
     }
     if (route === 'performers') {
-      return { route, primaryRoute: route, performerTab: ['directory', 'matching'].includes(tab) ? tab : 'proposals', detailId: null };
-    }
-    if (route === 'organize') {
-      const organizeTab = ['duplicates', 'people', 'quarantine'].includes(tab) ? tab : 'duplicates';
-      return { route, primaryRoute: organizeTab === 'people' ? 'performers' : 'quality', organizeTab, detailId: null };
+      const performersTab = PERFORMER_TABS.includes(tab) ? tab : 'review';
+      const area = params.get('area') || '';
+      const performerArea = performersTab === 'review' && PERFORMER_AREAS.includes(area) ? area : '';
+      return { route, primaryRoute: 'performers', detailId: null, performersTab, performerArea,
+        focusTarget: performerArea === 'name-variants' ? '#fuzzyTitle' : performerArea ? '#performerProposalsTitle' : null };
     }
     return routeInfo[route] ? { route, primaryRoute: route, detailId: null } : { route: 'start', primaryRoute: 'start', detailId: null };
-  }
-  function goToSectionTab(route, tab) {
-    const url = new URL(location.href);
-    url.hash = `${route}?tab=${encodeURIComponent(tab)}`;
-    history.pushState({}, '', url);
-    renderLocation();
   }
   function currentIssueFilterKey() {
     const params = new URLSearchParams();
@@ -168,13 +201,62 @@
     if (ISSUE_KINDS.has(kind)) params.set('kind', kind);
     return `${V2_API}/issues?${params}`;
   }
+  const SECTION_TAB_PANES = {
+    libraryTabList: { videos: '#libraryVideosPane', duplicates: '#libraryDuplicatesPane',
+      suggestions: '#librarySuggestionsPane', quarantine: '#libraryQuarantinePane' },
+    performersTabList: { directory: '#performerDirectoryPane', review: '#performerReviewPane' }
+  };
+  // Each tab anchor keeps its panel id in sync, following the <name>Tab / <name>Pane convention.
+  function syncSectionTabs(listId, activeTab) {
+    for (const [name, selector] of Object.entries(SECTION_TAB_PANES[listId] || {})) {
+      const selected = name === activeTab;
+      const pane = $(selector);
+      if (pane) pane.hidden = !selected;
+      const tab = $(selector.replace(/Pane$/, 'Tab'));
+      if (tab) tab.setAttribute('aria-selected', String(selected));
+    }
+  }
+  function setDuplicateMatch(match) {
+    const active = match === 'visual' ? 'visual' : 'catalog';
+    for (const name of DUPLICATE_MATCHES) {
+      const button = $(name === 'visual' ? '#duplicateMatchVisual' : '#duplicateMatchCatalog');
+      if (button) button.setAttribute('aria-pressed', String(name === active));
+      const group = $(name === 'visual' ? '#duplicateVisualGroup' : '#duplicateCatalogGroup');
+      if (group) group.hidden = name !== active;
+    }
+    return active;
+  }
+  function duplicateGroupIsVisible(match) {
+    const group = $(match === 'visual' ? '#duplicateVisualGroup' : '#duplicateCatalogGroup');
+    return state.route === 'library' && !$('#libraryDuplicatesPane').hidden && group && !group.hidden;
+  }
+  function selectDuplicateMatch(match) {
+    if (state.duplicateMatch === match) return;
+    history.pushState({}, '', urlFor(libraryHash('duplicates', match)));
+    renderLocation();
+  }
+  const ADVANCED_FILTER_NAMES = ['studio', 'performer', 'tag', 'missing', 'sort'];
+  function updateMoreFilterCount() {
+    const badge = $('#moreFilterCount');
+    if (!badge) return;
+    const form = $('#libraryFilters');
+    const active = ADVANCED_FILTER_NAMES.filter(name => {
+      const field = form.elements.namedItem(name);
+      const value = field ? field.value.trim() : '';
+      return value && !(name === 'sort' && value === 'first_seen');
+    }).length;
+    badge.hidden = active === 0;
+    badge.textContent = active ? String(active) : '';
+  }
   function renderLocation() {
     const next = currentRoute();
     const routeChanged = next.route !== state.route;
     const detailChanged = next.detailId !== state.detailId;
-    const organizeTabChanged = next.organizeTab !== state.organizeTab;
+    const libraryTabChanged = (next.libraryTab || 'videos') !== state.libraryTab;
+    const duplicateMatchChanged = (next.duplicateMatch || 'catalog') !== state.duplicateMatch;
+    const performersTabChanged = (next.performersTab || 'review') !== state.performersTab;
     const systemTabChanged = (next.systemTab || null) !== state.systemTab;
-    const peopleDirectoryQuery = next.route === 'organize' && next.primaryRoute === 'performers'
+    const peopleDirectoryQuery = next.route === 'performers' && next.performersTab === 'directory'
       ? routeQueryParams().get('person') || '' : '';
     const peopleDirectoryQueryChanged = peopleDirectoryQuery !== state.peopleDirectoryQuery;
     const previousIssueFilterKey = state.route === 'start' && state.issueFiltersInitialized
@@ -192,8 +274,14 @@
     clearTimeout(state.searchTimer);
     state.searchTimer = null;
     state.filterHistoryActive = false;
-    if (routeChanged) {
+    if (routeChanged || libraryTabChanged || duplicateMatchChanged || performersTabChanged) {
       beginOperationRequest();
+      state.visualRequestSeq += 1;
+      state.duplicateRequestSeq += 1;
+      state.peopleRequestSeq += 1;
+      state.quarantineRequestSeq += 1;
+      state.requestSeq += 1;
+      state.listAbort?.abort();
       if ($('#operationDialog')?.open) closeDialog($('#operationDialog'));
       if ($('#metadataDialog')?.open) closeDialog($('#metadataDialog'));
     }
@@ -203,8 +291,10 @@
     if (detailChanged && !next.detailId) state.detailOpener = null;
     state.route = next.route;
     state.detailId = next.detailId;
-    state.organizeTab = next.organizeTab || null;
-    state.performerTab = next.performerTab || null;
+    state.libraryTab = next.libraryTab || 'videos';
+    state.duplicateMatch = next.duplicateMatch || 'catalog';
+    state.performersTab = next.performersTab || 'review';
+    state.performerArea = next.performerArea || '';
     state.qualityTab = next.qualityTab || null;
     state.systemTab = next.systemTab || null;
     state.peopleDirectoryQuery = peopleDirectoryQuery;
@@ -216,19 +306,14 @@
       readIssueFiltersFromUrl();
       state.issueFiltersInitialized = true;
     }
-    $$('.view[data-view]').forEach(node => { node.hidden = node.dataset.view !== (['start', 'library', 'organize', 'performers'].includes(state.route) ? state.route : 'operational'); });
+    $$('.view[data-view]').forEach(node => { node.hidden = node.dataset.view !== (['start', 'library', 'performers'].includes(state.route) ? state.route : 'operational'); });
     $$('.primary-nav a[data-route]').forEach(link => {
       // Legacy screens stay reachable; the menu marks the section that owns them.
       const active = link.dataset.route === navOwner(next.primaryRoute || state.route);
       if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
     });
     setText($('#crumbCurrent'), next.detailId ? 'Video details' : routeInfo[next.primaryRoute || state.route].title);
-    const performerTab = next.performerTab || (next.primaryRoute === 'performers' ? 'directory' : '');
-    $$('.performer-section-tabs [data-section-tab]').forEach(link => {
-      if (link.dataset.sectionTab === performerTab) link.setAttribute('aria-current', 'page');
-      else link.removeAttribute('aria-current');
-    });
-    const catalogTab = next.qualityTab || next.organizeTab || (next.route === 'quality' ? 'issues' : '');
+    const catalogTab = next.route === 'quality' ? (next.qualityTab || 'issues') : '';
     $$('.catalog-health-tabs [data-section-tab]').forEach(link => {
       if (link.dataset.sectionTab === catalogTab) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
@@ -242,22 +327,14 @@
       else link.removeAttribute('aria-current');
     });
     $('#qualityIssuesPane').hidden = next.route === 'quality' && next.qualityTab !== 'issues';
-    $('#qualityEnrichmentPane').hidden = next.route === 'quality' && next.qualityTab !== 'enrichment';
-    $('#qualityOverview').hidden = next.route === 'quality' && next.qualityTab === 'enrichment';
-    $('#qualityAdvanced').hidden = next.route === 'quality' && next.qualityTab === 'enrichment';
-    $$('.performer-section-tabs').forEach(nav => { nav.hidden = next.primaryRoute !== 'performers'; });
-    // The legacy Organize tabs remain available on the legacy route only.
-    // Canonical Performers and Catalog Health provide their own tab bars.
-    $('#organizeTabList').hidden = next.route !== 'organize' || next.primaryRoute !== 'organize';
-    if (next.route === 'organize') {
-      setText($('#organizeTitle'), next.primaryRoute === 'performers' ? 'Performer Directory' : 'Catalog Health');
-      setText($('#organizeIntro'), next.primaryRoute === 'performers'
-        ? 'Search the canonical performer directory, review aliases, and open a filmography.'
-        : 'Review duplicate candidates and make reversible catalog decisions.');
-    }
-    $('#performerProposalsPane').hidden = next.route === 'performers' && performerTab !== 'proposals';
-    $('#performerNameMatchingPane').hidden = next.route === 'performers' && performerTab !== 'matching';
-    if (!['start', 'library', 'organize', 'performers'].includes(next.route)) {
+    $('#qualityEnrichmentPane').hidden = next.route === 'quality' && next.qualityTab !== 'enrichment-progress';
+    $('#qualityOverview').hidden = next.route === 'quality' && next.qualityTab === 'enrichment-progress';
+    $('#qualityAdvanced').hidden = next.route === 'quality' && next.qualityTab === 'enrichment-progress';
+    syncSectionTabs('libraryTabList', state.libraryTab);
+    setHidden('#librarySummary', state.libraryTab !== 'videos');
+    syncSectionTabs('performersTabList', state.performersTab);
+    setDuplicateMatch(state.duplicateMatch);
+    if (!['start', 'library', 'performers'].includes(next.route)) {
       // Keep the canonical route in state; only the view key is shared.
       state.route = next.route;
       showOperationalView(next);
@@ -284,21 +361,44 @@
       if (libraryFiltersChanged) clearLibrarySelection();
       if (detailChanged && next.detailId) loadDetail(next.detailId);
       else if (detailChanged && !next.detailId) closeDetailVisual();
-      if ((routeChanged || libraryQueryChanged) && !next.detailId) loadVideos();
+      if ((routeChanged || libraryTabChanged || libraryQueryChanged) && !next.detailId) loadVideos();
       else if (routeChanged && next.detailId && $('#detailOverlay').open) loadVideos();
     } else {
       closeDetailVisual();
     }
-    if (next.route === 'organize' && (routeChanged || organizeTabChanged || peopleDirectoryQueryChanged)) showOrganizeTab(next.organizeTab || 'duplicates');
+    if (next.route === 'library' && (routeChanged || libraryTabChanged || duplicateMatchChanged)) {
+      showLibraryTab(state.libraryTab, state.duplicateMatch);
+    }
+    if (next.route === 'performers' && (routeChanged || performersTabChanged || peopleDirectoryQueryChanged)) {
+      showPerformersTab(state.performersTab);
+    }
     document.dispatchEvent(new CustomEvent('adminv2:navigate', {
-      detail: { route: state.route, detailId: state.detailId, tab: state.qualityTab, systemTab: state.systemTab, sourcesTab: next.sourcesTab || null }
+      detail: {
+        route: state.route, detailId: state.detailId, tab: state.qualityTab,
+        libraryTab: state.route === 'library' ? state.libraryTab : null,
+        duplicateMatch: state.route === 'library' && state.libraryTab === 'duplicates' ? state.duplicateMatch : null,
+        performersTab: state.route === 'performers' ? state.performersTab : null,
+        performerArea: state.route === 'performers' ? state.performerArea : null,
+        systemTab: state.systemTab, sourcesTab: next.sourcesTab || null
+      }
     }));
     if (next.focusTarget) requestAnimationFrame(() => {
       const target = $(next.focusTarget);
       target?.focus({ preventScroll: true });
-      if (next.qualityTab === 'visual') target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (next.duplicateMatch === 'visual') target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
     if (restoreDetailFocus?.isConnected) requestAnimationFrame(() => restoreDetailFocus.focus({ preventScroll: true }));
+  }
+  function showLibraryTab(tab, match) {
+    if (tab === 'duplicates') {
+      if (match === 'visual') loadVisualDuplicateResults();
+      else loadDuplicateCandidates({ cacheOnly: true });
+      return;
+    }
+    if (tab === 'quarantine') loadQuarantine();
+  }
+  function showPerformersTab(tab) {
+    if (tab === 'directory') loadPeople();
   }
   function showOperationalView(routeState) {
     const route = routeState.route;
@@ -323,6 +423,7 @@
     state.offset = Math.max(0, Number(params.get('offset')) || 0);
     state.catalogCursor = params.get('cursor') || null;
     state.catalogCursorDirection = params.get('cursor_direction') === 'before' ? 'before' : 'after';
+    updateMoreFilterCount();
   }
   function routeQueryParams() {
     const params = new URLSearchParams(location.search);
@@ -377,6 +478,7 @@
       if (field) field.value = typeof view.filters[name] === 'string' ? view.filters[name] : '';
     }
     resetCatalogPage();
+    updateMoreFilterCount();
     commitFilterUrl();
     loadVideos();
   }
@@ -409,10 +511,14 @@
   }
   function writeFilterUrl(replace = true) {
     const url = new URL(location.href);
-    if (url.hash.includes('?')) url.hash = url.hash.slice(0, url.hash.indexOf('?'));
+    const hashQuery = new URLSearchParams(url.hash.includes('?') ? url.hash.slice(url.hash.indexOf('?') + 1) : '');
+    const route = url.hash.replace(/^#/, '').split('?', 2)[0];
+    url.hash = route;
     const keep = new Set(['q', 'channel_id', 'studio', 'performer', 'tag', 'availability', 'missing', 'sort', 'offset', 'cursor', 'cursor_direction']);
     for (const key of keep) url.searchParams.delete(key);
     for (const [key, value] of filterParams()) url.searchParams.set(key, value);
+    // Library keeps its selected tab in the hash, so filter writes must not drop it.
+    if (route === 'library') url.hash = libraryHash(hashQuery.get('tab'), hashQuery.get('match'));
     if (url.href === location.href) return;
     history[replace ? 'replaceState' : 'pushState']({}, '', url);
   }
@@ -652,7 +758,8 @@
   }
   window.AdminV2 = Object.freeze({
     requestJson, getJson, postJson, putJson, deleteJson, openDialog, closeDialog, setFeedback, downloadBlob,
-    create, el: create, setText, announce, safeId, scrub, titleCase, detailField, formatDuration, scheduleSync
+    create, el: create, setText, announce, safeId, scrub, titleCase, detailField, formatDuration, scheduleSync,
+    currentRoute
   });
   function renderServiceChip() {
     const element = $('#serviceStatus');
@@ -982,7 +1089,7 @@
     $('#issuesLoadMore').disabled = state.issueLoading;
   }
   const ISSUE_ROUTE_PATTERNS = [
-    /^\/?(?:admin\/v2\/)?#(?:library|quality|sources|organize|jobs|system|performers|schedules)(?:[?&/]|$)/,
+    /^\/?(?:admin\/v2\/)?#(?:library|quality|sources|jobs|system|performers|schedules)(?:[?&/]|$)/,
     /^\/admin\/v2\/\?source_id=[A-Za-z0-9%._~-]+#sources$/,
     /^\/admin\/v2\/\?job_id=[A-Za-z0-9%._~-]{1,128}#jobs$/,
     /^\/admin\/v2\/\?quality_kind=(?:missing_metadata|missing_nfo|invalid_nfo|nfo_metadata_mismatch|missing_artwork)#quality$/,
@@ -1562,7 +1669,7 @@
     }, 5000);
   }
   async function loadVideos() {
-    if (state.route !== 'library') return;
+    if (state.route !== 'library' || state.libraryTab !== 'videos') return;
     if (state.listAbort) state.listAbort.abort();
     const controller = new AbortController(); state.listAbort = controller;
     const sequence = ++state.requestSeq;
@@ -1916,7 +2023,7 @@
     const url = new URL(location.href);
     if (url.hash.startsWith('#film/')) {
       if (history.state && history.state.detailOpener) history.back();
-      else { history.replaceState({}, '', urlFor('library')); renderLocation(); }
+      else { history.replaceState({}, '', urlFor(libraryHash(state.libraryTab, state.duplicateMatch))); renderLocation(); }
     }
   }
   function openSideDetail(id) {
@@ -2210,9 +2317,8 @@
       }
     }
   }
-  async function loadDuplicateCandidates({ refresh = false } = {}) {
-    void loadVisualDuplicateResults();
-    if (state.route !== 'organize') return;
+  async function loadDuplicateCandidates({ refresh = false, cacheOnly = false } = {}) {
+    if (!duplicateGroupIsVisible('catalog')) return;
     const sequence = ++state.duplicateRequestSeq;
     const category = $('#duplicateCategory').value;
     if (refresh) {
@@ -2246,6 +2352,10 @@
       state.duplicateBusy = false;
       return;
     }
+    if (cacheOnly && category !== 'oshash_linked') {
+      setText(feedback, 'Choose Scan catalog to find duplicate candidates. Scans run only when requested.');
+      return;
+    }
     state.duplicateBusy = true;
     setText(feedback, category === 'oshash_linked' ? 'Loading OSHASH-linked videos…' : 'Scanning duplicate candidates…');
     const requestKey = `${category}:${scanOffset}`;
@@ -2261,7 +2371,7 @@
       }
       const { payload } = await pendingRequest;
       if (state.duplicateRequests.get(requestKey) === pendingRequest) state.duplicateRequests.delete(requestKey);
-      if (sequence !== state.duplicateRequestSeq || state.route !== 'organize') return;
+      if (sequence !== state.duplicateRequestSeq || !duplicateGroupIsVisible('catalog')) return;
       if (!payload?.ok) throw new Error(responseError(payload, 'Could not scan duplicates.'));
       const total = Number(payload.total) || 0;
       if (total === 0) state.duplicateOffset = 0;
@@ -2302,17 +2412,19 @@
       }
     } catch (error) {
       if (state.duplicateRequests.get(requestKey) === pendingRequest) state.duplicateRequests.delete(requestKey);
-      if (sequence !== state.duplicateRequestSeq || state.route !== 'organize') return;
+      if (sequence !== state.duplicateRequestSeq || !duplicateGroupIsVisible('catalog')) return;
       rows.replaceChildren(); setText(feedback, error.message);
       $('#duplicateState').hidden = false; $('#duplicateState').textContent = 'Duplicate suggestions are unavailable. Refresh to try again.';
     } finally { if (sequence === state.duplicateRequestSeq) state.duplicateBusy = false; }
   }
   async function loadVisualDuplicateResults() {
     const host = $('#visualDuplicateRows');
-    if (!host || state.route !== 'organize' || $('#organizeDuplicatesPane').hidden) return;
+    if (!host || !duplicateGroupIsVisible('visual')) return;
+    const sequence = ++state.visualRequestSeq;
     const status = $('#visualDuplicateStatus');
     try {
       const payload = await getJson(`${V2_API}/duplicates/visual?limit=50`);
+      if (sequence !== state.visualRequestSeq || !duplicateGroupIsVisible('visual')) return;
       if (!payload?.ok) throw new Error(responseError(payload, 'Could not load visual comparisons.'));
       const visualState = payload.state || {};
       const confirmedAt = Number(visualState.automatic_enabled_at || 0);
@@ -2388,7 +2500,9 @@
         host.append(card);
       }
       if (!payload.items?.length) host.append(create('p', 'detail-muted', 'No visual comparisons are ready yet. Signatures and candidate checks run in the background.'));
-    } catch (error) { setText(status, error.message); }
+    } catch (error) {
+      if (sequence === state.visualRequestSeq && duplicateGroupIsVisible('visual')) setText(status, error.message);
+    }
   }
   function appendDuplicateFingerprints(host, video) {
     const hashes = create('p', 'duplicate-fingerprints');
@@ -2517,14 +2631,14 @@
   }
 
   async function loadPeople() {
-    if (state.route !== 'organize' || $('#organizePeoplePane').hidden) return;
+    if (state.route !== 'performers' || $('#performerDirectoryPane').hidden) return;
     const sequence = ++state.peopleRequestSeq;
     state.peopleBusy = true;
     const query = $('#peopleQuery').value.trim(); setText($('#peopleFeedback'), 'Loading people…');
     try {
       const params = new URLSearchParams({ q: query, offset: String(state.peopleOffset), limit: '50' });
       const payload = await getJson(`${V2_API}/organize/people?${params}`);
-      if (sequence !== state.peopleRequestSeq || state.route !== 'organize' || $('#organizePeoplePane').hidden) return;
+      if (sequence !== state.peopleRequestSeq || state.route !== 'performers' || $('#performerDirectoryPane').hidden) return;
       if (!payload?.ok) throw new Error(responseError(payload, 'Could not load the people catalog.'));
       if (typeof payload.available !== 'boolean') {
         throw new Error('The people catalog response is incomplete.');
@@ -2564,7 +2678,7 @@
       $('#peoplePrev').disabled = state.peopleOffset <= 0; $('#peopleNext').disabled = state.peopleOffset + 50 >= state.peopleTotal;
       $('#peoplePagination').hidden = state.peopleTotal <= 50;
     } catch (error) {
-      if (sequence !== state.peopleRequestSeq || state.route !== 'organize' || $('#organizePeoplePane').hidden) return;
+      if (sequence !== state.peopleRequestSeq || state.route !== 'performers' || $('#performerDirectoryPane').hidden) return;
       setText($('#peopleFeedback'), error.message); $('#peopleState').hidden = false; $('#peopleState').textContent = 'People could not be loaded. Refresh to try again.';
     } finally { if (sequence === state.peopleRequestSeq) state.peopleBusy = false; }
   }
@@ -2812,25 +2926,14 @@
       }
     }
   }
-  function showOrganizeTab(tab) {
-    const panes = { duplicates: '#organizeDuplicatesPane', people: '#organizePeoplePane', quarantine: '#organizeQuarantinePane' };
-    for (const [name, selector] of Object.entries(panes)) {
-      $(selector).hidden = name !== tab;
-      $(`#${name}Tab`).classList.toggle('is-active', name === tab);
-      $(`#${name}Tab`).setAttribute('aria-selected', String(name === tab));
-    }
-    if (tab === 'duplicates') loadDuplicateCandidates({ refresh: true });
-    if (tab === 'people') loadPeople();
-    if (tab === 'quarantine') loadQuarantine();
-  }
   async function loadQuarantine() {
-    if (state.route !== 'organize' || $('#organizeQuarantinePane').hidden) return;
+    if (state.route !== 'library' || $('#libraryQuarantinePane').hidden) return;
     const sequence = ++state.quarantineRequestSeq;
     state.quarantineBusy = true; setText($('#quarantineFeedback'), 'Loading active decisions…');
     try {
       const params = new URLSearchParams({ offset: String(state.quarantineOffset), limit: '50' });
       const payload = await getJson(`${V2_API}/organize/quarantine?${params}`);
-      if (sequence !== state.quarantineRequestSeq || state.route !== 'organize' || $('#organizeQuarantinePane').hidden) return;
+      if (sequence !== state.quarantineRequestSeq || state.route !== 'library' || $('#libraryQuarantinePane').hidden) return;
       if (!payload?.ok || payload.available === false) throw new Error(responseError(payload, 'Quarantine history is unavailable.'));
       state.quarantineTotal = Number(payload.total) || 0;
       const rows = $('#quarantineRows'); rows.replaceChildren(); $('#quarantineState').hidden = payload.items.length > 0;
@@ -2847,7 +2950,7 @@
       $('#quarantinePagination').hidden = state.quarantineTotal <= 50;
       await loadOrphanFileQuarantine(sequence);
     } catch (error) {
-      if (sequence !== state.quarantineRequestSeq || state.route !== 'organize' || $('#organizeQuarantinePane').hidden) return;
+      if (sequence !== state.quarantineRequestSeq || state.route !== 'library' || $('#libraryQuarantinePane').hidden) return;
       setText($('#quarantineFeedback'), error.message); $('#quarantineState').hidden = false; $('#quarantineState').textContent = 'Could not load decisions. Refresh to try again.';
     } finally { if (sequence === state.quarantineRequestSeq) state.quarantineBusy = false; }
   }
@@ -2857,7 +2960,7 @@
     setText(feedback, 'Loading file quarantine…');
     try {
       const payload = await window.AdminV2.getJson(`${V2_API}/organize/quarantine/files?offset=0&limit=50`);
-      if (sequence !== state.quarantineRequestSeq || state.route !== 'organize' || $('#organizeQuarantinePane').hidden) return;
+      if (sequence !== state.quarantineRequestSeq || state.route !== 'library' || $('#libraryQuarantinePane').hidden) return;
       rows.replaceChildren();
       if (!payload.items.length) rows.append(create('p', 'catalog-empty', 'No orphan files are currently quarantined.'));
       for (const item of payload.items) {
@@ -2911,6 +3014,7 @@
     const route = state.route;
     const sequence = beginOperationRequest();
     const card = trigger?.closest('.duplicate-candidate, .duplicate-candidate-card');
+    const match = state.duplicateMatch;
     const feedback = card?.querySelector('.duplicate-action-feedback');
     const actionButtons = card?.querySelectorAll('button') || [];
     actionButtons.forEach(button => { button.disabled = true; });
@@ -2926,7 +3030,7 @@
         ...(Number.isInteger(pair.rules_version) ? { rules_version: pair.rules_version } : {}) };
       const plan = await window.AdminV2.postJson(`${V2_API}/operations/preview`, request);
       if (!operationRequestIsCurrent(sequence, route) || state.duplicatePending !== pending
-          || $('#organizeDuplicatesPane').hidden || !card?.isConnected) return;
+          || !duplicateGroupIsVisible(match) || !card?.isConnected) return;
       if (!plan.plan_id) throw new Error('The server did not return a review plan.');
       const result = await window.AdminV2.postJson(`${V2_API}/operations/execute`, { plan_id: plan.plan_id });
       if (!operationRequestIsCurrent(sequence, route) || state.duplicatePending !== pending) return;
@@ -3030,12 +3134,16 @@
     $('#duplicateRefresh').addEventListener('click', () => loadDuplicateCandidates({ refresh: true }));
     $('#visualDuplicateRefresh').addEventListener('click', () => loadVisualDuplicateResults());
     $('#autoMergeExact').addEventListener('click', previewAutoMergeExact);
-    $('#duplicateCategory').addEventListener('change', () => { state.duplicateOffset = 0; loadDuplicateCandidates({ refresh: true }); });
+    $('#duplicateCategory').addEventListener('change', () => {
+      state.duplicateOffset = 0;
+      $('#duplicateRows').replaceChildren();
+      $('#duplicatePagination').hidden = true;
+      loadDuplicateCandidates({ cacheOnly: true });
+    });
     $('#duplicatePrev').addEventListener('click', () => { state.duplicateOffset = Math.max(0, state.duplicateOffset - DUPLICATE_PAGE_SIZE); loadDuplicateCandidates(); });
     $('#duplicateNext').addEventListener('click', () => { state.duplicateOffset += DUPLICATE_PAGE_SIZE; loadDuplicateCandidates(); });
-    $('#duplicatesTab').addEventListener('click', () => goToSectionTab('quality', 'duplicates'));
-    $('#peopleTab').addEventListener('click', () => goToSectionTab('performers', 'directory'));
-    $('#quarantineTab').addEventListener('click', () => goToSectionTab('quality', 'quarantine'));
+    $('#duplicateMatchCatalog').addEventListener('click', () => selectDuplicateMatch('catalog'));
+    $('#duplicateMatchVisual').addEventListener('click', () => selectDuplicateMatch('visual'));
     $('#peopleRefresh').addEventListener('click', () => loadPeople());
     $('#peopleQuery').addEventListener('input', () => {
       clearTimeout(state.peopleTimer); state.peopleOffset = 0;
@@ -3059,9 +3167,11 @@
       const open = !$('#sidebar').classList.contains('is-open'); $('#sidebar').classList.toggle('is-open', open); $('#menuButton').setAttribute('aria-expanded', String(open));
     });
     $('#libraryFilters').addEventListener('input', event => {
+      updateMoreFilterCount();
       if (event.target.name === 'q' || ['channel_id', 'studio', 'performer', 'tag'].includes(event.target.name)) debounceLoad();
     });
     $('#libraryFilters').addEventListener('change', event => {
+      updateMoreFilterCount();
       if (event.target.tagName === 'SELECT') debounceLoad();
     });
     $('#savedViews').addEventListener('change', event => {
@@ -3096,7 +3206,7 @@
     });
     renderSavedViews();
     $('#clearFilters').addEventListener('click', () => {
-      $('#libraryFilters').reset(); clearLibrarySelection(); resetCatalogPage(); commitFilterUrl(); loadVideos();
+      $('#libraryFilters').reset(); clearLibrarySelection(); resetCatalogPage(); updateMoreFilterCount(); commitFilterUrl(); loadVideos();
     });
     $('#viewToggle').addEventListener('click', event => {
       const button = event.currentTarget; const tableMode = button.getAttribute('aria-pressed') !== 'true'; button.setAttribute('aria-pressed', String(tableMode));
@@ -3160,7 +3270,7 @@
   state.headerStatusTimer = setInterval(loadHeaderStatus, 15_000);
   state.headerSyncTimer = setInterval(loadHeaderSyncStatus, 60_000);
   state.visualResultsTimer = setInterval(() => {
-    if (state.route === 'organize' && !$('#organizeDuplicatesPane').hidden) loadVisualDuplicateResults();
+    if (duplicateGroupIsVisible('visual')) loadVisualDuplicateResults();
   }, 30_000);
   setupTheme(); setupEvents();
   // Feature scripts register for adminv2:navigate after this router script.

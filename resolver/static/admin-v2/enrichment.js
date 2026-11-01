@@ -209,8 +209,11 @@
       button.disabled = false;
     }
   });
-  function syncEnrichment(route, tab) {
-    enrichmentActive = route === 'quality' && tab === 'enrichment';
+  // Progress keeps the legacy Catalog Health address under its own tab key;
+  // the suggestion review itself moved to Library → Metadata suggestions.
+  function syncEnrichment(detail) {
+    const tab = detail?.tab ?? detail?.qualityTab;
+    enrichmentActive = detail?.route === 'quality' && tab === 'enrichment-progress';
     if (pollTimer !== null) clearInterval(pollTimer);
     pollTimer = null;
     if (enrichmentActive) {
@@ -222,10 +225,9 @@
     }
     requestSeq += 1;
   }
-  document.addEventListener('adminv2:navigate', event => syncEnrichment(event.detail?.route, event.detail?.tab));
+  document.addEventListener('adminv2:navigate', event => syncEnrichment(event.detail));
   document.addEventListener('visibilitychange', () => {
     if (enrichmentActive && !document.hidden) return load({ silent: true });
   });
-  const initialRoute = location.hash.replace(/^#/, '').split('?', 2);
-  syncEnrichment(initialRoute[0], new URLSearchParams(initialRoute[1] || '').get('tab'));
+  syncEnrichment(window.AdminV2.currentRoute());
 })();
