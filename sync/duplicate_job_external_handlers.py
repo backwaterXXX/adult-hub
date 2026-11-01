@@ -29,6 +29,19 @@ def execute_external_operation(action, conn, job_id, payload, media_dir, service
 
 def _execute(action, conn, job_id, payload, media_dir, services):
     """Execute a maintenance or integration action and report commit status."""
+    if action == "source_remove":
+        if not isinstance(payload.get("channel_id"), str):
+            raise ValueError("Channel removal requires a valid Telegram channel ID.")
+        if __package__:
+            from .source_removal import remove_telegram_channel
+        else:
+            from source_removal import remove_telegram_channel
+        result = remove_telegram_channel(
+            conn, media_dir, payload["channel_id"], job_id, services,
+            _core._record_job_progress,
+        )
+        return result, True
+
     if action == "backup_create":
         _core._record_job_progress(conn, job_id, "creating_backup")
         backup_path = _core.db.pg_backup(

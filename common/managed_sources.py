@@ -19,7 +19,7 @@ from common.config_loader import ConfigError, parse_and_validate_config
 
 MAX_OVERLAY_BYTES = 256 * 1024
 SOURCE_FIELDS = {"enabled", "stream_mode", "max_pages", "sections"}
-TELEGRAM_SOURCE_FIELDS = {"enabled", "defaults", "channels"}
+TELEGRAM_SOURCE_FIELDS = {"enabled", "defaults", "channels", "removed_channels"}
 TELEGRAM_DEFAULT_FIELDS = {
     "stream_mode", "max_pages", "min_duration_seconds", "history_batch_size",
     "tags_whitelist", "tags_blacklist",
@@ -238,6 +238,20 @@ def apply_overrides(base_data: Any, overlay: Any) -> dict[str, Any]:
                         channel = {"id": channel_id, **fields}
                         source.setdefault("channels", []).append(channel)
                         by_id[channel_id] = channel
+            if "removed_channels" in patch:
+                removed = patch["removed_channels"]
+                if (not isinstance(removed, list) or len(removed) > 5000
+                        or any(not isinstance(channel_id, str) or not channel_id
+                               or channel_id != channel_id.strip() or len(channel_id) > 256
+                               or any(ord(char) < 32 for char in channel_id)
+                               for channel_id in removed)
+                        or len(set(removed)) != len(removed)):
+                    raise ConfigError("Removed Telegram channels must be a list of unique immutable IDs.")
+                removed_ids = set(removed)
+                source["channels"] = [
+                    channel for channel in source.get("channels", [])
+                    if str(channel.get("id", "")).strip() not in removed_ids
+                ]
             if "enabled" in patch:
                 source["enabled"] = patch["enabled"]
         else:

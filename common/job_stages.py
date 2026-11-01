@@ -8,6 +8,7 @@ WORKING_STAGES = frozenset({
     "repairing_nfo", "writing_nfo", "scanning_metadata", "downloading_artwork", "generating_artwork",
     "metadata_pbc", "metadata_photos", "metadata_tpdb", "metadata_stashdb", "metadata_scenes",
     "pruning_history", "syncing_performer_catalog", "cleaning_telegram_titles",
+    "removing_source_data",
 })
 
 # Job states that may appear in persisted progress as final markers; they are not

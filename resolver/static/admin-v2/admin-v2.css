@@ -556,6 +556,8 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
   #systemBackupView #backupRows .operation-history-row strong { overflow-wrap: anywhere; }
 }
 .source-actions .button { min-height: 30px; padding: 0 9px; font-size: 10px; }
+.source-remove-button { margin-top: 8px; color: var(--danger); border-color: color-mix(in srgb, var(--danger) 32%, var(--border)); }
+.source-remove-button:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 8%, var(--surface)); border-color: var(--danger); }
 .source-access-outcome { flex: 1 0 100%; font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
 .source-access-outcome[data-access-status="accessible"] { color: var(--mint); }
 .source-access-outcome[data-access-status="inaccessible"],

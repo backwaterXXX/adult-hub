@@ -20,7 +20,7 @@
     phash_generation: 'Generate pHash', thumbnail_generation: 'Generate thumbnail',
     phash_thumbnail_legacy: 'pHash and thumbnail (legacy)',
     duplicate_reconcile: 'Duplicate reconciliation', hide: 'Hide duplicates', dismiss: 'Dismiss pair', undo: 'Undo hide', undismiss: 'Undo dismissal',
-    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Full catalog audit', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', history_cleanup: 'Backup history cleanup', performer_catalog: 'StashDB performer catalog', scene_backfill: 'Scene identification', telegram_title_cleanup: 'Telegram title cleanup', visual_compare: 'Compare video frames', visual_signature: 'Build frame signatures', sync: 'Sync'
+    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Full catalog audit', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', history_cleanup: 'Backup history cleanup', performer_catalog: 'StashDB performer catalog', scene_backfill: 'Scene identification', telegram_title_cleanup: 'Telegram title cleanup', source_remove: 'Remove Telegram channel', visual_compare: 'Compare video frames', visual_signature: 'Build frame signatures', sync: 'Sync'
   };
   const HISTORICAL_ACTION_LABELS = {
     lukayan_fingerprint: 'Scene fingerprint · legacy',
@@ -78,6 +78,7 @@
       metadata_stashdb: 'Enriching actor metadata from StashDB',
       metadata_scenes: 'Enriching video metadata from studio catalogs and ThePornDB',
       pruning_history: 'Removing expired history rows',
+      removing_source_data: 'Removing channel videos and history',
       syncing_performer_catalog: 'Importing the StashDB performer catalog',
       cleaning_telegram_titles: 'Cleaning Telegram titles and tags',
       checking_availability: 'Checking playback availability',
@@ -350,7 +351,8 @@
       retry.dataset.jobQueue = queue;
       actionCell.append(retry);
     }
-    if (queue !== 'visual' && (jobState === 'queued' || (queue === 'phash' && jobState === 'processing'))) {
+    if (queue !== 'visual' && safeId(job.action).toLowerCase() !== 'source_remove'
+        && (jobState === 'queued' || (queue === 'phash' && jobState === 'processing'))) {
       const cancel = create('button', 'button button-quiet job-retry', 'Cancel');
       cancel.type = 'button';
       cancel.dataset.jobCancel = id;
@@ -477,7 +479,7 @@
         retry.dataset.jobQueue = 'jobs';
         actions.append(retry);
       }
-      if (jobState === 'queued') {
+      if (jobState === 'queued' && safeId(job.action).toLowerCase() !== 'source_remove') {
         const cancel = create('button', 'button button-quiet', 'Cancel job');
         cancel.type = 'button';
         cancel.dataset.jobCancel = safeId(job.id);

@@ -207,9 +207,16 @@ def build_router(admin):
             candidate = current["overrides"]
             telegram = candidate.setdefault("telegram", {})
             channels = telegram.setdefault("channels", {})
-            if channel_id in channels:
+            removed = telegram.get("removed_channels", [])
+            restoring = channel_id in removed
+            if channel_id in channels and not restoring:
                 return admin.JSONResponse({"error": "This channel ID already exists."}, status_code=409)
-            channels[channel_id] = {"studio": studio, "enabled": True}
+            previous = channels.get(channel_id, {})
+            channels[channel_id] = {**previous, "studio": studio, "enabled": True}
+            if restoring:
+                telegram["removed_channels"] = [item for item in removed if item != channel_id]
+                if not telegram["removed_channels"]:
+                    telegram.pop("removed_channels")
             preview_result = await admin.asyncio.to_thread(
                 preview_overrides, admin.CONFIG_PATH, candidate,
                 expected_revision=body["expected_revision"],
@@ -238,6 +245,105 @@ def build_router(admin):
                 status_code=503,
             )
         return admin.JSONResponse({"error": "Source configuration is invalid or unavailable."}, status_code=400)
+
+    @router.post("/api/v2/sources/remove")
+    async def remove_source(request: Request):
+        """Remove a Telegram channel and queue deletion of its catalog data."""
+        denied = admin._write_denied(request)
+        if denied is not None:
+            return denied
+        length = request.headers.get("content-length")
+        try:
+            if length is not None and int(length) > 4096:
+                return admin.JSONResponse({"error": "Request is too large."}, status_code=413)
+        except ValueError:
+            return admin.JSONResponse({"error": "Invalid request size."}, status_code=400)
+        raw_body = bytearray()
+        try:
+            async for chunk in request.stream():
+                if len(raw_body) + len(chunk) > 4096:
+                    return admin.JSONResponse({"error": "Request is too large."}, status_code=413)
+                raw_body.extend(chunk)
+            body = json.loads(raw_body)
+        except Exception:
+            body = None
+        if (not isinstance(body, dict) or set(body) != {"expected_revision", "channel_id"}
+                or type(body.get("expected_revision")) is not int or body["expected_revision"] < 0
+                or not isinstance(body.get("channel_id"), str)):
+            return admin.JSONResponse({"error": "Specify a channel ID and current revision."}, status_code=400)
+        channel_id = body["channel_id"].strip()
+        if (not channel_id or len(channel_id) > 256
+                or any(ord(char) < 32 for char in channel_id)):
+            return admin.JSONResponse({"error": "Enter a valid channel ID."}, status_code=400)
+        try:
+            from common.managed_sources import (
+                ManagedAuditPending, ManagedConfigConflict, apply_overrides,
+                preview_overrides, read_overrides, update_overrides,
+            )
+
+            observed = await admin.asyncio.to_thread(read_overrides)
+            if observed["revision"] != body["expected_revision"]:
+                raise ManagedConfigConflict("Stale source revision.")
+            if not await flush_source_audit():
+                raise ManagedAuditPending("A prior source audit is still pending.")
+            current = await admin.asyncio.to_thread(read_overrides)
+            if current["revision"] != body["expected_revision"]:
+                raise ManagedConfigConflict("Stale source revision.")
+
+            import yaml
+            from pathlib import Path
+
+            def read_base():
+                with Path(admin.CONFIG_PATH).open(encoding="utf-8") as stream:
+                    return yaml.safe_load(stream)
+
+            base = await admin.asyncio.to_thread(read_base) or {}
+            effective = await admin.asyncio.to_thread(apply_overrides, base, current)
+            telegram = next((source for source in effective.get("sources", [])
+                             if source.get("provider") == "telegram"), None)
+            configured_ids = {
+                str(channel.get("id", "")).strip()
+                for channel in (telegram or {}).get("channels", [])
+                if isinstance(channel, dict)
+            }
+            if channel_id not in configured_ids:
+                return admin.JSONResponse({"error": "This channel is not configured."}, status_code=404)
+
+            candidate = current["overrides"]
+            telegram_overrides = candidate.setdefault("telegram", {})
+            removed_channels = set(telegram_overrides.get("removed_channels", []))
+            removed_channels.add(channel_id)
+            telegram_overrides["removed_channels"] = sorted(removed_channels)
+            preview_result = await admin.asyncio.to_thread(
+                preview_overrides, admin.CONFIG_PATH, candidate,
+                expected_revision=body["expected_revision"],
+            )
+            try:
+                from common.job_queue import enqueue_job
+                job_id = await admin.asyncio.to_thread(
+                    enqueue_job, admin.HUB_DB_URL, "source_remove", {"channel_id": channel_id},
+                )
+            except Exception:
+                return admin.JSONResponse(
+                    {"error": "Could not queue channel deletion. The source and its data were left unchanged."},
+                    status_code=503,
+                )
+            saved = await admin.asyncio.to_thread(
+                update_overrides, admin.CONFIG_PATH, candidate,
+                expected_revision=body["expected_revision"],
+                audit_event={"changes": preview_result["changes"],
+                             "truncated": preview_result["truncated"]},
+            )
+        except Exception as exc:
+            return safe_error(exc)
+        admin._wake_worker("jobs")
+        audit_pending = not await flush_source_audit()
+        return {"ok": True, "revision": saved["revision"], "source_id": channel_id,
+                "job_id": job_id, "state": "queued",
+                "changes": preview_result["changes"],
+                "application": "next sync or resolver config reload",
+                "audit_pending": audit_pending,
+                "message": "Channel removed from future syncs. Its channel-only videos and channel sync history are queued for deletion."}
 
     @router.post("/api/v2/sources/preview")
     async def preview_sources(request: Request):

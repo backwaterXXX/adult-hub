@@ -7,6 +7,7 @@
   const SOURCE_PREVIEW_URL = `${V2_API}/sources/preview`;
   const SOURCE_SAVE_URL = `${V2_API}/sources/save`;
   const SOURCE_CREATE_URL = `${V2_API}/sources`;
+  const SOURCE_REMOVE_URL = `${V2_API}/sources/remove`;
   const SOURCE_CHECK_URL = `${V2_API}/sources/check`;
   const HISTORY_URL = `${V2_API}/sources/sync-history?limit=50`;
   const TRIGGER_URL = `${V2_API}/maintenance/sync`;
@@ -669,6 +670,12 @@
       edit.type = 'button';
       edit.dataset.sourceEdit = itemKey(item);
       host.append(edit);
+      const remove = create('button', 'button button-quiet source-remove-button', 'Remove channel');
+      remove.type = 'button';
+      remove.dataset.sourceRemove = item.id;
+      remove.disabled = state.auditPending;
+      if (state.auditPending) remove.title = 'A pending source audit must finish before source changes.';
+      host.append(remove);
     }
 
     const channelSection = create('section', 'detail-section');
@@ -895,7 +902,12 @@
     }
     const candidate = JSON.parse(JSON.stringify(state.overrides || {}));
     candidate.telegram ||= {}; candidate.telegram.channels ||= {};
-    candidate.telegram.channels[id] = { enabled: true, studio };
+    const previous = candidate.telegram.channels[id] || {};
+    candidate.telegram.channels[id] = { ...previous, enabled: true, studio };
+    if (Array.isArray(candidate.telegram.removed_channels)) {
+      candidate.telegram.removed_channels = candidate.telegram.removed_channels.filter(channelId => channelId !== id);
+      if (!candidate.telegram.removed_channels.length) delete candidate.telegram.removed_channels;
+    }
     button.disabled = true;
     preview.replaceChildren(create('p', 'detail-muted', 'Validating the complete configuration…'));
     try {
@@ -926,6 +938,32 @@
       if (staleRevision) state.editorCandidate = null;
       button.disabled = staleRevision;
       const preview = $('#sourceCreatePreview'); if (preview) preview.replaceChildren(create('p', 'detail-error', scrub(error.message) || 'Could not add this channel. Reload and try again.'));
+    }
+  }
+  async function removeSourceChannel(button) {
+    const item = state.detailItem;
+    if (!item || item.provider !== 'telegram' || !state.settingsAvailable || !button) return;
+    const prompt = `Permanently remove “${item.studio}” from Sources? This deletes its channel-only catalog videos, managed video files and channel-specific sync history. Shared catalog items remain if another active source still provides them. This cannot be undone.`;
+    if (!window.confirm(prompt)) return;
+    button.disabled = true;
+    button.dataset.busy = 'true';
+    try {
+      const result = await window.AdminV2.postJson(SOURCE_REMOVE_URL, {
+        expected_revision: state.configRevision,
+        channel_id: item.id,
+      });
+      state.configRevision = result.revision;
+      closeSourceDetail(false);
+      await loadSources();
+      helpers().showQueued(result, 'Channel deletion', $('#sourcesNotice'));
+      announce('Channel removed from future syncs. Video and sync-history deletion is queued.');
+    } catch (error) {
+      const staleRevision = error.status === 409;
+      if (staleRevision) await loadSources();
+      button.disabled = staleRevision;
+      delete button.dataset.busy;
+      setNotice('error', scrub(error.message) || 'Could not remove this channel. Reload and try again.');
+      announce('Could not remove this channel.');
     }
   }
   async function previewSourceEditor(button) {
@@ -1406,6 +1444,7 @@
         if (event.target.closest('[data-source-create-cancel]')) { state.editorCandidate = null; closeSourceDetail(); return; }
         const createPreview = event.target.closest('[data-source-create-preview]'); if (createPreview) { previewNewChannel(createPreview); return; }
         const createSave = event.target.closest('#sourceCreateSave'); if (createSave) { saveNewChannel(createSave); return; }
+        const remove = event.target.closest('[data-source-remove]'); if (remove) { removeSourceChannel(remove); return; }
         const edit = event.target.closest('[data-source-edit]');
         if (edit && state.detailItem) { renderSourceEditor(state.detailItem); return; }
         if (event.target.closest('[data-source-editor-back]')) {

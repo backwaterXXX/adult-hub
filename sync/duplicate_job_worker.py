@@ -146,6 +146,7 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                 or action == 'performer_catalog'
                 or action == 'scene_backfill'
                 or action == 'telegram_title_cleanup'
+                or action == 'source_remove'
             ):
                 result, catalog_committed = _external_handlers.execute_external_operation(
                     action, conn, job_id, payload, media_dir, services

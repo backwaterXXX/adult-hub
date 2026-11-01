@@ -80,6 +80,12 @@ def _result_summary(job: dict) -> str | None:
                 return "Sync failed. Open Sources to inspect per-source results."
             if result.get("local_state") == "sync completed":
                 return "Sync completed. Open Sources to review per-source counts."
+        if job.get("action") == "source_remove" and result.get("local_state") == "source_removed":
+            videos = result.get("videos_deleted")
+            runs = result.get("history_runs_removed")
+            if type(videos) is int and videos >= 0 and type(runs) is int and runs >= 0:
+                return f"Channel removed; {videos:,} videos and {runs:,} channel-only sync runs deleted."
+            return "Channel videos and sync history removed."
         if job.get("action") == "metadata_backfill" and result.get("local_state") == "metadata_scan_completed":
             summary = []
             for key, label in (("entities_checked", "checked"), ("entities_enriched", "enriched")):
@@ -259,7 +265,7 @@ def _safe_job(job: dict, *, now=None) -> dict:
         "undo_available": bool(job.get("undo_available")) if job.get("undo_available") is not None else None,
     }
     parameters = {}
-    for key in ("video_id", "source"):
+    for key in ("video_id", "source", "channel_id"):
         value = payload.get(key)
         if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9:@+_.-]{1,250}", value):
             parameters[key] = value
@@ -306,7 +312,13 @@ def build_router(admin):
         if denied is not None:
             return denied
         try:
-            from common.job_queue import cancel_queued_job
+            from common.job_queue import cancel_queued_job, read_job
+            existing = await admin.asyncio.to_thread(read_job, admin.HUB_DB_URL, job_id)
+            if existing is not None and existing.get("action") == "source_remove":
+                return admin.JSONResponse(
+                    {"error": "Channel deletion cannot be cancelled after it is accepted."},
+                    status_code=409,
+                )
             result = await admin.asyncio.to_thread(cancel_queued_job, admin.HUB_DB_URL, job_id)
             if result["outcome"] == "not_found":
                 return admin.JSONResponse({"error": "Task not found."}, status_code=404)
