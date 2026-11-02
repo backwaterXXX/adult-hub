@@ -813,15 +813,16 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
             _core._finish_job(conn, job_id, result)
             if action == 'consistency_audit' and result.get('library_inventory_status') == 'complete' and payload.get('auto_repair'):
                 try:
-                    # Only absent files with a current catalog source are eligible
-                    # for unattended repair. Existing or mismatched files remain
-                    # in the interactive, revision-checked repair flow.
+                    # Only missing NFO sidecars are repaired unattended. Artwork
+                    # preview URLs can be syntactically present but unavailable
+                    # (Telegram returns 404 for some), which used to fail the
+                    # whole 25-item batch and requeue the same findings nightly.
+                    # Keep artwork findings visible for explicit repair instead.
                     from common.admin_operation_audits import preview_audit_repair
                     from common.admin_operations import execute_operation
                     finding_ids = [int(row[0]) for row in conn.execute(
                         "SELECT i.id FROM admin_audit_items i JOIN videos v ON v.id=i.video_id "
-                        "WHERE i.job_id=%s AND i.status='open' AND i.kind IN ('missing_nfo','missing_artwork') "
-                        "AND (i.kind='missing_nfo' OR NULLIF(btrim(v.thumbnail),'') IS NOT NULL) "
+                        "WHERE i.job_id=%s AND i.status='open' AND i.kind='missing_nfo' "
                         "ORDER BY i.id LIMIT 25", (job_id,),
                     ).fetchall()]
                     if finding_ids:
