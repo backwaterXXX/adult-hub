@@ -4,6 +4,8 @@
 
 Videos stream from Telegram when you play them, so Adult Hub does not download and store the video files in your library. It adds titles, performer details, and artwork to help you organize and find what you want to watch.
 
+> **Responsible use.** Adult Hub is intended for adults and for content you are legally allowed to access and organize. It does not host or distribute media; it indexes links from sources you configure. You are responsible for complying with the terms of service of those sources and with the laws that apply to you.
+
 ---
 
 ## How It Works
@@ -47,7 +49,7 @@ The catalog and sidecar files are stored locally; video files remain in Telegram
 
 - **Gay adult video library**: Organize gay content from your Telegram channels in Jellyfin.
 - **Stream without storing video files**: Videos play from Telegram on demand; your library keeps the catalog and artwork.
-- **Watch on your preferred device**: Use Jellyfin on the web, phone, or TV. For Android TV, see the [Adult Hub TV player](https://github.com/backwaterxxx/adult-hub-tv).
+- **Watch on your preferred device**: Use Jellyfin on the web, phone, or TV. For Android TV, see the [Adult Hub player](https://github.com/backwaterxxx/adult-hub-player).
 - **Browse and organize**: Find videos by performer and use automatically updated Jellyfin collections.
 - **Manage your library**: Review possible duplicates and keep unwanted items out of view without removing them from Telegram.
 
@@ -80,6 +82,7 @@ cp .env.example .env
 
 Edit `.env` and `config.yaml`:
 * **`.env`**: Set your `HOST_IP`, `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `DATABASE_URL`, your Telegram MTProto API credentials (`TELEGRAM_API_ID`, `TELEGRAM_API_HASH`), and your public playback URL (`RESOLVER_PUBLIC_URL`).
+* **Optional source hints**: `TELEGRAM_SIGNATURE_CHANNEL` is a channel handle used in captions to accept a first-line cast list. `TELEGRAM_CHANNEL_NAME_HINTS` is a comma-separated list of channel titles that should be treated as Telegram sources rather than production studios.
 * **`config.yaml`**: Add your authorized Telegram channels under the `sources` section (the default example channel is fictional and disabled).
 
 Advanced environment variables and fallback behavior are documented in the example configuration and Compose files.
@@ -90,7 +93,7 @@ Advanced environment variables and fallback behavior are documented in the examp
 make deploy
 ```
 
-The optional `tools/generate_latest_artwork.py` command requires `JELLYFIN_API_KEY`, `JELLYFIN_USER_ID`, and `JELLYFIN_ADULT_LIBRARY_ID` in the environment or local `.env`; set `JELLYFIN_URL` to the server URL when it differs from the tool default.
+The optional `tools/generate_latest_artwork.py` command requires `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `JELLYFIN_USER_ID`, and `JELLYFIN_ADULT_LIBRARY_ID` in the environment or local `.env`. Set `MEDIA_DIR` only when the library is not at `./media/adult`.
 
 `make deploy` reads the release number from `VERSION`, exports it as
 `APP_VERSION`, and recreates the resolver, sync, and backup services from
@@ -204,18 +207,9 @@ The preview endpoint bounds Telegram work to 8 seconds and returns HTTP 504 on t
 - Concurrency caveat: concurrent fetch tasks do NOT guarantee independent MTProto connections; Telegram may still serialize or throttle upstream.
 - Enablement gate: run real-movie A/B baselines at 1/2/4 concurrency (stalls, seek latency, upstream errors) before enabling anywhere near production.
 
-#### Intentional deviations in the reference deployment
+#### Deployment-specific tuning
 
-The private `.env` of the deployment this repository serves deliberately differs from the Compose defaults above. It is recorded here so a future audit does not mistake it for drift; the values themselves are not changed by that decision.
-
-| Variable | Deployed | Default | Why |
-| --- | --- | --- | --- |
-| `TELEGRAM_PARALLEL_STREAM_ENABLED` | `true` | `false` | The experimental parallel path is measured on this install; the A/B baselines it was gated on are collected here. |
-| `TELEGRAM_DOWNLOAD_WORKERS` / `TELEGRAM_DOWNLOAD_GLOBAL_WORKERS` | 4 / 8 | 3 / 6 | One extra per-stream and process-wide worker after the first measurements. |
-| `TELEGRAM_READ_AHEAD_BYTES` / `TELEGRAM_STREAM_CACHE_BYTES` | 64 MiB / 256 MiB | 32 MiB / 128 MiB | Doubled to cover 1080p seeks on the available host memory. |
-| `TELEGRAM_STREAM_CACHE_TTL_SECONDS` | 180 | 120 | Matches the larger cache so reused blocks survive a second seek. |
-| `ADMIN_PUBLIC` | `true` | `false` | The Admin v2 UI is reachable through the reverse proxy; writes still require the `ADMIN_WRITE_TOKEN` and the same-origin checks. |
-| `RESOLVER_TRUSTED_PROXY_IPS` | `127.0.0.1,::1,172.29.0.1` | `127.0.0.1,::1` | Adds the Docker network address of the local reverse proxy so client IPs survive `X-Forwarded-For`. |
+Tuning values belong in the private `.env` of each deployment. They are intentionally not recorded in this repository; keep a local change log if an installation needs to document why it differs from the defaults above.
 
 ---
 
@@ -308,7 +302,7 @@ The tools under `tools/` are optional, run by hand, and never part of the contai
 | `benchmark_ffprobe_ranges.py` | Bounded OSHASH + ffprobe pilot that reads only exact Telegram byte ranges. |
 | `test_oshash_metadata_128k.py` | Shows what ffprobe can learn from exactly the two OSHASH byte ranges. |
 
-The performer evaluation workflow as a whole is described in `docs/telegram-performer-review.md`.
+Performer evaluation is an optional operational workflow and is not included in this repository.
 
 ### Database Operations & Recreation
 - **Versioned migrations**: Schema changes are managed as ordered, versioned migrations in `common/migrations/` tracked by the `schema_migrations` table.

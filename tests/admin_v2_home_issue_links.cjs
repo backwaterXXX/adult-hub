@@ -684,20 +684,18 @@ const context = {
     'the Performer Directory deep link activates Performers in the sidebar');
   location.hash = '#performers?tab=proposals';
   onHashChange();
-  assert.equal(location.hash, '#performers?tab=review&area=proposals',
-    'the legacy proposals address redirects to Review matches with that area selected');
+  assert.equal(location.hash, '#performers?tab=review',
+    'the legacy proposals address redirects to the Review matches tab');
   assert.equal(elements.get('performerReviewPane').hidden, false);
   assert.equal(elements.get('performerDirectoryPane').hidden, true);
-  assert.equal(document.activeElement, elements.get('performerProposalsTitle'),
-    'the proposals address focuses the recognition proposals area');
-  assert.equal(lastAdminNavigation.detail.performerArea, 'proposals',
-    'route events carry the selected review area to the performer controllers');
+  assert.equal(lastAdminNavigation.detail.performersTab, 'review',
+    'route events carry the selected performer tab to the controllers');
   location.hash = '#performers?tab=matching';
   onHashChange();
-  assert.equal(location.hash, '#performers?tab=review&area=name-variants',
-    'the legacy name-matching address redirects to Review matches with the variants area selected');
+  assert.equal(location.hash, '#performers?tab=name-variants',
+    'the legacy name-matching address redirects to the Name variants tab');
   assert.equal(document.activeElement, elements.get('fuzzyTitle'),
-    'the name-variants address focuses the variants area, which stays beside the proposals');
+    'the name-variants address focuses the variants area');
 
   location.hash = '#organize?tab=people';
   onHashChange();

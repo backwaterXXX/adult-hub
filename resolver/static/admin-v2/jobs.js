@@ -453,6 +453,9 @@
       const section = create('section', 'detail-section');
       section.append(create('h3', '', 'Failure'));
       section.append(create('p', 'job-detail-error', error || 'This job failed. Inspect local worker logs for details.'));
+      if (job.failure_stage) {
+        section.append(create('p', 'detail-description', `Failed during: ${stageLabel(job.failure_stage)}.`));
+      }
       wrap.append(section);
     }
     const summary = resultSummary(job);
@@ -995,6 +998,8 @@
       commitFiltersToUrl();
       if (state.activeTab !== jobsTab()) sync(); else loadJobs();
     });
+    $('#jobsRefresh')?.addEventListener('click', () => { setNotice('', ''); loadJobs(); });
+    $('#operationHistoryRefresh')?.addEventListener('click', () => loadOperationHistory());
     $('#jobsPrev').addEventListener('click', () => {
       if (state.offset > 0) { state.offset = Math.max(0, state.offset - LIMIT); commitFiltersToUrl(); loadJobs(); }
     });

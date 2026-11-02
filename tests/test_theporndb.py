@@ -29,23 +29,23 @@ class TestThePornDB(PgTestCase):
 
     def test_search_performer_no_token(self):
         with patch.dict("os.environ", {}, clear=True):
-            self.assertIsNone(tpdb_module.search_performer("Alex"))
+            self.assertIsNone(tpdb_module.search_performer("Casey"))
 
     def test_search_performer_parses_json(self):
         payload = load_json_fixture("api", "theporndb_performer.json")
-        res = tpdb_module.search_performer("Alex Fox", token="test-token", http_get=lambda *a, **k: payload)
+        res = tpdb_module.search_performer("Casey North", token="test-token", http_get=lambda *a, **k: payload)
         self.assertIsNotNone(res)
-        self.assertEqual(res["bio"], "A popular performer in adult videos.")
-        self.assertEqual(res["birth"], "1995-04-12")
-        self.assertIn("Alex F", res["aliases"])
-        self.assertIn("Foxy", res["aliases"])
-        self.assertEqual(res["photo"], "https://example.com/alex.jpg")
+        self.assertEqual(res["bio"], "Fictional performer used only in tests.")
+        self.assertEqual(res["birth"], "1992-02-02")
+        self.assertIn("Casey N", res["aliases"])
+        self.assertIn("Northy", res["aliases"])
+        self.assertEqual(res["photo"], "https://example.com/casey.jpg")
 
     def test_backfill_tpdb_enriches_empty_bios(self):
         # Insert one empty bio and one populated bio
         self.conn.execute(
             "INSERT INTO performer_bios (name, bio, birth, aliases, updated_at) VALUES (%s, %s, %s, %s, %s)",
-            ("Alex Fox", "", "", "[]", 100),
+            ("Casey North", "", "", "[]", 100),
         )
         self.conn.execute(
             "INSERT INTO performer_bios (name, bio, birth, aliases, updated_at, nationality) "
@@ -60,11 +60,11 @@ class TestThePornDB(PgTestCase):
         payload = {
             "data": [
                 {
-                    "name": "Alex Fox",
+                    "name": "Casey North",
                     "bio": "Enriched bio text",
-                    "date_of_birth": "1995-04-12",
-                    "aliases": ["Alex F"],
-                    "image": "https://example.com/alex.jpg",
+                    "date_of_birth": "1992-02-02",
+                    "aliases": ["Casey N"],
+                    "image": "https://example.com/casey.jpg",
                 }
             ]
         }
@@ -77,16 +77,16 @@ class TestThePornDB(PgTestCase):
         self.assertEqual(checked, 1)
         self.assertEqual(updated, 1)
 
-        row = self.conn.execute("SELECT bio, birth, aliases FROM performer_bios WHERE name = 'Alex Fox'").fetchone()
+        row = self.conn.execute("SELECT bio, birth, aliases FROM performer_bios WHERE name = 'Casey North'").fetchone()
         self.assertEqual(row[0], "Enriched bio text")
-        self.assertEqual(row[1], "1995-04-12")
-        self.assertIn("Alex F", json.loads(row[2]))
+        self.assertEqual(row[1], "1992-02-02")
+        self.assertIn("Casey N", json.loads(row[2]))
 
-        alias_row = self.conn.execute("SELECT alias, canonical FROM performer_aliases WHERE alias = 'alex f'").fetchone()
-        self.assertEqual(alias_row[1], "Alex Fox")
+        alias_row = self.conn.execute("SELECT alias, canonical FROM performer_aliases WHERE alias = 'casey n'").fetchone()
+        self.assertEqual(alias_row[1], "Casey North")
 
-        photo_row = self.conn.execute("SELECT thumb FROM performer_photos WHERE name = 'Alex Fox'").fetchone()
-        self.assertEqual(photo_row[0], "https://example.com/alex.jpg")
+        photo_row = self.conn.execute("SELECT thumb FROM performer_photos WHERE name = 'Casey North'").fetchone()
+        self.assertEqual(photo_row[0], "https://example.com/casey.jpg")
 
         # Existing guy was not modified
         existing = self.conn.execute("SELECT bio FROM performer_bios WHERE name = 'Existing Guy'").fetchone()

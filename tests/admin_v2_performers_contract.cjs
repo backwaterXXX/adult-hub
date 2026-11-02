@@ -59,7 +59,7 @@ function find(root, predicate) {
 function deferred() { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; }
 
 (async () => {
-  const ids = ['taskReceipt', 'performerReviewPane', 'performersFeedback', 'performerProposalRows', 'performersCount', 'performersState', 'performersRefresh', 'performersReconcile', 'performerProposalPagination',
+  const ids = ['taskReceipt', 'performerReviewPane', 'performerNameVariantsPane', 'performersFeedback', 'performerProposalRows', 'performersCount', 'performersState', 'performersRefresh', 'performersReconcile', 'performerProposalPagination',
     'fuzzyCategory', 'fuzzyRows', 'fuzzyPagination', 'fuzzyPageInfo', 'fuzzyPrev', 'fuzzyNext', 'fuzzyFeedback',
     'fuzzyThreshold', 'fuzzyScan', 'fuzzyReviewSelected', 'fuzzyMergeDialog', 'fuzzyMergeContent', 'fuzzyMergeActions', 'fuzzyMergeClose'];
   const elements = Object.fromEntries(ids.map(id => [id, new Element(id === 'fuzzyMergeDialog' ? 'dialog' : 'div')]));
@@ -218,6 +218,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   assert.equal(document.activeElement, localName,
     'when catalogue search has no selectable match, an invalid approval focuses the active local-name field');
   assert.match(elements.performersFeedback.textContent, /Choose a catalogue performer/);
+  navigateListener({ detail: { route: 'performers', performersTab: 'name-variants' } });
   await elements.fuzzyScan.listeners.click();
   assert.equal(calls.find(call => call.path.includes('/performers/fuzzy?')).path, '/admin/api/v2/performers/fuzzy?threshold=0.88');
   const review = find(elements.fuzzyRows, item => item.tagName === 'button' && item.textContent === 'Merge');

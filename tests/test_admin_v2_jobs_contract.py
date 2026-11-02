@@ -174,6 +174,27 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(projected["error"], "Could not connect to a required service.")
         self.assertNotIn("private-token", str(projected))
 
+        artwork_error = "Failed to generate artwork: Invalid data at /private/library/video.mp4"
+        artwork_row = {
+            "id": "failed-artwork", "action": "artwork_generate", "state": "failed",
+            "payload": "{}", "result": json.dumps({
+                "error": artwork_error,
+                "events": [{"stage": "starting", "updated_at": 1},
+                           {"stage": "generating_artwork", "updated_at": 2}],
+            }), "error": None,
+        }
+        artwork = _public_job(artwork_row, include_failure_code=True)
+        self.assertEqual(artwork["failure_code"], "artwork_frame_extraction_failed")
+        self.assertNotIn("/private/library", str(artwork))
+        artwork_projected = admin_v2_jobs._safe_job(artwork)
+        self.assertEqual(
+            artwork_projected["error"],
+            "Could not extract an artwork frame from the video.",
+        )
+        self.assertEqual(artwork_projected["failure_code"], "artwork_frame_extraction_failed")
+        self.assertEqual(artwork_projected["failure_stage"], "generating_artwork")
+        self.assertNotIn("/private/library", str(artwork_projected))
+
         unknown = admin_v2_jobs._safe_job({
             "state": "failed", "failure_code": "private-token", "error": "Job failed. Inspect local worker logs for details.",
         })

@@ -3121,6 +3121,7 @@
     document.addEventListener('click', event => {
       const action = event.target.closest('[data-action]')?.dataset.action;
       if (action === 'close-detail') closeDetail();
+      if (action === 'refresh-status') loadStatus();
       const link = event.target.closest('a[data-route]');
       if (link && link.hash) {
         const route = link.hash.slice(1);

@@ -58,6 +58,7 @@
         <div id="legacyScreenNotice" class="state-banner" role="status" hidden></div>
         <section class="view" data-view="start" aria-labelledby="pageTitle">
           <h1 class="sr-only" id="pageTitle">Overview</h1>
+          <div class="jobs-filter-actions"><button class="button button-quiet" type="button" data-action="refresh-status">Refresh status</button></div>
           <div id="statusState" class="state-banner state-loading" role="status"><span class="spinner" aria-hidden="true"></span><span>Checking system status…</span></div>
           <div id="statusContent" hidden>
             <div class="status-grid" id="statusCards"></div>
@@ -136,7 +137,7 @@
           </div>
           <div class="library-pane" id="librarySuggestionsPane" role="tabpanel" aria-labelledby="librarySuggestionsTab" hidden>
             <section class="panel metadata-proposals" aria-labelledby="metadataProposalsTitle">
-              <div class="panel-heading"><div><h2 class="sr-only" id="metadataProposalsTitle" tabindex="-1">Metadata suggestions</h2><p class="page-intro">External matches that differ from existing catalog values. Compare Current with the suggested value, edit it if needed, preview the whole set, then queue the update or reject the suggestion.</p></div></div>
+              <div class="panel-heading"><div><h2 class="sr-only" id="metadataProposalsTitle" tabindex="-1">Metadata suggestions</h2><p class="page-intro">External matches that differ from existing catalog values. Compare Current with the suggested value, edit it if needed, preview the whole set, then queue the update or reject the suggestion.</p></div><div class="jobs-filter-actions"><button class="button button-quiet" type="button" id="metadataProposalsRefresh">Refresh suggestions</button></div></div>
               <div id="metadataProposalsFeedback" class="catalog-feedback" role="status" aria-live="polite">Loading metadata suggestions…</div>
               <div id="metadataProposalsRows" class="operation-history-list" aria-live="polite"></div>
               <nav id="metadataProposalsPagination" class="pagination" aria-label="Metadata suggestion pages" hidden></nav>
@@ -177,7 +178,7 @@
           </div>
           <div class="library-pane" id="performerReviewPane" role="tabpanel" aria-labelledby="performerReviewTab">
           <section id="performerProposalsPane" class="panel" aria-labelledby="performerProposalsTitle">
-            <div class="panel-heading"><div><p class="eyebrow">RECOGNITION PROPOSALS</p><h2 id="performerProposalsTitle" tabindex="-1">Names detected in titles</h2><p class="page-intro">Repeated names that are not yet matched to a catalogued performer. Resolve clear matches automatically; ambiguous identities stay queued without guessing.</p></div><div class="jobs-filter-actions"><button class="button button-primary" id="performersReconcile" type="button">Resolve clear matches</button></div></div>
+            <div class="panel-heading"><div><p class="eyebrow">RECOGNITION PROPOSALS</p><h2 id="performerProposalsTitle" tabindex="-1">Names detected in titles</h2><p class="page-intro">Repeated names that are not yet matched to a catalogued performer. Resolve clear matches automatically; ambiguous identities stay queued without guessing.</p></div><div class="jobs-filter-actions"><button class="button button-quiet" id="performersRefresh" type="button">Refresh</button><button class="button button-primary" id="performersReconcile" type="button">Resolve clear matches</button></div></div>
             <div class="catalog-toolbar"><div id="performersFeedback" class="catalog-feedback" role="status">Ready to load repeated names.</div><span id="performersCount" class="catalog-feedback"></span></div>
             <div id="performersState" class="catalog-state" hidden role="status"></div>
             <div id="performerProposalRows" class="performer-proposal-list" aria-live="polite"></div>
@@ -241,7 +242,7 @@
                 <div class="filter-field"><label for="jobQueueFilter">Queue</label><select id="jobQueueFilter" name="queue"><option value="all">All task queues</option><option value="jobs">Admin tasks</option><option value="phash">pHash and thumbnails</option><option value="visual">Visual comparisons</option></select></div>
                 <div class="filter-field"><label for="jobStateFilter">State</label><select id="jobStateFilter" name="state"><option value="active">All active</option><option value="history">All history</option><option value="queued">Queued</option><option value="processing">Running</option><option value="done">Succeeded</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></div>
                 <div class="filter-field"><label for="jobActionFilter">Action</label><select id="jobActionFilter" name="action"><option value="">All actions</option><option value="phash_generation">Generate pHash</option><option value="thumbnail_generation">Generate thumbnail</option><option value="phash_thumbnail_legacy">pHash and thumbnail (legacy)</option><option value="duplicate_reconcile">Duplicate reconciliation</option><option value="hide">Hide duplicates</option><option value="dismiss">Dismiss pair</option><option value="undo">Undo hide</option><option value="undismiss">Undo dismissal</option><option value="performer_merge">Merge performers</option><option value="performer_refresh">Refresh performer metadata</option><option value="metadata_backfill">External metadata scan</option><option value="telegram_fingerprint_scan">Scene fingerprint scan</option><option value="artwork_download">Download artwork</option><option value="artwork_generate">Generate artwork</option><option value="collections_refresh">Update collections</option><option value="quarantine">Quarantine</option><option value="orphan_file_operation">Orphan file quarantine or restore</option><option value="metadata_update">Update metadata</option><option value="availability_check">Check availability</option><option value="catalog_full_audit">Full catalog audit</option><option value="consistency_audit">Consistency audit</option><option value="metadata_quality_audit">Metadata quality audit</option><option value="audit_repair_nfo">Repair audit files</option><option value="audit_import_refresh">Request Jellyfin reimport</option><option value="backup_create">Create backup</option><option value="backup_restore_test">Test backup restore</option><option value="history_cleanup">Backup history cleanup</option><option value="performer_catalog">StashDB performer catalog</option><option value="scene_backfill">Scene identification</option><option value="telegram_title_cleanup">Telegram title cleanup</option><option value="visual_compare">Compare video frames</option><option value="visual_signature">Build frame signatures</option><option value="sync">Sync</option></select></div>
-                <div class="jobs-filter-actions"><button class="button button-quiet" type="button" id="jobsClearFilters">Clear filters</button></div>
+                <div class="jobs-filter-actions"><button class="button button-quiet" type="button" id="jobsRefresh">Refresh</button><button class="button button-quiet" type="button" id="jobsClearFilters">Clear filters</button></div>
               </form>
               <div class="catalog-toolbar"><div id="jobsFeedback" class="catalog-feedback" role="status">Ready to load jobs.</div></div>
               <div id="jobsState" class="catalog-state" role="status"></div>
@@ -255,7 +256,7 @@
             </section>
             </div>
             <section class="panel operation-history-panel" data-jobs-pane="bulk" hidden aria-labelledby="operationHistoryTitle">
-              <div class="panel-heading"><div><p class="eyebrow">BULK OPERATIONS</p><h2 id="operationHistoryTitle">Operation history</h2><p class="page-intro">Saved previews and the independent result of each queued item.</p></div></div>
+              <div class="panel-heading"><div><p class="eyebrow">BULK OPERATIONS</p><h2 id="operationHistoryTitle">Operation history</h2><p class="page-intro">Saved previews and the independent result of each queued item.</p></div><div class="jobs-filter-actions"><button class="button button-quiet" type="button" id="operationHistoryRefresh">Refresh</button></div></div>
               <div id="operationHistoryFeedback" class="catalog-feedback" role="status">Ready to load operation history.</div>
               <div id="operationHistoryState" class="catalog-state" role="status" hidden></div>
               <div id="operationHistoryTableWrap" class="table-wrap" hidden><table class="video-table operation-history-table"><thead><tr><th>Operation</th><th>Created</th><th>Items</th><th>State</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="operationHistoryRows"></tbody></table></div>
@@ -264,6 +265,7 @@
           </div>
             <section id="systemSchedulesView" class="panel operation-history-panel" hidden aria-labelledby="schedulesTitle">
               <h2 class="sr-only" id="schedulesTitle">Schedules</h2>
+              <div class="jobs-filter-actions"><button class="button button-quiet" type="button" id="schedulesRefresh">Refresh schedules</button></div>
               <details class="schedule-create-panel" id="scheduleCreatePanel">
                 <summary class="button button-primary">Add schedule</summary>
                 <form id="scheduleCreateForm" class="schedule-create-form">
@@ -285,7 +287,7 @@
               <form id="sourcesFilters" class="filter-bar sources-filter-bar">
                 <div class="filter-search"><label for="sourcesQuery">Search</label><div class="input-with-icon"><span aria-hidden="true">⌕</span><input id="sourcesQuery" type="search" name="q" placeholder="Channel, studio, or provider" autocomplete="off"></div></div>
                 <div class="filter-field"><label for="sourcesStatusFilter">Status</label><select id="sourcesStatusFilter" name="status"><option value="">All statuses</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="succeeded">Latest run succeeded</option><option value="failed">Latest run failed</option><option value="never">Never synced</option></select></div>
-                <div class="jobs-filter-actions"><button class="button button-primary" type="button" id="sourcesAddChannel">Add Telegram channel</button><button class="button button-quiet" type="button" id="sourcesClearFilters">Clear filters</button></div>
+                <div class="jobs-filter-actions"><button class="button button-quiet" type="button" id="sourcesRefresh">Refresh</button><button class="button button-primary" type="button" id="sourcesAddChannel">Add Telegram channel</button><button class="button button-quiet" type="button" id="sourcesClearFilters">Clear filters</button></div>
               </form>
               <div class="catalog-toolbar"><div id="sourcesFeedback" class="catalog-feedback" role="status">Ready to load sources.</div></div>
               <div id="sourcesState" class="catalog-state" role="status"></div>

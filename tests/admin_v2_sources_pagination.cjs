@@ -165,10 +165,9 @@ function descendants(root, predicate) {
   elements.sourcesRows.listeners.click({ target: { closest: selector =>
     selector === '[data-check-source]' ? checkButton : null } });
   await new Promise(resolve => setTimeout(resolve, 0));
-  const accessOutcome = sourceActionGroup.children.find(node => node.dataset.accessOutcome === '51');
   assert.equal(checkButton.textContent, 'Check access', 'the action remains available after a successful check');
-  assert.equal(accessOutcome.dataset.accessStatus, 'accessible');
-  assert.match(accessOutcome.textContent, /^Accessible · Telegram read access confirmed\. · Checked /);
+  assert.equal(checkButton.dataset.accessStatus, 'accessible');
+  assert.match(checkButton.title, /^Accessible · Telegram read access confirmed\. · Checked /);
   for (let page = 2; page < 25; page++) {
     const currentNext = elements.sourcesPagination.children.find(button => button.dataset.sourcePage === 'next');
     elements.sourcesPagination.listeners.click({ target: { closest: () => currentNext } });
@@ -189,10 +188,8 @@ function descendants(root, predicate) {
   assert.equal(document.activeElement.dataset.sourcePage, 'previous');
   const returnedCheckButton = elements.sourcesRows.children[0].children[5].children[0].children.find(
     button => button.dataset.checkSource === '51');
-  const returnedOutcome = elements.sourcesRows.children[0].children[5].children[0].children.find(
-    node => node.dataset.accessOutcome === '51');
   assert.equal(returnedCheckButton.textContent, 'Check access');
-  assert.equal(returnedOutcome.dataset.accessStatus, 'accessible', 'the last result survives paging');
+  assert.equal(returnedCheckButton.dataset.accessStatus, 'accessible', 'the last result survives paging');
   checkResult = {
     ok: true, status: 'unknown', message: 'Cannot confirm: https://private.invalid/channel?token=secret password=hunter2',
     checked_at: '2026-01-01T00:05:00Z',
@@ -201,9 +198,9 @@ function descendants(root, predicate) {
     selector === '[data-check-source]' ? returnedCheckButton : null } });
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(returnedCheckButton.textContent, 'Check access');
-  assert.equal(returnedOutcome.dataset.accessStatus, 'unknown');
-  assert.match(returnedOutcome.textContent, /^Unknown · Cannot confirm: \[link hidden\] password: \[hidden\] · Checked /);
-  assert.doesNotMatch(returnedOutcome.textContent, /private\.invalid|secret|hunter2/,
+  assert.equal(returnedCheckButton.dataset.accessStatus, 'unknown');
+  assert.match(returnedCheckButton.title, /^Unknown · Cannot confirm: \[link hidden\] password: \[hidden\] · Checked /);
+  assert.doesNotMatch(returnedCheckButton.title, /private\.invalid|secret|hunter2/,
     'upstream detail is redacted in the visible result');
   location.href = 'http://localhost/admin/v2/?source_status=disabled#sources';
   location.search = '?source_status=disabled';
@@ -278,7 +275,7 @@ function descendants(root, predicate) {
     'per-channel history includes actionable failure context');
   assert.doesNotMatch(detailText(), /private\.invalid|\/srv\/media/,
     'per-channel failure context never exposes URLs or filesystem paths');
-  assert.match(detailText(), /Oct 6, 2026/,
+  assert.match(detailText(), /2026-10-06/,
     'the channel detail retains its last successful run even when the latest run failed');
   historyPayload = { available: true, total: 60, truncated: true, runs: [{
     ended_at: 1791367210, success: false,

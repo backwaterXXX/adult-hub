@@ -1,0 +1,12 @@
+Adult Hub
+Copyright (c) 2026 Adult Hub contributors
+
+This product includes software developed by third parties.
+See the LICENSE file for specific language governing permissions and
+third-party attributions.
+
+stash-phash: upstream repository at
+https://github.com/hyper440/stash-phash currently declares no license.
+Redistribution of this dependency outside the private deployment requires
+obtaining permission from its author or replacing with an alternative
+implementation.

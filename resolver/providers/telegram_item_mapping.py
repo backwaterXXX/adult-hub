@@ -104,7 +104,7 @@ def message_to_video_impl(
             )
             if signature_ids and all(signature_ids):
                 cast_names = extracted["signature_name_candidates"]
-                cast_source = "pornbestsgay_signature"
+                cast_source = "channel_signature"
                 extracted["title"] = ""
                 extracted["title_source"] = ""
         external_catalog = [

@@ -851,6 +851,10 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
             except (TypeError, ValueError):
                 failure_result = {}
             failure_result['error'] = str(exc)[:300]
+            from common.job_failures import classify_job_failure
+            failure_code = classify_job_failure(action, failure_result)
+            if failure_code:
+                failure_result['failure_code'] = failure_code
             with conn:
                 conn.execute("UPDATE video_duplicate_jobs SET state='failed', result=%s, updated_at=%s WHERE id=%s AND state='processing'", (_core.json.dumps(failure_result, ensure_ascii=False), int(_core.time.time()), job_id))
             services.logger.warning('Duplicate operation %s failed: %s', job_id, exc)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from common import db
 from common.duration import (
     MIN_VIDEO_DURATION_SECONDS,
@@ -326,17 +327,19 @@ def sync_unique_video(
             video["production_studios"] = prod_names
     except Exception:
         pass
-    # For Telegram, distinguish actual production studios from source channel names
+    # For Telegram, distinguish actual production studios from source channel names.
+    # Deployment-specific channel titles can be supplied through the environment
+    # instead of being hardcoded in the public repository.
+    extra_channel_hints = tuple(
+        hint.strip().casefold()
+        for hint in (os.getenv("TELEGRAM_CHANNEL_NAME_HINTS") or "").split(",")
+        if hint.strip()
+    )
     is_tg_chan = bool(studio_val and (
         studio_val.lower() in ("telegram", "t.me", "telegram (t.me)")
         or studio_val.startswith("-100")
         or (studio_val.startswith("-") and studio_val[1:].isdigit())
-        or any(k in studio_val.lower() for k in (
-            "d - premium", "the g bunker", "gay porn full videos",
-            "gaycest archive", "gymrat kink", "lukayan show",
-            "nakedsword studios media online", "only guys:",
-            "onlyfans x men", "pornbestsgay",
-        ))
+        or any(k in studio_val.lower() for k in extra_channel_hints)
     ))
     if is_tg_chan:
         video["channel"] = studio_val

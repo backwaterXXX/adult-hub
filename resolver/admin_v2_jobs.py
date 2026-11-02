@@ -9,6 +9,7 @@ from admin_v2_errors import V2ErrorRoute
 from common.admin_job_health import is_processing_stale
 from common.job_queue import ALL_ACTIONS
 from common.job_stages import ALL_STAGES
+from common.job_failures import FAILURE_MESSAGES
 from admin_v2_duplicate_routes import (
     MAX_DUPLICATE_ACTION_BYTES as MAX_DUPLICATE_ACTION_BYTES,
     register_duplicate_routes,
@@ -18,16 +19,7 @@ from admin_v2_duplicate_routes import (
 JOB_STATES = {"all", "active", "queued", "processing", "done", "failed", "cancelled"}
 JOB_ACTIONS = frozenset(ALL_ACTIONS)
 JOB_STAGE_LABELS = ALL_STAGES
-JOB_FAILURE_MESSAGES = {
-    "operation_timeout": "A required operation timed out.",
-    "connection_failed": "Could not connect to a required service.",
-    "permission_denied": "Access to a required resource was denied.",
-    "file_missing": "A required file was not found.",
-    "stale_operation": "The operation no longer matches current data. Refresh its preview before retrying.",
-    "remote_service_failed": "A required service returned an unsuccessful response.",
-    "sync_failed": "Synchronization reported a failure. Open Sources for per-source results.",
-    "telegram_history_failed": "A Telegram history request failed. Open Sources for per-source results.",
-}
+JOB_FAILURE_MESSAGES = FAILURE_MESSAGES
 
 
 def _result_summary(job: dict) -> str | None:
@@ -242,6 +234,9 @@ def _safe_job(job: dict, *, now=None) -> dict:
             if isinstance(value, int) and value >= 0:
                 safe_event[key] = value
         safe_events.append(safe_event)
+    failure_code = job.get("failure_code")
+    if not isinstance(failure_code, str) or failure_code not in JOB_FAILURE_MESSAGES:
+        failure_code = None
     safe_job = {
         "id": str(job.get("id") or ""),
         "action": str(job.get("action") or "task"),
@@ -253,7 +248,11 @@ def _safe_job(job: dict, *, now=None) -> dict:
         "stage": stage,
         "progress": safe_progress,
         "events": safe_events[-20:],
-        "local_state": local_state if isinstance(local_state, str) and local_state in {"hidden", "dismissed", "restored", "quarantined", "metadata_updated", "metadata_scan_completed", "telegram_fingerprint_scan_completed", "artwork_downloaded", "artwork_generated", "artwork_already_valid", "artwork_not_found", "artwork_download_failed", "artwork_lookup_failed", "availability_checked", "audit_queued", "audit_completed", "metadata_quality_audit_completed", "nfo_repaired", "files_repaired"} else None,
+        "failure_code": failure_code,
+        "failure_stage": next((event["stage"] for event in reversed(safe_events)
+                                if event["stage"] not in {"starting", "completed", "cancelled"}), None)
+        if state == "failed" else None,
+        "local_state": local_state if isinstance(local_state, str) and local_state in {"hidden", "dismissed", "restored", "quarantined", "source_removed", "metadata_updated", "metadata_scan_completed", "telegram_fingerprint_scan_completed", "artwork_downloaded", "artwork_generated", "artwork_already_valid", "artwork_not_found", "artwork_download_failed", "artwork_lookup_failed", "availability_checked", "audit_queued", "audit_completed", "metadata_quality_audit_completed", "nfo_repaired", "files_repaired"} else None,
         "jellyfin_refresh": refresh_state if isinstance(refresh_state, str) and refresh_state in {"pending", "updated", "failed", "skipped", "unavailable", "not_required"} else None,
         "jellyfin_library_refresh": result.get("jellyfin_library_refresh") if isinstance(result.get("jellyfin_library_refresh"), str) and result.get("jellyfin_library_refresh") in {"pending", "updated", "failed", "skipped", "unavailable", "not_required"} else None,
         "jellyfin_import": import_state if isinstance(import_state, str) and import_state in {"not_requested", "not_confirmed", "confirmed"} else None,

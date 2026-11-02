@@ -1382,7 +1382,14 @@
     const form = $('#sourcesFilters');
     form.addEventListener('submit', event => event.preventDefault());
     form.addEventListener('input', event => {
-      if (event.target.name === 'q') { state.filter.q = event.target.value; state.filter.sourceKey = ''; state.page = 0; render(); scheduleSourceUrlUpdate(); }
+      if (event.target.name === 'q') {
+        state.filter.q = event.target.value;
+        state.filter.sourceKey = '';
+        state.page = 0;
+        state.accessFeedback = '';
+        render();
+        scheduleSourceUrlUpdate();
+      }
     });
     form.addEventListener('change', event => {
       if (event.target.name === 'status') { state.filter.status = event.target.value; state.page = 0; render(); commitSourceUrl(); }
@@ -1394,6 +1401,7 @@
       render();
       commitSourceUrl();
     });
+    $('#sourcesRefresh').addEventListener('click', () => { setNotice('', ''); return loadSources(); });
     $('#sourcesPagination').addEventListener('click', event => {
       const button = event.target.closest('[data-source-page]');
       if (!button || button.disabled) return;

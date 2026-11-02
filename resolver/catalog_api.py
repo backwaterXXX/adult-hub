@@ -31,7 +31,7 @@ async def get_categories(provider: str = "telegram"):
         raise HTTPException(status_code=404, detail=f"Provider '{provider}' not found")
     except Exception as e:
         logger.error(f"Error fetching categories for {provider}: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail="Could not load categories")
 
 
 @router.get("/api/browse")
@@ -44,7 +44,7 @@ async def browse(section: str = Query("trending"), page: int = 1, provider: str 
         raise HTTPException(status_code=404, detail=f"Provider '{provider}' not found")
     except Exception as e:
         logger.error(f"Error browsing {section} ({provider}): {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail="Could not browse videos")
 
 
 @router.get("/api/category/{category_id}")
@@ -79,7 +79,7 @@ async def get_category_videos(
         raise HTTPException(status_code=404, detail=f"Provider '{provider}' not found")
     except Exception as e:
         logger.error(f"Error fetching category {category_id} ({provider}): {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail="Could not load category videos")
 
 
 @router.get("/api/telegram/history/{channel_id}")
@@ -96,7 +96,7 @@ async def get_telegram_history(channel_id: str, offset_id: Optional[int] = None,
         raise
     except Exception as e:
         logger.error("Telegram history fetch failed for %s: %s", channel_id, e)
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail="Telegram history request failed")
 
 
 @router.get("/api/telegram/message-check/{channel_id}/{message_id}")
@@ -129,7 +129,7 @@ async def search_videos(q: str, page: int = 1, provider: str = "telegram"):
         raise HTTPException(status_code=404, detail=f"Provider '{provider}' not found")
     except Exception as e:
         logger.error(f"Error searching for '{sanitized_q}' ({provider}): {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail="Search failed")
 
 
 @router.get("/api/unsupported-embeds")
@@ -163,7 +163,7 @@ async def video_performers(provider: str, pid: str, slug: str = ""):
         names = normalize_performers(await fetch_fn(page_url))
     except Exception as e:
         logger.error(f"Performer lookup failed for {provider}:{pid}: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail="Performer lookup failed")
     return {"provider": provider, "id": pid, "performers": names}
 
 
@@ -204,11 +204,11 @@ async def api_thumb(provider: str = Query(...), ref: str = Query(...)):
         data = await asyncio.wait_for(fetch_fn(ref), timeout=THUMB_API_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Preview download timed out")
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Invalid preview reference")
     except Exception as e:
         logger.error(f"Thumb fetch failed for {provider}:{ref[:40]}: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=502, detail="Preview download failed")
     if not data:
         raise HTTPException(status_code=404, detail="No preview available")
     raw = bytes(data)

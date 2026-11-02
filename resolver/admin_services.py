@@ -3,50 +3,14 @@ import json
 import time
 from common import db
 from common.job_stages import ALL_STAGES
+from common.job_failures import classify_job_failure
 
 
 _JOB_PROGRESS_STAGES = ALL_STAGES
 
-_SAFE_JOB_FAILURE_CODES = {
-    "operation_timeout", "connection_failed", "permission_denied", "file_missing",
-    "stale_operation", "remote_service_failed", "sync_failed", "telegram_history_failed",
-}
-
-
-def _safe_job_failure_code(result) -> str | None:
+def _safe_job_failure_code(result, action: str | None = None) -> str | None:
     """Classify persisted failures without returning exception text or secrets."""
-    if not isinstance(result, dict):
-        return None
-    code = result.get("failure_code")
-    if isinstance(code, str) and code in _SAFE_JOB_FAILURE_CODES:
-        return code
-    if result.get("local_state") == "sync failed":
-        failures = result.get("source_failures")
-        if isinstance(failures, list) and any(
-                isinstance(item, dict)
-                and item.get("detail") == "Telegram fetch/history operation failed."
-                for item in failures):
-            return "telegram_history_failed"
-        return "sync_failed"
-    error = result.get("error")
-    if not isinstance(error, str):
-        return None
-    normalized = error.casefold()
-    if "timed out" in normalized or "timeout" in normalized:
-        return "operation_timeout"
-    if any(marker in normalized for marker in (
-            "connection refused", "connectionerror", "connecterror",
-            "could not connect", "network is unreachable")):
-        return "connection_failed"
-    if "permission denied" in normalized or "permissionerror" in normalized:
-        return "permission_denied"
-    if "no such file or directory" in normalized or "filenotfounderror" in normalized:
-        return "file_missing"
-    if any(marker in normalized for marker in ("stale plan", "stale preview", "revision conflict")):
-        return "stale_operation"
-    if any(marker in normalized for marker in ("httpstatuserror", "http 5", "status code 5")):
-        return "remote_service_failed"
-    return None
+    return classify_job_failure(action, result)
 
 
 def _safe_job_progress(result: dict) -> tuple[dict | None, list[dict]]:
@@ -105,7 +69,7 @@ def _public_job(row: db.Record, *, include_failure_code: bool = False) -> dict:
     item["result"] = json.loads(item["result"]) if item["result"] else None
     item["progress"], item["events"] = _safe_job_progress(item["result"] or {})
     if include_failure_code:
-        item["failure_code"] = _safe_job_failure_code(item["result"])
+        item["failure_code"] = _safe_job_failure_code(item["result"], item.get("action"))
     if item["result"] and "snapshots" in item["result"]:
         item["result"] = {"operation_id": item["result"].get("operation_id"), "recovery": "in_progress"}
     if isinstance(item["result"], dict) and item["result"].get("error"):

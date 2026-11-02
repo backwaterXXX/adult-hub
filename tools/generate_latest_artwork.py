@@ -38,16 +38,16 @@ def main():
 
     _load_all_env()
 
-    jf_url = (os.getenv("JELLYFIN_URL") or "http://192.168.1.111:8096").rstrip("/")
+    jf_url = (os.getenv("JELLYFIN_URL") or "").rstrip("/")
     jf_token = os.getenv("JELLYFIN_API_KEY")
     user_id = os.getenv("JELLYFIN_USER_ID")
     parent_id = os.getenv("JELLYFIN_ADULT_LIBRARY_ID")
     api_base = os.getenv("RESOLVER_LOCAL_API_URL", "http://127.0.0.1:8090/admin")
-    media_dir = Path(os.getenv("MEDIA_DIR", "/app/adult-hub/media/adult"))
+    media_dir = Path(os.getenv("MEDIA_DIR", "./media/adult"))
 
     missing_config = [key for key, value in (
-        ("JELLYFIN_API_KEY", jf_token), ("JELLYFIN_USER_ID", user_id),
-        ("JELLYFIN_ADULT_LIBRARY_ID", parent_id),
+        ("JELLYFIN_URL", jf_url), ("JELLYFIN_API_KEY", jf_token),
+        ("JELLYFIN_USER_ID", user_id), ("JELLYFIN_ADULT_LIBRARY_ID", parent_id),
     ) if not value]
     if missing_config:
         print("Error: required Jellyfin settings are missing: " + ", ".join(missing_config))

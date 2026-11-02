@@ -539,6 +539,7 @@
       if (!uncertain) { state.fuzzyMerging.delete(key); button.disabled = false; renderFuzzy(); }
     }
   }
+  $('#performersRefresh')?.addEventListener('click', load);
   $('#performersReconcile')?.addEventListener('click', reconcileClearMatches);
   $('#fuzzyScan')?.addEventListener('click', scanFuzzy);
   $('#fuzzyReviewSelected')?.addEventListener('click', mergeSelected);

@@ -177,6 +177,10 @@
     state.proposalRequestId += 1;
     if (suggestionsActive) void loadProposals();
   }
+  $('#metadataProposalsRefresh')?.addEventListener('click', () => {
+    state.proposalOffset = 0;
+    return loadProposals();
+  });
   document.addEventListener('adminv2:navigate', event => syncSuggestions(event.detail));
   const initial = window.AdminV2.currentRoute();
   if (initial.route === 'library') syncSuggestions(initial);

@@ -6,6 +6,7 @@ fields separate so performer matching never scans arbitrary title or promo text.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Iterable
 
@@ -44,7 +45,7 @@ def _is_name_list(value: str) -> list[str]:
 def extract_telegram_metadata(caption: str, channel_title: str = "") -> dict:
     """Extract an explicit scene title and cast field from one Telegram post.
 
-    A first-line cast list is accepted only for the tested PornBestsGay layout:
+    A first-line cast list is accepted only for the configured signature layout:
     the post carries its distinctive account handle and the first line is a
     compact, delimiter-separated list. Channel identity alone is insufficient.
     """
@@ -71,8 +72,9 @@ def extract_telegram_metadata(caption: str, channel_title: str = "") -> dict:
             title_source = "labeled_title"
 
     lower_caption = str(caption or "").casefold()
+    signature_channel = (os.getenv("TELEGRAM_SIGNATURE_CHANNEL") or "").strip().casefold()
     signature_names: list[str] = []
-    if not cast_names and "@pornbestsgay" in lower_caption:
+    if not cast_names and signature_channel and signature_channel in lower_caption:
         first = next((line for line in lines if not line.startswith(("#", "@"))), "")
         signature_names = _is_name_list(first)
 

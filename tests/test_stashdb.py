@@ -29,20 +29,20 @@ class TestStashDB(PgTestCase):
 
     def test_search_performer_no_token(self):
         with patch.dict("os.environ", {}, clear=True):
-            self.assertIsNone(stash_module.search_performer("Malik Delgaty"))
+            self.assertIsNone(stash_module.search_performer("Jordan Vale"))
 
     def test_search_performer_parses_graphql(self):
         payload = load_json_fixture("api", "stashdb_performer.json")
         res = stash_module.search_performer(
-            "Malik Delgaty", token="stash-token", http_post=lambda *a, **k: payload
+            "Jordan Vale", token="stash-token", http_post=lambda *a, **k: payload
         )
         self.assertIsNotNone(res)
-        self.assertEqual(res["bio"], "Canadian adult star and fitness model.")
-        self.assertEqual(res["birth"], "2000-09-29")
-        self.assertEqual(res["nationality"], "Canada")
-        self.assertIn("Malik", res["aliases"])
-        self.assertIn("M. Delgaty", res["aliases"])
-        self.assertEqual(res["photo"], "https://images.stashdb.org/malik-hd.jpg")
+        self.assertEqual(res["bio"], "Fictional performer used only in tests.")
+        self.assertEqual(res["birth"], "1990-01-01")
+        self.assertEqual(res["nationality"], "Exampleland")
+        self.assertIn("Jordan", res["aliases"])
+        self.assertIn("J. Vale", res["aliases"])
+        self.assertEqual(res["photo"], "https://images.stashdb.org/jordan-hd.jpg")
         self.assertEqual(res["stashdb_id"], "stash-123")
         self.assertEqual(res["stashdb_url"], "https://stashdb.org/performers/stash-123")
 
@@ -56,7 +56,7 @@ class TestStashDB(PgTestCase):
     def test_backfill_stashdb_enriches_performers(self):
         self.conn.execute(
             "INSERT INTO performer_bios (name, bio, birth, aliases, updated_at, nationality) VALUES (%s, %s, %s, %s, %s, %s)",
-            ("Malik Delgaty", "", "", "[]", 100, ""),
+            ("Jordan Vale", "", "", "[]", 100, ""),
         )
         self.conn.commit()
 
@@ -66,13 +66,13 @@ class TestStashDB(PgTestCase):
                     "performers": [
                         {
                             "id": "stash-123",
-                            "name": "Malik Delgaty",
-                            "disambiguation": "Canadian fitness model.",
-                            "birth_date": "2000-09-29",
-                            "country": "Canada",
-                            "aliases": ["Malik D"],
+                            "name": "Jordan Vale",
+                            "disambiguation": "Updated fictional bio.",
+                            "birth_date": "1990-01-01",
+                            "country": "Exampleland",
+                            "aliases": ["Jordan V"],
                             "images": [
-                                {"url": "https://images.stashdb.org/malik-hd.jpg"}
+                                {"url": "https://images.stashdb.org/jordan-hd.jpg"}
                             ],
                         }
                     ]
@@ -89,18 +89,18 @@ class TestStashDB(PgTestCase):
         self.assertEqual(updated, 1)
 
         row = self.conn.execute(
-            "SELECT bio, birth, nationality, aliases, stashdb_url FROM performer_bios WHERE name = 'Malik Delgaty'"
+            "SELECT bio, birth, nationality, aliases, stashdb_url FROM performer_bios WHERE name = 'Jordan Vale'"
         ).fetchone()
-        self.assertEqual(row[0], "Canadian fitness model.")
-        self.assertEqual(row[1], "2000-09-29")
-        self.assertEqual(row[2], "Canada")
-        self.assertIn("Malik D", json.loads(row[3]))
+        self.assertEqual(row[0], "Updated fictional bio.")
+        self.assertEqual(row[1], "1990-01-01")
+        self.assertEqual(row[2], "Exampleland")
+        self.assertIn("Jordan V", json.loads(row[3]))
         self.assertEqual(row[4], "https://stashdb.org/performers/stash-123")
 
         photo = self.conn.execute(
-            "SELECT thumb FROM performer_photos WHERE name = 'Malik Delgaty'"
+            "SELECT thumb FROM performer_photos WHERE name = 'Jordan Vale'"
         ).fetchone()
-        self.assertEqual(photo[0], "https://images.stashdb.org/malik-hd.jpg")
+        self.assertEqual(photo[0], "https://images.stashdb.org/jordan-hd.jpg")
 
     def test_no_match_does_not_pin_the_first_performer(self):
         for name in ("Alice", "Bob", "Carol"):

@@ -1,11 +1,11 @@
 {
   "data": [
     {
-      "name": "Alex Fox",
-      "bio": "A popular performer in adult videos.",
-      "birthday": "1995-04-12",
-      "aliases": ["Alex F", "Foxy"],
-      "image": "https://example.com/alex.jpg"
+      "name": "Casey North",
+      "bio": "Fictional performer used only in tests.",
+      "birthday": "1992-02-02",
+      "aliases": ["Casey N", "Northy"],
+      "image": "https://example.com/casey.jpg"
     }
   ]
 }

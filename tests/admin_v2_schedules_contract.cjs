@@ -353,9 +353,6 @@ const context = {
     ['Task', 'Enabled', 'Description', 'Next run', 'Actions']);
   assert.equal(dependentRow.children[0].colSpan, undefined, 'dependent rows use the same simplified columns');
   assert.equal(dependentRow.children[0].children[0].textContent, 'Scene identification');
-  assert.equal(dependentRow.children[0].children[1].textContent,
-    'Backfills scene fingerprints when work is available.',
-    'the description stays under the dependent task name');
   assert.equal(dependentRow.children[1].children[0].textContent, 'Enabled');
   assert.equal(dependentRow.children[2].children[0].textContent, 'Backfills scene fingerprints when work is available.');
   assert.equal(dependentRow.children[3].children[0].dateTime, '2026-11-01T02:00:00.000Z',
@@ -366,9 +363,6 @@ const context = {
   const triggerlessRun = failedRow.children[4].children[0];
   assert.equal(triggerlessRun.textContent, 'Run');
   const cleanupRow = [...grouped.children].find(row => row.dataset.stageId === 'telegram-title-cleanup');
-  assert.equal(cleanupRow.children[0].children[1].textContent,
-    'Up to 500 stored Telegram videos per library sync.',
-    'the cleanup task description stays generic below the task name');
   assert.equal(cleanupRow.children[1].children[0].textContent, 'Enabled');
   assert.equal(cleanupRow.children[2].children[1].textContent,
     '16903/16903 scanned; 167 titles cleaned; 0 tags added; 0 categories added.',

@@ -4,14 +4,14 @@
       "performers": [
         {
           "id": "stash-123",
-          "name": "Malik Delgaty",
-          "disambiguation": "Canadian adult star and fitness model.",
-          "birth_date": "2000-09-29",
-          "country": "Canada",
+          "name": "Jordan Vale",
+          "disambiguation": "Fictional performer used only in tests.",
+          "birth_date": "1990-01-01",
+          "country": "Exampleland",
           "ethnicity": "CAUCASIAN",
-          "aliases": ["Malik", "M. Delgaty"],
+          "aliases": ["Jordan", "J. Vale"],
           "images": [
-            {"url": "https://images.stashdb.org/malik-hd.jpg"}
+            {"url": "https://images.stashdb.org/jordan-hd.jpg"}
           ]
         }
       ]

@@ -247,6 +247,7 @@
     };
     addDetail('Task type', group === 'system' ? item.action || item.id : taskNames[item.action] || item.action);
     addDetail('Schedule', item.cron_expression || cadence(item));
+    addDetail('Time zone', scheduleZone);
     addDetail('Last result', resultNames[item.last_result] || item.last_result || item.status);
     const detailResult = /^Last result:\s*(.+?)\.?$/i.exec(String(item.details || '').trim());
     const repeatsLastResult = detailResult && item.last_result
@@ -342,6 +343,8 @@
     const descriptionCell = node('td', 'schedule-description-cell');
     descriptionCell.dataset.label = 'Description';
     descriptionCell.append(node('small', 'schedule-task-kind', item.task_description || item.details || `Runs with ${parent.name}`));
+    if (item.progress_details) descriptionCell.append(node('small', 'schedule-task-kind', item.progress_details));
+    if (item.last_error) descriptionCell.append(node('small', 'schedule-task-error', item.last_error));
     const nextCell = node('td', 'schedule-time-cell');
     nextCell.dataset.label = 'Next run';
     nextCell.append(timeNode(item.enabled === false ? null : parent.next_run_at, scheduleZone));
@@ -496,6 +499,7 @@
       if (restoreFocus && button.isConnected && document.activeElement === document.body) button.focus({ preventScroll: true });
     }
   });
+  $('#schedulesRefresh')?.addEventListener('click', () => load());
   function syncSchedules(route) {
     schedulesActive = route === 'schedules';
     if (pollTimer !== null) clearInterval(pollTimer);

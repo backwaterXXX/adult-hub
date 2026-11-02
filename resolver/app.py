@@ -535,8 +535,8 @@ async def get_video_variants(video_id: str):
             except HTTPException as exc:
                 last_error = exc
                 continue
-            except ValueError as exc:
-                last_error = HTTPException(status_code=404, detail=str(exc))
+            except ValueError:
+                last_error = HTTPException(status_code=404, detail="Video variants are unavailable")
                 continue
             except Exception as exc:
                 last_error = exc
@@ -547,7 +547,7 @@ async def get_video_variants(video_id: str):
         if isinstance(last_error, HTTPException):
             raise last_error
         logger.error(f"Failed to resolve variants for {video_id}: {last_error}")
-        raise HTTPException(status_code=502, detail=f"Failed to resolve video variants: {last_error}")
+        raise HTTPException(status_code=502, detail="Failed to resolve video variants")
 
     raise HTTPException(status_code=404, detail=f"No video found for {video_id}")
 
@@ -631,7 +631,7 @@ async def play_stream(
                 continue
             except Exception as e:
                 if chosen_variant and "not found" in str(e).lower():
-                    last_error = HTTPException(status_code=404, detail=str(e))
+                    last_error = HTTPException(status_code=404, detail="Video not found")
                 else:
                     last_error = e
                 logger.warning(f"Failed to resolve {cache_key}: {e}")
@@ -648,7 +648,7 @@ async def play_stream(
         if isinstance(last_error, HTTPException):
             raise last_error
         logger.error(f"Failed to resolve stream for {video_id}: {last_error}")
-        raise HTTPException(status_code=502, detail=f"Failed to resolve stream: {last_error or 'No working stream source'}")
+        raise HTTPException(status_code=502, detail="Failed to resolve stream")
 
     if (stream_url or "").startswith("tg://"):
         return await proxy_fetch_response(request, stream_url, active_cache_key)
