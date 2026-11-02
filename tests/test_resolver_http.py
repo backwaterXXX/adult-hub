@@ -1498,7 +1498,8 @@ class TestPlayStream(ResolverHarness):
         response = self.get(module, "/admin/play/telegram:1/stream")
 
         self.assertEqual(response.status_code, 502)
-        self.assertIn("Empty stream URL resolved for telegram:1", response.json()["detail"])
+        self.assertEqual(response.json()["detail"], "Failed to resolve stream")
+        self.assertIn("Empty stream URL resolved for telegram:1", self.logs.blob("WARNING"))
 
     def test_a_freshly_resolved_dead_url_is_refused(self):
         module = self.load()
@@ -1510,7 +1511,8 @@ class TestPlayStream(ResolverHarness):
         response = self.get(module, "/admin/play/telegram:1/stream")
 
         self.assertEqual(response.status_code, 502)
-        self.assertIn("Freshly resolved URL is dead", response.json()["detail"])
+        self.assertEqual(response.json()["detail"], "Failed to resolve stream")
+        self.assertIn("Freshly resolved URL is dead", self.logs.blob("WARNING"))
 
     def test_an_unparsable_candidate_id_is_skipped(self):
         module = self.load()

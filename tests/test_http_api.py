@@ -263,6 +263,7 @@ class TestResolverHttpApi(unittest.TestCase):
         ("POST", "/admin/api/v2/sources"),
         ("POST", "/admin/api/v2/sources/save"),
         ("POST", "/admin/api/v2/sources/check"),
+        ("POST", "/admin/api/v2/sources/remove"),
         ("POST", "/admin/api/v2/availability/execute"),
         ("POST", "/admin/api/v2/backups/create"),
         ("POST", "/admin/api/v2/backups/restore-test"),
