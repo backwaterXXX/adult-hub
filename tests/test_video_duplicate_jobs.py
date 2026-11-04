@@ -34,7 +34,9 @@ class TestWorkerActionDispatchContract(unittest.TestCase):
     def test_every_advertised_worker_action_has_a_dispatch_branch(self):
         from common.job_queue import WORKER_ACTIONS
 
-        function = ast.parse(inspect.getsource(duplicate_jobs.process_video_duplicate_jobs_locked))
+        # The dispatch branches live in _execute_action, not in the claim/run loop.
+        worker = sys.modules[duplicate_jobs.process_video_duplicate_jobs_locked.__module__]
+        function = ast.parse(inspect.getsource(worker._execute_action))
         dispatched = {
             node.comparators[0].value
             for node in ast.walk(function)
