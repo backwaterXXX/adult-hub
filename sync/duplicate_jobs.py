@@ -42,38 +42,56 @@ def _audit_library_inventory(media_dir: Path, registered_streams: set[str]):
                         stack.clear()
                         break
                     scanned += 1
-                    try:
-                        if entry.is_symlink():
-                            continue
-                        if entry.is_dir(follow_symlinks=False):
-                            if depth >= _AUDIT_INVENTORY_MAX_DEPTH:
-                                complete = False
-                            else:
-                                stack.append((Path(entry.path), depth + 1))
-                            continue
-                        if not entry.is_file(follow_symlinks=False):
-                            continue
-                    except OSError:
+                    kind = _entry_kind(entry)
+                    if kind == "incomplete":
                         complete = False
-                        continue
-                    relative = Path(entry.path).relative_to(root).as_posix()
-                    suffix = Path(relative).suffix.lower()
-                    if suffix not in {".strm", ".nfo", ".jpg"}:
-                        continue
-                    path = Path(relative)
-                    key = (path.parent.as_posix(), path.stem)
-                    try:
-                        stat = entry.stat(follow_symlinks=False)
-                    except OSError:
+                    elif kind == "dir":
+                        if depth >= _AUDIT_INVENTORY_MAX_DEPTH:
+                            complete = False
+                        else:
+                            stack.append((Path(entry.path), depth + 1))
+                    elif kind == "file" and not _record_family_file(entry, root, families):
                         complete = False
-                        continue
-                    families.setdefault(key, []).append({
-                        "path": relative, "suffix": suffix, "size": int(stat.st_size),
-                        "mtime_ns": int(stat.st_mtime_ns), "dev": int(stat.st_dev),
-                        "ino": int(stat.st_ino),
-                    })
         except OSError:
             complete = False
+    return _orphan_families(families, registered_streams), scanned, complete
+
+
+def _entry_kind(entry) -> str:
+    """Classify one scandir entry as 'dir', 'file', 'skip', or 'incomplete' (could not be read)."""
+    try:
+        if entry.is_symlink():
+            return "skip"
+        if entry.is_dir(follow_symlinks=False):
+            return "dir"
+        if not entry.is_file(follow_symlinks=False):
+            return "skip"
+    except OSError:
+        return "incomplete"
+    return "file"
+
+
+def _record_family_file(entry, root: Path, families: dict) -> bool:
+    """Add a sidecar-capable file to its same-basename family. False if its metadata could not be read."""
+    relative = Path(entry.path).relative_to(root).as_posix()
+    suffix = Path(relative).suffix.lower()
+    if suffix not in {".strm", ".nfo", ".jpg"}:
+        return True
+    path = Path(relative)
+    key = (path.parent.as_posix(), path.stem)
+    try:
+        stat = entry.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    families.setdefault(key, []).append({
+        "path": relative, "suffix": suffix, "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns), "dev": int(stat.st_dev),
+        "ino": int(stat.st_ino),
+    })
+    return True
+
+
+def _orphan_families(families: dict, registered_streams: set[str]) -> list:
     orphans = []
     registered_families = set()
     for registered in registered_streams:
@@ -87,7 +105,7 @@ def _audit_library_inventory(media_dir: Path, registered_streams: set[str]):
             continue
         files.sort(key=lambda item: (item["path"].casefold(), item["path"]))
         orphans.append({"files": files, "total_bytes": sum(item["size"] for item in files)})
-    return orphans, scanned, complete
+    return orphans
 
 
 def _audit_nfo_metadata_signature(root):

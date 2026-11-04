@@ -119,6 +119,42 @@ def _comparison(job: dict) -> None:
     finish_comparison(DB_URL, job, state=state, evidence=evidence, frame_sheet=sheet)
 
 
+def _process_claimed_job(job) -> None:
+    heartbeat_stop = threading.Event()
+    heartbeat_thread = threading.Thread(target=_keep_lease, args=(job, heartbeat_stop), daemon=True)
+    heartbeat_thread.start()
+    try:
+        (_signature if job["kind"] == "signature" else _comparison)(job)
+    except Exception as exc:
+        LOG.exception("Visual job %s failed", job["id"])
+        finish_failure(DB_URL, job, type(exc).__name__[:80], retryable=True)
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=2)
+
+
+def _keep_lease(job, heartbeat_stop: threading.Event) -> None:
+    while not heartbeat_stop.wait(15):
+        try:
+            if not heartbeat(DB_URL, job):
+                LOG.error("Visual job lease was lost: %s", job["id"])
+                return
+        except Exception:
+            LOG.exception("Could not extend visual job lease %s", job["id"])
+            return
+
+
+def _run_cycle() -> None:
+    if not _resolver_ready():
+        time.sleep(2)
+        return
+    job = claim_next(DB_URL)
+    if not job:
+        time.sleep(2)
+        return
+    _process_claimed_job(job)
+
+
 def main() -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
@@ -132,33 +168,7 @@ def main() -> int:
         try:
             recover_expired(DB_URL, force=first_cycle)
             first_cycle = False
-            if not _resolver_ready():
-                time.sleep(2)
-                continue
-            job = claim_next(DB_URL)
-            if not job:
-                time.sleep(2)
-                continue
-            heartbeat_stop = threading.Event()
-            def keep_lease(job=job, heartbeat_stop=heartbeat_stop) -> None:
-                while not heartbeat_stop.wait(15):
-                    try:
-                        if not heartbeat(DB_URL, job):
-                            LOG.error("Visual job lease was lost: %s", job["id"])
-                            return
-                    except Exception:
-                        LOG.exception("Could not extend visual job lease %s", job["id"])
-                        return
-            heartbeat_thread = threading.Thread(target=keep_lease, daemon=True)
-            heartbeat_thread.start()
-            try:
-                (_signature if job["kind"] == "signature" else _comparison)(job)
-            except Exception as exc:
-                LOG.exception("Visual job %s failed", job["id"])
-                finish_failure(DB_URL, job, type(exc).__name__[:80], retryable=True)
-            finally:
-                heartbeat_stop.set()
-                heartbeat_thread.join(timeout=2)
+            _run_cycle()
         except Exception:
             LOG.exception("Visual worker cycle failed")
             time.sleep(5)

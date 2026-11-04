@@ -91,42 +91,18 @@ def reconcile_telegram_channel(
         if video_id in current_video_ids:
             status = "available"
         else:
-            url = (f"{resolver_api_url.rstrip('/')}/admin/api/telegram/message-check/"
-                   f"{quote(channel_ref, safe='')}/{message_id}?unique_id={quote(unique_id, safe='')}")
+            url = _exact_message_check_url(resolver_api_url, channel_ref, message_id, unique_id)
             try:
-                result = fetch_json_with_retry(url, timeout=15.0, desc="telegram/exact-message-check")
-                status = result.get("status") if isinstance(result, dict) else None
-                if status not in {"available", "missing", "mismatch"}:
-                    raise ValueError("unexpected Telegram message check response")
+                status = _fetch_message_status(url, fetch_json_with_retry)
             except Exception as exc:
                 counts["errors"] += 1
                 logger.info("Telegram availability check inconclusive for %s: %s", video_id, exc)
-                retained_status = old_status if old_status in {"suspect", "quarantined"} else "failed"
-                try:
-                    conn.execute("""
-                        INSERT INTO telegram_unavailable_quarantine
-                            (video_id,channel_id,message_id,file_unique_id,status,miss_count,last_checked_at,files,last_error)
-                        VALUES (%s,%s,%s,%s,%s,%s,to_timestamp(%s),%s::jsonb,%s)
-                        ON CONFLICT(video_id) DO UPDATE SET
-                            last_checked_at=EXCLUDED.last_checked_at,
-                            last_error=EXCLUDED.last_error
-                    """, (video_id, channel_id, message_id, unique_id, retained_status,
-                          int(old_misses or 0), now, json.dumps(old_files or []), str(exc)[:500]))
-                except Exception:
-                    pass
+                _retain_inconclusive(conn, video_id, channel_id, message_id, unique_id,
+                                     old_status, old_misses, old_files, now, exc)
                 continue
         counts["checked"] += 1
         if status == "available":
-            try:
-                _restore_files(old_files)
-                conn.execute("UPDATE videos SET last_seen=GREATEST(COALESCE(last_seen, to_timestamp(%s)), to_timestamp(%s)) WHERE id=%s", (now, now, video_id))
-                conn.execute("DELETE FROM telegram_unavailable_quarantine WHERE video_id=%s", (video_id,))
-                counts["available"] += 1
-                if old_status == "quarantined":
-                    counts["restored"] += 1
-            except Exception as exc:
-                counts["errors"] += 1
-                logger.warning("Could not restore Telegram quarantine for %s: %s", video_id, exc)
+            _restore_available(conn, video_id, old_status, old_files, now, counts, logger)
             continue
         misses = int(old_misses or 0) + 1
         next_status = "quarantined" if misses >= 2 else "suspect"
@@ -154,3 +130,50 @@ def reconcile_telegram_channel(
             logger.warning("Could not quarantine unavailable Telegram item %s: %s", video_id, exc)
     conn.commit()
     return counts
+
+
+def _exact_message_check_url(resolver_api_url: str, channel_ref: str, message_id, unique_id: str) -> str:
+    return (f"{resolver_api_url.rstrip('/')}/admin/api/telegram/message-check/"
+            f"{quote(channel_ref, safe='')}/{message_id}?unique_id={quote(unique_id, safe='')}")
+
+
+def _fetch_message_status(url: str, fetch_json_with_retry: Callable) -> str:
+    result = fetch_json_with_retry(url, timeout=15.0, desc="telegram/exact-message-check")
+    status = result.get("status") if isinstance(result, dict) else None
+    if status not in {"available", "missing", "mismatch"}:
+        raise ValueError("unexpected Telegram message check response")
+    return status
+
+
+def _retain_inconclusive(conn, video_id, channel_id, message_id, unique_id,
+                         old_status, old_misses, old_files, now, exc) -> None:
+    """Keep the previous quarantine state when the check could not give an answer."""
+    retained_status = old_status if old_status in {"suspect", "quarantined"} else "failed"
+    try:
+        conn.execute("""
+            INSERT INTO telegram_unavailable_quarantine
+                (video_id,channel_id,message_id,file_unique_id,status,miss_count,last_checked_at,files,last_error)
+            VALUES (%s,%s,%s,%s,%s,%s,to_timestamp(%s),%s::jsonb,%s)
+            ON CONFLICT(video_id) DO UPDATE SET
+                last_checked_at=EXCLUDED.last_checked_at,
+                last_error=EXCLUDED.last_error
+        """, (video_id, channel_id, message_id, unique_id, retained_status,
+              int(old_misses or 0), now, json.dumps(old_files or []), str(exc)[:500]))
+    except Exception:
+        pass
+
+
+def _restore_available(conn, video_id, old_status, old_files, now, counts, logger) -> None:
+    """Move files back from quarantine and clear the quarantine row for a Telegram item that answered."""
+    try:
+        _restore_files(old_files)
+        conn.execute("UPDATE videos SET last_seen=GREATEST(COALESCE(last_seen, to_timestamp(%s)), to_timestamp(%s)) WHERE id=%s", (now, now, video_id))
+        conn.execute("DELETE FROM telegram_unavailable_quarantine WHERE video_id=%s", (video_id,))
+        counts["available"] += 1
+        if old_status == "quarantined":
+            counts["restored"] += 1
+    except Exception as exc:
+        counts["errors"] += 1
+        logger.warning("Could not restore Telegram quarantine for %s: %s", video_id, exc)
+
+

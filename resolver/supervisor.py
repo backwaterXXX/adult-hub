@@ -11,6 +11,7 @@ import os
 import signal
 import subprocess
 import time
+from dataclasses import dataclass
 from urllib.error import URLError
 from urllib.request import urlopen
 from common.logging_setup import configure_logging
@@ -77,75 +78,62 @@ def _sleep(seconds: float) -> None:
         time.sleep(min(remaining, 0.5))
 
 
+@dataclass
+class _Worker:
+    """A helper process restarted with exponential backoff whenever it exits."""
+    label: str
+    command: list[str]
+    process: subprocess.Popen | None = None
+    restart_at: float = 0.0
+    restart_delay: float = 2.0
+
+    def start_if_due(self, now: float) -> None:
+        if self.process is None and now >= self.restart_at:
+            self.process = subprocess.Popen(self.command, start_new_session=True)
+            _log(f"started {self.label} pid={self.process.pid}")
+
+    def reap_if_exited(self) -> None:
+        if self.process is not None and self.process.poll() is not None:
+            code = self.process.returncode
+            _log(f"{self.label} exited with code {code}; restarting in {self.restart_delay:g}s",
+                 logging.WARNING)
+            self.process = None
+            self.restart_at = time.monotonic() + self.restart_delay
+            self.restart_delay = min(self.restart_delay * 2.0, MAX_RESTART_DELAY)
+
+    def reset_backoff_if_running(self) -> None:
+        if self.process is not None and self.process.poll() is None:
+            self.restart_delay = 2.0
+
+    def stop(self) -> None:
+        if self.process is not None:
+            _stop_child(self.process)
+
+
 def main() -> int:
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
     restart_delay = 2.0
-    worker = None
-    visual_worker = None
-    worker_restart_at = 0.0
-    worker_restart_delay = 2.0
-    visual_restart_at = 0.0
-    visual_restart_delay = 2.0
+    workers = (
+        _Worker("pHash worker", PHASH_WORKER_COMMAND),
+        _Worker("visual duplicate worker", VISUAL_WORKER_COMMAND),
+    )
 
     while not _stop_requested:
-        if worker is None and time.monotonic() >= worker_restart_at:
-            worker = subprocess.Popen(PHASH_WORKER_COMMAND, start_new_session=True)
-            _log(f"started pHash worker pid={worker.pid}")
-        if visual_worker is None and time.monotonic() >= visual_restart_at:
-            visual_worker = subprocess.Popen(VISUAL_WORKER_COMMAND, start_new_session=True)
-            _log(f"started visual duplicate worker pid={visual_worker.pid}")
+        for worker in workers:
+            worker.start_if_due(time.monotonic())
         child = subprocess.Popen(UVICORN_COMMAND)
         started_at = time.monotonic()
-        failures = 0
-        reason = "process exited"
         _log(f"started Uvicorn pid={child.pid}")
 
-        while not _stop_requested:
-            if worker is not None and worker.poll() is not None:
-                code = worker.returncode
-                _log(f"pHash worker exited with code {code}; restarting in {worker_restart_delay:g}s",
-                     logging.WARNING)
-                worker = None
-                worker_restart_at = time.monotonic() + worker_restart_delay
-                worker_restart_delay = min(worker_restart_delay * 2.0, MAX_RESTART_DELAY)
-            if visual_worker is not None and visual_worker.poll() is not None:
-                code = visual_worker.returncode
-                _log(f"visual duplicate worker exited with code {code}; restarting in {visual_restart_delay:g}s",
-                     logging.WARNING)
-                visual_worker = None
-                visual_restart_at = time.monotonic() + visual_restart_delay
-                visual_restart_delay = min(visual_restart_delay * 2.0, MAX_RESTART_DELAY)
-
-            return_code = child.poll()
-            if return_code is not None:
-                reason = f"Uvicorn exited with code {return_code}"
-                break
-
-            if time.monotonic() - started_at >= STARTUP_GRACE:
-                if _healthy():
-                    failures = 0
-                    restart_delay = 2.0
-                    if worker is not None and worker.poll() is None:
-                        worker_restart_delay = 2.0
-                    if visual_worker is not None and visual_worker.poll() is None:
-                        visual_restart_delay = 2.0
-                else:
-                    failures += 1
-                    _log(f"healthcheck failed ({failures}/{FAILURES_TO_RESTART})", logging.WARNING)
-                    if failures >= FAILURES_TO_RESTART:
-                        reason = "process is alive but health endpoint stayed unresponsive (event loop may be busy)"
-                        _stop_child(child)
-                        break
-
-            _sleep(CHECK_INTERVAL)
+        reason, healthy_seen = _watch_child(child, workers, started_at)
+        if healthy_seen:
+            restart_delay = 2.0
 
         if _stop_requested:
             _stop_child(child)
-            if worker is not None:
-                _stop_child(worker)
-            if visual_worker is not None:
-                _stop_child(visual_worker)
+            for worker in workers:
+                worker.stop()
             return 0
 
         _log(f"restarting Uvicorn: {reason}; next attempt in {restart_delay:g}s", logging.WARNING)
@@ -153,6 +141,38 @@ def main() -> int:
         restart_delay = min(restart_delay * 2.0, MAX_RESTART_DELAY)
 
     return 0
+
+
+def _watch_child(child: subprocess.Popen, workers, started_at: float) -> tuple[str, bool]:
+    """Watch Uvicorn and its helpers until Uvicorn must restart or a stop is requested.
+
+    Returns (restart reason, whether any health check passed).
+    """
+    failures = 0
+    healthy_seen = False
+    while not _stop_requested:
+        for worker in workers:
+            worker.reap_if_exited()
+        return_code = child.poll()
+        if return_code is not None:
+            return f"Uvicorn exited with code {return_code}", healthy_seen
+
+        if time.monotonic() - started_at >= STARTUP_GRACE:
+            if _healthy():
+                failures = 0
+                healthy_seen = True
+                for worker in workers:
+                    worker.reset_backoff_if_running()
+            else:
+                failures += 1
+                _log(f"healthcheck failed ({failures}/{FAILURES_TO_RESTART})", logging.WARNING)
+                if failures >= FAILURES_TO_RESTART:
+                    _stop_child(child)
+                    return ("process is alive but health endpoint stayed unresponsive "
+                            "(event loop may be busy)"), healthy_seen
+
+        _sleep(CHECK_INTERVAL)
+    return "process exited", healthy_seen
 
 
 if __name__ == "__main__":

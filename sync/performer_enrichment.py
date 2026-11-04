@@ -73,32 +73,7 @@ def backfill_performers_from_titles(conn: db.Connection, media_dir: Path, *, ser
     Updates DB and regenerates corresponding .nfo files. Returns count updated.
     """
     try:
-        known_rows = conn.execute(
-            "SELECT performers FROM videos WHERE performers <> '[]'::jsonb"
-        ).fetchall()
-        known_dict = {}
-        for (raw,) in known_rows:
-            try:
-                items = json.loads(raw) if isinstance(raw, str) else []
-                for n in items:
-                    name_str = str(n or "").strip()
-                    if name_str:
-                        k = name_str.lower()
-                        if k not in known_dict:
-                            known_dict[k] = name_str
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "backfill_performers_from_titles", exc_info=True)
-        try:
-            for alias, canonical in conn.execute(
-                "SELECT alias, canonical FROM performer_aliases"
-            ).fetchall():
-                alias_key = str(alias or "").strip().lower()
-                canonical_name = str(canonical or "").strip()
-                if alias_key and canonical_name:
-                    known_dict[alias_key] = canonical_name
-        except db.Error:
-            pass
-
+        known_dict = _known_performer_names(conn)
         rows = conn.execute(
             """SELECT id, provider, title, slug, duration, thumbnail,
                       performers, categories, tags
@@ -110,26 +85,67 @@ def backfill_performers_from_titles(conn: db.Connection, media_dir: Path, *, ser
         return 0
 
     updated = 0
-    for vid_id, provider, title, slug, duration, thumb, _perf, cats, tags in rows:
-        names = services.parse_title_performers(title or "", known_performers=known_dict)
-        if not names:
-            continue
-        try:
-            conn.execute("UPDATE videos SET performers = %s WHERE id = %s",
-                         (json.dumps(names), vid_id))
-            conn.commit()
-            _regenerate_performer_nfo(
-                conn, media_dir, vid_id, provider, title, slug, duration,
-                thumb, cats, tags, names, services,
-            )
+    for row in rows:
+        if _apply_title_performers(conn, media_dir, row, known_dict, services):
             updated += 1
-            for n in names:
-                k = n.strip().lower()
-                if k not in known_dict:
-                    known_dict[k] = n.strip()
-        except Exception as e:
-            services.logger.warning(f"Title performer backfill store failed for {vid_id}: {e}")
 
     if updated:
         services.logger.info(f"Title performer backfill: {updated} videos enriched from titles")
     return updated
+
+
+def _known_performer_names(conn) -> dict:
+    """Map lower-cased performer names and aliases to their display spelling."""
+    known_rows = conn.execute(
+        "SELECT performers FROM videos WHERE performers <> '[]'::jsonb"
+    ).fetchall()
+    known_dict = {}
+    for (raw,) in known_rows:
+        try:
+            items = json.loads(raw) if isinstance(raw, str) else []
+            for n in items:
+                name_str = str(n or "").strip()
+                if name_str:
+                    k = name_str.lower()
+                    if k not in known_dict:
+                        known_dict[k] = name_str
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "backfill_performers_from_titles", exc_info=True)
+    try:
+        for alias, canonical in conn.execute(
+            "SELECT alias, canonical FROM performer_aliases"
+        ).fetchall():
+            alias_key = str(alias or "").strip().lower()
+            canonical_name = str(canonical or "").strip()
+            if alias_key and canonical_name:
+                known_dict[alias_key] = canonical_name
+    except db.Error:
+        pass
+    return known_dict
+
+
+def _apply_title_performers(conn, media_dir: Path, row, known_dict: dict, services) -> bool:
+    """Store performers parsed from one video title. Returns True when the row was stored."""
+    vid_id, provider, title, slug, duration, thumb, _perf, cats, tags = row
+    names = services.parse_title_performers(title or "", known_performers=known_dict)
+    if not names:
+        return False
+    stored = False
+    try:
+        conn.execute("UPDATE videos SET performers = %s WHERE id = %s",
+                     (json.dumps(names), vid_id))
+        conn.commit()
+        _regenerate_performer_nfo(
+            conn, media_dir, vid_id, provider, title, slug, duration,
+            thumb, cats, tags, names, services,
+        )
+        stored = True
+        for n in names:
+            k = n.strip().lower()
+            if k not in known_dict:
+                known_dict[k] = n.strip()
+    except Exception as e:
+        services.logger.warning(f"Title performer backfill store failed for {vid_id}: {e}")
+    return stored
+
+
