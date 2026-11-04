@@ -157,6 +157,18 @@ class TestAutomaticDuplicateRules(unittest.TestCase):
             all_res = video_duplicates.find_duplicate_candidates(None, include_same_telegram_file=True)
             self.assertEqual(all_res["total"], 2)
 
+    def test_same_telegram_file_pairs_stay_visible_unless_a_caller_opts_out(self):
+        found_mock = [
+            {"evidence": "telegram_file_id", "category": "Same file", "reasons": ["Same Telegram file, different messages"]},
+            {"evidence": "oshash", "category": "Strong suggestion", "reasons": ["Matching OSHASH fingerprint"]},
+        ]
+        with patch("video_duplicates._collect_duplicate_candidates", return_value=(found_mock, 2, True)):
+            self.assertEqual(video_duplicates.find_duplicate_candidates(None)["total"], 2)
+            same_file = video_duplicates.find_duplicate_candidates(
+                None, category="same_file", include_same_telegram_file=False)
+            self.assertEqual(same_file["total"], 1)
+            self.assertEqual(same_file["pairs"][0]["evidence"], "telegram_file_id")
+
 
 class TestDuplicateFileMoveAtomic(unittest.TestCase):
     def test_duplicate_match_does_not_follow_symlink_paths(self):

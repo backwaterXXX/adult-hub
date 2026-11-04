@@ -1802,6 +1802,27 @@ class TestVideoDuplicateJobs(PgTestCase):
             "done"
         )
 
+    def test_blocked_channel_readd_does_not_stall_other_queued_jobs(self):
+        readd_id = enqueue_job(self.db_url, "source_readd", {"channel_id": "-100777"})
+        enqueue_job(self.db_url, "source_remove", {"channel_id": "-100777"})
+        quarantine_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
+        with self.conn:
+            self.conn.execute(
+                "UPDATE video_duplicate_jobs SET created_at = created_at - INTERVAL '1 hour' WHERE id=%s",
+                (readd_id,),
+            )
+
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+
+        states = dict(self.conn.execute(
+            "SELECT id, state FROM video_duplicate_jobs WHERE id = ANY(%s)",
+            ([readd_id, quarantine_id],)).fetchall())
+        self.assertEqual(states[readd_id], "queued")
+        self.assertEqual(states[quarantine_id], "done")
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
+
 
 class TestScheduledReconcileMergeGate(unittest.TestCase):
     """A scheduled reconciliation queues hides only after an explicit opt-in."""

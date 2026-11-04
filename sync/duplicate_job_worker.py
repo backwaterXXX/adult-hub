@@ -21,10 +21,14 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
         services.logger.info('Requeued %s duplicate job(s) left processing by a dead worker', recovered)
     conn.commit()
     completed = 0
+    # A re-added channel parked behind an active removal keeps its created_at, so
+    # claiming the oldest queued job would pick it again every iteration and stall
+    # the rest of the queue. Deferred ids are skipped for the rest of this pass.
+    deferred: list[str] = []
     while True:
         try:
             conn.execute('BEGIN')
-            job = conn.execute("SELECT id, action, payload FROM video_duplicate_jobs WHERE state='queued' AND action = ANY(%s) ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED", (list(worker_actions),)).fetchone()
+            job = conn.execute("SELECT id, action, payload FROM video_duplicate_jobs WHERE state='queued' AND action = ANY(%s) AND NOT id = ANY(%s) ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED", (list(worker_actions), deferred)).fetchone()
             if not job:
                 conn.commit()
                 break
@@ -841,8 +845,9 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                     "UPDATE video_duplicate_jobs SET state='queued', updated_at=%s WHERE id=%s AND state='processing'",
                     (int(_core.time.time()), job_id),
                 )
-            services.logger.info("Channel removal is still active; requeued job %s: %s", job_id, retry_exc)
-            break
+            deferred.append(job_id)
+            services.logger.info("Channel removal is still active; deferred job %s to the next pass: %s", job_id, retry_exc)
+            continue
         except Exception as exc:
             if not catalog_committed and action != 'orphan_file_operation':
                 for origin, target in reversed(moved):

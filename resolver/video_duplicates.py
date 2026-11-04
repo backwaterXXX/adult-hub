@@ -417,7 +417,7 @@ def _collect_duplicate_candidates(db_url: str | None, category: str = "") -> tup
 
 
 def find_duplicate_candidates(db_url: str | None, limit: int = 200, offset: int = 0,
-                              category: str = "", *, include_same_telegram_file: bool = False) -> dict:
+                              category: str = "", *, include_same_telegram_file: bool = True) -> dict:
     limit = max(1, min(int(limit), 500))
     offset = max(0, int(offset))
     category = str(category or "")
@@ -425,7 +425,7 @@ def find_duplicate_candidates(db_url: str | None, limit: int = 200, offset: int 
     found, scanned, scan_complete = _collect_duplicate_candidates(db_url, wanted_category or "")
     if wanted_category:
         found = [pair for pair in found if pair.get("category") == wanted_category]
-    if not include_same_telegram_file:
+    if not include_same_telegram_file and wanted_category != "Same file":
         found = [pair for pair in found if not (pair.get("evidence") == "telegram_file_id"
                  and any("Same Telegram file" in r for r in pair.get("reasons", [])))]
     return {"pairs": found[offset:offset + limit], "total": len(found),
