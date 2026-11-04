@@ -42,14 +42,8 @@ def _is_name_list(value: str) -> list[str]:
     return names
 
 
-def extract_telegram_metadata(caption: str, channel_title: str = "") -> dict:
-    """Extract an explicit scene title and cast field from one Telegram post.
-
-    A first-line cast list is accepted only for the configured signature layout:
-    the post carries its distinctive account handle and the first line is a
-    compact, delimiter-separated list. Channel identity alone is insufficient.
-    """
-    lines = [line.strip() for line in str(caption or "").splitlines() if line.strip()]
+def _labeled_fields(lines: list[str]) -> tuple[str, str, list[str], str]:
+    """Return (title, title_source, cast_names, cast_source) from explicit ``Label: value`` lines."""
     title = ""
     title_source = ""
     cast_names: list[str] = []
@@ -70,32 +64,49 @@ def extract_telegram_metadata(caption: str, channel_title: str = "") -> dict:
         elif _TITLE_LABEL_RE.search(label) and not title:
             title = clean_title_text(value, max_length=120)
             title_source = "labeled_title"
+    return title, title_source, cast_names, cast_source
 
-    lower_caption = str(caption or "").casefold()
+
+def _signature_cast_names(lines: list[str], lower_caption: str, cast_names: list[str]) -> list[str]:
     signature_channel = (os.getenv("TELEGRAM_SIGNATURE_CHANNEL") or "").strip().casefold()
-    signature_names: list[str] = []
     if not cast_names and signature_channel and signature_channel in lower_caption:
         first = next((line for line in lines if not line.startswith(("#", "@"))), "")
-        signature_names = _is_name_list(first)
+        return _is_name_list(first)
+    return []
 
+
+def _first_line_title(lines: list[str], cast_source: str) -> tuple[str, str]:
+    """Return (title, title_source) from the first prose line, or ("", "") when none qualifies."""
+    for line in lines:
+        if cast_source == "labeled_cast":
+            # A labeled cast does not make nearby prose a scene title.
+            # The title must have its own explicit label in this format.
+            continue
+        match = _FIELD_RE.match(line)
+        if match and (_CAST_LABEL_RE.search(match.group("label"))
+                      or _TITLE_LABEL_RE.search(match.group("label"))):
+            continue
+        candidate = re.sub(r"^(?:[🎬🎥📹]\s*)", "", line).strip()
+        if (candidate and _ALNUM_RE.search(candidate)
+                and not candidate.startswith(("#", "@"))
+                and not _DECORATION_RE.fullmatch(candidate)
+                and not _PROMO_RE.search(candidate)):
+            return clean_title_text(candidate, max_length=120), "first_line"
+    return "", ""
+
+
+def extract_telegram_metadata(caption: str, channel_title: str = "") -> dict:
+    """Extract an explicit scene title and cast field from one Telegram post.
+
+    A first-line cast list is accepted only for the configured signature layout:
+    the post carries its distinctive account handle and the first line is a
+    compact, delimiter-separated list. Channel identity alone is insufficient.
+    """
+    lines = [line.strip() for line in str(caption or "").splitlines() if line.strip()]
+    title, title_source, cast_names, cast_source = _labeled_fields(lines)
+    signature_names = _signature_cast_names(lines, str(caption or "").casefold(), cast_names)
     if not title:
-        for line in lines:
-            if cast_source == "labeled_cast":
-                # A labeled cast does not make nearby prose a scene title.
-                # The title must have its own explicit label in this format.
-                continue
-            match = _FIELD_RE.match(line)
-            if match and (_CAST_LABEL_RE.search(match.group("label"))
-                          or _TITLE_LABEL_RE.search(match.group("label"))):
-                continue
-            candidate = re.sub(r"^(?:[🎬🎥📹]\s*)", "", line).strip()
-            if (candidate and _ALNUM_RE.search(candidate)
-                    and not candidate.startswith(("#", "@"))
-                    and not _DECORATION_RE.fullmatch(candidate)
-                    and not _PROMO_RE.search(candidate)):
-                title = clean_title_text(candidate, max_length=120)
-                title_source = "first_line"
-                break
+        title, title_source = _first_line_title(lines, cast_source)
 
     return {
         "title": title,

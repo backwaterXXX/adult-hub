@@ -236,32 +236,40 @@ def search_split_scene(
         except Exception as exc:
             _core.logger.warning("%s split-title lookup failed (%s)", source, type(exc).__name__)
             continue
-        accepted: dict[str, _core.ScrapedScene] = {}
-        for item in candidates:
-            if not isinstance(item, dict):
-                continue
-            candidate_title, candidate_duration, performers, studio = _scene_fields(item)
-            if (not candidate_title or candidate_duration <= 0
-                    or abs(candidate_duration - runtime) > tolerance):
-                continue
-            title_ok, _score = _title_evidence(query_title, candidate_title)
-            if not title_ok:
-                continue
-            independent = _has_independent_evidence(
-                source_texts=source_texts, caption_performers=caption_performers,
-                scene_performers=performers, studio=studio,
-            )
-            # Exact scene title + summed runtime is sufficient. If the Telegram
-            # title has extra words, require corroboration from the caption's
-            # explicitly labelled cast or a studio name present in the source.
-            exact_title = normalize_scene_title(query_title) == normalize_scene_title(candidate_title)
-            if not exact_title and not independent:
-                continue
-            external_id = str(item.get("id") or item.get("_id") or "")
-            dedupe_key = external_id or f"{normalize_scene_title(candidate_title)}:{candidate_duration}"
-            accepted[dedupe_key] = _to_scraped_scene(item, source)
+        accepted = _accepted_scenes(candidates, query_title, runtime, tolerance,
+                                    source_texts, caption_performers, source)
         if len(accepted) == 1:
             return next(iter(accepted.values()))
         if len(accepted) > 1:
             _core.logger.info("Rejected ambiguous %s split-title match for %r", source, query_title[:120])
     return None
+
+
+def _accepted_scenes(candidates, query_title: str, runtime: int, tolerance: int,
+                     source_texts, caption_performers, source: str) -> dict:
+    """Return candidates that match the title and runtime, keyed by external id or title/runtime."""
+    accepted: dict[str, _core.ScrapedScene] = {}
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        candidate_title, candidate_duration, performers, studio = _scene_fields(item)
+        if (not candidate_title or candidate_duration <= 0
+                or abs(candidate_duration - runtime) > tolerance):
+            continue
+        title_ok, _score = _title_evidence(query_title, candidate_title)
+        if not title_ok:
+            continue
+        independent = _has_independent_evidence(
+            source_texts=source_texts, caption_performers=caption_performers,
+            scene_performers=performers, studio=studio,
+        )
+        # Exact scene title + summed runtime is sufficient. If the Telegram
+        # title has extra words, require corroboration from the caption's
+        # explicitly labelled cast or a studio name present in the source.
+        exact_title = normalize_scene_title(query_title) == normalize_scene_title(candidate_title)
+        if not exact_title and not independent:
+            continue
+        external_id = str(item.get("id") or item.get("_id") or "")
+        dedupe_key = external_id or f"{normalize_scene_title(candidate_title)}:{candidate_duration}"
+        accepted[dedupe_key] = _to_scraped_scene(item, source)
+    return accepted

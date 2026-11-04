@@ -91,55 +91,58 @@ class PersistentLRUCache:
     def get(self, key: str) -> Optional[str]:
         now = time.time()
         with self._lock:
-            # 1. Check in-memory cache
             if key in self._memory:
-                url, exp, last_persisted_access = self._memory[key]
+                return self._get_from_memory(key, now)
+            if self._pg_ok:
+                return self._get_from_postgres(key, now)
+            return None
+
+    def _get_from_memory(self, key: str, now: float) -> Optional[str]:
+        url, exp, last_persisted_access = self._memory[key]
+        if now < exp:
+            self._memory.move_to_end(key)
+            if now - last_persisted_access >= self._access_persist_interval_seconds:
+                if self._pg_write(
+                        "UPDATE stream_cache SET last_accessed = %s WHERE cache_key = %s",
+                        (now, key)):
+                    self._memory[key] = (url, exp, now)
+            return url
+        del self._memory[key]
+        self._pg_write("DELETE FROM stream_cache WHERE cache_key = %s", (key,))
+        return None
+
+    def _get_from_postgres(self, key: str, now: float) -> Optional[str]:
+        try:
+            conn = db.connect(self.db_url)
+        except Exception as e:
+            logger.debug(f"PostgreSQL cache get error: {e}")
+            return None
+        try:
+            cur = conn.execute(
+                "SELECT stream_url, expire_at FROM stream_cache WHERE cache_key = %s",
+                (key,)
+            )
+            row = cur.fetchone()
+            if row:
+                url, exp = row
                 if now < exp:
-                    self._memory.move_to_end(key)
-                    if now - last_persisted_access >= self._access_persist_interval_seconds:
-                        if self._pg_write(
-                                "UPDATE stream_cache SET last_accessed = %s WHERE cache_key = %s",
-                                (now, key)):
-                            self._memory[key] = (url, exp, now)
+                    self._memory[key] = (url, exp, now)
+                    if len(self._memory) > self.max_entries:
+                        self._memory.popitem(last=False)
+                    conn.execute("UPDATE stream_cache SET last_accessed = %s WHERE cache_key = %s", (now, key))
+                    conn.commit()
                     return url
                 else:
-                    del self._memory[key]
-                    self._pg_write("DELETE FROM stream_cache WHERE cache_key = %s", (key,))
-                    return None
-
-            # 2. Check PostgreSQL if not in memory
-            if self._pg_ok:
-                try:
-                    conn = db.connect(self.db_url)
-                except Exception as e:
-                    logger.debug(f"PostgreSQL cache get error: {e}")
-                    return None
-                try:
-                    cur = conn.execute(
-                        "SELECT stream_url, expire_at FROM stream_cache WHERE cache_key = %s",
-                        (key,)
-                    )
-                    row = cur.fetchone()
-                    if row:
-                        url, exp = row
-                        if now < exp:
-                            self._memory[key] = (url, exp, now)
-                            if len(self._memory) > self.max_entries:
-                                self._memory.popitem(last=False)
-                            conn.execute("UPDATE stream_cache SET last_accessed = %s WHERE cache_key = %s", (now, key))
-                            conn.commit()
-                            return url
-                        else:
-                            conn.execute("DELETE FROM stream_cache WHERE cache_key = %s", (key,))
-                            conn.commit()
-                except Exception as e:
-                    logger.debug(f"PostgreSQL cache get error: {e}")
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-                finally:
-                    conn.close()
+                    conn.execute("DELETE FROM stream_cache WHERE cache_key = %s", (key,))
+                    conn.commit()
+        except Exception as e:
+            logger.debug(f"PostgreSQL cache get error: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            conn.close()
 
         return None
 

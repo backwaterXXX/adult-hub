@@ -71,6 +71,41 @@ def _post(payload, token: str):
     return response.json()
 
 
+def _fetch_catalog_records(request, post, api_key: str, per_page: int, pause: float) -> list:
+    """Collect every performer row across pages, pausing between requests."""
+    records = []
+    page = 1
+    expected = None
+    while expected is None or len(records) < expected:
+        page_rows, expected = _fetch_catalog_page(request, post, api_key, page, per_page)
+        records.extend(row for row in page_rows if isinstance(row, dict) and row.get("id") and row.get("name"))
+        if not page_rows or len(records) >= expected:
+            break
+        page += 1
+        if pause:
+            time.sleep(pause)
+    return records
+
+
+def _fetch_catalog_page(request, post, api_key: str, page: int, per_page: int) -> tuple[list, int]:
+    """Return (performer rows on this page, total count reported by StashDB)."""
+    payload = {"query": QUERY, "variables": {"page": page, "perPage": per_page}}
+    try:
+        result = request(payload, api_key) if post is None else request(
+            ENDPOINT, json=payload, headers={"ApiKey": api_key}, timeout=30)
+    except TypeError:
+        result = request(payload)
+    if hasattr(result, "json"):
+        result = result.json()
+    if not isinstance(result, dict) or result.get("errors"):
+        raise RuntimeError("StashDB returned an invalid performer catalogue page")
+    data = result.get("data", {}).get("queryPerformers", {})
+    page_rows = data.get("performers")
+    if not isinstance(page_rows, list):
+        raise RuntimeError("StashDB response did not include performers")
+    return page_rows, int(data.get("count") or 0)
+
+
 def sync_catalog(conn: db.Connection, *, token: str | None = None,
                  post: Callable | None = None, per_page: int = 100,
                  pause: float = 0.25) -> tuple[int, int]:
@@ -83,31 +118,7 @@ def sync_catalog(conn: db.Connection, *, token: str | None = None,
     if not api_key and post is None:
         raise RuntimeError("STASHDB_API_KEY is required to import the catalogue")
     request = post or _post
-    records = []
-    page = 1
-    expected = None
-    while expected is None or len(records) < expected:
-        payload = {"query": QUERY, "variables": {"page": page, "perPage": per_page}}
-        try:
-            result = request(payload, api_key) if post is None else request(
-                ENDPOINT, json=payload, headers={"ApiKey": api_key}, timeout=30)
-        except TypeError:
-            result = request(payload)
-        if hasattr(result, "json"):
-            result = result.json()
-        if not isinstance(result, dict) or result.get("errors"):
-            raise RuntimeError("StashDB returned an invalid performer catalogue page")
-        data = result.get("data", {}).get("queryPerformers", {})
-        page_rows = data.get("performers")
-        if not isinstance(page_rows, list):
-            raise RuntimeError("StashDB response did not include performers")
-        expected = int(data.get("count") or 0)
-        records.extend(row for row in page_rows if isinstance(row, dict) and row.get("id") and row.get("name"))
-        if not page_rows or len(records) >= expected:
-            break
-        page += 1
-        if pause:
-            time.sleep(pause)
+    records = _fetch_catalog_records(request, post, api_key, per_page, pause)
 
     alias_count = 0
     with conn:

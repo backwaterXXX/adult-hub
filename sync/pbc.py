@@ -149,22 +149,8 @@ def known_performer_names(conn: db.Connection) -> List[str]:
         raw = row[0] if row else None
         if raw is None or raw == "":
             continue
-        names: List[str] = []
-        if isinstance(raw, str) and raw.strip().startswith("["):
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, list):
-                    names = [str(v) for v in parsed]
-                else:
-                    names = [str(parsed)]
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "known_performer_names", exc_info=True)
-                continue
-        elif isinstance(raw, str):
-            names = raw.split(",")
-        elif isinstance(raw, list):
-            names = [str(v) for v in raw]
-        else:
+        names = _performer_values(raw)
+        if names is None:
             continue
         for candidate in names:
             if candidate is None:
@@ -177,6 +163,24 @@ def known_performer_names(conn: db.Connection) -> List[str]:
                 seen.add(key)
                 out.append(name)
     return out
+
+
+def _performer_values(raw) -> Optional[List[str]]:
+    """Split one ``videos.performers`` value into raw names; None means the row is unreadable."""
+    if isinstance(raw, str) and raw.strip().startswith("["):
+        try:
+            parsed = json.loads(raw)
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "known_performer_names", exc_info=True)
+            return None
+        if isinstance(parsed, list):
+            return [str(v) for v in parsed]
+        return [str(parsed)]
+    if isinstance(raw, str):
+        return raw.split(",")
+    if isinstance(raw, list):
+        return [str(v) for v in raw]
+    return None
 
 
 def backfill_pbc(
