@@ -47,6 +47,90 @@ def prepare_legacy_catalog(known_performers, aliases):
     return catalog, prepare_catalog(catalog)
 
 
+def _load_catalog(load_performer_catalog_fn) -> list:
+    try:
+        return load_performer_catalog_fn()
+    except Exception:
+        return []
+
+
+def _signature_cast(extracted: dict, catalog) -> tuple:
+    """Return (cast names, cast source), promoting a verified channel signature to the cast."""
+    cast_names = extracted["performer_names"]
+    cast_source = extracted["performer_source"]
+    if not cast_names and extracted["signature_name_candidates"]:
+        signature_names, signature_ids = resolve_explicit_cast(
+            extracted["signature_name_candidates"], catalog,
+        )
+        if signature_ids and all(signature_ids):
+            cast_names = extracted["signature_name_candidates"]
+            cast_source = "channel_signature"
+            extracted["title"] = ""
+            extracted["title_source"] = ""
+    return cast_names, cast_source
+
+
+def _performer_resolution(cast_names, cast_source, exact_records, catalog, extracted) -> tuple:
+    """Return (performers, performer_resolution) from the explicit cast, catalogue credits, or neither."""
+    if cast_names:
+        try:
+            resolved_names, resolved_ids = resolve_explicit_cast(cast_names, catalog)
+        except Exception:
+            resolved_names, resolved_ids = list(cast_names), [""] * len(cast_names)
+        # Do not run legacy normalization here: it strips demonyms and
+        # scene-like suffixes, which can be real parts of a performer name.
+        performers = list(dict.fromkeys(
+            str(name).strip() for name in resolved_names if str(name).strip()
+        ))
+        return performers, {
+            "status": "resolved" if all(resolved_ids) else "partial",
+            "method": "telegram_field_parser",
+            "source": cast_source,
+            "raw_names": cast_names,
+            "external_ids": resolved_ids,
+            "priority": 10,
+            "title_candidate": extracted["title"],
+            "title_source": extracted["title_source"],
+            "version": 1,
+        }
+    if exact_records:
+        performers = [str(row.get("name") or "").strip()
+                      for row in exact_records if str(row.get("name") or "").strip()]
+        resolved_ids = [str(row.get("id") or "") for row in exact_records]
+        return performers, {
+            "status": "resolved" if all(resolved_ids) else "partial",
+            "method": "telegram_catalog_credit_v1",
+            "source": "caption_credit_list",
+            "raw_names": performers,
+            "external_ids": resolved_ids,
+            "priority": 10,
+            "title_candidate": extracted["title"],
+            "title_source": extracted["title_source"],
+            "version": 1,
+        }
+    # A fresh post with no cast signal invalidates old, unproven cast
+    # assignments. Higher priority scene matches survive this update.
+    return [], {
+        "status": "unresolved",
+        "method": "telegram_field_parser",
+        "source": "no_cast_field",
+        "raw_names": [],
+        "external_ids": [],
+        "priority": 10,
+        "title_candidate": extracted["title"],
+        "title_source": extracted["title_source"],
+        "version": 1,
+    }
+
+
+def _resolved_title(extracted: dict, performer_resolution, filtered_caption: str, fallback: str) -> str:
+    title = extracted["title"] or (
+        fallback if performer_resolution and performer_resolution.get("source") != "no_cast_field"
+        else parse_caption_title(filtered_caption, fallback)
+    )
+    return clean_title_text(title, max_length=120) or clean_title_text(fallback, max_length=120)
+
+
 def message_to_video_impl(
     msg: dict,
     channel_title: str,
@@ -90,23 +174,10 @@ def message_to_video_impl(
 
         # Always use the external catalogue for identity resolution. The legacy
         # name list is derived from existing video assignments and is not evidence.
-        try:
-            catalog = load_performer_catalog_fn()
-        except Exception:
-            catalog = []
+        catalog = _load_catalog(load_performer_catalog_fn)
         if catalog and prepared_catalog is None:
             prepared_catalog = prepare_catalog(catalog)
-        cast_names = extracted["performer_names"]
-        cast_source = extracted["performer_source"]
-        if not cast_names and extracted["signature_name_candidates"]:
-            signature_names, signature_ids = resolve_explicit_cast(
-                extracted["signature_name_candidates"], catalog,
-            )
-            if signature_ids and all(signature_ids):
-                cast_names = extracted["signature_name_candidates"]
-                cast_source = "channel_signature"
-                extracted["title"] = ""
-                extracted["title_source"] = ""
+        cast_names, cast_source = _signature_cast(extracted, catalog)
         external_catalog = [
             row for row in catalog
             if isinstance(row, dict)
@@ -117,63 +188,12 @@ def message_to_video_impl(
             [("caption", credit_text)], external_catalog,
             prepared=prepared_catalog if external_catalog and prepared_catalog else None,
         )
-        if cast_names:
-            try:
-                resolved_names, resolved_ids = resolve_explicit_cast(cast_names, catalog)
-            except Exception:
-                resolved_names, resolved_ids = list(cast_names), [""] * len(cast_names)
-            # Do not run legacy normalization here: it strips demonyms and
-            # scene-like suffixes, which can be real parts of a performer name.
-            performers = list(dict.fromkeys(
-                str(name).strip() for name in resolved_names if str(name).strip()
-            ))
-            performer_resolution = {
-                "status": "resolved" if all(resolved_ids) else "partial",
-                "method": "telegram_field_parser",
-                "source": cast_source,
-                "raw_names": cast_names,
-                "external_ids": resolved_ids,
-                "priority": 10,
-                "title_candidate": extracted["title"],
-                "title_source": extracted["title_source"],
-                "version": 1,
-            }
-        elif exact_records:
-            performers = [str(row.get("name") or "").strip()
-                          for row in exact_records if str(row.get("name") or "").strip()]
-            resolved_ids = [str(row.get("id") or "") for row in exact_records]
-            performer_resolution = {
-                "status": "resolved" if all(resolved_ids) else "partial",
-                "method": "telegram_catalog_credit_v1",
-                "source": "caption_credit_list",
-                "raw_names": performers,
-                "external_ids": resolved_ids,
-                "priority": 10,
-                "title_candidate": extracted["title"],
-                "title_source": extracted["title_source"],
-                "version": 1,
-            }
-        else:
-            # A fresh post with no cast signal invalidates old, unproven cast
-            # assignments. Higher priority scene matches survive this update.
-            performer_resolution = {
-                "status": "unresolved",
-                "method": "telegram_field_parser",
-                "source": "no_cast_field",
-                "raw_names": [],
-                "external_ids": [],
-                "priority": 10,
-                "title_candidate": extracted["title"],
-                "title_source": extracted["title_source"],
-                "version": 1,
-            }
+        performers, performer_resolution = _performer_resolution(
+            cast_names, cast_source, exact_records, catalog, extracted,
+        )
     except Exception:
         performers, proposals, performer_resolution = [], [], None
-    title = extracted["title"] or (
-        fallback if performer_resolution and performer_resolution.get("source") != "no_cast_field"
-        else parse_caption_title(filtered_caption, fallback)
-    )
-    title = clean_title_text(title, max_length=120) or clean_title_text(fallback, max_length=120)
+    title = _resolved_title(extracted, performer_resolution, filtered_caption, fallback)
     return VideoItem(
         id=f"telegram:{unique_id}",
         provider="telegram",

@@ -74,7 +74,6 @@ max-complexity = 10
 "resolver/phash_worker.py" = ["C901"]
 "resolver/providers/telegram_config.py" = ["G004"]
 "resolver/providers/telegram_download.py" = ["C901"]
-"resolver/providers/telegram_item_mapping.py" = ["C901"]
 "resolver/providers/telegram_messages.py" = ["C901"]
 "resolver/providers/telegram_metadata.py" = ["C901"]
 "resolver/providers/telegram_thumbnails.py" = ["C901"]
