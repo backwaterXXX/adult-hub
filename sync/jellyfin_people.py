@@ -51,8 +51,8 @@ def sync_jellyfin_people(conn: db.Connection, url: str, api_key: str,
         tables = db.table_names(conn)
         if "jellyfin_person_stash_sync" in tables:
             legacy_names = {r[0] for r in conn.execute("SELECT name FROM jellyfin_person_stash_sync").fetchall()}
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "sync_jellyfin_people", exc_info=True)
 
     has_nationality = False
     try:
@@ -195,8 +195,8 @@ def sync_jellyfin_people(conn: db.Connection, url: str, api_key: str,
                     item["PremiereDate"] = birth_iso
                     try:
                         item["ProductionYear"] = int(birth.strip()[:4])
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        logger.debug("Ignored exception in %s", "sync_jellyfin_people", exc_info=True)
                     item_changed = True
 
             if item_changed:

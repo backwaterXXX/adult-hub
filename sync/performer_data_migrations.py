@@ -10,6 +10,9 @@ from typing import Any, Dict, Optional, Tuple
 
 from common import db
 from common.performers import is_safe_alias, is_valid_performer_name
+import logging
+
+logger = logging.getLogger(__name__)
 
 REDUNDANT_PERFORMERS_VERSION = 7
 
@@ -42,8 +45,8 @@ def break_alias_cycles_and_flatten(conn: db.Connection) -> Tuple[int, int]:
             try:
                 for p in json.loads(raw):
                     video_counts[str(p).strip().lower()] += 1
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("Ignored exception in %s", "break_alias_cycles_and_flatten", exc_info=True)
 
     photos = {str(n).strip().lower() for (n,) in conn.execute("SELECT name FROM performer_photos").fetchall()} if "performer_photos" in tables else set()
     bios = {str(n).strip().lower() for (n,) in conn.execute("SELECT name FROM performer_bios").fetchall()} if "performer_bios" in tables else set()
@@ -142,8 +145,8 @@ def migrate_redundant_performers(conn: db.Connection, media_dir: Path, *,
         if row and row[0] == str(redundant_performers_version):
             svc.logger.debug("migrate_redundant_performers: v%s already applied, skipping.", redundant_performers_version)
             return 0
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "migrate_redundant_performers", exc_info=True)
 
     # Purge invalid stopwords/verbs and media files from metadata tables if present
     try:
@@ -169,8 +172,8 @@ def migrate_redundant_performers(conn: db.Connection, media_dir: Path, *,
                 for (n,) in sync_rows:
                     if not is_valid_performer_name(n):
                         conn.execute("DELETE FROM jellyfin_person_sync WHERE name = %s", (n,))
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "migrate_redundant_performers", exc_info=True)
 
     # Correct known false performers for Cock Sure Men
     try:

@@ -193,7 +193,8 @@ except ConfigError as ce:
     logger.critical(f"FATAL CONFIG ERROR: {ce}")
     raise SystemExit(f"FATAL CONFIG ERROR: {ce}")
 except Exception as e:
-    logger.warning(f"Could not load config_loader: {e}")
+    logger.critical(f"FATAL: could not load config: {e}")
+    raise SystemExit(f"FATAL: could not load config: {e}") from e
 
 if CONFIG:
     RETENTION_DAYS = CONFIG.sync.retention_days
@@ -843,8 +844,8 @@ def safe_process_duplicate_jobs_checkpoint(
                     payload = json.loads(trig.read_text()) if trig.stat().st_size else {}
                     if isinstance(payload, dict) and payload.get("action") == "jobs":
                         trig.unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("Ignored exception in %s", "safe_process_duplicate_jobs_checkpoint", exc_info=True)
         return completed
     except Exception as e:
         logger.warning("Could not process queued duplicate decisions at checkpoint: %s", e)

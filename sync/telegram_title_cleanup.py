@@ -12,6 +12,9 @@ from xml.dom import minidom
 
 from common import db
 from common.title_cleaning import clean_title_text, extract_title_hashtags
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 TASK_ID = "telegram-title-cleanup"
@@ -98,7 +101,8 @@ def _display_title(title: str, performers: list[str], slug: str) -> str:
             from display_titles import clean_display_title
         return clean_display_title(title, performers=performers,
                                    provider="telegram", slug=slug) or title
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_display_title", exc_info=True)
         return title
 
 

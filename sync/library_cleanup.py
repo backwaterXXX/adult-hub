@@ -6,6 +6,9 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Destructive upkeep removes catalog rows for material that is already gone, so
 # a replaced or half-mounted media volume is indistinguishable from a healthy
@@ -228,8 +231,8 @@ def purge_videos(conn: db.Connection, media_dir: Path, comp_ids: List[str], reas
                 for ext in (".strm", ".nfo", ".jpg", ".thumb_fail"):
                     try:
                         path.with_suffix(ext).unlink(missing_ok=True)
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        logger.debug("Ignored exception in %s", "purge_videos", exc_info=True)
             with conn:
                 conn.execute("DELETE FROM video_categories WHERE video_id = %s", (video_id,))
                 conn.execute("DELETE FROM synced_files WHERE video_id = %s", (video_id,))

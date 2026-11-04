@@ -6,6 +6,9 @@ import stat
 from pathlib import Path
 
 from common.image_utils import compute_dhash, is_black_image, is_bumper_hash
+import logging
+
+logger = logging.getLogger(__name__)
 
 MAX_ARTWORK_GENERATION_ITEMS = 100
 ARTWORK_GENERATION_OFFSET_SECONDS = 60
@@ -35,7 +38,8 @@ def artwork_needs_generation(path: Path, *, bumper_hashes=None) -> bool:
         return False
     try:
         return is_bumper_hash(compute_dhash(path), bumper_hashes, max_distance=4)
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "artwork_needs_generation", exc_info=True)
         return False
 
 

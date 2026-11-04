@@ -7,6 +7,9 @@ import subprocess
 import threading
 import tempfile
 from common.logging_setup import configure_logging
+import logging
+
+logger = logging.getLogger(__name__)
 
 LOGGER = configure_logging("sync.runner")
 
@@ -83,8 +86,8 @@ def signal_handler(signum, frame):
     if current_process and current_process.poll() is None:
         try:
             current_process.terminate()
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "signal_handler", exc_info=True)
 
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
@@ -424,8 +427,8 @@ def _clear_sync_trigger() -> None:
         payload = json.loads(trig.read_text()) if trig.stat().st_size else {}
         if isinstance(payload, dict) and payload.get("action") == "sync":
             trig.unlink(missing_ok=True)
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_clear_sync_trigger", exc_info=True)
 
 
 def _latest_scheduled_sync_start() -> int | None:

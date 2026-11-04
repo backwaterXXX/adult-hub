@@ -129,8 +129,8 @@ def ensure_tables(conn: db.Connection) -> None:
     try:
         from common.migrations import apply_migrations
         apply_migrations(conn)
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "ensure_tables", exc_info=True)
 
 
 def known_performer_names(conn: db.Connection) -> List[str]:
@@ -157,7 +157,8 @@ def known_performer_names(conn: db.Connection) -> List[str]:
                     names = [str(v) for v in parsed]
                 else:
                     names = [str(parsed)]
-            except Exception:
+            except Exception as _exc:
+                logger.debug("Ignored exception in %s", "known_performer_names", exc_info=True)
                 continue
         elif isinstance(raw, str):
             names = raw.split(",")

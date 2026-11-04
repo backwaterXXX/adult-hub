@@ -9,6 +9,9 @@ else:
 import copy
 import math
 from common import schedule_stages
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ChannelRemovalStillActive(RuntimeError):
@@ -27,10 +30,10 @@ def _is_channel_removal_active_db(conn, channel_id: str) -> bool:
                 p = _core.json.loads(p_raw) if isinstance(p_raw, str) else p_raw
                 if isinstance(p, dict) and canonical_channel_id(str(p.get("channel_id", ""))) == clean:
                     return True
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as _exc:
+                logger.debug("Ignored exception in %s", "_is_channel_removal_active_db", exc_info=True)
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_is_channel_removal_active_db", exc_info=True)
     return False
 
 

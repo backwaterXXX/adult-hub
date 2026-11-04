@@ -50,7 +50,8 @@ def _decode_scene_payload(response: Any) -> Optional[dict]:
     try:
         text = getattr(response, "text", None)
         return json.loads(text) if isinstance(text, str) else None
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_decode_scene_payload", exc_info=True)
         return None
 
 

@@ -7,6 +7,9 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Dict, Optional
 from common.http_rate_limit import wait_for_host_slot
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def get_http_client(httpx_module, default_headers: Dict[str, str], current_client):
@@ -90,8 +93,8 @@ def retry_after_from_error(
                     value = headers.get("Retry-After")
                 if value is not None:
                     return parse_retry_after_fn(value, default)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "retry_after_from_error", exc_info=True)
         current = current.__cause__ or current.__context__
     return default
 

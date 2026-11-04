@@ -5,6 +5,9 @@ import time as _time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
+import logging
+
+logger = logging.getLogger(__name__)
 
 try:
     import httpx
@@ -57,17 +60,18 @@ def denylist_ids(conn: db.Connection, comp_ids: List[str], reason: str, *,
                     conn.execute(
                         "INSERT INTO dead_streams (video_id, reason, detected_at)"
                         " VALUES (%s, %s, %s) ON CONFLICT (video_id) DO NOTHING", (vid, reason, now))
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as _exc:
+                    logger.debug("Ignored exception in %s", "denylist_ids", exc_info=True)
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "denylist_ids", exc_info=True)
 
 
 def deadlisted_ids(conn: db.Connection) -> Set[str]:
     """Retrieve all video IDs currently marked in the dead_streams table."""
     try:
         return {r[0] for r in conn.execute("SELECT video_id FROM dead_streams").fetchall()}
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "deadlisted_ids", exc_info=True)
         return set()
 
 
@@ -89,7 +93,8 @@ def probe_playlist_url(playlist_url: str, *, user_agent: Optional[str] = None) -
                 if r.status_code in (404, 410):
                     return False
                 return None
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "probe_playlist_url", exc_info=True)
         return None
 
 
@@ -168,6 +173,7 @@ def _probe_playlist_outcome(url: str, *, user_agent: str) -> str:
                     return "transient_error"
                 return "unknown"
     except Exception as exc:
+        logger.debug("Ignored exception in %s", "_probe_playlist_outcome", exc_info=True)
         return "transient_error" if _network_failure(exc) else "unknown"
 
 
@@ -232,5 +238,5 @@ def hide_dead_streams(collected: Dict[str, Dict[str, Any]], conn: db.Connection,
                     "DELETE FROM dead_streams WHERE detected_at < %s AND video_id NOT IN "
                     f"({','.join(['%s'] * len(listed))})",
                     (now - services.denylist_days * 86400, *listed))
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "hide_dead_streams", exc_info=True)

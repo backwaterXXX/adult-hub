@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
+logger = logging.getLogger(__name__)
+
 
 _WARNED_MISSING_CHANNEL_HINTS: bool = False
 
@@ -36,8 +38,8 @@ def _is_telegram_configured() -> bool:
                 channels = getattr(tg, "channels", [])
                 if channels and any(getattr(ch, "enabled", True) for ch in channels):
                     return True
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_is_telegram_configured", exc_info=True)
     if os.getenv("TELEGRAM_API_ID") and (
         os.getenv("TELEGRAM_CHANNELS") or os.getenv("SYNC_TELEGRAM", "").lower() in ("true", "1", "yes")
     ):
@@ -343,20 +345,20 @@ def sync_unique_video(
                     _fresh_perfs = list(dict.fromkeys(
                         str(value).strip() for value in _db_perfs if str(value).strip()
                     ))
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("Ignored exception in %s", "sync_unique_video", exc_info=True)
     if _row and len(_row) > 6 and _row[6] and _row[2]:
         try:
             _db_perfs = json.loads(_row[2]) if isinstance(_row[2], str) else _row[2]
             _fresh_perfs = services.normalize_performers(_db_perfs)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "sync_unique_video", exc_info=True)
     elif not video.get("performer_resolution") and not _fresh_perfs and _row and len(_row) > 2 and _row[2]:
         try:
             _db_perfs = json.loads(_row[2]) if isinstance(_row[2], str) else []
             _fresh_perfs = services.normalize_performers(_db_perfs)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "sync_unique_video", exc_info=True)
 
     # Normalize performers once so NFO and DB stay consistent (deduped order).
     _perfs = _fresh_perfs
@@ -365,8 +367,8 @@ def sync_unique_video(
     if getattr(services, "load_performer_links", None):
         try:
             perf_links = services.load_performer_links(conn, _perfs)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "sync_unique_video", exc_info=True)
     video = {**video, "_video_id": comp_id, "performers": _perfs, "thumbnail": public_thumb_url,
              "performer_thumbs": services.load_performer_thumbs(conn, _perfs),
              "performer_links": perf_links,
@@ -383,8 +385,8 @@ def sync_unique_video(
         prod_names = detect_production_studio_names(title, tags)
         if prod_names:
             video["production_studios"] = prod_names
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "sync_unique_video", exc_info=True)
     # For Telegram, distinguish actual production studios from source channel names.
     # Deployment-specific channel titles can be supplied through the environment
     # instead of being hardcoded in the public repository.
@@ -435,8 +437,8 @@ def sync_unique_video(
         if commit:
             try:
                 conn.rollback()
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("Ignored exception in %s", "sync_unique_video", exc_info=True)
         raise
     # The catalog row is durable; publish sidecars (NFO first so the library
     # scanner sees metadata before a new stream file becomes visible).
@@ -549,8 +551,8 @@ def flush_collected(
     except Exception as e:
         try:
             conn.rollback()
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "flush_collected", exc_info=True)
         errors.append(f"database batch: {type(e).__name__}: {e}")
         services.logger.warning(f"Database batch failed: {e}")
         written = 0
@@ -660,8 +662,8 @@ def republish_pending_videos(
             failed += 1
             try:
                 conn.rollback()
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("Ignored exception in %s", "republish_pending_videos", exc_info=True)
             services.logger.error("Republish failed for %s: %s", comp_id, exc)
     services.logger.info(
         "Republished %d/%d catalog row(s) awaiting library publication (%d failed, %d still pending)",

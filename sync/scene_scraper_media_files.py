@@ -5,6 +5,9 @@ import hashlib
 from pathlib import Path
 from typing import Any, List, Optional
 from common.http_rate_limit import request_with_host_limit
+import logging
+
+logger = logging.getLogger(__name__)
 
 try:
     from sync.scene_scraper_models import ScrapedScene
@@ -299,8 +302,8 @@ def _download_scene_poster(url: str, jpg_path: Path, video_id: str,
         marker_tmp.replace(marker)
         try:
             _core.os.utime(jpg_path, (_core.time.time(), _core.time.time()))
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "_download_scene_poster", exc_info=True)
         return True
     except Exception as image_error:
         _core.logger.warning("Could not save linked poster for %s (%s)", video_id,

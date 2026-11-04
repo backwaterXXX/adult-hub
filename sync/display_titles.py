@@ -6,6 +6,9 @@ from typing import Any, Dict, Iterable, Optional
 from common.performers import MEDIA_EXT_SUFFIX_RE, is_performer_segment
 from common.performer_titles import strip_performer_credits
 from common.title_cleaning import clean_title_text
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 _SYNC_SLUG_TOKEN_HOOKS: Dict[str, Any] = {}
@@ -60,8 +63,8 @@ def clean_display_title(
     if hook and slug:
         try:
             text = hook(text, slug)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "clean_display_title", exc_info=True)
 
     perfs_list = list(performers) if performers else []
     return strip_performer_credits(text, perfs_list, is_performer_segment)

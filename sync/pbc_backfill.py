@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from typing import List
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def backfill_pbc(conn, limit=25, sleep=1.0, fetch=None, search=None):
@@ -59,8 +62,8 @@ def _backfill_pbc(conn, limit, sleep, fetch, search, _core):
         if sleep and index > 0:
             try:
                 _core.time.sleep(sleep)
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("Ignored exception in %s", "_backfill_pbc", exc_info=True)
         checked += 1
         try:
             title = _core.page_title(name)

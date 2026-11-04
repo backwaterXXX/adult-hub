@@ -5,6 +5,9 @@ from common import db
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -83,8 +86,8 @@ def backfill_performers_from_titles(conn: db.Connection, media_dir: Path, *, ser
                         k = name_str.lower()
                         if k not in known_dict:
                             known_dict[k] = name_str
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("Ignored exception in %s", "backfill_performers_from_titles", exc_info=True)
         try:
             for alias, canonical in conn.execute(
                 "SELECT alias, canonical FROM performer_aliases"

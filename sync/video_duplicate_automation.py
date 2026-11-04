@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from common import db
 from common.duplicate_evidence import extract_part_identity
+import logging
+
+logger = logging.getLogger(__name__)
 
 RULES_VERSION = 11
 PHASH_ALGORITHM_VERSION = "stash-phash-689a6b400625d6da2afb58a7f908c88bcdb6f8ab-v2"
@@ -217,7 +220,8 @@ def reconcile(db_url: str | None, *, limit: int = MAX_AUTO_LOSERS,
             )
             if outcome.get("outcome") == "queued":
                 phash_jobs += 1
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "reconcile", exc_info=True)
             continue
         if phash_jobs >= MAX_PHASH_ENQUEUES:
             break

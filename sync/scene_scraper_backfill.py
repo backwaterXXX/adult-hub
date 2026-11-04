@@ -6,6 +6,9 @@ import inspect
 from pathlib import Path
 from dataclasses import replace
 from typing import Any, List, Optional, Tuple
+import logging
+
+logger = logging.getLogger(__name__)
 
 try:
     from .scene_scraper_models import ScrapedScene
@@ -359,8 +362,9 @@ def backfill_scenes(
     try:
         # Check if columns exist
         conn.execute("SELECT plot, date_released, scene_matched_at FROM videos LIMIT 1")
-    except Exception:
+    except Exception as _exc:
         # Columns not yet migrated, skip gracefully
+        logger.debug("Ignored exception in %s", "backfill_scenes", exc_info=True)
         return 0, 0
 
     checked, updated = apply_pending_fingerprint_proposals(conn, media_dir, limit=500, http_client=http_client)

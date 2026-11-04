@@ -3,6 +3,9 @@
 import hashlib
 import json
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def audit_telegram_import_state(url, api_key, media_dir, *, state_path, session=None, progress=None):
@@ -88,8 +91,9 @@ def audit_telegram_import_state(url, api_key, media_dir, *, state_path, session=
             if not items or start >= total:
                 break
         return {"status": "checked", "findings": findings}
-    except Exception:
+    except Exception as _exc:
         # API exceptions can embed credential-bearing request details. The audit
         # report deliberately exposes only an unknown status.
+        logger.debug("Ignored exception in %s", "audit_telegram_import_state", exc_info=True)
         return {"status": "unknown", "findings": []}
 
