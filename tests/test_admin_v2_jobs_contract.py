@@ -371,7 +371,14 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
         with patch("video_duplicates.find_duplicate_candidates", return_value=expected) as scan:
             response = await endpoint(request("/admin/api/v2/duplicates"), 25, 0, "review")
         self.assertEqual(response["pairs"], [])
-        scan.assert_called_once_with("postgresql://test.invalid/catalog", 25, 0, "review")
+        scan.assert_called_once_with("postgresql://test.invalid/catalog", 25, 0, "review",
+                                     include_same_telegram_file=True)
+
+        # A caller can ask for the automatically merged Telegram pairs to be left out.
+        with patch("video_duplicates.find_duplicate_candidates", return_value=expected) as scan:
+            await endpoint(request("/admin/api/v2/duplicates"), 200, 0, "", False)
+        scan.assert_called_once_with("postgresql://test.invalid/catalog", 200, 0, "",
+                                     include_same_telegram_file=False)
 
     async def test_duplicate_scan_rejects_bad_category_and_admin_block(self):
         routes = {route.path: route.endpoint for route in admin_v2_jobs.build_router(make_admin()).routes}

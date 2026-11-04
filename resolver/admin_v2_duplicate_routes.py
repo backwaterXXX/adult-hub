@@ -99,6 +99,7 @@ def register_duplicate_routes(router: APIRouter, admin) -> None:
         limit: int = Query(25, ge=1, le=200),
         offset: int = Query(0, ge=0, le=2_147_483_647),
         category: str = Query("", max_length=20),
+        include_same_telegram_file: bool = True,
     ):
         if admin._admin_blocked(request):
             return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
@@ -107,7 +108,8 @@ def register_duplicate_routes(router: APIRouter, admin) -> None:
         try:
             from video_duplicates import find_duplicate_candidates
             result = await admin.asyncio.to_thread(
-                find_duplicate_candidates, admin.HUB_DB_URL, limit, offset, category
+                find_duplicate_candidates, admin.HUB_DB_URL, limit, offset, category,
+                include_same_telegram_file=include_same_telegram_file,
             )
             # Preserve the bounded candidate set while omitting backend diagnostics.
             allowed = {"pairs", "total", "scanned", "candidate_limit_reached", "complete", "offset", "limit", "rules_version"}

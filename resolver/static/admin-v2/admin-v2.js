@@ -2317,6 +2317,9 @@
         const linked = category === 'oshash_linked';
         const params = new URLSearchParams({ limit: String(linked ? DUPLICATE_PAGE_SIZE : DUPLICATE_SCAN_BATCH_SIZE), offset: String(scanOffset) });
         if (category && !linked) params.set('category', category);
+        // Identical Telegram files are hidden by the automatic reconcile pass, so the
+        // unfiltered view skips them; picking "Same file candidates" lists them again.
+        if (!linked && !category) params.set('include_same_telegram_file', 'false');
         const endpoint = linked ? '/duplicates/linked' : '/duplicates';
         pendingRequest = getJson(`${V2_API}${endpoint}?${params}`).then(payload => ({ payload }));
         state.duplicateRequests.set(requestKey, pendingRequest);

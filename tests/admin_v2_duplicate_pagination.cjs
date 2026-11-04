@@ -76,6 +76,7 @@ const context = vm.createContext({
       offset: Number(parsed.searchParams.get('offset')),
       limit: Number(parsed.searchParams.get('limit')),
       category: parsed.searchParams.get('category'),
+      sameTelegramFile: parsed.searchParams.get('include_same_telegram_file'),
     });
     const offset = requests.at(-1).offset;
     const limit = requests.at(-1).limit;
@@ -117,7 +118,7 @@ context.loadVisualDuplicateResults = (...args) => {
   await context.loadDuplicateCandidates({ cacheOnly: true });
   assert.equal(requests.length, 0, 'opening an unscanned tab performs no expensive scan');
   await context.loadDuplicateCandidates();
-  assert.deepEqual(requests, [{ offset: 0, limit: 200, category: 'same_file' }]);
+  assert.deepEqual(requests, [{ offset: 0, limit: 200, category: 'same_file', sameTelegramFile: null }]);
   assert.deepEqual(rendered.at(-1).ids, Array.from({ length: 25 }, (_item, index) => index));
 
   state.duplicateOffset = 25;
@@ -132,7 +133,7 @@ context.loadVisualDuplicateResults = (...args) => {
 
   state.duplicateOffset = 200;
   await context.loadDuplicateCandidates();
-  assert.deepEqual(requests.at(-1), { offset: 200, limit: 200, category: 'same_file' });
+  assert.deepEqual(requests.at(-1), { offset: 200, limit: 200, category: 'same_file', sameTelegramFile: null });
   state.duplicateOffset = 175;
   await context.loadDuplicateCandidates();
   assert.equal(requests.length, 2, 'recent prior scan batches should remain available for Previous');
@@ -145,13 +146,13 @@ context.loadVisualDuplicateResults = (...args) => {
   elements['#duplicateCategory'].value = 'strong';
   state.duplicateOffset = 0;
   await context.loadDuplicateCandidates({ refresh: true });
-  assert.deepEqual(requests.at(-1), { offset: 0, limit: 200, category: 'strong' });
+  assert.deepEqual(requests.at(-1), { offset: 0, limit: 200, category: 'strong', sameTelegramFile: null });
   assert.equal(state.duplicateScans.length, 1, 'changing category must discard prior scan batches');
 
   fakeNow += 30_001;
   state.duplicateOffset = 25;
   await context.loadDuplicateCandidates();
-  assert.deepEqual(requests.at(-1), { offset: 0, limit: 200, category: 'strong' },
+  assert.deepEqual(requests.at(-1), { offset: 0, limit: 200, category: 'strong', sameTelegramFile: null },
     'expired batches must be rescanned before serving another page');
 
   const beforeTraversal = requests.length;
@@ -163,6 +164,12 @@ context.loadVisualDuplicateResults = (...args) => {
   }
   assert.equal(requests.length - beforeTraversal, 6,
     '1,200 candidates should require six complete scans instead of 48 page scans');
+
+  elements['#duplicateCategory'].value = '';
+  state.duplicateOffset = 0;
+  await context.loadDuplicateCandidates({ refresh: true });
+  assert.deepEqual(requests.at(-1), { offset: 0, limit: 200, category: null, sameTelegramFile: 'false' },
+    'the unfiltered view must leave Telegram pairs that reconcile merges automatically');
 
   elements['#duplicateCategory'].value = 'review';
   state.duplicateOffset = 0;
