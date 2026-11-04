@@ -76,38 +76,19 @@ def check_one(client: "httpx.Client", video_id: str) -> Tuple[bool, str]:
     """Returns (ok, detail)."""
     mode = stream_mode_for_provider(video_id)
     try:
-        headers = dict(BROWSER_HEADERS)
-        headers["Range"] = "bytes=0-8192"
-        with client.stream(
-            "GET",
+        status_code, resp_headers, chunk = _sample_response(
+            client,
             f"{RESOLVER_API_URL.rstrip('/')}/admin/play/{video_id}/stream?mode={mode}",
-            headers=headers,
             follow_redirects=False,
             timeout=35.0,
-        ) as r:
-            status_code = r.status_code
-            resp_headers = dict(r.headers)
-            chunk = b""
-            if status_code in (200, 206):
-                for c in r.iter_bytes(8192):
-                    chunk = c
-                    break
-            elif status_code != 302:
-                for c in r.iter_bytes(1024):
-                    chunk = c
-                    break
+            sample_size=_resolver_sample_size,
+        )
     except Exception as e:
         logger.debug("Ignored exception in %s", "check_one", exc_info=True)
         return False, f"resolver error: {e}"
 
     if status_code in (200, 206):
-        ctype = resp_headers.get("content-type", "")
-        text_preview = chunk.decode("utf-8", errors="ignore").lstrip()
-        if "mpegurl" in ctype or text_preview.startswith("#EXTM3U"):
-            return True, f"proxied playlist OK ({len(chunk)}B)"
-        if b"ftyp" in chunk[:32] or "video/" in ctype:
-            return True, f"proxied stream OK ({len(chunk)}B, {ctype or 'video'})"
-        return True, f"direct stream OK ({len(chunk)}B)"
+        return True, _describe_direct_stream(resp_headers, chunk)
 
     if status_code == 302 and resp_headers.get("location"):
         playlist_url = resp_headers["location"]
@@ -116,37 +97,73 @@ def check_one(client: "httpx.Client", video_id: str) -> Tuple[bool, str]:
         return False, f"resolve HTTP {status_code}: {body}"
 
     try:
-        headers = dict(BROWSER_HEADERS)
-        headers["Range"] = "bytes=0-8192"
-        with client.stream(
-            "GET",
+        pr_status, pr_headers, pr_chunk = _sample_response(
+            client,
             playlist_url,
-            headers=headers,
             follow_redirects=True,
             timeout=20.0,
-        ) as pr:
-            pr_status = pr.status_code
-            pr_headers = dict(pr.headers)
-            pr_chunk = b""
-            if pr_status in (200, 206):
-                for c in pr.iter_bytes(8192):
-                    pr_chunk = c
-                    break
-            else:
-                for c in pr.iter_bytes(1024):
-                    pr_chunk = c
-                    break
+            sample_size=_playlist_sample_size,
+        )
     except Exception as e:
         logger.debug("Ignored exception in %s", "check_one", exc_info=True)
         return False, f"playlist fetch error: {e}"
 
     if pr_status in (200, 206):
-        ctype = pr_headers.get("content-type", "")
-        text_preview = pr_chunk.decode("utf-8", errors="ignore").lstrip()
-        if "mpegurl" in ctype or text_preview.startswith("#EXTM3U"):
-            return True, f"playlist OK ({len(pr_chunk)}B)"
-        return True, f"stream OK ({len(pr_chunk)}B, {ctype or 'no ctype'})"
+        return True, _describe_playlist(pr_headers, pr_chunk)
     return False, f"playlist HTTP {pr_status}"
+
+
+def _sample_response(client: "httpx.Client", url: str, *, follow_redirects: bool,
+                     timeout: float, sample_size) -> Tuple[int, dict, bytes]:
+    """Request the first bytes of a URL; ``sample_size(status)`` picks how many to read."""
+    headers = dict(BROWSER_HEADERS)
+    headers["Range"] = "bytes=0-8192"
+    with client.stream(
+        "GET",
+        url,
+        headers=headers,
+        follow_redirects=follow_redirects,
+        timeout=timeout,
+    ) as r:
+        status_code = r.status_code
+        resp_headers = dict(r.headers)
+        chunk = b""
+        size = sample_size(status_code)
+        if size:
+            for c in r.iter_bytes(size):
+                chunk = c
+                break
+    return status_code, resp_headers, chunk
+
+
+def _resolver_sample_size(status_code: int):
+    if status_code in (200, 206):
+        return 8192
+    if status_code != 302:
+        return 1024
+    return None
+
+
+def _playlist_sample_size(status_code: int) -> int:
+    return 8192 if status_code in (200, 206) else 1024
+
+
+def _describe_direct_stream(resp_headers: dict, chunk: bytes) -> str:
+    ctype = resp_headers.get("content-type", "")
+    text_preview = chunk.decode("utf-8", errors="ignore").lstrip()
+    if "mpegurl" in ctype or text_preview.startswith("#EXTM3U"):
+        return f"proxied playlist OK ({len(chunk)}B)"
+    if b"ftyp" in chunk[:32] or "video/" in ctype:
+        return f"proxied stream OK ({len(chunk)}B, {ctype or 'video'})"
+    return f"direct stream OK ({len(chunk)}B)"
+
+
+def _describe_playlist(pr_headers: dict, pr_chunk: bytes) -> str:
+    ctype = pr_headers.get("content-type", "")
+    text_preview = pr_chunk.decode("utf-8", errors="ignore").lstrip()
+    if "mpegurl" in ctype or text_preview.startswith("#EXTM3U"):
+        return f"playlist OK ({len(pr_chunk)}B)"
+    return f"stream OK ({len(pr_chunk)}B, {ctype or 'no ctype'})"
 
 
 def main() -> int:

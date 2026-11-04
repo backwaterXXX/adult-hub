@@ -229,9 +229,18 @@ def _prepare(rows: list[dict], aliases: dict[str, str] | None = None) -> None:
 
 def _candidate_pairs(rows: list[dict]) -> tuple[set[tuple[int, int]], bool]:
     """Index shared actor pairs and sweep adjacent duration windows."""
+    by_cast_pair, by_single_actor = _index_by_actors(rows)
+    pairs: set[tuple[int, int]] = set()
+    if not _sweep_duration_windows(by_cast_pair, rows, pairs):
+        return pairs, False
+    if not _sweep_duration_windows(by_single_actor, rows, pairs):
+        return pairs, False
+    return pairs, True
+
+
+def _index_by_actors(rows: list[dict]) -> tuple[dict, dict]:
     by_cast_pair: dict[tuple[str, str], list[int]] = defaultdict(list)
     by_single_actor: dict[str, list[int]] = defaultdict(list)
-
     for i, row in enumerate(rows):
         duration = _duration_values(row)
         if duration is None:
@@ -243,32 +252,26 @@ def _candidate_pairs(rows: list[dict]) -> tuple[set[tuple[int, int]], bool]:
         elif p_len == 1:
             actor = next(iter(row["performer_norm"]))
             by_single_actor[actor].append(i)
+    return by_cast_pair, by_single_actor
 
-    pairs: set[tuple[int, int]] = set()
 
-    def _sweep_groups(groups_dict: dict):
-        nonlocal pairs
-        for indexes in groups_dict.values():
-            if len(indexes) < 2:
-                continue
-            indexes.sort(key=lambda idx: (int(rows[idx]["duration"]), str(rows[idx]["id"])))
-            for offset, left in enumerate(indexes):
-                left_duration = int(rows[left]["duration"])
-                for right in indexes[offset + 1:]:
-                    if int(rows[right]["duration"]) - left_duration > 15:
-                        break
-                    pair = (min(left, right), max(left, right))
-                    pairs.add(pair)
-                    if len(pairs) >= MAX_HEURISTIC_CANDIDATES:
-                        return False
-        return True
+def _sweep_duration_windows(groups_dict: dict, rows: list[dict], pairs: set[tuple[int, int]]) -> bool:
+    """Add pairs whose durations are within 15 seconds; False once the candidate cap is hit."""
+    for indexes in groups_dict.values():
+        if len(indexes) < 2:
+            continue
+        indexes.sort(key=lambda idx: (int(rows[idx]["duration"]), str(rows[idx]["id"])))
+        for offset, left in enumerate(indexes):
+            left_duration = int(rows[left]["duration"])
+            for right in indexes[offset + 1:]:
+                if int(rows[right]["duration"]) - left_duration > 15:
+                    break
+                pair = (min(left, right), max(left, right))
+                pairs.add(pair)
+                if len(pairs) >= MAX_HEURISTIC_CANDIDATES:
+                    return False
+    return True
 
-    if not _sweep_groups(by_cast_pair):
-        return pairs, False
-    if not _sweep_groups(by_single_actor):
-        return pairs, False
-
-    return pairs, True
 
 def _index_dismissals(dismissed: set[tuple[str, str]]) -> dict[str, set[tuple[str, str]]]:
     """Index dismissed pairs by member so same-file groups avoid rescanning all decisions."""
