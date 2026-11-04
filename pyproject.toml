@@ -36,7 +36,6 @@ max-complexity = 10
 "common/fuzzy_performers.py" = ["C901", "T201"]
 "common/image_utils.py" = ["C901"]
 "common/job_failures.py" = ["C901"]
-"common/job_queue.py" = ["C901"]
 "common/managed_collections.py" = ["C901"]
 "common/managed_sources.py" = ["C901"]
 "common/performer_catalog.py" = ["C901"]

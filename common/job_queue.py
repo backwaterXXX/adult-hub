@@ -154,31 +154,38 @@ def retry_job(db_url: str | None, job_id: str) -> str | None:
     if not isinstance(payload, dict) or row["action"] not in ALL_ACTIONS:
         return None
     if row["action"] == "metadata_update":
-        try:
-            result = json.loads(row.get("result") or "{}")
-        except (TypeError, ValueError):
-            result = {}
-        if not isinstance(result, dict):
-            result = {}
-        # Keep only markers that prove a local stage already completed. The
-        # worker still rechecks source fingerprint and override revision.
-        resume = payload.get("_resume") if isinstance(payload.get("_resume"), dict) else {}
-        for key in ("metadata_revision", "nfo_source_fingerprint", "nfo_written", "local_state"):
-            if key in result:
-                resume[key] = result[key]
-        if resume:
-            payload["_resume"] = resume
+        _mark_metadata_resume(payload, _row_result(row))
     elif row["action"] == "performer_merge":
-        try:
-            result = json.loads(row.get("result") or "{}")
-        except (TypeError, ValueError):
-            result = {}
-        progress = result.get("progress") if isinstance(result, dict) else None
-        if isinstance(progress, dict) and progress.get("stage") == "merging_performers":
-            resume = payload.get("_resume") if isinstance(payload.get("_resume"), dict) else {}
-            resume["merge_started"] = True
-            payload["_resume"] = resume
+        _mark_merge_resume(payload, _row_result(row))
     return enqueue_job(db_url, row["action"], payload)
+
+
+def _mark_metadata_resume(payload: dict, result: dict) -> None:
+    # Keep only markers that prove a local stage already completed. The
+    # worker still rechecks source fingerprint and override revision.
+    resume = payload.get("_resume") if isinstance(payload.get("_resume"), dict) else {}
+    for key in ("metadata_revision", "nfo_source_fingerprint", "nfo_written", "local_state"):
+        if key in result:
+            resume[key] = result[key]
+    if resume:
+        payload["_resume"] = resume
+
+
+def _mark_merge_resume(payload: dict, result: dict) -> None:
+    progress = result.get("progress")
+    if isinstance(progress, dict) and progress.get("stage") == "merging_performers":
+        resume = payload.get("_resume") if isinstance(payload.get("_resume"), dict) else {}
+        resume["merge_started"] = True
+        payload["_resume"] = resume
+
+
+def _row_result(row) -> dict:
+    """Return the job's stored result as a dict, or an empty dict when unreadable."""
+    try:
+        result = json.loads(row.get("result") or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return result if isinstance(result, dict) else {}
 
 
 def cancel_queued_job(db_url: str | None, job_id: str) -> dict:

@@ -152,7 +152,12 @@ def cleanup_retention(conn: db.Connection, media_dir: Path, retention_days: int,
     for vid_id, provider, title in candidates:
         if services.is_cleanup_allowed(vid_id, provider, providers_succeeded):
             expired.append((vid_id, title, provider))
+    return _purge_expired_videos(conn, media_dir, expired, retention_days, services)
 
+
+def _purge_expired_videos(conn: db.Connection, media_dir: Path, expired: list, retention_days: int,
+                          services: LibraryCleanupServices) -> None:
+    """Apply the scale guard, then delete files and catalog rows for each expired video."""
     if not expired:
         services.logger.info("Retention check: no eligible non-Telegram videos expired within %s days.", retention_days)
         return
@@ -171,26 +176,7 @@ def cleanup_retention(conn: db.Connection, media_dir: Path, retention_days: int,
     # Per-item transactions: a DB error must not roll back deletions that
     # already committed, leaving catalog rows pointing at deleted files.
     for vid_id, title, _provider in expired:
-        f_cur = conn.execute(
-            "SELECT file_path FROM synced_files WHERE video_id = %s", (vid_id,)
-        )
-        for (file_path,) in f_cur.fetchall():
-            try:
-                path = services.resolve_media_path(file_path, media_dir)
-            except ValueError as exc:
-                services.logger.warning("Skipping unsafe media record: %s", exc)
-                continue
-            for ext in (".strm", ".nfo", ".jpg", ".thumb_fail"):
-                file_to_delete = path.with_suffix(ext)
-                if file_to_delete.exists():
-                    try:
-                        file_to_delete.unlink()
-                        services.logger.info(f"Retention: deleted {file_to_delete.name}")
-                    except Exception as exc:
-                        services.logger.warning(
-                            f"Retention: error deleting {file_to_delete}: {exc}"
-                        )
-
+        _delete_retention_files(conn, media_dir, vid_id, services)
         try:
             with conn:
                 conn.execute("DELETE FROM video_categories WHERE video_id = %s", (vid_id,))
@@ -202,6 +188,28 @@ def cleanup_retention(conn: db.Connection, media_dir: Path, retention_days: int,
             )
             continue
         services.logger.info(f"Retention: purged video {vid_id} ('{title}')")
+
+
+def _delete_retention_files(conn: db.Connection, media_dir: Path, vid_id, services) -> None:
+    f_cur = conn.execute(
+        "SELECT file_path FROM synced_files WHERE video_id = %s", (vid_id,)
+    )
+    for (file_path,) in f_cur.fetchall():
+        try:
+            path = services.resolve_media_path(file_path, media_dir)
+        except ValueError as exc:
+            services.logger.warning("Skipping unsafe media record: %s", exc)
+            continue
+        for ext in (".strm", ".nfo", ".jpg", ".thumb_fail"):
+            file_to_delete = path.with_suffix(ext)
+            if file_to_delete.exists():
+                try:
+                    file_to_delete.unlink()
+                    services.logger.info(f"Retention: deleted {file_to_delete.name}")
+                except Exception as exc:
+                    services.logger.warning(
+                        f"Retention: error deleting {file_to_delete}: {exc}"
+                    )
 
 
 def purge_videos(conn: db.Connection, media_dir: Path, comp_ids: List[str], reason: str,

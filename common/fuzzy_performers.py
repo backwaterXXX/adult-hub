@@ -161,6 +161,21 @@ def score_canonical(
     if has_photo:
         score += 80.0
 
+    score += _name_shape_score(name)
+    score += _noise_penalty(name)
+
+    # Library video count bonus
+    score += min(video_count * 2.0, 60.0)
+
+    # Preserve proper accents (e.g. Artyóm vs Artyom)
+    if strip_accents(name) != name:
+        score += 10.0
+
+    return score
+
+
+def _name_shape_score(name: str) -> float:
+    score = 0.0
     # Spacje miedzy czlonami (prawdziwe imie i nazwisko vs login/handle)
     words = name.split()
     if len(words) >= 2:
@@ -173,7 +188,12 @@ def score_canonical(
         score -= 30.0
     elif name.isupper():
         score -= 20.0
+    return score
 
+
+def _noise_penalty(name: str) -> float:
+    """Penalise trailing noise suffixes, digits and punctuation in a name."""
+    score = 0.0
     # Kary za obecnosc szumu na koncu
     k = normalize_clean_key(name)
     for sfx in NOISE_SUFFIXES:
@@ -184,14 +204,6 @@ def score_canonical(
         score -= 35.0
     if re.search(r"[\?!_\.]", name):
         score -= 25.0
-
-    # Library video count bonus
-    score += min(video_count * 2.0, 60.0)
-
-    # Preserve proper accents (e.g. Artyóm vs Artyom)
-    if strip_accents(name) != name:
-        score += 10.0
-
     return score
 
 
