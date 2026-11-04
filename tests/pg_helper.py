@@ -147,9 +147,14 @@ class PgTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.db_url = require_url()
-        _acquire_run_guard(cls.db_url)
-        initial_connection = init_test_db(cls.db_url)
-        initial_connection.close()
+        try:
+            _acquire_run_guard(cls.db_url)
+            initial_connection = init_test_db(cls.db_url)
+            initial_connection.close()
+        except Exception as exc:
+            if os.getenv("ADULT_HUB_REQUIRE_TEST_DATABASE", "").strip().lower() in {"1", "true", "yes"}:
+                raise
+            raise unittest.SkipTest(f"PostgreSQL test database not available: {exc}")
 
     def setUp(self):
         reset_db(self.db_url)

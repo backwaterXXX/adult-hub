@@ -245,8 +245,9 @@ def reconcile(db_url: str | None, *, limit: int = MAX_AUTO_LOSERS,
         safe_losers = []
         for loser in keeper_pool[1:]:
             if not _duration_matches(keeper, loser):
-                skipped += 1
-                continue
+                if evidence != "telegram_file_id" or (keeper.get("duration") and loser.get("duration")):
+                    skipped += 1
+                    continue
             keeper_split, keeper_part = _part_identity(keeper)
             loser_split, loser_part = _part_identity(loser)
             if (keeper_split or loser_split) and (not keeper_part or keeper_part != loser_part):
@@ -278,17 +279,19 @@ def reconcile(db_url: str | None, *, limit: int = MAX_AUTO_LOSERS,
 
     work = []
     claimed_ids: set[str] = set()
-    if execute_merges:
-        for payload in auto_groups.values():
-            group_ids = {payload["keeper_id"], *payload["loser_ids"]}
-            if group_ids & claimed_ids:
-                continue
-            work.append(("hide", payload))
-            claimed_ids.update(group_ids)
-            if len(work) >= max(1, min(limit, MAX_AUTO_LOSERS)):
-                break
+    for payload in auto_groups.values():
+        is_same_telegram_file = payload.get("evidence") == "telegram_file_id"
+        if not execute_merges and not is_same_telegram_file:
+            continue
+        group_ids = {payload["keeper_id"], *payload["loser_ids"]}
+        if group_ids & claimed_ids:
+            continue
+        work.append(("hide", payload))
+        claimed_ids.update(group_ids)
+        if len(work) >= max(1, min(limit, MAX_AUTO_LOSERS)):
+            break
     job_ids = enqueue_jobs_batch(db_url, work)
     return {"outcome": "completed", **visual, "scanned": scan.get("scanned", 0),
             "phash_queued": phash_jobs, "merge_jobs_queued": len(job_ids),
-            "merge_candidates": len(auto_groups), "mode": "automatic" if execute_merges else "report",
+            "merge_candidates": len(auto_groups), "mode": "automatic" if (execute_merges or work) else "report",
             "skipped_safety_checks": skipped}

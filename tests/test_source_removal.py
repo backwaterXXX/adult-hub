@@ -242,6 +242,7 @@ class TestSourceRemoval(unittest.TestCase):
         self.assertEqual(_channel_ids("-10012345"), {"-10012345", "12345"})
         self.assertEqual(_channel_ids("12345"), {"-10012345", "12345"})
         self.assertEqual(_channel_ids("-12345"), {"-10012345", "-12345"})
+        self.assertIn("-10012345", _channel_ids(" -12345 "))
 
     @patch.object(source_removal, "_acquire_channel_removal_lock", return_value=None)
     @patch.object(source_removal, "_verify_channel_not_configured", return_value=None)

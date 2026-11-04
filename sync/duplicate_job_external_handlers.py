@@ -6,7 +6,32 @@ if __package__:
 else:
     import duplicate_jobs as _core
 
+import copy
+import math
 from common import schedule_stages
+
+
+class ChannelRemovalStillActive(RuntimeError):
+    """Channel removal is still active; the re-add job should be requeued."""
+
+
+def _is_channel_removal_active_db(conn, channel_id: str) -> bool:
+    from common.managed_sources import canonical_channel_id
+    clean = canonical_channel_id(channel_id)
+    try:
+        rows = conn.execute(
+            "SELECT payload FROM video_duplicate_jobs WHERE action='source_remove' AND state IN ('queued', 'processing')"
+        ).fetchall()
+        for (p_raw,) in rows:
+            try:
+                p = _core.json.loads(p_raw) if isinstance(p_raw, str) else p_raw
+                if isinstance(p, dict) and canonical_channel_id(str(p.get("channel_id", ""))) == clean:
+                    return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return False
 
 
 def execute_external_operation(action, conn, job_id, payload, media_dir, services):
@@ -40,6 +65,69 @@ def _execute(action, conn, job_id, payload, media_dir, services):
             conn, media_dir, payload["channel_id"], job_id, services,
             _core._record_job_progress,
         )
+        return result, True
+
+    if action == "source_readd":
+        channel_id = str(payload.get("channel_id") or "").strip()
+        if not channel_id:
+            raise ValueError("Channel re-add requires a valid Telegram channel ID.")
+        from common.managed_sources import (
+            canonical_channel_id,
+            is_channel_locked,
+            preview_overrides,
+            read_overrides,
+            update_overrides,
+        )
+        ch_lock_path = payload.get("overrides_path")
+        if is_channel_locked(channel_id, path=ch_lock_path) or _is_channel_removal_active_db(conn, channel_id):
+            raise ChannelRemovalStillActive(f"Channel removal is still active for '{channel_id}'.")
+
+        ch_canon = canonical_channel_id(channel_id)
+        current = read_overrides(path=ch_lock_path)
+        if isinstance(payload.get("overrides"), dict):
+            candidate = copy.deepcopy(payload["overrides"])
+        else:
+            candidate = copy.deepcopy(current.get("overrides") or {})
+
+        tg = candidate.setdefault("telegram", {})
+        removed = list(tg.get("removed_channels", []))
+        tg["removed_channels"] = [
+            cid for cid in removed if canonical_channel_id(str(cid)) != ch_canon
+        ]
+        if not tg["removed_channels"]:
+            tg.pop("removed_channels", None)
+
+        channels = tg.setdefault("channels", {})
+        existing_key = next((k for k in channels if canonical_channel_id(str(k)) == ch_canon), channel_id)
+        existing_conf = channels.pop(existing_key, {})
+        new_conf = dict(existing_conf)
+        if isinstance(payload.get("channel_config"), dict):
+            new_conf.update(payload["channel_config"])
+        if payload.get("studio"):
+            new_conf["studio"] = str(payload["studio"]).strip()
+        new_conf["enabled"] = True
+        channels[channel_id] = new_conf
+
+        config_path = payload.get("config_path") or _core.os.getenv("CONFIG_PATH", "/config/config.yaml")
+        if not _core.Path(config_path).exists() and _core.Path("config.yaml").exists():
+            config_path = "config.yaml"
+
+        preview_result = preview_overrides(
+            config_path, candidate, expected_revision=current["revision"], path=ch_lock_path
+        )
+        saved = update_overrides(
+            config_path,
+            candidate,
+            expected_revision=current["revision"],
+            path=ch_lock_path,
+            audit_event={"changes": preview_result["changes"], "truncated": preview_result["truncated"]},
+        )
+        result = {
+            "local_state": "source_readded",
+            "channel_id": channel_id,
+            "revision": saved["revision"],
+            "changes": preview_result["changes"],
+        }
         return result, True
 
     if action == "backup_create":
@@ -159,7 +247,7 @@ def _execute(action, conn, job_id, payload, media_dir, services):
         if type(offset) is not int or offset <= 0:
             raise ValueError("Artwork generation requires a positive offset.")
         raw_timeout = payload.get("timeout", DEFAULT_ARTWORK_EXTRACTION_TIMEOUT)
-        if type(raw_timeout) not in (int, float) or raw_timeout <= 0:
+        if type(raw_timeout) not in (int, float) or not math.isfinite(raw_timeout) or raw_timeout <= 0:
             raise ValueError("Artwork generation requires a positive timeout.")
         timeout = float(raw_timeout)
         _core._record_job_progress(conn, job_id, "generating_artwork")

@@ -28,7 +28,7 @@ WORKER_ACTIONS = (
     "backup_create", "backup_restore_test", "metadata_backfill", "telegram_fingerprint_scan", "artwork_download", "artwork_generate", "duplicate_reconcile",
     # One-off triggers for the dependent stages listed in the Schedules UI.
     "history_cleanup", "performer_catalog", "scene_backfill", "telegram_title_cleanup",
-    "source_remove",
+    "source_remove", "source_readd",
 )
 # ``sync`` is claimed by the runner, which owns full-sync execution.
 SYNC_ACTION = "sync"

@@ -20,6 +20,34 @@ class Element {
     if (selector.startsWith('.')) return this.children.find(node => node.className.split(/\s+/).includes(selector.slice(1))) || null;
     return null;
   }
+  reportValidity() { return true; }
+  select() {}
+  get elements() {
+    const inputs = descendants(this, node => ['input', 'select', 'textarea'].includes(node.tagName));
+    const named = {};
+    inputs.forEach(input => { if (input.name) named[input.name] = input; });
+    return named;
+  }
+  closest(selector) {
+    let curr = this;
+    while (curr) {
+      if (selector.startsWith('#') && curr.id === selector.slice(1)) return curr;
+      if (selector.startsWith('.') && curr.className && curr.className.split(/\s+/).includes(selector.slice(1))) return curr;
+      const attrMatch = selector.match(/^\[([a-zA-Z0-9_\-]+)(?:="([^"]*)")?\]$/);
+      if (attrMatch) {
+        const attrName = attrMatch[1];
+        const attrVal = attrMatch[2];
+        if (attrName.startsWith('data-')) {
+          const dsKey = attrName.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+          if (curr.dataset && Object.prototype.hasOwnProperty.call(curr.dataset, dsKey)) {
+            if (attrVal === undefined || curr.dataset[dsKey] === attrVal) return curr;
+          }
+        }
+      }
+      curr = curr.parentElement;
+    }
+    return null;
+  }
   focus() { if (!this.disabled) activeElement = this; }
   querySelectorAll() { return []; }
 }
@@ -46,7 +74,15 @@ function descendants(root, predicate) {
   const document = {
     get activeElement() { return activeElement; },
     querySelector(selector) {
-      if (selector.startsWith('#')) return elements[selector.slice(1)] || null;
+      if (selector.startsWith('#')) {
+        const id = selector.slice(1);
+        if (elements[id]) return elements[id];
+        for (const root of Object.values(elements)) {
+          const match = descendants(root, node => node.id === id)[0];
+          if (match) return match;
+        }
+        return null;
+      }
       const pageMatch = selector.match(/^\[data-source-page="(previous|next)"\]$/);
       if (pageMatch) return descendants(elements.sourcesPagination, node => node.dataset.sourcePage === pageMatch[1])[0] || null;
       return null;
@@ -350,6 +386,34 @@ function descendants(root, predicate) {
       node => node.tagName === 'label' && node.children.includes(input))[0];
     return label?.children[0]?.textContent;
   }), ['Telegram channel ID', 'Studio label'], 'each dynamically rendered channel input has a visible wrapping label');
+  const saveBtn = descendants(elements.sourceDetailContent, node => node.id === 'sourceCreateSave')[0];
+  assert.equal(saveBtn.disabled, false, 'Add channel button is immediately enabled without requiring preview first');
+  newChannelFields[0].value = '@immediate_new';
+  newChannelFields[1].value = 'Immediate Studio';
+  const postCallsBeforeCreate = postCalls.length;
+  elements.sourceDetailDialog.listeners.click({ target: saveBtn });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(postCalls.length, postCallsBeforeCreate + 1, 'clicking save posts source creation immediately');
+  assert.equal(postCalls[postCalls.length - 1].path, '/admin/api/v2/sources');
+  assert.equal(postCalls[postCalls.length - 1].payload.channel.id, '@immediate_new');
+  assert.equal(postCalls[postCalls.length - 1].payload.channel.studio, 'Immediate Studio');
+
+  // Test channel name editing
+  const firstDetailBtn = descendants(elements.sourcesRows, node => node.dataset.sourceDetail)[0];
+  elements.sourcesRows.listeners.click({ target: { closest: selector => selector === '[data-source-detail]' ? firstDetailBtn : null } });
+  const editNameBtn = descendants(elements.sourceDetailContent, node => node.dataset.sourceEditName)[0];
+  assert.ok(editNameBtn, 'Edit channel name button is rendered in channel details');
+  elements.sourceDetailDialog.listeners.click({ target: editNameBtn });
+  const editNameInput = descendants(elements.sourceDetailContent, node => node.tagName === 'input' && node.name === 'studio')[0];
+  assert.ok(editNameInput, 'Edit channel name form renders with studio input');
+  editNameInput.value = 'Renamed Studio Test';
+  const saveNameBtn = descendants(elements.sourceDetailContent, node => node.id === 'sourceEditNameSave')[0];
+  const postCallsBeforeNameSave = postCalls.length;
+  elements.sourceDetailDialog.listeners.click({ target: saveNameBtn });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(postCalls.length, postCallsBeforeNameSave + 1, 'saving channel name posts to sources save');
+  assert.equal(postCalls[postCalls.length - 1].path, '/admin/api/v2/sources/save');
+  assert.equal(postCalls[postCalls.length - 1].payload.overrides.telegram.channels['2'].studio, 'Renamed Studio Test');
   historyPayload = { available: true, total: 65, runs: Array.from({ length: 65 }, (_, index) => ({
     started_at: 1700000000 - index, success: true, sources: []
   })) };

@@ -325,6 +325,7 @@
     if (next.route === 'system' && (next.systemTab || 'status') === 'status'
       && (routeChanged || systemTabChanged)) void loadSystemStatus();
     if (next.route === 'library') {
+      void loadChannelFilterOptions();
       syncFiltersFromUrl();
       const currentLibraryParams = filterParams();
       const libraryQueryChanged = previousLibraryQuery !== null
@@ -385,12 +386,75 @@
     $('#systemBackupView').hidden = route !== 'system' || systemTab !== 'backups';
     $('#systemMaintenanceView').hidden = route !== 'system' || systemTab !== 'maintenance';
   }
+  let channelFilterLoaded = false;
+  async function loadChannelFilterOptions() {
+    const select = $('#filterChannel');
+    if (!select || channelFilterLoaded) return;
+    try {
+      const data = await window.AdminV2.getJson('/admin/api/v2/sources/list');
+      const channels = [];
+      if (Array.isArray(data?.sources)) {
+        for (const source of data.sources) {
+          if (!source || (source.provider && source.provider !== 'telegram')) continue;
+          if (Array.isArray(source.channels)) {
+            for (const ch of source.channels) {
+              if (ch && ch.id) channels.push(ch);
+            }
+          }
+        }
+      } else if (Array.isArray(data?.items)) {
+        for (const item of data.items) {
+          if (item && item.id && (!item.provider || item.provider === 'telegram')) {
+            channels.push(item);
+          }
+        }
+      }
+      if (!channels.length) return;
+      channels.sort((a, b) => (a.studio || a.id || '').localeCompare(b.studio || b.id || '', undefined, { sensitivity: 'base' }));
+      const currentValue = select.value;
+      const options = [];
+      const defaultOpt = document.createElement('option');
+      defaultOpt.value = '';
+      defaultOpt.textContent = 'All channels';
+      options.push(defaultOpt);
+      channels.forEach(ch => {
+        const opt = document.createElement('option');
+        opt.value = ch.id;
+        opt.textContent = ch.studio ? `${ch.studio} (${ch.id})` : ch.id;
+        options.push(opt);
+      });
+      select.replaceChildren(...options);
+      if (currentValue) {
+        if (typeof select.querySelector === 'function' && !select.querySelector(`option[value="${currentValue}"]`)) {
+          const opt = document.createElement('option');
+          opt.value = currentValue;
+          opt.textContent = currentValue;
+          select.append(opt);
+        }
+        select.value = currentValue;
+      }
+      channelFilterLoaded = true;
+    } catch (_) {}
+  }
+  document.addEventListener('adminv2:sources-changed', () => {
+    channelFilterLoaded = false;
+    void loadChannelFilterOptions();
+  });
   function syncFiltersFromUrl() {
     const params = routeQueryParams();
     const form = $('#libraryFilters');
     for (const name of ['q', 'channel_id', 'studio', 'performer', 'tag', 'availability', 'missing', 'sort']) {
       const field = form.elements.namedItem(name);
-      if (field) field.value = params.get(name) || (name === 'sort' ? 'first_seen' : '');
+      if (field) {
+        const val = params.get(name) || (name === 'sort' ? 'first_seen' : '');
+        if (field.id === 'filterChannel' && val && typeof field.querySelector === 'function' && !field.querySelector(`option[value="${val}"]`)) {
+          const opt = document.createElement('option');
+          opt.value = val;
+          opt.textContent = val;
+          field.append(opt);
+        }
+        field.value = val;
+      }
     }
     state.offset = Math.max(0, Number(params.get('offset')) || 0);
     state.catalogCursor = params.get('cursor') || null;
@@ -763,7 +827,7 @@
   window.AdminV2 = Object.freeze({
     requestJson, getJson, postJson, putJson, deleteJson, openDialog, closeDialog, setFeedback, downloadBlob,
     create, el: create, setText, announce, safeId, scrub, titleCase, detailField, formatDuration, scheduleSync,
-    currentRoute, taskLink, showQueued
+    currentRoute, taskLink, showQueued, loadChannelFilterOptions
   });
   function renderServiceChip() {
     const element = $('#serviceStatus');
@@ -3167,4 +3231,5 @@
   loadHeaderStatus();
   loadHeaderSyncStatus();
   loadStatus();
+  void loadChannelFilterOptions();
 })();

@@ -78,6 +78,9 @@ def _result_summary(job: dict) -> str | None:
             if type(videos) is int and videos >= 0 and type(runs) is int and runs >= 0:
                 return f"Channel removed; {videos:,} videos and {runs:,} channel-only sync runs deleted."
             return "Channel videos and sync history removed."
+        if job.get("action") == "source_readd" and result.get("local_state") == "source_readded":
+            ch = result.get("channel_id") or "channel"
+            return f"Channel {ch} configuration updated."
         if job.get("action") == "metadata_backfill" and result.get("local_state") == "metadata_scan_completed":
             summary = []
             for key, label in (("entities_checked", "checked"), ("entities_enriched", "enriched")):
@@ -252,7 +255,7 @@ def _safe_job(job: dict, *, now=None) -> dict:
         "failure_stage": next((event["stage"] for event in reversed(safe_events)
                                 if event["stage"] not in {"starting", "completed", "cancelled"}), None)
         if state == "failed" else None,
-        "local_state": local_state if isinstance(local_state, str) and local_state in {"hidden", "dismissed", "restored", "quarantined", "source_removed", "metadata_updated", "metadata_scan_completed", "telegram_fingerprint_scan_completed", "artwork_downloaded", "artwork_generated", "artwork_already_valid", "artwork_not_found", "artwork_download_failed", "artwork_lookup_failed", "availability_checked", "audit_queued", "audit_completed", "metadata_quality_audit_completed", "nfo_repaired", "files_repaired"} else None,
+        "local_state": local_state if isinstance(local_state, str) and local_state in {"hidden", "dismissed", "restored", "quarantined", "source_removed", "source_readded", "metadata_updated", "metadata_scan_completed", "telegram_fingerprint_scan_completed", "artwork_downloaded", "artwork_generated", "artwork_already_valid", "artwork_not_found", "artwork_download_failed", "artwork_lookup_failed", "availability_checked", "audit_queued", "audit_completed", "metadata_quality_audit_completed", "nfo_repaired", "files_repaired"} else None,
         "jellyfin_refresh": refresh_state if isinstance(refresh_state, str) and refresh_state in {"pending", "updated", "failed", "skipped", "unavailable", "not_required"} else None,
         "jellyfin_library_refresh": result.get("jellyfin_library_refresh") if isinstance(result.get("jellyfin_library_refresh"), str) and result.get("jellyfin_library_refresh") in {"pending", "updated", "failed", "skipped", "unavailable", "not_required"} else None,
         "jellyfin_import": import_state if isinstance(import_state, str) and import_state in {"not_requested", "not_confirmed", "confirmed"} else None,

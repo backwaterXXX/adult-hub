@@ -147,6 +147,7 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                 or action == 'scene_backfill'
                 or action == 'telegram_title_cleanup'
                 or action == 'source_remove'
+                or action == 'source_readd'
             ):
                 result, catalog_committed = _external_handlers.execute_external_operation(
                     action, conn, job_id, payload, media_dir, services
@@ -834,6 +835,14 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
                 except Exception:
                     services.logger.exception('Could not queue safe automatic repairs after audit %s', job_id)
             completed += 1
+        except _external_handlers.ChannelRemovalStillActive as retry_exc:
+            with conn:
+                conn.execute(
+                    "UPDATE video_duplicate_jobs SET state='queued', updated_at=%s WHERE id=%s AND state='processing'",
+                    (int(_core.time.time()), job_id),
+                )
+            services.logger.info("Channel removal is still active; requeued job %s: %s", job_id, retry_exc)
+            break
         except Exception as exc:
             if not catalog_committed and action != 'orphan_file_operation':
                 for origin, target in reversed(moved):

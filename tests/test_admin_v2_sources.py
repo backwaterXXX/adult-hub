@@ -487,6 +487,214 @@ class TestAdminV2SourcesConcurrency(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("-100999", overlay["overrides"].get("telegram", {}).get("removed_channels", []))
             self.assertNotIn("999", overlay["overrides"].get("telegram", {}).get("removed_channels", []))
 
+    async def test_save_sources_renaming_other_channel_while_another_channel_is_removed_succeeds(self):
+        import fcntl
+        from common.managed_sources import update_overrides, channel_lock_path
+        update_overrides(
+            self.admin.CONFIG_PATH,
+            {"telegram": {"channels": {"-100111": {"studio": "Chan 1"}}, "removed_channels": ["-100999"]}},
+            expected_revision=0,
+            path=self.overlay_path,
+        )
+        lock_file = channel_lock_path("-100999", path=self.overlay_path)
+        with lock_file.open("a+b") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                req_save = make_post_request(
+                    "/api/v2/sources/save",
+                    {
+                        "expected_revision": 1,
+                        "overrides": {
+                            "telegram": {
+                                "channels": {"-100111": {"studio": "Renamed Chan 1"}},
+                                "removed_channels": ["-100999"],
+                            }
+                        }
+                    },
+                )
+                resp = await self.routes["/api/v2/sources/save"](req_save)
+                self.assertIsInstance(resp, dict)
+                self.assertTrue(resp.get("ok"))
+                self.assertEqual(resp.get("revision"), 2)
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+    async def test_save_sources_rename_while_removal_active_is_queued_and_executed_after(self):
+        import fcntl
+        from common.managed_sources import update_overrides, read_overrides, channel_lock_path
+        from sync.duplicate_job_external_handlers import (
+            execute_external_operation,
+            ChannelRemovalStillActive,
+        )
+
+        update_overrides(
+            self.admin.CONFIG_PATH,
+            {
+                "telegram": {
+                    "channels": {"-100999": {"studio": "Original Name"}},
+                    "removed_channels": ["-100999"],
+                }
+            },
+            expected_revision=0,
+            path=self.overlay_path,
+        )
+
+        enqueued = []
+        def mock_enqueue(db_url, action, payload):
+            job_id = f"job-{len(enqueued) + 1}"
+            enqueued.append((action, payload, job_id))
+            return job_id
+
+        lock_file = channel_lock_path("-100999", path=self.overlay_path)
+        with lock_file.open("a+b") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                with patch("common.job_queue.enqueue_job", side_effect=mock_enqueue):
+                    req_save = make_post_request(
+                        "/api/v2/sources/save",
+                        {
+                            "expected_revision": 1,
+                            "overrides": {
+                                "telegram": {
+                                    "channels": {"-100999": {"studio": "Renamed Studio"}},
+                                    "removed_channels": [],
+                                }
+                            },
+                        },
+                    )
+                    resp = await self.routes["/api/v2/sources/save"](req_save)
+
+                # HTTP response is 202 Accepted, queued without timeout or 409
+                self.assertEqual(resp.status_code, 202)
+                body = json.loads(resp.body)
+                self.assertTrue(body.get("ok"))
+                self.assertTrue(body.get("queued"))
+                self.assertEqual(body.get("job_id"), "job-1")
+                self.assertEqual(len(enqueued), 1)
+                action, payload, jid = enqueued[0]
+                self.assertEqual(action, "source_readd")
+                self.assertEqual(payload["channel_id"], "-100999")
+                self.assertEqual(payload["studio"], "Renamed Studio")
+
+                # Payload execution during active lock raises ChannelRemovalStillActive (re-queue)
+                payload["overrides_path"] = self.overlay_path
+                payload["config_path"] = self.admin.CONFIG_PATH
+
+                class MockConn:
+                    def execute(self, sql, params=()):
+                        class MockResult:
+                            def fetchall(self): return []
+                            def fetchone(self): return None
+                        return MockResult()
+
+                with self.assertRaises(ChannelRemovalStillActive):
+                    execute_external_operation(
+                        action, MockConn(), jid, payload, Path("/tmp"), None
+                    )
+
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+        # After removal lock is released, worker execution succeeds and updates configuration
+        result, committed = execute_external_operation(
+            action, MockConn(), jid, payload, Path("/tmp"), None
+        )
+        self.assertTrue(committed)
+        self.assertEqual(result["local_state"], "source_readded")
+        self.assertEqual(result["channel_id"], "-100999")
+
+        # Overrides verify: removed_channels is empty, channels[-100999] updated with new studio
+        overlay = read_overrides(self.overlay_path)
+        self.assertEqual(overlay["revision"], 2)
+        tg = overlay["overrides"]["telegram"]
+        self.assertNotIn("-100999", tg.get("removed_channels", []))
+        self.assertIn("-100999", tg["channels"])
+        self.assertEqual(tg["channels"]["-100999"]["studio"], "Renamed Studio")
+        self.assertTrue(tg["channels"]["-100999"]["enabled"])
+
+    async def test_create_source_readd_while_removal_active_is_queued_and_executed_after(self):
+        import fcntl
+        from common.managed_sources import update_overrides, read_overrides, channel_lock_path
+        from sync.duplicate_job_external_handlers import (
+            execute_external_operation,
+            ChannelRemovalStillActive,
+        )
+
+        update_overrides(
+            self.admin.CONFIG_PATH,
+            {
+                "telegram": {
+                    "channels": {},
+                    "removed_channels": ["-100555"],
+                }
+            },
+            expected_revision=0,
+            path=self.overlay_path,
+        )
+
+        enqueued = []
+        def mock_enqueue(db_url, action, payload):
+            job_id = f"job-{len(enqueued) + 1}"
+            enqueued.append((action, payload, job_id))
+            return job_id
+
+        lock_file = channel_lock_path("-100555", path=self.overlay_path)
+        with lock_file.open("a+b") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                with patch("common.job_queue.enqueue_job", side_effect=mock_enqueue):
+                    req_create = make_post_request(
+                        "/api/v2/sources",
+                        {
+                            "expected_revision": 1,
+                            "channel": {"id": "-100555", "studio": "Readded Studio"},
+                        },
+                    )
+                    resp = await self.routes["/api/v2/sources"](req_create)
+
+                self.assertEqual(resp.status_code, 202)
+                body = json.loads(resp.body)
+                self.assertTrue(body.get("ok"))
+                self.assertTrue(body.get("queued"))
+                self.assertEqual(body.get("job_id"), "job-1")
+                self.assertEqual(len(enqueued), 1)
+                action, payload, jid = enqueued[0]
+                self.assertEqual(action, "source_readd")
+                self.assertEqual(payload["channel_id"], "-100555")
+                self.assertEqual(payload["studio"], "Readded Studio")
+
+                payload["overrides_path"] = self.overlay_path
+                payload["config_path"] = self.admin.CONFIG_PATH
+
+                class MockConn:
+                    def execute(self, sql, params=()):
+                        class MockResult:
+                            def fetchall(self): return []
+                            def fetchone(self): return None
+                        return MockResult()
+
+                with self.assertRaises(ChannelRemovalStillActive):
+                    execute_external_operation(
+                        action, MockConn(), jid, payload, Path("/tmp"), None
+                    )
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+        result, committed = execute_external_operation(
+            action, MockConn(), jid, payload, Path("/tmp"), None
+        )
+        self.assertTrue(committed)
+        self.assertEqual(result["local_state"], "source_readded")
+        self.assertEqual(result["channel_id"], "-100555")
+
+        overlay = read_overrides(self.overlay_path)
+        self.assertEqual(overlay["revision"], 2)
+        tg = overlay["overrides"]["telegram"]
+        self.assertNotIn("-100555", tg.get("removed_channels", []))
+        self.assertIn("-100555", tg["channels"])
+        self.assertEqual(tg["channels"]["-100555"]["studio"], "Readded Studio")
+        self.assertTrue(tg["channels"]["-100555"]["enabled"])
+
 
 if __name__ == "__main__":
     unittest.main()

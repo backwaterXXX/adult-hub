@@ -57,6 +57,106 @@ class TestAutomaticDuplicateRules(unittest.TestCase):
         self.assertFalse(video_duplicate_automation._duration_matches(
             {"duration": 858}, {"duration": 880}))
 
+    def test_telegram_document_id_extracted_correctly(self):
+        from common.duplicate_evidence import _telegram_document_id
+        valid = "telegram:-1001000:1389:5000000000000000001"
+        self.assertEqual(_telegram_document_id(valid), "5000000000000000001")
+        self.assertIsNone(_telegram_document_id("telegram:bad_format"))
+        self.assertIsNone(_telegram_document_id("other:123:456"))
+        self.assertIsNone(_telegram_document_id(""))
+
+    def test_pair_evidence_confirms_identical_telegram_document_id(self):
+        from common.duplicate_evidence import pair_evidence
+
+        class MockConn:
+            def execute(self, sql, params=()):
+                if "SELECT v.id" in sql:
+                    class Result:
+                        def fetchall(self_inner):
+                            return [
+                                ("telegram:-1001:1:doc123", 1000, 50000, "Title 1", "f1.mp4", "text 1", None, None, None),
+                                ("telegram:-1002:2:doc123", 1000, 50000, "Title 2", "f2.mp4", "text 2", None, None, None),
+                            ]
+                    return Result()
+                elif "SELECT 1 FROM video_duplicate_dismissals" in sql:
+                    class DismissalResult:
+                        def fetchone(self_inner):
+                            return None
+                    return DismissalResult()
+                raise NotImplementedError(sql)
+
+        conn = MockConn()
+        proof = pair_evidence(conn, "telegram:-1001:1:doc123", "telegram:-1002:2:doc123")
+        self.assertEqual(proof, {"type": "telegram_file_id", "file_id": "doc123"})
+
+    def test_reconcile_auto_merges_same_telegram_file_when_execute_merges_false(self):
+        left_id = "telegram:-1001:1:doc999"
+        right_id = "telegram:-1001:2:doc999"
+        scan_mock = {
+            "complete": True,
+            "scanned": 2,
+            "pairs": [{
+                "evidence": "telegram_file_id",
+                "left": {"id": left_id},
+                "right": {"id": right_id},
+                "members": [{"id": left_id}, {"id": right_id}],
+                "reasons": ["Same Telegram file, different messages"],
+            }],
+        }
+        enqueued_batches = []
+
+        cols = [
+            "id", "title", "duration", "playable", "file_size_bytes", "scene_match_source",
+            "scene_match_external_id", "source_filename", "source_text", "performers",
+            "fingerprint", "media_probe_data",
+        ]
+        class MockRow(dict):
+            pass
+
+        class MockConn:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def close(self): pass
+            def commit(self): pass
+            def execute(self, sql, params=()):
+                class Result:
+                    def fetchall(self_inner):
+                        if "SELECT v.id" in sql:
+                            r1 = MockRow(zip(cols, (left_id, "Keeper", 500, True, 10000, None, None, "f1.mp4", "text 1", "[]", None, None)))
+                            r2 = MockRow(zip(cols, (right_id, "Loser", 500, True, 10000, None, None, "f2.mp4", "text 2", "[]", None, None)))
+                            return [r1, r2]
+                        return []
+                    def fetchone(self_inner):
+                        return None
+                return Result()
+
+        with patch("video_duplicates.scan_duplicate_index", return_value=scan_mock), \
+             patch.object(video_duplicate_automation, "_reconcile_visual", return_value={}), \
+             patch("common.db.connect", return_value=MockConn()), \
+             patch("common.duplicate_evidence.pair_evidence", return_value={"type": "telegram_file_id", "file_id": "doc999"}), \
+             patch("common.job_queue.enqueue_jobs_batch", side_effect=lambda db_url, work: [enqueued_batches.extend(work) or "job-1"]):
+
+            res = video_duplicate_automation.reconcile(None, execute_merges=False)
+            self.assertEqual(res["outcome"], "completed")
+            self.assertEqual(len(enqueued_batches), 1)
+            action, payload = enqueued_batches[0]
+            self.assertEqual(action, "hide")
+            self.assertEqual(payload["evidence"], "telegram_file_id")
+            self.assertTrue(payload["automatic"])
+
+    def test_find_duplicate_candidates_can_exclude_same_telegram_file_for_decision_panel(self):
+        found_mock = [
+            {"evidence": "telegram_file_id", "category": "Same file", "reasons": ["Same Telegram file, different messages"]},
+            {"evidence": "oshash", "category": "Strong suggestion", "reasons": ["Matching OSHASH fingerprint"]},
+        ]
+        with patch("video_duplicates._collect_duplicate_candidates", return_value=(found_mock, 2, True)):
+            panel_res = video_duplicates.find_duplicate_candidates(None, include_same_telegram_file=False)
+            self.assertEqual(panel_res["total"], 1)
+            self.assertEqual(panel_res["pairs"][0]["evidence"], "oshash")
+
+            all_res = video_duplicates.find_duplicate_candidates(None, include_same_telegram_file=True)
+            self.assertEqual(all_res["total"], 2)
+
 
 class TestDuplicateFileMoveAtomic(unittest.TestCase):
     def test_duplicate_match_does_not_follow_symlink_paths(self):
@@ -541,7 +641,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
         self.add_video("b:2", "A Very Specific Scene With Alex", provider="b",
                        duration=603, performers=["Alex", "Casey"])
 
-        result = find_duplicate_candidates(TEST_URL)
+        result = find_duplicate_candidates(TEST_URL, include_same_telegram_file=True)
 
         self.assertEqual(result["total"], 0)
         conn = db.connect(TEST_URL)
@@ -558,7 +658,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
         self.add_video("b:2", "Lucas Entertainment", duration=1205,
                        performers=["Alex", "Blake"])
 
-        result = find_duplicate_candidates(TEST_URL)
+        result = find_duplicate_candidates(TEST_URL, include_same_telegram_file=True)
 
         self.assertEqual(result["total"], 1)
         self.assertAlmostEqual(result["pairs"][0]["score"], 85.4426357, places=4)
@@ -595,7 +695,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
         self.add_video("a:1", "Morning Workout Session 1", duration=900, performers=["Alex"])
         self.add_video("b:2", "Morning Workout Session 1 HD", duration=903, performers=["Alex"])
 
-        result = find_duplicate_candidates(TEST_URL)
+        result = find_duplicate_candidates(TEST_URL, include_same_telegram_file=True)
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["pairs"][0]["evidence"], "solo_title_duration")
         self.assertIn("Matching solo performer (Alex)", result["pairs"][0]["reasons"][0])
@@ -618,7 +718,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
         self.add_video("b:2", "British Boys Fetish Club Discipline Tales Vol 131",
                        duration=2905, performers=["Discipline"])
 
-        result = find_duplicate_candidates(TEST_URL)
+        result = find_duplicate_candidates(TEST_URL, include_same_telegram_file=True)
         self.assertEqual(result["total"], 0)
 
     def test_discipline_tales_different_volumes_are_not_duplicates(self):
@@ -629,7 +729,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
                        "British Boys Fetish Club Discipline Tales Vol 273",
                        provider="telegram", duration=2898, performers=["Discipline"])
 
-        result = find_duplicate_candidates(TEST_URL)
+        result = find_duplicate_candidates(TEST_URL, include_same_telegram_file=True)
         self.assertEqual(result["total"], 0)
 
     def test_same_volume_scenes_are_duplicates(self):
@@ -638,7 +738,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
         self.add_video("b:2", "British Boys Fetish Club Discipline Tales Vol 247 HD",
                        duration=2915, performers=["Discipline"])
 
-        result = find_duplicate_candidates(TEST_URL)
+        result = find_duplicate_candidates(TEST_URL, include_same_telegram_file=True)
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["pairs"][0]["evidence"], "solo_title_duration")
 
@@ -648,7 +748,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
         self.add_video("b:2", "Next Stop Vegas - Part 2-2", duration=1205,
                        performers=["Drew Dixon", "Roman Todd"])
 
-        result = find_duplicate_candidates(TEST_URL)
+        result = find_duplicate_candidates(TEST_URL, include_same_telegram_file=True)
         self.assertEqual(result["total"], 0)
 
     def test_same_telegram_file_id_groups_different_titles(self):
@@ -658,7 +758,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
         self.add_video("telegram:-1001000:1244:5000000000000000001", "Other title",
                        provider="telegram", slug="5000000000000000001", duration=1220,
                        performers=["Dato Foland", "Gabriel Cross", "Griffin Barrows"])
-        result = find_duplicate_candidates(TEST_URL)
+        result = find_duplicate_candidates(TEST_URL, include_same_telegram_file=True)
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["pairs"][0]["score"], 100.0)
         self.assertEqual(result["pairs"][0]["category"], "Same file")
@@ -692,7 +792,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
                        provider="telegram", slug="wrong", duration=600)
         self.add_video("telegram:-1001:2:900719925474099312345", "Men",
                        provider="telegram", slug="900719925474099312345", duration=600)
-        result = find_duplicate_candidates(TEST_URL)
+        result = find_duplicate_candidates(TEST_URL, include_same_telegram_file=True)
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["pairs"][0]["category"], "Same file")
         self.assertTrue(any("slug" in reason for reason in result["pairs"][0]["reasons"]))

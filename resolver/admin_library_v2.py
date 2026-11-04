@@ -88,10 +88,17 @@ def build_router(admin):
             cursor_data = _decode_catalog_cursor(cursor, sort) if cursor else None
             if len(q) > 200 or len(studio) > 200 or len(performer) > 200 or len(tag) > 200:
                 raise ValueError
-            if channel_id and not re.fullmatch(r"(?:telegram:)?[-A-Za-z0-9_]+", channel_id):
-                raise ValueError
-            if channel_id.startswith("telegram:"):
-                channel_id = channel_id[len("telegram:"):]
+            channel_ids = []
+            if channel_id:
+                for raw_cid in channel_id.split(","):
+                    cid = raw_cid.strip()
+                    if not cid:
+                        continue
+                    if not re.fullmatch(r"(?:telegram:)?[-A-Za-z0-9_]+", cid):
+                        raise ValueError
+                    if cid.startswith("telegram:"):
+                        cid = cid[len("telegram:"):]
+                    channel_ids.append(cid)
             if any(field not in _MISSING_FIELDS for field in missing_fields):
                 raise ValueError
             if len(missing_fields) != len(set(missing_fields)):
@@ -100,7 +107,7 @@ def build_router(admin):
             return admin.JSONResponse({"ok": False, "error": "Invalid catalog filter."}, status_code=400)
 
         query = {
-            "q": q.strip(), "channel_id": channel_id, "studio": studio.strip(),
+            "q": q.strip(), "channel_id": channel_id, "channel_ids": channel_ids, "studio": studio.strip(),
             "performer": performer.strip(), "tag": tag.strip(),
             "availability": availability, "missing": missing_fields,
             "sort": sort, "offset": page_offset, "limit": min(page_limit, 100),

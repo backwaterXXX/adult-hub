@@ -67,6 +67,17 @@ def _part(row):
     return extract_part_identity(row)
 
 
+def _telegram_document_id(video_id: str) -> str | None:
+    clean = str(video_id or "").strip()
+    if not clean.startswith("telegram:"):
+        return None
+    ref = clean[len("telegram:"):]
+    parts = ref.rsplit(":", 2)
+    if len(parts) == 3 and parts[0] and parts[1].isascii() and parts[1].isdigit() and parts[2]:
+        return parts[2]
+    return None
+
+
 def pair_evidence(conn, left_id: str, right_id: str) -> dict | None:
     left_id, right_id = sorted((left_id, right_id))
     if left_id == right_id:
@@ -82,18 +93,27 @@ def pair_evidence(conn, left_id: str, right_id: str) -> dict | None:
     if len(rows) != 2:
         return None
     a, b = (dict(zip(names, row)) for row in rows)
+    doc_a = _telegram_document_id(a['id'])
+    doc_b = _telegram_document_id(b['id'])
+    same_tg_doc = bool(doc_a and doc_b and doc_a == doc_b)
     try:
         x, y = float(a['duration'] or 0), float(b['duration'] or 0)
-        if x <= 0 or y <= 0 or abs(x-y) > min(15, max(5, .01*max(x,y))):
+        if x > 0 and y > 0:
+            if abs(x-y) > min(15, max(5, .01*max(x,y))):
+                return None
+        elif not same_tg_doc:
             return None
     except (ValueError, TypeError):
-        return None
+        if not same_tg_doc:
+            return None
     ap, an = _part(a)
     bp, bn = _part(b)
     if (ap or bp) and (not an or an != bn):
         return None
     if conn.execute('SELECT 1 FROM video_duplicate_dismissals WHERE left_id=%s AND right_id=%s AND active=1', (left_id,right_id)).fetchone():
         return None
+    if same_tg_doc:
+        return {'type': 'telegram_file_id', 'file_id': doc_a}
     if a['oshash'] and a['oshash'] == b['oshash']:
         return {'type': 'oshash'}
     try:

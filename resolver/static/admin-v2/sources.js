@@ -666,6 +666,13 @@
     }
     if (contextualActions.childElementCount) host.append(contextualActions);
     if (item.provider === 'telegram' && state.settingsAvailable) {
+      const editName = create('button', 'button button-quiet source-name-edit-open', 'Edit channel name');
+      editName.type = 'button';
+      editName.dataset.sourceEditName = itemKey(item);
+      editName.disabled = state.auditPending;
+      if (state.auditPending) editName.title = 'A pending source audit must finish before source changes.';
+      host.append(editName);
+
       const edit = create('button', 'button button-primary source-editor-open', 'Edit settings');
       edit.type = 'button';
       edit.dataset.sourceEdit = itemKey(item);
@@ -682,6 +689,7 @@
     channelSection.append(create('h3', '', item.isProviderConfig ? 'Provider' : 'Channel'));
     const fields = create('dl', 'detail-fields');
     fields.append(detailField(item.isProviderConfig ? 'Provider key' : 'Channel ID', scrub(item.id) || '—'));
+    if (!item.isProviderConfig) fields.append(detailField('Channel name', scrub(item.studio) || '—'));
     fields.append(detailField('Provider', item.providerLabel));
     if (!item.isProviderConfig) fields.append(detailField('Channel enabled', item.channelEnabled ? 'Yes' : 'No'));
     fields.append(detailField(item.isProviderConfig ? 'Provider enabled' : 'Source enabled', item.sourceEnabled ? 'Yes' : 'No'));
@@ -830,7 +838,7 @@
     addEditorField(form, 'Default tags blacklist (one per line)', [...sourcePath, 'defaults', 'tags_blacklist'], defaults.tagsBlacklist, 'textarea');
     form.append(create('h3', 'detail-section-title', 'Channel settings'));
     addEditorField(form, 'Channel enabled', [...channelPath, 'enabled'], item.channelEnabled, 'checkbox');
-    addEditorField(form, 'Studio label', [...channelPath, 'studio'], item.studio, 'text');
+    addEditorField(form, 'Channel name (studio label)', [...channelPath, 'studio'], item.studio, 'text');
     addEditorField(form, 'Stream mode', [...channelPath, 'stream_mode'], channel.streamMode, 'select', [['proxy', 'Proxy'], ['redirect', 'Redirect']]);
     addEditorField(form, 'Max pages', [...channelPath, 'max_pages'], channel.maxPages, 'number');
     addEditorField(form, 'Minimum duration (seconds)', [...channelPath, 'min_duration_seconds'], channel.minDurationSeconds, 'number');
@@ -879,22 +887,22 @@
       label.append(create('span', '', labelText), input); form.append(label);
     }
     const preview = create('div', 'source-editor-preview'); preview.id = 'sourceCreatePreview'; preview.setAttribute('aria-live', 'polite');
-    preview.append(create('p', 'detail-muted', 'Preview the validated configuration change before adding the channel.'));
+    preview.append(create('p', 'detail-muted', 'Add the channel immediately, or preview changes before saving.'));
     const actions = create('div', 'source-editor-actions');
     const back = create('button', 'button button-quiet', 'Cancel'); back.type = 'button'; back.dataset.sourceCreateCancel = 'true';
     const previewButton = create('button', 'button button-quiet', 'Preview'); previewButton.type = 'button'; previewButton.dataset.sourceCreatePreview = 'true';
-    const save = create('button', 'button button-primary', 'Add channel'); save.type = 'button'; save.id = 'sourceCreateSave'; save.disabled = true;
+    const save = create('button', 'button button-primary', 'Add channel'); save.type = 'button'; save.id = 'sourceCreateSave';
     actions.append(back, previewButton, save); form.append(preview, actions); form.addEventListener('submit', event => event.preventDefault()); host.append(form);
-    form.addEventListener('input', () => { state.editorCandidate = null; $('#sourceCreateSave').disabled = true; preview.replaceChildren(create('p', 'detail-muted', 'Preview the updated channel details before adding it.')); });
+    form.addEventListener('input', () => { state.editorCandidate = null; preview.replaceChildren(create('p', 'detail-muted', 'Add the channel immediately, or preview changes before saving.')); });
     const dialog = $('#sourceDetailDialog'); window.AdminV2.openDialog(dialog, opener || document.activeElement);
     const panel = panelFor(dialog); if (panel) { panel.focus({ preventScroll: true }); panel.scrollTop = 0; }
     id.focus({ preventScroll: true });
   }
   async function previewNewChannel(button) {
     const form = $('#sourceCreateForm'); if (!form || !form.reportValidity()) return;
-    const id = form.elements.id.value.trim(); const studio = form.elements.studio.value.trim();
+    const id = form.elements.id ? form.elements.id.value.trim() : '';
+    const studio = form.elements.studio ? form.elements.studio.value.trim() : '';
     state.editorCandidate = null;
-    $('#sourceCreateSave').disabled = true;
     const preview = $('#sourceCreatePreview');
     if (state.items.some(item => item.provider === 'telegram' && item.id === id)) {
       preview.replaceChildren(create('p', 'detail-error', 'This Telegram channel ID is already configured. Use its settings instead.'));
@@ -914,21 +922,32 @@
       const result = await window.AdminV2.postJson(SOURCE_PREVIEW_URL, { expected_revision: state.configRevision, overrides: candidate });
       preview.replaceChildren(create('p', 'detail-muted', result.changes.map(change => `${change.path.join(' / ')}: ${change.after ?? 'None'}`).join(' · ') || 'Configuration is valid.'));
       state.editorCandidate = { id, studio, revision: state.configRevision };
-      $('#sourceCreateSave').disabled = false;
     } catch (error) {
-      state.editorCandidate = null; $('#sourceCreateSave').disabled = true;
+      state.editorCandidate = null;
       preview.replaceChildren(create('p', 'detail-error', scrub(error.message) || 'Could not validate this channel.'));
     } finally { button.disabled = false; }
   }
   async function saveNewChannel(button) {
-    const candidate = state.editorCandidate; if (!candidate) return;
+    const form = $('#sourceCreateForm'); if (!form || !form.reportValidity()) return;
+    const id = form.elements.id ? form.elements.id.value.trim() : '';
+    const studio = form.elements.studio ? form.elements.studio.value.trim() : '';
+    if (!id || !studio) return;
+    const preview = $('#sourceCreatePreview');
+    if (state.items.some(item => item.provider === 'telegram' && item.id === id)) {
+      if (preview) preview.replaceChildren(create('p', 'detail-error', 'This Telegram channel ID is already configured. Use its settings instead.'));
+      return;
+    }
+    const revision = (state.editorCandidate && state.editorCandidate.id === id && state.editorCandidate.studio === studio)
+      ? state.editorCandidate.revision
+      : state.configRevision;
     button.disabled = true;
     try {
-      const result = await window.AdminV2.postJson(SOURCE_CREATE_URL, { expected_revision: candidate.revision, channel: { id: candidate.id, studio: candidate.studio } });
+      const result = await window.AdminV2.postJson(SOURCE_CREATE_URL, { expected_revision: revision, channel: { id, studio } });
       state.editorCandidate = null; state.configRevision = result.revision; closeSourceDetail();
       setNotice('success', result.audit_pending
         ? 'Telegram channel added. Its audit record is queued until the database is available.'
         : 'Telegram channel added. The next sync will apply it.'); announce('Telegram channel added.'); await loadSources();
+      if (typeof CustomEvent === 'function') document.dispatchEvent(new CustomEvent('adminv2:sources-changed'));
       if (state.settingsAvailable && !state.auditPending && state.historyAvailable
           && state.configRevision === result.revision) {
         setNotice('success', 'Telegram channel added. The next sync will apply it.');
@@ -937,7 +956,112 @@
       const staleRevision = error.status === 409;
       if (staleRevision) state.editorCandidate = null;
       button.disabled = staleRevision;
-      const preview = $('#sourceCreatePreview'); if (preview) preview.replaceChildren(create('p', 'detail-error', scrub(error.message) || 'Could not add this channel. Reload and try again.'));
+      if (preview) preview.replaceChildren(create('p', 'detail-error', scrub(error.message) || 'Could not add this channel. Reload and try again.'));
+    } finally {
+      if (!button.disabled || !button.closest('dialog')?.open) {
+        button.disabled = false;
+      }
+    }
+  }
+  function renderChannelNameEditor(item) {
+    const host = $('#sourceDetailContent');
+    if (!host) return;
+    host.replaceChildren(
+      create('p', 'detail-kicker', 'TELEGRAM CHANNEL'),
+      create('h2', 'detail-title', 'Edit channel name'),
+      create('p', 'detail-note', `Update the display name (studio label) for channel ${item.id}.`)
+    );
+    const form = document.createElement('form');
+    form.id = 'sourceEditNameForm';
+    form.className = 'source-editor-form';
+    const nameInput = document.createElement('input');
+    nameInput.name = 'studio';
+    nameInput.required = true;
+    nameInput.maxLength = 160;
+    nameInput.autocomplete = 'off';
+    nameInput.className = 'source-editor-input';
+    nameInput.value = item.studio || '';
+    const label = document.createElement('label');
+    label.className = 'source-editor-field';
+    label.append(create('span', '', 'Channel name'), nameInput);
+    form.append(label);
+
+    const preview = create('div', 'source-editor-preview');
+    preview.id = 'sourceEditNamePreview';
+    preview.setAttribute('aria-live', 'polite');
+
+    const actions = create('div', 'source-editor-actions');
+    const back = create('button', 'button button-quiet', 'Cancel');
+    back.type = 'button';
+    back.dataset.sourceEditNameCancel = 'true';
+    const save = create('button', 'button button-primary', 'Save channel name');
+    save.type = 'button';
+    save.id = 'sourceEditNameSave';
+    actions.append(back, save);
+    form.append(preview, actions);
+    form.addEventListener('submit', event => event.preventDefault());
+    host.append(form);
+    const panel = panelFor($('#sourceDetailDialog'));
+    if (panel) panel.scrollTop = 0;
+    nameInput.focus({ preventScroll: true });
+    nameInput.select();
+  }
+  async function saveChannelName(button) {
+    const item = state.detailItem;
+    if (!item || !state.settingsAvailable) return;
+    const form = $('#sourceEditNameForm');
+    if (!form || !form.reportValidity()) return;
+    const newStudio = form.elements.studio ? form.elements.studio.value.trim() : '';
+    if (!newStudio) return;
+    if (newStudio === item.studio) {
+      renderSourceDetail(item);
+      return;
+    }
+    const preview = $('#sourceEditNamePreview');
+    button.disabled = true;
+    try {
+      const candidate = JSON.parse(JSON.stringify(state.overrides || {}));
+      candidate.telegram ||= {};
+      candidate.telegram.channels ||= {};
+      const previous = candidate.telegram.channels[item.id] || {};
+      candidate.telegram.channels[item.id] = { ...previous, studio: newStudio };
+      const removedList = Array.isArray(candidate.telegram.removed_channels) ? candidate.telegram.removed_channels : [];
+      const removedSet = new Set(removedList.map(String));
+      for (const ch of Object.keys(candidate.telegram.channels)) {
+        const clean = ch.replace(/^-100/, '').replace(/^-/, '');
+        if (removedSet.has(ch) || removedSet.has(clean)) {
+          delete candidate.telegram.channels[ch];
+        }
+      }
+
+      const result = await window.AdminV2.postJson(SOURCE_SAVE_URL, {
+        expected_revision: state.configRevision,
+        overrides: candidate
+      });
+      state.overrides = candidate;
+      state.configRevision = result.revision;
+      setNotice('success', result.audit_pending
+        ? 'Channel name updated. Its audit record is queued until the database is available.'
+        : 'Channel name updated. The next sync will apply it.');
+      announce('Channel name updated.');
+      await loadSources();
+      if (typeof CustomEvent === 'function') document.dispatchEvent(new CustomEvent('adminv2:sources-changed'));
+      const updatedItem = state.items.find(candidateItem => itemKey(candidateItem) === itemKey(item));
+      if (updatedItem) {
+        state.detailItem = updatedItem;
+        renderSourceDetail(updatedItem);
+      } else {
+        closeSourceDetail(false);
+      }
+    } catch (error) {
+      const staleRevision = error.status === 409;
+      if (staleRevision) await loadSources();
+      button.disabled = staleRevision;
+      if (preview) preview.replaceChildren(create('p', 'detail-error', scrub(error.message) || 'Could not update channel name. Reload and try again.'));
+    } finally {
+      if (!button.disabled || !button.closest('dialog')?.open) {
+        button.disabled = false;
+      }
     }
   }
   async function removeSourceChannel(button) {
@@ -955,6 +1079,7 @@
       state.configRevision = result.revision;
       closeSourceDetail(false);
       await loadSources();
+      if (typeof CustomEvent === 'function') document.dispatchEvent(new CustomEvent('adminv2:sources-changed'));
       helpers().showQueued(result, 'Channel deletion', $('#sourcesNotice'));
       announce('Channel removed from future syncs. Video and sync-history deletion is queued.');
     } catch (error) {
@@ -1445,6 +1570,7 @@
     const dialog = $('#sourceDetailDialog');
     if (dialog) {
       dialog.addEventListener('click', event => {
+        if (event.target === dialog) { closeSourceDetail(); return; }
         const sync = event.target.closest('[data-sync-source]');
         if (sync) { syncNow(sync.dataset.syncSource, sync.dataset.syncMode || 'scheduled', sync); return; }
         const check = event.target.closest('[data-check-source]');
@@ -1453,6 +1579,14 @@
         const createPreview = event.target.closest('[data-source-create-preview]'); if (createPreview) { previewNewChannel(createPreview); return; }
         const createSave = event.target.closest('#sourceCreateSave'); if (createSave) { saveNewChannel(createSave); return; }
         const remove = event.target.closest('[data-source-remove]'); if (remove) { removeSourceChannel(remove); return; }
+        if (event.target.closest('[data-source-edit-name]') && state.detailItem) { renderChannelNameEditor(state.detailItem); return; }
+        if (event.target.closest('[data-source-edit-name-cancel]')) {
+          if (state.detailItem) renderSourceDetail(state.detailItem);
+          else closeSourceDetail();
+          return;
+        }
+        const editNameSave = event.target.closest('#sourceEditNameSave');
+        if (editNameSave) { saveChannelName(editNameSave); return; }
         const edit = event.target.closest('[data-source-edit]');
         if (edit && state.detailItem) { renderSourceEditor(state.detailItem); return; }
         if (event.target.closest('[data-source-editor-back]')) {
@@ -1469,7 +1603,6 @@
         button.addEventListener('click', () => closeSourceDetail());
       });
       dialog.addEventListener('cancel', event => { event.preventDefault(); closeSourceDetail(); });
-      dialog.addEventListener('click', event => { if (event.target === dialog) closeSourceDetail(); });
     }
     document.addEventListener('adminv2:navigate', sync);
   }

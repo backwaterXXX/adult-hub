@@ -13,11 +13,12 @@ from common import db
 
 
 def _channel_ids(channel_id: str) -> set[str]:
-    values = {channel_id}
-    if channel_id.startswith("-100"):
-        values.add(channel_id[4:])
+    clean = channel_id.strip()
+    values = {channel_id, clean}
+    if clean.startswith("-100"):
+        values.add(clean[4:])
     else:
-        values.add("-100" + channel_id.lstrip("-"))
+        values.add("-100" + clean.lstrip("-"))
     return values
 
 

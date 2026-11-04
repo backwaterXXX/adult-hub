@@ -269,7 +269,7 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
         mock_conn.execute.return_value.fetchall.return_value = [("test.mp4",)]
         mock_services = MagicMock()
 
-        for bad_timeout in [0, -5, "90", False]:
+        for bad_timeout in [0, -5, "90", False, float("nan"), float("inf"), float("-inf")]:
             payload = {"video_id": "telegram:10:20:30", "offset_seconds": 60, "timeout": bad_timeout}
             with self.assertRaises(ValueError, msg=f"Should reject timeout={bad_timeout!r}"):
                 execute_external_operation(
@@ -279,8 +279,12 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
     def test_admin_base_is_not_nested_twice(self):
         # Import the handler the flat way the sync image does, so this does not
         # depend on which module identity the suite happened to load first.
-        import duplicate_job_external_handlers
-        import media_files
+        try:
+            import duplicate_job_external_handlers
+            import media_files
+        except ModuleNotFoundError:
+            from sync import duplicate_job_external_handlers
+            from sync import media_files
 
         handlers = duplicate_job_external_handlers
         mock_conn = MagicMock()

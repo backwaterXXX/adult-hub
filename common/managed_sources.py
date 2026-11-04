@@ -102,7 +102,7 @@ def is_channel_locked(channel_id: str, path: str | Path | None = None) -> bool:
     try:
         with lock_file.open("a+b") as f:
             try:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                 return False
             except (BlockingIOError, OSError):
@@ -437,13 +437,21 @@ def update_overrides(
         tg_patch = patch.get("telegram")
         if isinstance(tg_patch, dict):
             channels_patch = tg_patch.get("channels")
+            removed_patch = set(tg_patch.get("removed_channels", []))
+            removed_patch_canon = {canonical_channel_id(cid) for cid in removed_patch}
             if isinstance(channels_patch, dict):
                 for ch_id, ch_conf in channels_patch.items():
                     if isinstance(ch_conf, dict) and ch_conf.get("enabled", True) is not False:
+                        if canonical_channel_id(str(ch_id)) in removed_patch_canon or str(ch_id) in removed_patch:
+                            continue
                         if is_channel_locked(ch_id, target):
-                            raise ManagedConfigConflict(
-                                f"Channel {ch_id} is currently being deleted; retry after deletion completes."
-                            )
+                            deadline = time.monotonic() + min(lock_timeout, 3.0)
+                            while is_channel_locked(ch_id, target) and time.monotonic() < deadline:
+                                time.sleep(0.05)
+                            if is_channel_locked(ch_id, target):
+                                raise ManagedConfigConflict(
+                                    f"Channel {ch_id} is currently being deleted; retry after deletion completes."
+                                )
         current = read_overrides(target)
         if (isinstance(expected_revision, bool) or not isinstance(expected_revision, int)
                 or expected_revision != current["revision"]):

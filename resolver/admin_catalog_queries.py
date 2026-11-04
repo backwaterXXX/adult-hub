@@ -212,13 +212,15 @@ def _run_catalog_query(
                 conditions.append("(" + " OR ".join(f"{expr} ILIKE %s" for expr in searchable) + ")")
                 params.extend([f"%{q}%"] * len(searchable))
 
-        channel_id = query["channel_id"]
-        if channel_id:
+        channel_ids = query.get("channel_ids") or ([query["channel_id"]] if query.get("channel_id") else [])
+        if channel_ids:
             # IDs are composite strings. Exact prefix matching avoids LIKE
             # wildcard interpretation and keeps studio as production metadata.
-            conditions.append("left(v.id, length(%s)) = %s")
-            prefix = f"telegram:{channel_id}:"
-            params.extend([prefix, prefix])
+            channel_clauses = ["left(v.id, length(%s)) = %s" for _ in channel_ids]
+            conditions.append("(" + " OR ".join(channel_clauses) + ")")
+            for cid in channel_ids:
+                prefix = f"telegram:{cid}:"
+                params.extend([prefix, prefix])
 
         for field in ("studio",):
             value = query[field]

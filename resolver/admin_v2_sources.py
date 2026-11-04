@@ -249,11 +249,6 @@ def build_router(admin):
             ch_canon = canonical_channel_id(channel_id)
             if any(canonical_channel_id(cid) == ch_canon for cid in existing_ids):
                 return admin.JSONResponse({"error": "This channel ID already exists."}, status_code=409)
-            if is_channel_locked(channel_id):
-                return admin.JSONResponse(
-                    {"error": "Channel deletion is in progress; wait for it to complete before re-adding."},
-                    status_code=409,
-                )
             candidate = current["overrides"]
             telegram = candidate.setdefault("telegram", {})
             channels = telegram.setdefault("channels", {})
@@ -261,12 +256,41 @@ def build_router(admin):
             restoring = any(canonical_channel_id(item) == ch_canon for item in removed)
             if any(canonical_channel_id(cid) == ch_canon for cid in channels) and not restoring:
                 return admin.JSONResponse({"error": "This channel ID already exists."}, status_code=409)
+
+            ch_is_locked = is_channel_locked(channel_id)
+            ch_is_removing = False
             if restoring:
-                if await admin.asyncio.to_thread(_is_channel_removal_active, channel_id):
+                ch_is_removing = await admin.asyncio.to_thread(_is_channel_removal_active, channel_id)
+
+            if ch_is_locked or ch_is_removing:
+                try:
+                    from common.job_queue import enqueue_job
+                    job_id = await admin.asyncio.to_thread(
+                        enqueue_job, admin.HUB_DB_URL, "source_readd", {
+                            "channel_id": channel_id,
+                            "studio": studio,
+                            "action_type": "create",
+                        }
+                    )
+                    admin._wake_worker("jobs")
+                    return admin.JSONResponse(
+                        {
+                            "ok": True,
+                            "queued": True,
+                            "job_id": job_id,
+                            "state": "queued",
+                            "source_id": channel_id,
+                            "revision": current["revision"],
+                            "message": f"Channel deletion is in progress for '{channel_id}'. Re-adding is queued and will execute after deletion.",
+                        },
+                        status_code=202,
+                    )
+                except Exception:
                     return admin.JSONResponse(
                         {"error": "Channel deletion is in progress; wait for it to complete before re-adding."},
                         status_code=409,
                     )
+            if restoring:
                 telegram["removed_channels"] = [
                     item for item in removed if canonical_channel_id(item) != ch_canon
                 ]
@@ -348,7 +372,7 @@ def build_router(admin):
         try:
             from common.managed_sources import (
                 ManagedAuditPending, ManagedConfigConflict, apply_overrides,
-                preview_overrides, read_overrides, update_overrides,
+                canonical_channel_id, preview_overrides, read_overrides, update_overrides,
             )
 
             observed = await admin.asyncio.to_thread(read_overrides)
@@ -389,6 +413,10 @@ def build_router(admin):
             removed_channels = set(telegram_overrides.get("removed_channels", []))
             removed_channels.add(channel_id)
             telegram_overrides["removed_channels"] = sorted(removed_channels)
+            channels = telegram_overrides.get("channels", {})
+            for k in list(channels.keys()):
+                if canonical_channel_id(k) == canonical_channel_id(channel_id):
+                    channels.pop(k, None)
             preview_result = await admin.asyncio.to_thread(
                 preview_overrides, admin.CONFIG_PATH, candidate,
                 expected_revision=body["expected_revision"],
@@ -501,13 +529,38 @@ def build_router(admin):
                         canon = canonical_channel_id(ch_str)
                         is_enabled = isinstance(ch_conf, dict) and ch_conf.get("enabled", True) is not False
                         if is_enabled:
-                            if is_channel_locked(ch_str):
-                                return admin.JSONResponse(
-                                    {"error": f"Channel deletion is in progress for '{ch_str}'; wait for it to complete before re-adding."},
-                                    status_code=409,
-                                )
-                            if canon in current_removed_canon or ch_str in current_removed:
-                                if await admin.asyncio.to_thread(_is_channel_removal_active, ch_str):
+                            if canon in new_removed_canon or ch_str in new_removed:
+                                continue
+                            if is_channel_locked(ch_str) or (
+                                (canon in current_removed_canon or ch_str in current_removed)
+                                and await admin.asyncio.to_thread(_is_channel_removal_active, ch_str)
+                            ):
+                                try:
+                                    from common.job_queue import enqueue_job
+                                    ch_studio = ch_conf.get("studio") if isinstance(ch_conf, dict) else None
+                                    job_id = await admin.asyncio.to_thread(
+                                        enqueue_job, admin.HUB_DB_URL, "source_readd", {
+                                            "channel_id": ch_str,
+                                            "studio": ch_studio,
+                                            "channel_config": ch_conf if isinstance(ch_conf, dict) else None,
+                                            "overrides": body["overrides"],
+                                            "action_type": "save",
+                                        }
+                                    )
+                                    admin._wake_worker("jobs")
+                                    return admin.JSONResponse(
+                                        {
+                                            "ok": True,
+                                            "queued": True,
+                                            "job_id": job_id,
+                                            "state": "queued",
+                                            "source_id": ch_str,
+                                            "revision": observed["revision"],
+                                            "message": f"Channel deletion is in progress for '{ch_str}'. Channel updates are queued and will execute after deletion.",
+                                        },
+                                        status_code=202,
+                                    )
+                                except Exception:
                                     return admin.JSONResponse(
                                         {"error": f"Channel deletion is in progress for '{ch_str}'; wait for it to complete before re-adding."},
                                         status_code=409,
@@ -516,16 +569,34 @@ def build_router(admin):
                 if "removed_channels" in tg_candidate:
                     for canon, orig_id in current_removed_canon.items():
                         if canon not in new_removed_canon:
-                            if is_channel_locked(orig_id):
-                                return admin.JSONResponse(
-                                    {"error": f"Channel deletion is in progress for '{orig_id}'; wait for it to complete before re-adding."},
-                                    status_code=409,
-                                )
-                            if await admin.asyncio.to_thread(_is_channel_removal_active, orig_id):
-                                return admin.JSONResponse(
-                                    {"error": f"Channel deletion is in progress for '{orig_id}'; wait for it to complete before re-adding."},
-                                    status_code=409,
-                                )
+                            if is_channel_locked(orig_id) or await admin.asyncio.to_thread(_is_channel_removal_active, orig_id):
+                                try:
+                                    from common.job_queue import enqueue_job
+                                    job_id = await admin.asyncio.to_thread(
+                                        enqueue_job, admin.HUB_DB_URL, "source_readd", {
+                                            "channel_id": orig_id,
+                                            "overrides": body["overrides"],
+                                            "action_type": "restore",
+                                        }
+                                    )
+                                    admin._wake_worker("jobs")
+                                    return admin.JSONResponse(
+                                        {
+                                            "ok": True,
+                                            "queued": True,
+                                            "job_id": job_id,
+                                            "state": "queued",
+                                            "source_id": orig_id,
+                                            "revision": observed["revision"],
+                                            "message": f"Channel deletion is in progress for '{orig_id}'. Re-adding is queued and will execute after deletion.",
+                                        },
+                                        status_code=202,
+                                    )
+                                except Exception:
+                                    return admin.JSONResponse(
+                                        {"error": f"Channel deletion is in progress for '{orig_id}'; wait for it to complete before re-adding."},
+                                        status_code=409,
+                                    )
             preview_result = await preview(body)
             saved = await admin.asyncio.to_thread(
                 update_overrides,
