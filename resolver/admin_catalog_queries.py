@@ -188,158 +188,7 @@ def _run_catalog_query(
         raise CatalogUnavailable from exc
     conn.row_factory = db.Record
     try:
-        tables, columns = _tables_and_columns(conn)
-        has_files = "synced_files" in tables
-        has_dead = "dead_streams" in tables
-        has_overrides = "video_metadata_overrides" in tables
-        missing_local_artwork = (
-            _missing_local_artwork_ids(conn, media_root)
-            if "thumbnail" in query["missing"] and has_files and media_root is not None
-            else None
-        )
-        params: list[Any] = []
-        conditions: list[str] = []
-
-        q = query["q"]
-        if q:
-            searchable = ["COALESCE(v.id, '')"]
-            searchable.extend(
-                f"COALESCE({_effective_value(name, columns, has_overrides)}::text, '')" if name in {"title", "plot", "performers", "studio", "tags"}
-                else f"COALESCE(v.{name}::text, '')"
-                for name in ("title", "performers", "studio", "plot", "tags") if name in columns
-            )
-            if searchable:
-                conditions.append("(" + " OR ".join(f"{expr} ILIKE %s" for expr in searchable) + ")")
-                params.extend([f"%{q}%"] * len(searchable))
-
-        channel_ids = query.get("channel_ids") or ([query["channel_id"]] if query.get("channel_id") else [])
-        if channel_ids:
-            # IDs are composite strings. Exact prefix matching avoids LIKE
-            # wildcard interpretation and keeps studio as production metadata.
-            channel_clauses = ["left(v.id, length(%s)) = %s" for _ in channel_ids]
-            conditions.append("(" + " OR ".join(channel_clauses) + ")")
-            for cid in channel_ids:
-                prefix = f"telegram:{cid}:"
-                params.extend([prefix, prefix])
-
-        for field in ("studio",):
-            value = query[field]
-            if value:
-                if field not in columns:
-                    conditions.append("FALSE")
-                else:
-                    conditions.append(f"COALESCE({_effective_value(field, columns, has_overrides)}::text, '') ILIKE %s")
-                    params.append(f"%{value}%")
-
-        performer = query["performer"]
-        if performer:
-            if "performers" not in columns:
-                conditions.append("FALSE")
-            else:
-                conditions.append(f"COALESCE({_effective_value('performers', columns, has_overrides)}::text, '') ILIKE %s")
-                params.append(f"%{performer}%")
-
-        tag = query["tag"]
-        if tag:
-            if "tags" not in columns:
-                conditions.append("FALSE")
-            else:
-                tag_values = _effective_value("tags", columns, has_overrides)
-                conditions.append(f"EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE "
-                                  f"WHEN jsonb_typeof({tag_values}) = 'array' THEN {tag_values} ELSE '[]'::jsonb END) t(value) "
-                                  "WHERE t.value ILIKE %s)")
-                params.append(f"%{tag}%")
-
-        availability = query["availability"]
-        if availability != "all":
-            condition = _availability_clauses(columns, has_dead).get(availability)
-            if condition:
-                conditions.append(condition)
-
-        for field in query["missing"]:
-            if field == "thumbnail" and missing_local_artwork is not None:
-                conditions.append(
-                    f"({_missing_effective_clause(field, columns, has_overrides)} OR v.id = ANY(%s))"
-                )
-                params.append(missing_local_artwork)
-            else:
-                conditions.append(_missing_effective_clause(field, columns, has_overrides))
-
-        where = " WHERE " + " AND ".join(conditions) if conditions else ""
-        join_dead = " LEFT JOIN dead_streams d ON d.video_id = v.id" if has_dead else ""
-        join_overrides = " LEFT JOIN video_metadata_overrides mo ON mo.video_id = v.id" if has_overrides else ""
-        cursor_data = query.get("cursor_data")
-        cursor_direction = query.get("cursor_direction", "after")
-        total_exact = bool(query.get("total_exact", True))
-        total = None
-        if total_exact:
-            count_row = conn.execute(
-                f"SELECT count(*) AS total FROM videos v{join_overrides}{join_dead}{where}", params
-            ).fetchone()
-            total = int(count_row["total"] if hasattr(count_row, "keys") else count_row[0])
-
-        row_conditions = list(conditions)
-        row_params = list(params)
-        if cursor_data is not None:
-            cursor_filter, cursor_params = _cursor_condition(
-                query["sort"], columns, has_overrides, cursor_data, cursor_direction,
-            )
-            row_conditions.append(cursor_filter)
-            row_params.extend(cursor_params)
-        row_where = " WHERE " + " AND ".join(row_conditions) if row_conditions else ""
-        cursor_mode = cursor_data is not None or not total_exact
-        fields = _select_video_fields(columns, has_overrides)
-        if cursor_mode:
-            fields += ", " + _cursor_value_expression(query["sort"], columns, has_overrides) + " AS __sort_value"
-        file_join = (
-            " LEFT JOIN LATERAL (SELECT count(*) AS file_count, "
-            "array_agg(DISTINCT category ORDER BY category) FILTER (WHERE category IS NOT NULL) AS file_categories "
-            "FROM synced_files WHERE video_id = v.id) sf ON TRUE"
-            if has_files else ""
-        )
-        file_fields = (", COALESCE(sf.file_count, 0) AS file_count, sf.file_categories AS file_categories"
-                       if has_files else ", 0 AS file_count, NULL AS file_categories")
-        has_local = "(COALESCE(sf.file_count, 0) > 0) AS has_local_files" if has_files else "FALSE AS has_local_files"
-        dead_field = "(d.video_id IS NOT NULL) AS dead_stream" if has_dead else "FALSE AS dead_stream"
-        unavailable_fields = (", d.reason AS unavailable_reason, d.detected_at AS unavailable_detected_at"
-                              if has_dead else ", NULL AS unavailable_reason, NULL AS unavailable_detected_at")
-        order = (
-            _reverse_sort_clause(query["sort"], columns, has_overrides)
-            if cursor_data is not None and cursor_direction == "before"
-            else _sort_clause(query["sort"], columns, has_overrides)
-        )
-        rows = conn.execute(
-            f"SELECT {fields}{file_fields}, {has_local}, {dead_field}{unavailable_fields} FROM videos v{join_overrides}{join_dead}{file_join}{row_where} "
-            f"ORDER BY {order} LIMIT %s OFFSET %s",
-            [*row_params, query["limit"] + (1 if cursor_mode else 0),
-             0 if cursor_data is not None else query["offset"]],
-        ).fetchall()
-        has_extra = len(rows) > query["limit"] if cursor_mode else False
-        has_previous = False
-        if cursor_mode:
-            rows = rows[:query["limit"]]
-            if cursor_data is not None and cursor_direction == "before":
-                rows.reverse()
-                has_previous = has_extra
-                has_more = bool(rows)
-            else:
-                has_previous = bool(rows) and (cursor_data is not None or query["offset"] > 0)
-                has_more = has_extra
-        else:
-            has_more = query["offset"] + len(rows) < total
-        items = [_serialize_video(row, detail=False) for row in rows]
-        next_cursor = _encode_catalog_cursor(query["sort"], rows[-1]) if cursor_mode and has_more and rows else None
-        previous_cursor = _encode_catalog_cursor(query["sort"], rows[0]) if cursor_mode and has_previous and rows else None
-        return {
-            "ok": True,
-            "items": items,
-            "page": {
-                "limit": query["limit"], "offset": query["offset"],
-                "total": total, "total_exact": total_exact, "has_more": has_more,
-                "has_previous": has_previous, "next_cursor": next_cursor,
-                "previous_cursor": previous_cursor,
-            },
-        }
+        return _query_catalog_page(conn, query, media_root)
     except CatalogUnavailable:
         raise
     except Exception as exc:
@@ -348,11 +197,198 @@ def _run_catalog_query(
         conn.close()
 
 
+def _query_catalog_page(conn, query: dict[str, Any], media_root) -> dict[str, Any]:
+    tables, columns = _tables_and_columns(conn)
+    has_files = "synced_files" in tables
+    has_dead = "dead_streams" in tables
+    has_overrides = "video_metadata_overrides" in tables
+    missing_local_artwork = (
+        _missing_local_artwork_ids(conn, media_root)
+        if "thumbnail" in query["missing"] and has_files and media_root is not None
+        else None
+    )
+    conditions: list[str] = []
+    params: list[Any] = []
+    _add_filter_conditions(conditions, params, query, columns, has_overrides, has_dead, missing_local_artwork)
+
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    join_dead = " LEFT JOIN dead_streams d ON d.video_id = v.id" if has_dead else ""
+    join_overrides = " LEFT JOIN video_metadata_overrides mo ON mo.video_id = v.id" if has_overrides else ""
+    cursor_data = query.get("cursor_data")
+    cursor_direction = query.get("cursor_direction", "after")
+    total_exact = bool(query.get("total_exact", True))
+    total = None
+    if total_exact:
+        count_row = conn.execute(
+            f"SELECT count(*) AS total FROM videos v{join_overrides}{join_dead}{where}", params
+        ).fetchone()
+        total = int(count_row["total"] if hasattr(count_row, "keys") else count_row[0])
+
+    row_conditions = list(conditions)
+    row_params = list(params)
+    if cursor_data is not None:
+        cursor_filter, cursor_params = _cursor_condition(
+            query["sort"], columns, has_overrides, cursor_data, cursor_direction,
+        )
+        row_conditions.append(cursor_filter)
+        row_params.extend(cursor_params)
+    row_where = " WHERE " + " AND ".join(row_conditions) if row_conditions else ""
+    cursor_mode = cursor_data is not None or not total_exact
+    projection = _row_projection(columns, query, has_files, has_dead, has_overrides, cursor_mode)
+    order = _page_order(query, columns, has_overrides, cursor_data, cursor_direction)
+    rows = conn.execute(
+        f"SELECT {projection} FROM videos v{join_overrides}{join_dead}{_file_join(has_files)}{row_where} "
+        f"ORDER BY {order} LIMIT %s OFFSET %s",
+        [*row_params, query["limit"] + (1 if cursor_mode else 0),
+         0 if cursor_data is not None else query["offset"]],
+    ).fetchall()
+    rows, has_more, has_previous = _page_window(
+        rows, query, cursor_mode, cursor_data, cursor_direction, total,
+    )
+    items = [_serialize_video(row, detail=False) for row in rows]
+    next_cursor = _encode_catalog_cursor(query["sort"], rows[-1]) if cursor_mode and has_more and rows else None
+    previous_cursor = _encode_catalog_cursor(query["sort"], rows[0]) if cursor_mode and has_previous and rows else None
+    return {
+        "ok": True,
+        "items": items,
+        "page": {
+            "limit": query["limit"], "offset": query["offset"],
+            "total": total, "total_exact": total_exact, "has_more": has_more,
+            "has_previous": has_previous, "next_cursor": next_cursor,
+            "previous_cursor": previous_cursor,
+        },
+    }
 
 
+def _page_window(rows: list, query: dict[str, Any], cursor_mode: bool, cursor_data,
+                 cursor_direction: str, total) -> tuple[list, bool, bool]:
+    """Trim the over-fetched row and return (rows, has_more, has_previous)."""
+    limit = query["limit"]
+    if not cursor_mode:
+        return rows, query["offset"] + len(rows) < total, False
+    has_extra = len(rows) > limit
+    rows = rows[:limit]
+    if cursor_data is not None and cursor_direction == "before":
+        rows.reverse()
+        return rows, bool(rows), has_extra
+    has_previous = bool(rows) and (cursor_data is not None or query["offset"] > 0)
+    return rows, has_extra, has_previous
 
 
+def _page_order(query: dict[str, Any], columns: set[str], has_overrides: bool,
+                cursor_data, cursor_direction: str) -> str:
+    if cursor_data is not None and cursor_direction == "before":
+        return _reverse_sort_clause(query["sort"], columns, has_overrides)
+    return _sort_clause(query["sort"], columns, has_overrides)
 
+
+def _file_join(has_files: bool) -> str:
+    return (
+        " LEFT JOIN LATERAL (SELECT count(*) AS file_count, "
+        "array_agg(DISTINCT category ORDER BY category) FILTER (WHERE category IS NOT NULL) AS file_categories "
+        "FROM synced_files WHERE video_id = v.id) sf ON TRUE"
+        if has_files else ""
+    )
+
+
+def _row_projection(columns: set[str], query: dict[str, Any], has_files: bool, has_dead: bool,
+                    has_overrides: bool, cursor_mode: bool) -> str:
+    fields = _select_video_fields(columns, has_overrides)
+    if cursor_mode:
+        fields += ", " + _cursor_value_expression(query["sort"], columns, has_overrides) + " AS __sort_value"
+    file_fields = (", COALESCE(sf.file_count, 0) AS file_count, sf.file_categories AS file_categories"
+                   if has_files else ", 0 AS file_count, NULL AS file_categories")
+    has_local = "(COALESCE(sf.file_count, 0) > 0) AS has_local_files" if has_files else "FALSE AS has_local_files"
+    dead_field = "(d.video_id IS NOT NULL) AS dead_stream" if has_dead else "FALSE AS dead_stream"
+    unavailable_fields = (", d.reason AS unavailable_reason, d.detected_at AS unavailable_detected_at"
+                          if has_dead else ", NULL AS unavailable_reason, NULL AS unavailable_detected_at")
+    return f"{fields}{file_fields}, {has_local}, {dead_field}{unavailable_fields}"
+
+
+def _add_filter_conditions(conditions: list[str], params: list[Any], query: dict[str, Any],
+                           columns: set[str], has_overrides: bool, has_dead: bool,
+                           missing_local_artwork) -> None:
+    _add_search_condition(conditions, params, query["q"], columns, has_overrides)
+    _add_channel_condition(conditions, params, query)
+    _add_text_condition(conditions, params, "studio", query["studio"], columns, has_overrides)
+    _add_text_condition(conditions, params, "performers", query["performer"], columns, has_overrides)
+    _add_tag_condition(conditions, params, query["tag"], columns, has_overrides)
+    _add_availability_condition(conditions, query["availability"], columns, has_dead)
+    _add_missing_conditions(conditions, params, query["missing"], columns, has_overrides, missing_local_artwork)
+
+
+def _add_search_condition(conditions: list[str], params: list[Any], q, columns: set[str],
+                          has_overrides: bool) -> None:
+    if not q:
+        return
+    searchable = ["COALESCE(v.id, '')"]
+    searchable.extend(
+        f"COALESCE({_effective_value(name, columns, has_overrides)}::text, '')" if name in {"title", "plot", "performers", "studio", "tags"}
+        else f"COALESCE(v.{name}::text, '')"
+        for name in ("title", "performers", "studio", "plot", "tags") if name in columns
+    )
+    if searchable:
+        conditions.append("(" + " OR ".join(f"{expr} ILIKE %s" for expr in searchable) + ")")
+        params.extend([f"%{q}%"] * len(searchable))
+
+
+def _add_channel_condition(conditions: list[str], params: list[Any], query: dict[str, Any]) -> None:
+    channel_ids = query.get("channel_ids") or ([query["channel_id"]] if query.get("channel_id") else [])
+    if not channel_ids:
+        return
+    # IDs are composite strings. Exact prefix matching avoids LIKE
+    # wildcard interpretation and keeps studio as production metadata.
+    channel_clauses = ["left(v.id, length(%s)) = %s" for _ in channel_ids]
+    conditions.append("(" + " OR ".join(channel_clauses) + ")")
+    for cid in channel_ids:
+        prefix = f"telegram:{cid}:"
+        params.extend([prefix, prefix])
+
+
+def _add_text_condition(conditions: list[str], params: list[Any], field: str, value,
+                        columns: set[str], has_overrides: bool) -> None:
+    """Case-insensitive substring match on one effective text column."""
+    if not value:
+        return
+    if field not in columns:
+        conditions.append("FALSE")
+    else:
+        conditions.append(f"COALESCE({_effective_value(field, columns, has_overrides)}::text, '') ILIKE %s")
+        params.append(f"%{value}%")
+
+
+def _add_tag_condition(conditions: list[str], params: list[Any], tag, columns: set[str],
+                       has_overrides: bool) -> None:
+    if not tag:
+        return
+    if "tags" not in columns:
+        conditions.append("FALSE")
+        return
+    tag_values = _effective_value("tags", columns, has_overrides)
+    conditions.append(f"EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE "
+                      f"WHEN jsonb_typeof({tag_values}) = 'array' THEN {tag_values} ELSE '[]'::jsonb END) t(value) "
+                      "WHERE t.value ILIKE %s)")
+    params.append(f"%{tag}%")
+
+
+def _add_availability_condition(conditions: list[str], availability: str, columns: set[str],
+                                has_dead: bool) -> None:
+    if availability != "all":
+        condition = _availability_clauses(columns, has_dead).get(availability)
+        if condition:
+            conditions.append(condition)
+
+
+def _add_missing_conditions(conditions: list[str], params: list[Any], missing, columns: set[str],
+                            has_overrides: bool, missing_local_artwork) -> None:
+    for field in missing:
+        if field == "thumbnail" and missing_local_artwork is not None:
+            conditions.append(
+                f"({_missing_effective_clause(field, columns, has_overrides)} OR v.id = ANY(%s))"
+            )
+            params.append(missing_local_artwork)
+        else:
+            conditions.append(_missing_effective_clause(field, columns, has_overrides))
 
 
 def _get_video(db_url: str | None, video_id: str, media_root: str | os.PathLike[str] = "/media/adult") -> dict[str, Any] | None:

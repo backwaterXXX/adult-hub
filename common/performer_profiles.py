@@ -253,78 +253,22 @@ def update_profile(conn, *, name: str, expected_revision: int, profile: dict,
     import time
 
     reset_fields = reset_fields or []
-    if (type(expected_revision) is not int or expected_revision < 0
-            or any(field not in PROFILE_FIELDS for field in reset_fields)):
-        raise PerformerProfileError("Invalid performer profile revision or reset field.")
+    _check_profile_request(expected_revision, reset_fields)
     valid = validate_profile(name, profile.get("bio"), profile.get("photo"), profile.get("aliases"))
     # Serializes first-write requests too, where no override row exists yet.
     lock_profile_enrichment(conn, name)
-    row = conn.execute(
-        "SELECT name,fields,revision FROM performer_profile_overrides WHERE lower(name)=lower(%s) FOR UPDATE",
-        (name,),
-    ).fetchone()
-    if row:
-        name = str(row[0])
-    old_fields = _json_object(row[1]) if row else {}
-    revision = int(row[2]) if row else 0
+    name, old_fields, revision = _lock_profile_override(conn, name)
     if expected_revision != revision:
         raise PerformerProfileConflict("Performer profile changed. Reload it before saving.", revision)
     before = _profile_snapshot(conn, name)
     next_fields = dict(old_fields)
     now = int(time.time())
-    changed = []
+    changed: list[str] = []
 
     if "aliases" not in reset_fields:
         _check_alias_collisions(conn, name, valid["aliases"])
-    for field in reset_fields:
-        entry = next_fields.get(field)
-        if not isinstance(entry, dict) or "base" not in entry:
-            continue
-        base = entry["base"]
-        if field == "aliases":
-            if not isinstance(base, dict):
-                raise PerformerProfileConflict("Saved alias source snapshot is invalid.", revision)
-            conn.execute("DELETE FROM performer_aliases WHERE lower(canonical)=lower(%s)", (name,))
-            for mapping in base.get("mapped", []):
-                alias, canonical = mapping.get("alias"), mapping.get("canonical")
-                if not isinstance(alias, str) or not isinstance(canonical, str):
-                    continue
-                collision = conn.execute("SELECT canonical FROM performer_aliases WHERE lower(alias)=lower(%s)", (alias,)).fetchone()
-                if collision and str(collision[0]).casefold() != canonical.casefold():
-                    raise PerformerProfileConflict("A saved provider alias now belongs to another performer.", revision)
-                conn.execute("INSERT INTO performer_aliases(alias,canonical) VALUES (%s,%s) ON CONFLICT(alias) DO NOTHING", (alias, canonical))
-            bio_row = conn.execute(
-                "SELECT name FROM performer_bios WHERE lower(name)=lower(%s) ORDER BY name LIMIT 1 FOR UPDATE", (name,)
-            ).fetchone()
-            if bio_row:
-                conn.execute("UPDATE performer_bios SET aliases=%s,updated_at=%s WHERE name=%s",
-                             (Jsonb(base.get("bio_aliases", [])), now, bio_row[0]))
-            else:
-                conn.execute("INSERT INTO performer_bios(name,aliases,updated_at) VALUES (%s,%s,%s)",
-                             (name, Jsonb(base.get("bio_aliases", [])), now))
-        else:
-            _write_base_field(conn, name, field, base, now)
-        if before[field] != base:
-            changed.append(field)
-        next_fields.pop(field, None)
-
-    for field in PROFILE_FIELDS:
-        if field in reset_fields:
-            continue
-        value = valid[field]
-        prior = next_fields.get(field)
-        if isinstance(prior, dict) and "base" in prior:
-            entry = {"base": prior["base"], "value": value}
-        elif value != before[field]:
-            base = before["alias_snapshot"] if field == "aliases" else before[field]
-            entry = {"base": base, "value": value}
-        else:
-            # Saving an untouched provider value must not turn it into a locked override.
-            continue
-        if before[field] != value or not isinstance(prior, dict):
-            changed.append(field)
-        next_fields[field] = entry
-        _write_base_field(conn, name, field, value, now)
+    _reset_profile_fields(conn, name, reset_fields, next_fields, before, revision, now, changed)
+    _save_profile_fields(conn, name, valid, reset_fields, next_fields, before, now, changed)
 
     changed = sorted(set(changed))
     if not changed:
@@ -345,6 +289,85 @@ def update_profile(conn, *, name: str, expected_revision: int, profile: dict,
     return {"name": name, "bio": after["bio"], "photo": after["photo"],
             "aliases": after["aliases"], "revision": next_revision,
             "overrides": sorted(next_fields), "updated_at": None}
+
+
+def _check_profile_request(expected_revision, reset_fields: list[str]) -> None:
+    if (type(expected_revision) is not int or expected_revision < 0
+            or any(field not in PROFILE_FIELDS for field in reset_fields)):
+        raise PerformerProfileError("Invalid performer profile revision or reset field.")
+
+
+def _lock_profile_override(conn, name: str) -> tuple[str, dict, int]:
+    row = conn.execute(
+        "SELECT name,fields,revision FROM performer_profile_overrides WHERE lower(name)=lower(%s) FOR UPDATE",
+        (name,),
+    ).fetchone()
+    if row:
+        name = str(row[0])
+    old_fields = _json_object(row[1]) if row else {}
+    revision = int(row[2]) if row else 0
+    return name, old_fields, revision
+
+
+def _reset_profile_fields(conn, name: str, reset_fields: list[str], next_fields: dict,
+                          before: dict, revision: int, now: int, changed: list[str]) -> None:
+    for field in reset_fields:
+        entry = next_fields.get(field)
+        if not isinstance(entry, dict) or "base" not in entry:
+            continue
+        base = entry["base"]
+        if field == "aliases":
+            _restore_alias_base(conn, name, base, revision, now)
+        else:
+            _write_base_field(conn, name, field, base, now)
+        if before[field] != base:
+            changed.append(field)
+        next_fields.pop(field, None)
+
+
+def _restore_alias_base(conn, name: str, base, revision: int, now: int) -> None:
+    """Put the saved provider alias snapshot back and drop the manual mappings."""
+    if not isinstance(base, dict):
+        raise PerformerProfileConflict("Saved alias source snapshot is invalid.", revision)
+    conn.execute("DELETE FROM performer_aliases WHERE lower(canonical)=lower(%s)", (name,))
+    for mapping in base.get("mapped", []):
+        alias, canonical = mapping.get("alias"), mapping.get("canonical")
+        if not isinstance(alias, str) or not isinstance(canonical, str):
+            continue
+        collision = conn.execute("SELECT canonical FROM performer_aliases WHERE lower(alias)=lower(%s)", (alias,)).fetchone()
+        if collision and str(collision[0]).casefold() != canonical.casefold():
+            raise PerformerProfileConflict("A saved provider alias now belongs to another performer.", revision)
+        conn.execute("INSERT INTO performer_aliases(alias,canonical) VALUES (%s,%s) ON CONFLICT(alias) DO NOTHING", (alias, canonical))
+    bio_row = conn.execute(
+        "SELECT name FROM performer_bios WHERE lower(name)=lower(%s) ORDER BY name LIMIT 1 FOR UPDATE", (name,)
+    ).fetchone()
+    if bio_row:
+        conn.execute("UPDATE performer_bios SET aliases=%s,updated_at=%s WHERE name=%s",
+                     (Jsonb(base.get("bio_aliases", [])), now, bio_row[0]))
+    else:
+        conn.execute("INSERT INTO performer_bios(name,aliases,updated_at) VALUES (%s,%s,%s)",
+                     (name, Jsonb(base.get("bio_aliases", [])), now))
+
+
+def _save_profile_fields(conn, name: str, valid: dict, reset_fields: list[str], next_fields: dict,
+                         before: dict, now: int, changed: list[str]) -> None:
+    for field in PROFILE_FIELDS:
+        if field in reset_fields:
+            continue
+        value = valid[field]
+        prior = next_fields.get(field)
+        if isinstance(prior, dict) and "base" in prior:
+            entry = {"base": prior["base"], "value": value}
+        elif value != before[field]:
+            base = before["alias_snapshot"] if field == "aliases" else before[field]
+            entry = {"base": base, "value": value}
+        else:
+            # Saving an untouched provider value must not turn it into a locked override.
+            continue
+        if before[field] != value or not isinstance(prior, dict):
+            changed.append(field)
+        next_fields[field] = entry
+        _write_base_field(conn, name, field, value, now)
 
 
 def merge_override_names(conn, alias: str, canonical: str) -> list[str]:
