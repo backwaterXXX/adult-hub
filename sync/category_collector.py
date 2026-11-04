@@ -78,40 +78,54 @@ def collect_provider_categories(
         category_label = (category.get("title") or services.format_category_name(category_id)).strip()
         if not category_label:
             continue
-
-        for page in range(1, max_pages + 1):
-            try:
-                videos = services.fetch_category_videos(provider, category_id, page)
-                services.logger.info("%s category '%s' p.%s: %s videos", provider_name, category_id, page, len(videos))
-                for video in videos:
-                    if video.get("provider", provider) != provider:
-                        continue
-                    video_id = video.get("provider_video_id") or video.get("id", "").split(":", 1)[-1]
-                    if not video_id:
-                        continue
-                    composite_id = f"{provider}:{video_id}"
-                    if composite_id not in collected:
-                        collected[composite_id] = {
-                            "video": video,
-                            "genres": set(),
-                            "tags": set(),
-                        }
-                    else:
-                        services.merge_video_fields(collected[composite_id]["video"], video)
-                    item = collected[composite_id]
-                    item["tags"].add(provider_name)
-                    mapped_cat = services.map_category(category_label)
-                    if mapped_cat:
-                        item["genres"].add(mapped_cat)
-                    for c in video.get("categories", []):
-                        mc = services.map_category(c)
-                        if mc:
-                            item["genres"].add(mc)
-            except Exception as e:
-                complete = False
-                services.logger.error("Failed to fetch %s category '%s' p.%s: %s", provider_name, category_id, page, e)
-            delay = max(0.0, float(services.category_fetch_delay_seconds))
-            if delay:
-                services.sleep_fn(delay)
+        if not _collect_category_pages(collected, provider, provider_name, category_id,
+                                       category_label, max_pages, services):
+            complete = False
 
     return complete
+
+
+def _collect_category_pages(collected, provider: str, provider_name: str, category_id: str,
+                            category_label: str, max_pages: int, services: CategoryCollectorServices) -> bool:
+    """Merge up to ``max_pages`` pages of one category; return False when any page failed."""
+    complete = True
+    for page in range(1, max_pages + 1):
+        try:
+            videos = services.fetch_category_videos(provider, category_id, page)
+            services.logger.info("%s category '%s' p.%s: %s videos", provider_name, category_id, page, len(videos))
+            for video in videos:
+                _merge_category_video(collected, provider, provider_name, category_label, video, services)
+        except Exception as e:
+            complete = False
+            services.logger.error("Failed to fetch %s category '%s' p.%s: %s", provider_name, category_id, page, e)
+        delay = max(0.0, float(services.category_fetch_delay_seconds))
+        if delay:
+            services.sleep_fn(delay)
+    return complete
+
+
+def _merge_category_video(collected, provider: str, provider_name: str, category_label: str,
+                          video: dict, services: CategoryCollectorServices) -> None:
+    if video.get("provider", provider) != provider:
+        return
+    video_id = video.get("provider_video_id") or video.get("id", "").split(":", 1)[-1]
+    if not video_id:
+        return
+    composite_id = f"{provider}:{video_id}"
+    if composite_id not in collected:
+        collected[composite_id] = {
+            "video": video,
+            "genres": set(),
+            "tags": set(),
+        }
+    else:
+        services.merge_video_fields(collected[composite_id]["video"], video)
+    item = collected[composite_id]
+    item["tags"].add(provider_name)
+    mapped_cat = services.map_category(category_label)
+    if mapped_cat:
+        item["genres"].add(mapped_cat)
+    for c in video.get("categories", []):
+        mc = services.map_category(c)
+        if mc:
+            item["genres"].add(mc)

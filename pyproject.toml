@@ -98,7 +98,6 @@ max-complexity = 10
 "scripts/cleanup_studios_and_tags.py" = ["C901"]
 "scripts/rebuild_telegram_performers.py" = ["C901"]
 "scripts/reparse_telegram_performers.py" = ["C901"]
-"sync/category_collector.py" = ["C901"]
 "sync/category_mapping.py" = ["C901"]
 "sync/data_migrations.py" = ["C901", "G004"]
 "sync/dead_streams.py" = ["C901", "G004"]
