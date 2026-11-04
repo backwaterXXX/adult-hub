@@ -12,6 +12,24 @@ from common import db
 from common.admin_operations import MAX_QUARANTINE_BATCH, PLAN_TTL_SECONDS
 
 
+def _proposal_conflict(conn, proposal_id, video_id, expected_revision, source_fingerprint,
+                       preview, current_revision) -> dict | None:
+    """Return a not_found or stale outcome when the review proposal no longer matches, else None."""
+    proposal = conn.execute(
+        "SELECT video_id,changes,status,expected_revision,expected_source_fingerprint "
+        "FROM metadata_review_proposals WHERE id=%s FOR UPDATE", (proposal_id,),
+    ).fetchone()
+    if proposal is None:
+        return {"outcome": "not_found"}
+    candidate_changes = proposal[1] if isinstance(proposal[1], dict) else json.loads(proposal[1] or "{}")
+    if (str(proposal[0]) != str(video_id) or str(proposal[2]) != "pending"
+            or int(proposal[3]) != int(expected_revision)
+            or str(proposal[4]) != source_fingerprint
+            or set(candidate_changes) != set(preview["changes"]) or preview["reset_fields"]):
+        return {"outcome": "stale", "revision": current_revision}
+    return None
+
+
 def preview_metadata_plan(db_url: str | None, video_id: str, expected_revision: int,
                           changes: dict, reset_fields: list, proposal_id: int | None = None) -> dict:
     """Persist a metadata diff as an expiring operation plan."""
@@ -40,20 +58,11 @@ def preview_metadata_plan(db_url: str | None, video_id: str, expected_revision: 
             conn.rollback()
             return {"outcome": "stale", "revision": current["revision"]}
         if proposal_id is not None:
-            proposal = conn.execute(
-                "SELECT video_id,changes,status,expected_revision,expected_source_fingerprint "
-                "FROM metadata_review_proposals WHERE id=%s FOR UPDATE", (proposal_id,),
-            ).fetchone()
-            if proposal is None:
+            conflict = _proposal_conflict(conn, proposal_id, video_id, expected_revision,
+                                          source_fingerprint, preview, current["revision"])
+            if conflict is not None:
                 conn.rollback()
-                return {"outcome": "not_found"}
-            candidate_changes = proposal[1] if isinstance(proposal[1], dict) else json.loads(proposal[1] or "{}")
-            if (str(proposal[0]) != str(video_id) or str(proposal[2]) != "pending"
-                    or int(proposal[3]) != int(expected_revision)
-                    or str(proposal[4]) != source_fingerprint
-                    or set(candidate_changes) != set(preview["changes"]) or preview["reset_fields"]):
-                conn.rollback()
-                return {"outcome": "stale", "revision": current["revision"]}
+                return conflict
         plan_id = uuid.uuid4().hex
         now = int(time.time())
         expires_at = now + PLAN_TTL_SECONDS

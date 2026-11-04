@@ -67,6 +67,12 @@ def decode_catalog_cursor(token: str, sort: str) -> dict[str, Any]:
             or payload["sort"] != sort or not isinstance(payload["id"], str)
             or not payload["id"] or len(payload["id"]) > 1000):
         raise ValueError("Invalid catalog cursor")
+    _normalize_cursor_value(sort, payload)
+    return payload
+
+
+def _normalize_cursor_value(sort: str, payload: dict) -> None:
+    """Check the cursor value for its sort key and store timestamp values as epoch floats."""
     value = payload["value"]
     if sort in {"first_seen", "last_seen"} and value is not None:
         try:
@@ -85,7 +91,6 @@ def decode_catalog_cursor(token: str, sort: str) -> dict[str, Any]:
         raise ValueError("Invalid catalog cursor")
     elif sort == "title" and not isinstance(value, str):
         raise ValueError("Invalid catalog cursor")
-    return payload
 
 
 def encode_catalog_cursor(sort: str, row) -> str:
