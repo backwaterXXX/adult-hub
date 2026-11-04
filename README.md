@@ -1,5 +1,14 @@
 # Adult Hub
 
+## Companion Players
+
+Beyond Jellyfin, Adult Hub has dedicated players for your devices:
+
+- **[Adult Hub Player](https://github.com/backwaterXXX/adult-hub-player)** — native Android app for phones and Android TV.
+- **[Adult Hub Desktop](https://github.com/backwaterXXX/adult-hub-desktop)** — desktop player for Windows and Linux.
+
+---
+
 **Adult Hub** brings videos from Telegram channels into your [Jellyfin](https://jellyfin.org/) library, where you can browse and play them on your devices. It is designed for gay adult content.
 
 Videos stream from Telegram when you play them, so Adult Hub does not download and store the video files in your library. It adds titles, performer details, and artwork to help you organize and find what you want to watch.
