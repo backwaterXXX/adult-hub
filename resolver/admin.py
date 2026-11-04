@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from fastapi import APIRouter, Request
+from common.app_version import __version__ as APP_VERSION
 import admin_data
 import admin_security
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -171,7 +172,7 @@ async def admin_v2_page(request: Request):
         )
     template_path = Path(__file__).parent / "templates" / "admin_v2.html"
     try:
-        source = template_path.read_text(encoding="utf-8")
+        source = template_path.read_text(encoding="utf-8").replace("__APP_VERSION__", APP_VERSION)
     except OSError:
         return HTMLResponse("<h1>Admin v2 is unavailable.</h1>", status_code=503)
     return HTMLResponse(
