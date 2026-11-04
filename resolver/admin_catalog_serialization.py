@@ -9,6 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 _SAFE_UNAVAILABLE_REASONS = {
@@ -204,8 +208,8 @@ def _local_file_status(file_names: list[Any], media_root: str | os.PathLike[str]
                         from common.image_utils import is_black_image
                         if is_black_image(candidate):
                             state = "missing"
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        logger.debug("Ignored exception in %s", "_local_file_status", exc_info=True)
             except FileNotFoundError:
                 state = "missing"
             except OSError:
@@ -243,8 +247,8 @@ def _resolve_local_artwork_path(file_names: list[Any], media_root: str | os.Path
                     from common.image_utils import is_black_image
                     if is_black_image(candidate):
                         continue
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("Ignored exception in %s", "_resolve_local_artwork_path", exc_info=True)
                 return candidate
         except (OSError, ValueError):
             continue

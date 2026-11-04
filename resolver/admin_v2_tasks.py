@@ -8,6 +8,10 @@ import re
 from fastapi import APIRouter, Query, Request
 from admin_v2_errors import V2ErrorRoute
 from admin_v2_jobs import JOB_ACTIONS
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 _STATES = {"", "active", "history", "queued", "processing", "done", "failed", "cancelled"}
@@ -211,7 +215,8 @@ def build_router(admin):
             worker = read_worker_capabilities(os.getenv(
                 "PHASH_WORKER_CAPABILITIES_PATH", "/data/cache/phash-worker-capabilities.json"))
             return {"ok": True, **result, "workers": {"phash": worker}}
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "list_tasks", exc_info=True)
             return admin.JSONResponse({"error": "Could not load task history."}, status_code=503)
 
     @router.get("/api/v2/tasks/{queue}/{task_id}")
@@ -230,7 +235,8 @@ def build_router(admin):
             if not result["tasks"]:
                 return admin.JSONResponse({"error": "Task not found."}, status_code=404)
             return {"ok": True, "task": result["tasks"][0]}
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "read_task", exc_info=True)
             return admin.JSONResponse({"error": "Could not load task details."}, status_code=503)
 
     return router

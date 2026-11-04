@@ -632,7 +632,8 @@ class TelegramProvider(BaseProvider):
         """Rozmiar pliku z metadanych wiadomosci albo None, gdy nieznany."""
         try:
             channel_ref, message_id, unique_id = _parse_ref(ref)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "file_size", exc_info=True)
             return None
         if not is_channel_authorized(channel_ref):
             return None
@@ -643,7 +644,8 @@ class TelegramProvider(BaseProvider):
                 retryable=lambda exc: is_retryable(exc)
                 or "database is locked" in str(exc).casefold(),
             )
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "file_size", exc_info=True)
             return None
         if message is None:
             return None

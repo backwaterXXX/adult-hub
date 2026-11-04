@@ -2,6 +2,10 @@
 import inspect
 import os
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def _is_parallel_stream_enabled() -> bool:
     val = (os.getenv("TELEGRAM_PARALLEL_STREAM_ENABLED") or "").strip().lower()
@@ -79,15 +83,15 @@ async def _close_download_iterator(iterator):
             res = iterator.close()
             if inspect.isawaitable(res):
                 await res
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "_close_download_iterator", exc_info=True)
     if hasattr(iterator, "aclose"):
         try:
             res = iterator.aclose()
             if inspect.isawaitable(res):
                 await res
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "_close_download_iterator", exc_info=True)
 
 
 async def _download_sequential(

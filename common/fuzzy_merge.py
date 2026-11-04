@@ -1,8 +1,11 @@
 """Preview and execution of fuzzy performer merges."""
 
 import hashlib
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def preview_performer_merge(db_url, alias, canonical, *, _core):
@@ -226,7 +229,8 @@ def execute_performer_merges(db_url, media_dir, merges, skip_backup=False, *, _c
                         arr = _core["_json_list"](raw_json)
                         if not arr:
                             continue
-                    except Exception:
+                    except Exception as _exc:
+                        logger.debug("Ignored exception in %s", "execute_performer_merges", exc_info=True)
                         continue
 
                     changed = False

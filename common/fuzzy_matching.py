@@ -1,9 +1,12 @@
 """Database scan and grouping for fuzzy performer candidates."""
 
+import logging
 import re
 from collections import defaultdict
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def find_fuzzy_performer_candidates(db_url=None, similarity_threshold=0.88, *, _core):
@@ -39,8 +42,8 @@ def find_fuzzy_performer_candidates(db_url=None, similarity_threshold=0.88, *, _
                                             "provider": str(provider or ""),
                                             "studio": str(studio or ""),
                                         })
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("Ignored exception in %s", "find_fuzzy_performer_candidates", exc_info=True)
 
         # 2. Zdjecia i biografie
         photos_set: Set[str] = set()

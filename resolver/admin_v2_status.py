@@ -11,6 +11,10 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import APIRouter, Request
 from admin_v2_errors import V2ErrorRoute
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 def _sync_stale_after_seconds(config_path, db_url=None):
@@ -32,8 +36,8 @@ def _sync_stale_after_seconds(config_path, db_url=None):
                         return max(300, int(item["legacy_interval_minutes"]) * 120)
             elif item:
                 return None
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "_sync_stale_after_seconds", exc_info=True)
     try:
         from common.config_loader import load_config
 
@@ -41,7 +45,8 @@ def _sync_stale_after_seconds(config_path, db_url=None):
         schedule = config.sync
         interval = 24 * 60 * 60 if schedule.daily_at else int(schedule.interval_minutes) * 60
         return max(300, interval * 2) if interval > 0 else None
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_sync_stale_after_seconds", exc_info=True)
         return None
 
 
@@ -94,7 +99,8 @@ def _sync_history_for_status(admin):
         return {"runs": [], "error": "History reader unavailable"}
     try:
         return reader(1)
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_sync_history_for_status", exc_info=True)
         return {"runs": [], "error": "Sync history is unavailable."}
 
 
@@ -150,7 +156,8 @@ async def _jellyfin_probe():
         if (parsed.scheme not in {"http", "https"} or not parsed.netloc
                 or parsed.username or parsed.password or parsed.query or parsed.fragment):
             return {"status": "unknown", "checked_at": None}
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_jellyfin_probe", exc_info=True)
         return {"status": "unknown", "checked_at": None}
     try:
         # Jellyfin's public system-info route responds without an API key. Ignore
@@ -220,8 +227,8 @@ def build_router(admin):
                             provider for provider in providers
                             if isinstance(provider, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,40}", provider)
                         })[:20]
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("Ignored exception in %s", "admin_v2_status", exc_info=True)
         # Keep the dashboard contract explicit: raw DB paths, exception text,
         # and arbitrary status-file keys are never returned to the browser.
         attention = {}
@@ -235,8 +242,8 @@ def build_router(admin):
                     "last_sync_failed_sources", "last_sync_rate_limited",
                 )
                 attention = {key: raw_attention[key] for key in allowed if key in raw_attention}
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "admin_v2_status", exc_info=True)
         db_result = {}
         if isinstance(db, dict):
             if db.get("database_backend") == "PostgreSQL":

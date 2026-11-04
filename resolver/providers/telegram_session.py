@@ -5,6 +5,10 @@ from __future__ import annotations
 import asyncio
 import os
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 async def require_client(session_state: dict, *, api_id_fn, api_hash_fn, session_path_fn):
@@ -87,5 +91,5 @@ async def login(
     finally:
         try:
             await client.disconnect()
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "login", exc_info=True)

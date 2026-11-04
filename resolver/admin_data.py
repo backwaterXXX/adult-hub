@@ -17,6 +17,10 @@ from pathlib import Path
 from common import db
 from common.config_loader import ConfigError, load_config
 import admin_data_runtime_files as runtime_files
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 # Reports analyzed by the seven-day summary. `PlaybackDiagnostics.list_reports`
@@ -192,33 +196,33 @@ def _collect_db_stats(conn, out: dict, config_path, media_dir) -> None:
         out["db_size_mb"] = conn.execute(
             "SELECT round(pg_database_size(current_database()) / 1024.0 / 1024.0, 2)"
         ).fetchone()[0]
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_collect_db_stats", exc_info=True)
     out["videos_total"] = conn.execute("SELECT count(*) FROM videos").fetchone()[0]
     if media_dir is not None:
         out["artwork_total"] = _local_artwork_count(conn, media_dir)
     try:
         out["files_total"] = conn.execute("SELECT count(*) FROM synced_files").fetchone()[0]
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_collect_db_stats", exc_info=True)
     try:
         _collect_provider_breakdown(conn, out, config_path)
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_collect_db_stats", exc_info=True)
     try:
         mx = conn.execute("SELECT MAX(last_seen) FROM videos").fetchone()[0]
         if mx:
             out["last_seen"] = int(mx)
             out["last_seen_human"] = datetime.fromtimestamp(int(mx)).strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_collect_db_stats", exc_info=True)
     try:
         day_ago = int(time.time()) - 86400
         out["fresh_24h"] = conn.execute(
             "SELECT count(*) FROM videos WHERE last_seen > %s", (day_ago,)
         ).fetchone()[0]
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_collect_db_stats", exc_info=True)
     _collect_table_totals(conn, out)
 
 
@@ -330,7 +334,8 @@ def unavailable_videos(db_url: str | None, limit: int = 100, offset: int = 0) ->
     empty = {"videos": [], "total": 0, "truncated": False, "offset": offset, "available": True}
     try:
         conn = db.connect(db_url)
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "unavailable_videos", exc_info=True)
         return {**empty, "available": False}
     conn.row_factory = db.Record
     try:
@@ -386,7 +391,8 @@ def quarantine_report(db_url: str | None, limit: int = 200, offset: int = 0) -> 
     empty = {"items": [], "total": 0, "truncated": False, "offset": offset, "available": True}
     try:
         conn = db.connect(db_url)
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "quarantine_report", exc_info=True)
         return {**empty, "available": False}
     conn.row_factory = db.Record
     try:

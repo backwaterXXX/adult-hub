@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import tempfile
 import time
 import uuid
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_PATH = "/data/cache/active-telegram-playbacks.json"
 LEASE_SECONDS = 90
@@ -86,6 +89,7 @@ def has_active_playback() -> bool:
             active = bool(_read(path, time.time()))
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
             return active
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "has_active_playback", exc_info=True)
         # An unreadable lease file must keep background reads at the safe rate.
         return True

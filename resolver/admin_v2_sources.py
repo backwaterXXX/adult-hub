@@ -11,6 +11,9 @@ from fastapi import APIRouter, Request
 from admin_v2_errors import V2ErrorRoute
 from admin_v2_sync_history import safe_sync_history as _safe_sync_history
 
+logger = logging.getLogger(__name__)
+
+
 
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_CHECK_REQUEST_BYTES = 4096
@@ -41,8 +44,8 @@ def is_channel_removal_active(admin, channel_id: str) -> bool:
                         p_ch = str(p.get("channel_id", "")).strip()
                         if p_ch in aliases or canonical_channel_id(p_ch) == canonical_channel_id(channel_id):
                             return True
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("Ignored exception in %s", "is_channel_removal_active", exc_info=True)
         finally:
             conn.close()
     except Exception as exc:
@@ -83,7 +86,8 @@ def build_router(admin):
                     "applied_revision_available": (isinstance(history, dict)
                                                     and not history.get("error")
                                                     and isinstance(history.get("runs"), list))}
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "list_sources", exc_info=True)
             return admin.JSONResponse({"error": "Could not load configured sources."}, status_code=500)
 
     @router.get("/api/v2/sources/sync-history")
@@ -95,7 +99,8 @@ def build_router(admin):
             safe_offset = max(0, offset)
             report = await admin.asyncio.to_thread(admin._sync_history, safe_limit, safe_offset) if safe_offset else await admin.asyncio.to_thread(admin._sync_history, safe_limit)
             return {"ok": True, **_safe_sync_history(report), "limit": safe_limit, "offset": safe_offset}
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "source_sync_history", exc_info=True)
             return admin.JSONResponse({"error": "Sync history is unavailable."}, status_code=503)
 
     @router.get("/api/v2/sources/settings")
@@ -119,7 +124,8 @@ def build_router(admin):
             await admin.asyncio.to_thread(apply_overrides, base, overlay)
             return {"ok": True, "revision": overlay["revision"], "overrides": overlay["overrides"],
                     "audit_pending": audit_pending}
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "get_source_settings", exc_info=True)
             return admin.JSONResponse({"error": "Source settings are unavailable."}, status_code=503)
 
     async def parse_body(request: Request):
@@ -128,7 +134,8 @@ def build_router(admin):
             if length is not None and int(length) > MAX_REQUEST_BYTES:
                 return None
             body = await request.json()
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "parse_body", exc_info=True)
             return None
         if (not isinstance(body, dict) or set(body) != {"expected_revision", "overrides"}
                 or type(body["expected_revision"]) is not int or body["expected_revision"] < 0
@@ -285,7 +292,8 @@ def build_router(admin):
                         },
                         status_code=202,
                     )
-                except Exception:
+                except Exception as _exc:
+                    logger.debug("Ignored exception in %s", "create_source", exc_info=True)
                     return admin.JSONResponse(
                         {"error": "Channel deletion is in progress; wait for it to complete before re-adding."},
                         status_code=409,
@@ -311,6 +319,7 @@ def build_router(admin):
                 audit_event={"changes": preview_result["changes"], "truncated": preview_result["truncated"]},
             )
         except Exception as exc:
+            logger.debug("Ignored exception in %s", "create_source", exc_info=True)
             return safe_error(exc)
         audit_pending = not await flush_source_audit()
         return {"ok": True, "revision": saved["revision"], "source_id": channel_id,
@@ -436,8 +445,8 @@ def build_router(admin):
                 _LOG.error("Failed to enqueue source_remove job: %s", enqueue_exc)
                 try:
                     await flush_source_audit()
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("Ignored exception in %s", "remove_source", exc_info=True)
                 try:
                     rollback_candidate = copy.deepcopy(candidate)
                     rollback_tg = rollback_candidate.get("telegram", {})
@@ -459,8 +468,8 @@ def build_router(admin):
                     )
                     try:
                         await flush_source_audit()
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        logger.debug("Ignored exception in %s", "remove_source", exc_info=True)
                 except Exception as rollback_exc:
                     _LOG.error("Compensating config rollback failed: %s", rollback_exc)
                     return admin.JSONResponse(
@@ -472,6 +481,7 @@ def build_router(admin):
                     status_code=503,
                 )
         except Exception as exc:
+            logger.debug("Ignored exception in %s", "remove_source", exc_info=True)
             return safe_error(exc)
         admin._wake_worker("jobs")
         audit_pending = not await flush_source_audit()
@@ -492,6 +502,7 @@ def build_router(admin):
         try:
             result = await preview(body)
         except Exception as exc:
+            logger.debug("Ignored exception in %s", "preview_sources", exc_info=True)
             return safe_error(exc)
         return {"ok": True, **result}
 
@@ -560,7 +571,8 @@ def build_router(admin):
                                         },
                                         status_code=202,
                                     )
-                                except Exception:
+                                except Exception as _exc:
+                                    logger.debug("Ignored exception in %s", "save_sources", exc_info=True)
                                     return admin.JSONResponse(
                                         {"error": f"Channel deletion is in progress for '{ch_str}'; wait for it to complete before re-adding."},
                                         status_code=409,
@@ -592,7 +604,8 @@ def build_router(admin):
                                         },
                                         status_code=202,
                                     )
-                                except Exception:
+                                except Exception as _exc:
+                                    logger.debug("Ignored exception in %s", "save_sources", exc_info=True)
                                     return admin.JSONResponse(
                                         {"error": f"Channel deletion is in progress for '{orig_id}'; wait for it to complete before re-adding."},
                                         status_code=409,
@@ -606,6 +619,7 @@ def build_router(admin):
                 audit_event={"changes": preview_result["changes"], "truncated": preview_result["truncated"]},
             )
         except Exception as exc:
+            logger.debug("Ignored exception in %s", "save_sources", exc_info=True)
             return safe_error(exc)
         audit_pending = not await flush_source_audit()
         return {"ok": True, "revision": saved["revision"], "changes": preview_result["changes"],
@@ -644,7 +658,8 @@ def build_router(admin):
             configured = telegram and any(channel.id == channel_id for channel in telegram.channels)
             if not configured:
                 return admin.JSONResponse({"error": "Channel is not configured."}, status_code=400)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "check_source_access", exc_info=True)
             return admin.JSONResponse({"error": "Source configuration is unavailable."}, status_code=503)
 
         try:

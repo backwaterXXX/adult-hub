@@ -209,8 +209,8 @@ async def _local_artwork_response(ref: str):
                 media_type="image/jpeg",
                 headers={"Cache-Control": "public, max-age=3600"},
             )
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_local_artwork_response", exc_info=True)
     return None
 
 
@@ -240,8 +240,8 @@ async def _reject_black_preview(raw: bytes) -> None:
             raise HTTPException(status_code=404, detail="Empty or black preview image")
     except HTTPException:
         raise
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_reject_black_preview", exc_info=True)
 
 
 def _preview_media_type(raw: bytes) -> str:

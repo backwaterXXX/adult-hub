@@ -395,8 +395,8 @@ def extract_video_frame(
         # Ensure file permissions allow reading by all containers and host
         try:
             os.chmod(str(tmp_path), 0o666)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "extract_video_frame", exc_info=True)
 
         # Atomically replace destination file
         shutil.move(str(tmp_path), str(dest))

@@ -94,7 +94,8 @@ def _attention_summary() -> dict:
             "last_sync_failed_sources": failed_sources if runs else None,
             "last_sync_rate_limited": int(latest_http.get("rate_limited") or 0) if runs else None,
         }
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_attention_summary", exc_info=True)
         return {}
 
 

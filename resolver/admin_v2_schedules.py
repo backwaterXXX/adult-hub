@@ -11,6 +11,10 @@ from admin_v2_errors import V2ErrorRoute
 from common import admin_schedules
 from common import schedule_stages
 from common import system_schedules
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 def build_router(admin):
@@ -143,7 +147,8 @@ def build_router(admin):
                     )
                 system.append(row)
             return {"ok": True, "items": items, "system_items": system}
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "list_schedules", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Schedule list is unavailable."}, status_code=503)
 
     @router.get("/api/v2/schedules/cron-preview")
@@ -192,7 +197,8 @@ def build_router(admin):
             return admin.JSONResponse({"ok": True, **result}, status_code=201)
         except ValueError as exc:
             return admin.JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "create_schedule", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not create schedule."}, status_code=503)
 
     @router.post("/api/v2/schedules/{schedule_id}/enabled")
@@ -215,7 +221,8 @@ def build_router(admin):
             return {"ok": True, **result}
         except ValueError as exc:
             return admin.JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "set_schedule_enabled", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not update schedule."}, status_code=503)
 
     @router.post("/api/v2/schedules/{schedule_id}/cron")
@@ -238,7 +245,8 @@ def build_router(admin):
             return {"ok": True, **result}
         except ValueError as exc:
             return admin.JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "set_schedule_cron", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not update cron schedule."}, status_code=503)
 
     @router.post("/api/v2/schedules/system/{schedule_id}")
@@ -261,7 +269,8 @@ def build_router(admin):
             return {"ok": True, **result}
         except ValueError as exc:
             return admin.JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "update_system_schedule", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not update system schedule."}, status_code=503)
 
     async def queue_run(request: Request, schedule_id: str, *, system: bool):
@@ -278,7 +287,8 @@ def build_router(admin):
             if not system:
                 admin._wake_worker("jobs")
             return admin.JSONResponse({"ok": True, **result}, status_code=202)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "queue_run", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not run schedule."}, status_code=503)
 
     @router.post("/api/v2/schedules/{schedule_id}/run")
@@ -310,7 +320,8 @@ def build_router(admin):
             return {"ok": True, **result}
         except ValueError as exc:
             return admin.JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "set_stage_enabled", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not update stage."}, status_code=503)
 
     @router.post("/api/v2/schedules/system/{schedule_id}/stages/{stage_id}/run")
@@ -324,7 +335,8 @@ def build_router(admin):
             )
         except ValueError as exc:
             return admin.JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "run_stage", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not run stage."}, status_code=503)
         if result["outcome"] == "not_found":
             return admin.JSONResponse({"ok": False, "error": "Stage not found."}, status_code=404)

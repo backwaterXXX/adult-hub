@@ -5,6 +5,10 @@ import json
 
 from fastapi import APIRouter, Query, Request
 from admin_v2_errors import V2ErrorRoute
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 MAX_PROPOSAL_ACTION_BYTES = 8192
 
@@ -30,7 +34,8 @@ def build_router(admin):
                 similarity_threshold=threshold,
             )
             return result
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "fuzzy", exc_info=True)
             return admin.JSONResponse(
                 {"ok": False, "error": "Could not scan performer name variants."},
                 status_code=503,
@@ -48,7 +53,8 @@ def build_router(admin):
             from common.performer_proposals import list_pending_proposals
             return await admin.asyncio.to_thread(
                 list_pending_proposals, admin.HUB_DB_URL, limit, offset)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "proposals", exc_info=True)
             return admin.JSONResponse({"error": "Could not load performer proposals."}, status_code=503)
 
     @router.get("/api/v2/performers/proposal-groups")
@@ -59,7 +65,8 @@ def build_router(admin):
         try:
             from common.performer_proposals import list_pending_groups
             return await admin.asyncio.to_thread(list_pending_groups, admin.HUB_DB_URL, limit, offset)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "proposal_groups", exc_info=True)
             return admin.JSONResponse({"error": "Could not summarize performer proposals."}, status_code=503)
 
     @router.post("/api/v2/performers/proposals/reconcile")
@@ -72,7 +79,8 @@ def build_router(admin):
             if len(raw) > 1024:
                 return admin.JSONResponse({"error": "Request is too large."}, status_code=413)
             body = json.loads(raw or b"{}")
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "reconcile", exc_info=True)
             return admin.JSONResponse({"error": "Specify a valid reconciliation cursor."}, status_code=400)
         if (not isinstance(body, dict) or set(body) - {"after_id"}
                 or ("after_id" in body and (type(body["after_id"]) is not int or body["after_id"] < 0))):
@@ -82,7 +90,8 @@ def build_router(admin):
             return await admin.asyncio.to_thread(
                 reconcile_clear_matches, admin.HUB_DB_URL, body.get("after_id", 0),
                 wake_worker=admin._wake_worker)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "reconcile", exc_info=True)
             return admin.JSONResponse({"error": "Could not reconcile clear performer matches."}, status_code=503)
 
     @router.post("/api/v2/performers/proposal-groups/{reason}/{key}")
@@ -114,7 +123,8 @@ def build_router(admin):
             return result
         except ProposalError as exc:
             return admin.JSONResponse({"error": exc.message}, status_code=exc.status_code)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "review_proposal_group", exc_info=True)
             return admin.JSONResponse({"error": "Could not review performer group."}, status_code=503)
 
     @router.get("/api/v2/performers/catalog")
@@ -124,7 +134,8 @@ def build_router(admin):
         try:
             from common.performer_proposals import search_catalog
             return await admin.asyncio.to_thread(search_catalog, admin.HUB_DB_URL, q, limit)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "catalog", exc_info=True)
             return admin.JSONResponse({"error": "Could not load performer catalogue."}, status_code=503)
 
     @router.post("/api/v2/performers/proposals/{proposal_id}")
@@ -180,7 +191,8 @@ def build_router(admin):
             )
         except ProposalError as exc:
             return admin.JSONResponse({"error": exc.message}, status_code=exc.status_code)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "review", exc_info=True)
             return admin.JSONResponse({"error": "Could not review performer proposal."}, status_code=503)
 
     return router

@@ -17,6 +17,10 @@ from .telegram_messages import (
     parse_caption_title,
     thumb_api_path,
 )
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 def prepare_legacy_catalog(known_performers, aliases):
@@ -50,7 +54,8 @@ def prepare_legacy_catalog(known_performers, aliases):
 def _load_catalog(load_performer_catalog_fn) -> list:
     try:
         return load_performer_catalog_fn()
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_load_catalog", exc_info=True)
         return []
 
 

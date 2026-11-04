@@ -35,6 +35,10 @@ from video_duplicate_scoring import (
     _score_solo as _score_solo,
     _telegram_file_id as _telegram_file_id,
 )
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 
@@ -91,7 +95,8 @@ def _collect_duplicate_candidates(db_url: str | None, category: str = "") -> tup
     """Compute the full, unpaginated candidate list shared by readers."""
     try:
         conn = db.connect(db_url)
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_collect_duplicate_candidates", exc_info=True)
         return [], 0, False
     conn.row_factory = db.Record
     aliases: dict[str, str] = {}

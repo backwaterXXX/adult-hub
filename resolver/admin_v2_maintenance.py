@@ -7,6 +7,10 @@ import os
 import httpx
 from fastapi import APIRouter, Request
 from admin_v2_errors import V2ErrorRoute
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 def build_router(admin):
@@ -19,7 +23,8 @@ def build_router(admin):
             return denied
         try:
             body = await request.json()
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "trigger_sync", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Specify a valid sync request."}, status_code=400)
         if not isinstance(body, dict) or set(body) - {"source", "sync_mode"}:
             return admin.JSONResponse({"ok": False, "error": "Specify a valid sync request."}, status_code=400)
@@ -53,7 +58,8 @@ def build_router(admin):
                     return admin.JSONResponse({"ok": False, "error": "History backfill is available only for Telegram channels."}, status_code=400)
                 if source not in allowed:
                     return admin.JSONResponse({"ok": False, "error": "Source is not enabled in configuration."}, status_code=400)
-            except Exception:
+            except Exception as _exc:
+                logger.debug("Ignored exception in %s", "trigger_sync", exc_info=True)
                 return admin.JSONResponse({"ok": False, "error": "Could not validate the source configuration."}, status_code=400)
         try:
             from video_duplicates import enqueue_job
@@ -65,7 +71,8 @@ def build_router(admin):
             admin._wake_worker("sync", source=source or None)
             return admin.JSONResponse({"ok": True, "job_id": job_id, "state": "queued",
                                        "source": source or None, "sync_mode": sync_mode}, status_code=202)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "trigger_sync", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not queue the sync."}, status_code=503)
 
     @router.post("/api/v2/maintenance/cache/clear")
@@ -81,7 +88,8 @@ def build_router(admin):
         try:
             count = await admin.asyncio.to_thread(clear)
             return {"ok": True, "cleared": max(0, int(count or 0))}
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "clear_resolver_cache", exc_info=True)
             return admin.JSONResponse(
                 {"ok": False, "error": "Could not clear the resolver cache."}, status_code=503
             )
@@ -109,7 +117,8 @@ def build_router(admin):
                     status_code=502,
                 )
             return {"ok": True, "requested": True}
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "refresh_jellyfin_library", exc_info=True)
             return admin.JSONResponse(
                 {"ok": False, "error": "Could not request a Jellyfin library refresh."},
                 status_code=502,
@@ -138,7 +147,8 @@ def build_router(admin):
                 {"ok": True, "queued": True, "job_id": job_id, "state": "queued"},
                 status_code=202,
             )
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "refresh_collections", exc_info=True)
             return admin.JSONResponse(
                 {"ok": False, "error": "Could not queue a collections refresh."}, status_code=503
             )

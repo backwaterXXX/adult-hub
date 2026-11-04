@@ -9,6 +9,10 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from fastapi import APIRouter, Request
 from admin_v2_errors import V2ErrorRoute
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 _PROBE_CACHE_SECONDS = 10.0
@@ -44,7 +48,8 @@ async def _http_probe(url: str, *, service: str, label: str) -> dict:
             elapsed_ms=max(0, round((time.monotonic() - started) * 1000)),
             http_status=code,
         )
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_http_probe", exc_info=True)
         return _safe_probe_row(
             service, label, "unavailable",
             elapsed_ms=max(0, round((time.monotonic() - started) * 1000)),
@@ -106,7 +111,8 @@ async def _configured_jellyfin_probe() -> dict:
         if (parsed.scheme not in {"http", "https"} or not parsed.netloc
                 or parsed.username or parsed.password or parsed.query or parsed.fragment):
             return _safe_probe_row("jellyfin", "Jellyfin", "unknown")
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Ignored exception in %s", "_configured_jellyfin_probe", exc_info=True)
         return _safe_probe_row("jellyfin", "Jellyfin", "unknown")
     return await _http_probe(
         f"{base_url}/System/Info/Public", service="jellyfin", label="Jellyfin",
@@ -157,7 +163,8 @@ def build_router(admin):
             return admin.JSONResponse({"ok": False, "error": "Admin is only available locally."}, status_code=403)
         try:
             return {"ok": True, **(await _cached_service_probes(admin))}
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "service_probes", exc_info=True)
             return {"ok": True, "checked_at": datetime.now(timezone.utc).isoformat(),
                     "cache_age_seconds": 0,
                     "services": [

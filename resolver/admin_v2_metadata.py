@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 from admin_v2_errors import V2ErrorRoute
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 def build_router(admin):
@@ -35,7 +39,8 @@ def build_router(admin):
             )
         except MetadataValidationError as exc:
             return admin.JSONResponse({"error": str(exc)}, status_code=400)
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "make_preview", exc_info=True)
             return admin.JSONResponse({"error": "Could not review metadata changes."}, status_code=503)
 
     def public_preview(result):
@@ -83,7 +88,8 @@ def build_router(admin):
             job_id = await admin.asyncio.to_thread(
                 enqueue_job, admin.HUB_DB_URL, "metadata_update", payload
             )
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "execute_metadata", exc_info=True)
             return admin.JSONResponse({"error": "Could not queue the metadata update."}, status_code=503)
         admin._wake_worker("jobs")
         return admin.JSONResponse({"ok": True, "job_id": job_id, "preview": result}, status_code=202)

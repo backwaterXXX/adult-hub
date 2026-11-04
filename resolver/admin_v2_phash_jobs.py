@@ -7,6 +7,10 @@ import os
 
 from fastapi import APIRouter, Query, Request
 from admin_v2_errors import V2ErrorRoute
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 def build_router(admin):
@@ -31,7 +35,8 @@ def build_router(admin):
             from common.worker_capabilities import read_worker_capabilities
             worker = read_worker_capabilities(os.getenv("PHASH_WORKER_CAPABILITIES_PATH", "/data/cache/phash-worker-capabilities.json"))
             return {"ok": True, **page, "worker": worker}
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "list_phash_jobs", exc_info=True)
             return admin.JSONResponse({"error": "Could not load pHash task history."}, status_code=503)
 
     @router.post("/api/v2/phash-jobs/{job_id}/retry")
@@ -45,7 +50,8 @@ def build_router(admin):
             if not changed:
                 return admin.JSONResponse({"error": "Only failed or cancelled pHash tasks can be retried."}, status_code=409)
             return {"ok": True, "job_id": job_id, "state": "queued"}
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "retry_phash_job", exc_info=True)
             return admin.JSONResponse({"error": "Could not retry pHash task."}, status_code=503)
 
     @router.post("/api/v2/phash-jobs/{job_id}/cancel")
@@ -61,7 +67,8 @@ def build_router(admin):
             if outcome == "conflict":
                 return admin.JSONResponse({"error": "Only queued or processing pHash tasks can be cancelled."}, status_code=409)
             return {"ok": True, "job_id": job_id, "state": "cancelled"}
-        except Exception:
+        except Exception as _exc:
+            logger.debug("Ignored exception in %s", "cancel_phash_job", exc_info=True)
             return admin.JSONResponse({"error": "Could not cancel pHash task."}, status_code=503)
 
     return router
