@@ -34,59 +34,21 @@ def audit_telegram_import_state(url, api_key, media_dir, *, state_path, session=
         seen = set()
         expected_total = None
         while True:
-            response = session.request("GET", base + "/Items", headers=headers, timeout=20, params={
-                "Recursive": "true", "IncludeItemTypes": "Movie", "Fields": "Path",
-                "StartIndex": start, "Limit": 500,
-            })
-            response.raise_for_status()
-            page = response.json()
-            if not isinstance(page, dict) or not isinstance(page.get("Items"), list):
+            page = _read_page(session, base, headers, start, expected_total)
+            if page is None:
                 return {"status": "unknown", "findings": []}
-            items = page["Items"]
-            total = page.get("TotalRecordCount")
-            if type(total) is not int or total < 0:
+            items, total, expected_total = page
+            page_findings = _scan_page_items(items, media_dir, state, seen)
+            if page_findings is None:
                 return {"status": "unknown", "findings": []}
-            if expected_total is None:
-                expected_total = total
-            elif total != expected_total:
-                # A changing inventory cannot be fully verified by an offset
-                # scan. Do not resolve findings based on this mixed snapshot.
-                return {"status": "unknown", "findings": []}
-            if len(items) > total - start:
-                return {"status": "unknown", "findings": []}
-            for item in items:
-                if not isinstance(item, dict):
-                    return {"status": "unknown", "findings": []}
-                item_id, raw_path = item.get("Id"), item.get("Path")
-                if not item_id or not isinstance(raw_path, str) or not raw_path:
-                    return {"status": "unknown", "findings": []}
-                if item_id in seen:
-                    return {"status": "unknown", "findings": []}
-                seen.add(item_id)
-                if not raw_path.startswith("/media/adult/"):
-                    continue
-                filename = Path(raw_path).name
-                if not filename.startswith("telegram [") or not filename.lower().endswith(".strm"):
-                    continue
-                nfo_path = media_dir / Path(filename).with_suffix(".nfo")
-                if nfo_path.is_symlink() or not nfo_path.resolve().is_relative_to(media_dir):
-                    continue
-                try:
-                    digest = hashlib.sha256(nfo_path.read_bytes()).hexdigest()
-                except OSError:
-                    # The local audit reports an absent/unreadable sidecar separately.
-                    continue
-                recorded = state.get(str(item_id))
-                if recorded != digest:
-                    findings.append((filename, "nfo_import_state_missing" if recorded is None
-                                     else "nfo_import_state_mismatch"))
+            findings.extend(page_findings)
             start += len(items)
             if progress is not None:
                 progress(start, total)
             # An empty page before the reported end means the scan is
             # incomplete. Never let a partial Jellyfin inventory resolve old
             # import-state findings as though the whole library was checked.
-            if not items and isinstance(total, int) and total > start:
+            if not items and total > start:
                 return {"status": "unknown", "findings": []}
             if not items or start >= total:
                 break
@@ -96,4 +58,76 @@ def audit_telegram_import_state(url, api_key, media_dir, *, state_path, session=
         # report deliberately exposes only an unknown status.
         logger.debug("Ignored exception in %s", "audit_telegram_import_state", exc_info=True)
         return {"status": "unknown", "findings": []}
+
+
+def _fetch_items_page(session, base: str, headers: dict, start: int):
+    response = session.request("GET", base + "/Items", headers=headers, timeout=20, params={
+        "Recursive": "true", "IncludeItemTypes": "Movie", "Fields": "Path",
+        "StartIndex": start, "Limit": 500,
+    })
+    response.raise_for_status()
+    return response.json()
+
+
+def _read_page(session, base: str, headers: dict, start: int, expected_total):
+    """Fetch one page and check it against the inventory seen so far.
+
+    Returns (items, total, expected_total), or None when the page cannot be trusted.
+    """
+    parsed = _items_and_total(_fetch_items_page(session, base, headers, start))
+    if parsed is None:
+        return None
+    items, total = parsed
+    if expected_total is None:
+        expected_total = total
+    elif total != expected_total:
+        # A changing inventory cannot be fully verified by an offset
+        # scan. Do not resolve findings based on this mixed snapshot.
+        return None
+    if len(items) > total - start:
+        return None
+    return items, total, expected_total
+
+
+def _items_and_total(page):
+    """Return (items, total) from a page, or None if the page shape is not usable."""
+    if not isinstance(page, dict) or not isinstance(page.get("Items"), list):
+        return None
+    total = page.get("TotalRecordCount")
+    if type(total) is not int or total < 0:
+        return None
+    return page["Items"], total
+
+
+def _scan_page_items(items: list, media_dir: Path, state: dict, seen: set) -> list | None:
+    """Return (filename, reason) findings for one page, or None if the page cannot be trusted."""
+    findings = []
+    for item in items:
+        if not isinstance(item, dict):
+            return None
+        item_id, raw_path = item.get("Id"), item.get("Path")
+        if not item_id or not isinstance(raw_path, str) or not raw_path:
+            return None
+        if item_id in seen:
+            return None
+        seen.add(item_id)
+        if not raw_path.startswith("/media/adult/"):
+            continue
+        filename = Path(raw_path).name
+        if not filename.startswith("telegram [") or not filename.lower().endswith(".strm"):
+            continue
+        nfo_path = media_dir / Path(filename).with_suffix(".nfo")
+        if nfo_path.is_symlink() or not nfo_path.resolve().is_relative_to(media_dir):
+            continue
+        try:
+            digest = hashlib.sha256(nfo_path.read_bytes()).hexdigest()
+        except OSError:
+            # The local audit reports an absent/unreadable sidecar separately.
+            continue
+        recorded = state.get(str(item_id))
+        if recorded != digest:
+            findings.append((filename, "nfo_import_state_missing" if recorded is None
+                             else "nfo_import_state_mismatch"))
+    return findings
+
 

@@ -131,8 +131,9 @@ def compare_pair(left_id: str, right_id: str, left_duration: float, right_durati
                  *, left_aspect: float | None = None, right_aspect: float | None = None,
                  cache_dir: str | None = None, byte_budget: int = 256 * 1024 * 1024) -> tuple[str, dict, bytes | None]:
     """Fine-verify a candidate with 8 anchors, a +/-2 s search and SSIM."""
-    import numpy as np
-    from PIL import Image, ImageDraw
+    # Import here so missing optional dependencies fail before any frame is fetched.
+    import numpy as np  # noqa: F401
+    from PIL import Image, ImageDraw  # noqa: F401
     if left_duration <= 0 or right_duration <= 0:
         return "inconclusive", {"reason": "missing_duration"}, None
     left_anchors = [left_duration * (0.10 + 0.80 * i / 7) for i in range(8)]
@@ -141,76 +142,27 @@ def compare_pair(left_id: str, right_id: str, left_duration: float, right_durati
     coarse_right_times = sorted({round(left_anchors[i] + delta, 3)
                                  for delta in coarse_offsets for i in coarse_indices
                                  if 0 <= left_anchors[i] + delta < right_duration})
+    cache_base = "visual-" + _identity(left_id, right_id)
 
-    def extract(video_id: str, times: list[float], cache_id: str) -> list[bytes]:
-        try:
-            from resolver_video_fingerprints import telegram_frame_samples
-        except ImportError:
-            from video_fingerprints import telegram_frame_samples
-        return telegram_frame_samples(video_id, times, byte_budget=byte_budget,
-                                      timeout_seconds=900, resolver_url="http://127.0.0.1:8090/admin",
-                                      cache_dir=cache_dir, cache_id=cache_id)
-
-    left_frames = extract(left_id, [round(t, 3) for t in left_anchors], "visual-" + _identity(left_id, right_id) + "-L")
-    coarse_frames = extract(right_id, coarse_right_times, "visual-" + _identity(left_id, right_id) + "-R")
+    left_frames = _extract_telegram_frames(left_id, [round(t, 3) for t in left_anchors], cache_base + "-L",
+                                           byte_budget, cache_dir)
+    coarse_frames = _extract_telegram_frames(right_id, coarse_right_times, cache_base + "-R",
+                                             byte_budget, cache_dir)
     coarse_by_time = dict(zip(coarse_right_times, coarse_frames))
-    coarse_scores = []
-    for delta in coarse_offsets:
-        scores = [_ssim(left_frames[i], coarse_by_time[round(left_anchors[i] + delta, 3)])
-                  for i in coarse_indices if round(left_anchors[i] + delta, 3) in coarse_by_time]
-        coarse_scores.append((sum(scores) / len(scores) if len(scores) == len(coarse_indices) else -1, delta))
-    best_coarse = max(coarse_scores, key=lambda value: (value[0], -abs(value[1])))[1]
+    best_coarse = _best_coarse_offset(left_frames, left_anchors, coarse_offsets, coarse_indices, coarse_by_time)
     fine_offsets = [round(best_coarse - .25 + .05 * i, 2) for i in range(11)
                     if -2 <= best_coarse - .25 + .05 * i <= 2]
     fine_right_times = sorted({round(left_anchors[i] + delta, 3)
                                for delta in fine_offsets for i in range(8)
                                if 0 <= left_anchors[i] + delta < right_duration})
-    fine_frames = extract(right_id, fine_right_times, "visual-" + _identity(left_id, right_id) + "-R")
+    fine_frames = _extract_telegram_frames(right_id, fine_right_times, cache_base + "-R", byte_budget, cache_dir)
     fine_by_time = dict(zip(fine_right_times, fine_frames))
-    anchor_results = []
-    local_offsets = []
-    for i, left_frame in enumerate(left_frames):
-        choices = [(delta, fine_by_time[round(left_anchors[i] + delta, 3)])
-                   for delta in fine_offsets if round(left_anchors[i] + delta, 3) in fine_by_time]
-        if not choices:
-            continue
-        left_phash, left_dhash, left_valid = _frame_hashes(left_frame)
-        scored = []
-        for delta, right_frame in choices:
-            right_phash, right_dhash, right_valid = _frame_hashes(right_frame)
-            score = _ssim(left_frame, right_frame) if left_valid and right_valid else 0.0
-            scored.append((score, delta, right_frame, right_phash, right_dhash, right_valid))
-        score, delta, right_frame, right_phash, right_dhash, right_valid = max(scored, key=lambda x: (x[0], -abs(x[1])))
-        pd, dd = _distance(left_phash, right_phash), _distance(left_dhash, right_dhash)
-        valid = left_valid and right_valid
-        anchor_results.append({"left_t": round(left_anchors[i], 3),
-                               "right_t": round(left_anchors[i] + delta, 3),
-                               "offset": delta, "phash": pd, "dhash": dd,
-                               "ssim": round(score, 4), "informative": valid,
-                               "match": bool(valid and pd <= 6 and dd <= 6 and score >= .90),
-                               "loose": bool(valid and pd <= 12 and dd <= 10 and score >= .85),
-                               "left_frame": left_frame, "right_frame": right_frame})
-        if valid:
-            local_offsets.append((left_anchors[i], delta))
+    anchor_results, local_offsets = _anchor_matches(left_frames, left_anchors, fine_offsets, fine_by_time)
     informative = [x for x in anchor_results if x["informative"]]
     strict = [x for x in anchor_results if x["match"]]
     loose = [x for x in anchor_results if x["loose"]]
-    thirds = {"beginning": False, "middle": False, "end": False}
-    strict_thirds = {"beginning": False, "middle": False, "end": False}
-    for item in loose:
-        position = item["left_t"] / left_duration
-        section = "beginning" if position < 1/3 else "end" if position > 2/3 else "middle"
-        thirds[section] = True
-        if item["match"]:
-            strict_thirds[section] = True
-    if len(local_offsets) >= 2:
-        x = np.array([v[0] for v in local_offsets], dtype=np.float64)
-        y = np.array([v[1] for v in local_offsets], dtype=np.float64)
-        slope, intercept = np.polyfit(x, y, 1)
-        residual = float(np.max(np.abs(y - (slope * x + intercept))))
-        predicted = [float(slope * t + intercept) for t in left_anchors]
-    else:
-        residual, predicted = 99.0, []
+    thirds, strict_thirds = _section_coverage(loose, left_duration)
+    slope, intercept, residual, predicted = _offset_fit(local_offsets, left_anchors)
     matched_ssim = sorted(x["ssim"] for x in strict)
     median_ssim = matched_ssim[len(matched_ssim)//2] if matched_ssim else 0.0
     matched_dhash = sorted(x["dhash"] for x in strict)
@@ -239,22 +191,105 @@ def compare_pair(left_id: str, right_id: str, left_duration: float, right_durati
         state = "different"
     else:
         state = "inconclusive"
-    sheet = None
-    if anchor_results:
-        picks = [anchor_results[i] for i in (0, 2, 5, 7) if i < len(anchor_results)]
-        tile_w, tile_h = 320, 180
-        canvas = Image.new("RGB", (tile_w * 2, (tile_h + 26) * len(picks)), "#10151d")
-        draw = ImageDraw.Draw(canvas)
-        for row, item in enumerate(picks):
-            y = row * (tile_h + 26)
-            draw.text((4, y + 3), f"A {item['left_t']:.2f}s  B {item['right_t']:.2f}s  SSIM {item['ssim']:.3f}", fill="white")
-            canvas.paste(Image.frombytes("L", (160, 90), item["left_frame"]).convert("RGB").resize((tile_w, tile_h)), (0, y + 26))
-            canvas.paste(Image.frombytes("L", (160, 90), item["right_frame"]).convert("RGB").resize((tile_w, tile_h)), (tile_w, y + 26))
-        output = BytesIO()
-        canvas.save(output, format="JPEG", quality=68, optimize=True)
-        if len(output.getvalue()) <= 2_000_000:
-            sheet = output.getvalue()
+    sheet = _contact_sheet(anchor_results)
     return state, evidence, sheet
+
+
+def _extract_telegram_frames(video_id: str, times: list[float], cache_id: str,
+                             byte_budget: int, cache_dir: str | None) -> list[bytes]:
+    try:
+        from resolver_video_fingerprints import telegram_frame_samples
+    except ImportError:
+        from video_fingerprints import telegram_frame_samples
+    return telegram_frame_samples(video_id, times, byte_budget=byte_budget,
+                                  timeout_seconds=900, resolver_url="http://127.0.0.1:8090/admin",
+                                  cache_dir=cache_dir, cache_id=cache_id)
+
+
+def _best_coarse_offset(left_frames, left_anchors, coarse_offsets, coarse_indices, coarse_by_time) -> float:
+    coarse_scores = []
+    for delta in coarse_offsets:
+        scores = [_ssim(left_frames[i], coarse_by_time[round(left_anchors[i] + delta, 3)])
+                  for i in coarse_indices if round(left_anchors[i] + delta, 3) in coarse_by_time]
+        coarse_scores.append((sum(scores) / len(scores) if len(scores) == len(coarse_indices) else -1, delta))
+    return max(coarse_scores, key=lambda value: (value[0], -abs(value[1])))[1]
+
+
+def _anchor_matches(left_frames, left_anchors, fine_offsets, fine_by_time) -> tuple[list, list]:
+    """Score each left anchor against its best fine-offset frame. Returns (results, local offsets)."""
+    anchor_results = []
+    local_offsets = []
+    for i, left_frame in enumerate(left_frames):
+        choices = [(delta, fine_by_time[round(left_anchors[i] + delta, 3)])
+                   for delta in fine_offsets if round(left_anchors[i] + delta, 3) in fine_by_time]
+        if not choices:
+            continue
+        left_phash, left_dhash, left_valid = _frame_hashes(left_frame)
+        scored = []
+        for delta, right_frame in choices:
+            right_phash, right_dhash, right_valid = _frame_hashes(right_frame)
+            score = _ssim(left_frame, right_frame) if left_valid and right_valid else 0.0
+            scored.append((score, delta, right_frame, right_phash, right_dhash, right_valid))
+        score, delta, right_frame, right_phash, right_dhash, right_valid = max(scored, key=lambda x: (x[0], -abs(x[1])))
+        pd, dd = _distance(left_phash, right_phash), _distance(left_dhash, right_dhash)
+        valid = left_valid and right_valid
+        anchor_results.append({"left_t": round(left_anchors[i], 3),
+                               "right_t": round(left_anchors[i] + delta, 3),
+                               "offset": delta, "phash": pd, "dhash": dd,
+                               "ssim": round(score, 4), "informative": valid,
+                               "match": bool(valid and pd <= 6 and dd <= 6 and score >= .90),
+                               "loose": bool(valid and pd <= 12 and dd <= 10 and score >= .85),
+                               "left_frame": left_frame, "right_frame": right_frame})
+        if valid:
+            local_offsets.append((left_anchors[i], delta))
+    return anchor_results, local_offsets
+
+
+def _section_coverage(loose: list, left_duration: float) -> tuple[dict, dict]:
+    """Which thirds of the video have a loose match, and which have a strict one."""
+    thirds = {"beginning": False, "middle": False, "end": False}
+    strict_thirds = {"beginning": False, "middle": False, "end": False}
+    for item in loose:
+        position = item["left_t"] / left_duration
+        section = "beginning" if position < 1/3 else "end" if position > 2/3 else "middle"
+        thirds[section] = True
+        if item["match"]:
+            strict_thirds[section] = True
+    return thirds, strict_thirds
+
+
+def _offset_fit(local_offsets: list, left_anchors: list) -> tuple:
+    """Fit offset = slope * time + intercept. Returns (slope, intercept, max residual, predicted offsets)."""
+    import numpy as np
+    if len(local_offsets) >= 2:
+        x = np.array([v[0] for v in local_offsets], dtype=np.float64)
+        y = np.array([v[1] for v in local_offsets], dtype=np.float64)
+        slope, intercept = np.polyfit(x, y, 1)
+        residual = float(np.max(np.abs(y - (slope * x + intercept))))
+        predicted = [float(slope * t + intercept) for t in left_anchors]
+        return slope, intercept, residual, predicted
+    return None, None, 99.0, []
+
+
+def _contact_sheet(anchor_results: list) -> bytes | None:
+    """JPEG grid of up to four anchor pairs for manual review, or None if too large."""
+    from PIL import Image, ImageDraw
+    if not anchor_results:
+        return None
+    picks = [anchor_results[i] for i in (0, 2, 5, 7) if i < len(anchor_results)]
+    tile_w, tile_h = 320, 180
+    canvas = Image.new("RGB", (tile_w * 2, (tile_h + 26) * len(picks)), "#10151d")
+    draw = ImageDraw.Draw(canvas)
+    for row, item in enumerate(picks):
+        y = row * (tile_h + 26)
+        draw.text((4, y + 3), f"A {item['left_t']:.2f}s  B {item['right_t']:.2f}s  SSIM {item['ssim']:.3f}", fill="white")
+        canvas.paste(Image.frombytes("L", (160, 90), item["left_frame"]).convert("RGB").resize((tile_w, tile_h)), (0, y + 26))
+        canvas.paste(Image.frombytes("L", (160, 90), item["right_frame"]).convert("RGB").resize((tile_w, tile_h)), (tile_w, y + 26))
+    output = BytesIO()
+    canvas.save(output, format="JPEG", quality=68, optimize=True)
+    if len(output.getvalue()) <= 2_000_000:
+        return output.getvalue()
+    return None
 
 
 def _identity(left_id: str, right_id: str) -> str:
