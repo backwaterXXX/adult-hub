@@ -95,16 +95,7 @@ def create_stream_file(path: Path, video_id: str, mode: Optional[str] = None, *,
     content = base + ("\n" if mode == "redirect" else "?mode=proxy\n")
     path = Path(path)
 
-    def already_restored() -> bool:
-        if path.is_symlink():
-            raise FileExistsError("Registered stream path is a symlink.")
-        if not path.exists():
-            return False
-        if not path.is_file() or path.read_text(encoding="utf-8") != content:
-            raise FileExistsError("Registered stream path already contains different data.")
-        return True
-
-    if already_restored():
+    if _already_restored(path, content):
         return False
     if not path.parent.is_dir():
         raise FileNotFoundError("Registered stream directory is unavailable.")
@@ -121,12 +112,23 @@ def create_stream_file(path: Path, video_id: str, mode: Optional[str] = None, *,
             return True
         except FileExistsError:
             # A worker retry or concurrent file restoration may have won the race.
-            if already_restored():
+            if _already_restored(path, content):
                 return False
             raise
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
+
+
+def _already_restored(path: Path, content: str) -> bool:
+    """Return True when path already holds the exact stream file, False when absent."""
+    if path.is_symlink():
+        raise FileExistsError("Registered stream path is a symlink.")
+    if not path.exists():
+        return False
+    if not path.is_file() or path.read_text(encoding="utf-8") != content:
+        raise FileExistsError("Registered stream path already contains different data.")
+    return True
 
 
 def rewrite_all_stream_files(

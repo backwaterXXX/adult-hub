@@ -293,6 +293,28 @@ async def login(phone: str, code: Optional[str] = None,
 # Parallel Telegram streaming configuration and helpers
 # ---------------------------------------------------------------------------
 
+def _variant_size(message, channel_ref: str, unique_id: str) -> Optional[int]:
+    """Return the size of the media variant whose unique id matches, or None when unknown."""
+    media = getattr(message, "media", None) or getattr(message, "document", None)
+    if media is None:
+        return None
+    target_doc = find_variant_document(media, unique_id)
+    if target_doc is None:
+        return None
+    size = getattr(target_doc, "size", None)
+    if size is not None:
+        try:
+            size = int(size)
+        except (TypeError, ValueError):
+            size = None
+        if size is not None and size >= 0:
+            return size
+    doc_orig = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
+    if target_doc == doc_orig:
+        return _size_of(_message_to_dict(message, channel_ref))
+    return None
+
+
 class TelegramProvider(BaseProvider):
     """Provider MTProto: prywatne kanaly jako kategorie (etap 1, bez hashtagow)."""
 
@@ -625,24 +647,7 @@ class TelegramProvider(BaseProvider):
             return None
         if message is None:
             return None
-        media = getattr(message, "media", None) or getattr(message, "document", None)
-        if media is None:
-            return None
-        target_doc = find_variant_document(media, str(unique_id))
-        if target_doc is None:
-            return None
-        size = getattr(target_doc, "size", None)
-        if size is not None:
-            try:
-                size = int(size)
-            except (TypeError, ValueError):
-                size = None
-            if size is not None and size >= 0:
-                return size
-        doc_orig = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
-        if target_doc == doc_orig:
-            return _size_of(_message_to_dict(message, channel_ref))
-        return None
+        return _variant_size(message, channel_ref, str(unique_id))
 
     async def download_thumb(self, ref: str) -> Optional[bytes]:
         return await _download_thumb_impl(self, ref)

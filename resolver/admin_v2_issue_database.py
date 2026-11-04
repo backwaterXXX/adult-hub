@@ -13,6 +13,55 @@ from admin_v2_issue_builder import (
 )
 
 
+def _stalled_job_issues(processing_jobs, now) -> list:
+    issues = []
+    for job in processing_jobs:
+        updated_at = _timestamp(job.get("updated_at"))
+        if not is_processing_stale(job.get("state"), updated_at, now=now):
+            continue
+        job_id = str(job.get("id") or "")[:120]
+        raw_action = str(job.get("action") or "")
+        action = raw_action if raw_action in ALL_ACTIONS else "task"
+        issues.append(_issue(
+            "job_stalled", "high", "Task may be stalled",
+            f"The “{action}” task has reported no worker activity for more than {PROCESSING_STALE_WARNING_SECONDS} seconds. Review its latest stage before taking action.",
+            "task", job_id,
+            updated_at + PROCESSING_STALE_WARNING_SECONDS, now,
+            "Open task details",
+            f"/admin/v2/?job_id={quote(job_id, safe='')}#jobs" if job_id else "/admin/v2/#jobs",
+            operation_id=action,
+            operation_label=action,
+            list_route=f"/admin/v2/?job_state=processing&job_action={quote(action, safe='')}#jobs",
+        ))
+    return issues
+
+
+def _failed_job_issues(failed_jobs, now) -> list:
+    issues = []
+    for job in failed_jobs:
+        failed_at = _timestamp(job.get("updated_at") or job.get("created_at"))
+        attempts = int(job.get("attempts") or 1)
+        raw_action = str(job.get("action") or "")
+        action = raw_action if raw_action in ALL_ACTIONS else "task"
+        job_id = str(job.get("id") or "")[:120]
+        message = (f"The “{action}” operation failed on {attempts} matching attempts. "
+                   "Review the latest task and retry it if appropriate."
+                   if attempts > 1 else
+                   f"The “{action}” operation failed. Review the task and retry it if appropriate.")
+        issues.append(_issue(
+            "job_failure", "high", "Task failed",
+            message,
+            "task", job_id, failed_at, failed_at, "Open task details",
+            f"/admin/v2/?job_id={quote(job_id, safe='')}#jobs" if job_id else "/admin/v2/#jobs",
+            operation_id=action,
+            operation_label=action,
+            list_route=f"/admin/v2/?job_state=failed&job_action={quote(action, safe='')}#jobs",
+        ))
+        if attempts > 1:
+            issues[-1]["count"] = attempts
+    return issues
+
+
 def collect_database_issues(admin, now, health, issues):
     db_available = False
     try:
@@ -51,45 +100,8 @@ def collect_database_issues(admin, now, health, issues):
                 health["truncated"]["failed_jobs"] = True
             health["truncated"]["done_jobs"] = False
             health["truncated"]["processing_jobs"] = bool(processing_page.get("truncated"))
-            for job in processing_page.get("jobs") or []:
-                updated_at = _timestamp(job.get("updated_at"))
-                if not is_processing_stale(job.get("state"), updated_at, now=now):
-                    continue
-                job_id = str(job.get("id") or "")[:120]
-                raw_action = str(job.get("action") or "")
-                action = raw_action if raw_action in ALL_ACTIONS else "task"
-                issues.append(_issue(
-                    "job_stalled", "high", "Task may be stalled",
-                    f"The “{action}” task has reported no worker activity for more than {PROCESSING_STALE_WARNING_SECONDS} seconds. Review its latest stage before taking action.",
-                    "task", job_id,
-                    updated_at + PROCESSING_STALE_WARNING_SECONDS, now,
-                    "Open task details",
-                    f"/admin/v2/?job_id={quote(job_id, safe='')}#jobs" if job_id else "/admin/v2/#jobs",
-                    operation_id=action,
-                    operation_label=action,
-                    list_route=f"/admin/v2/?job_state=processing&job_action={quote(action, safe='')}#jobs",
-                ))
-            for job in failed_jobs:
-                failed_at = _timestamp(job.get("updated_at") or job.get("created_at"))
-                attempts = int(job.get("attempts") or 1)
-                raw_action = str(job.get("action") or "")
-                action = raw_action if raw_action in ALL_ACTIONS else "task"
-                job_id = str(job.get("id") or "")[:120]
-                message = (f"The “{action}” operation failed on {attempts} matching attempts. "
-                           "Review the latest task and retry it if appropriate."
-                           if attempts > 1 else
-                           f"The “{action}” operation failed. Review the task and retry it if appropriate.")
-                issues.append(_issue(
-                    "job_failure", "high", "Task failed",
-                    message,
-                    "task", job_id, failed_at, failed_at, "Open task details",
-                    f"/admin/v2/?job_id={quote(job_id, safe='')}#jobs" if job_id else "/admin/v2/#jobs",
-                    operation_id=action,
-                    operation_label=action,
-                    list_route=f"/admin/v2/?job_state=failed&job_action={quote(action, safe='')}#jobs",
-                ))
-                if attempts > 1:
-                    issues[-1]["count"] = attempts
+            issues.extend(_stalled_job_issues(processing_page.get("jobs") or [], now))
+            issues.extend(_failed_job_issues(failed_jobs, now))
 
         library = admin.admin_data.unavailable_videos(admin.HUB_DB_URL, limit=1, offset=0)
         health["available"]["database"] = bool(library.get("available")) and db_available

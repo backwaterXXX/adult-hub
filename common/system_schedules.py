@@ -113,6 +113,35 @@ def list_system_schedules(db_url) -> list[dict]:
         conn.close()
 
 
+def _update_system_schedule_row(conn, schedule_id: str, expression: str, enabled: bool,
+                                upcoming, instant) -> None:
+    if expression:
+        conn.execute(
+            "UPDATE system_schedules SET cron_expression=%s,legacy_interval_minutes=NULL,"
+            "legacy_daily_at=NULL,needs_conversion=FALSE,enabled=%s,revision=revision+1,"
+            "next_run_at=%s,updated_at=%s WHERE id=%s",
+            (expression, enabled, upcoming, instant.timestamp(), schedule_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE system_schedules SET enabled=%s,revision=revision+1,next_run_at=%s,updated_at=%s WHERE id=%s",
+            (enabled, upcoming, instant.timestamp(), schedule_id),
+        )
+
+
+def _record_system_schedule_changes(conn, schedule_id: str, row, expression: str, enabled: bool,
+                                    revision: int) -> None:
+    from common.admin_audit_events import record_schedule_cron, record_schedule_enabled
+    if expression and row[0] != expression and not record_schedule_cron(
+            conn, schedule_id=f"system-{schedule_id}", before=row[0], after=expression,
+            revision_before=revision):
+        raise RuntimeError("Could not record the system schedule cron audit event.")
+    if bool(row[1]) != enabled and not record_schedule_enabled(
+            conn, schedule_id=f"system-{schedule_id}", before=bool(row[1]), after=enabled,
+            revision_before=revision, revision_after=revision + 1):
+        raise RuntimeError("Could not record the system schedule enabled audit event.")
+
+
 def set_system_schedule(db_url, schedule_id: str, *, expression: str, enabled: bool,
                         revision: int, now=None) -> dict:
     if schedule_id not in _NAMES:
@@ -143,27 +172,8 @@ def set_system_schedule(db_url, schedule_id: str, *, expression: str, enabled: b
         if not expression and enabled:
             old_type = "daily" if row[4] else "interval"
             upcoming = admin_schedules.next_run(old_type, row[3], row[4], after=instant)
-        if expression:
-            conn.execute(
-                "UPDATE system_schedules SET cron_expression=%s,legacy_interval_minutes=NULL,"
-                "legacy_daily_at=NULL,needs_conversion=FALSE,enabled=%s,revision=revision+1,"
-                "next_run_at=%s,updated_at=%s WHERE id=%s",
-                (expression, enabled, upcoming, instant.timestamp(), schedule_id),
-            )
-        else:
-            conn.execute(
-                "UPDATE system_schedules SET enabled=%s,revision=revision+1,next_run_at=%s,updated_at=%s WHERE id=%s",
-                (enabled, upcoming, instant.timestamp(), schedule_id),
-            )
-        from common.admin_audit_events import record_schedule_cron, record_schedule_enabled
-        if expression and row[0] != expression and not record_schedule_cron(
-                conn, schedule_id=f"system-{schedule_id}", before=row[0], after=expression,
-                revision_before=revision):
-            raise RuntimeError("Could not record the system schedule cron audit event.")
-        if bool(row[1]) != enabled and not record_schedule_enabled(
-                conn, schedule_id=f"system-{schedule_id}", before=bool(row[1]), after=enabled,
-                revision_before=revision, revision_after=revision + 1):
-            raise RuntimeError("Could not record the system schedule enabled audit event.")
+        _update_system_schedule_row(conn, schedule_id, expression, enabled, upcoming, instant)
+        _record_system_schedule_changes(conn, schedule_id, row, expression, enabled, revision)
         conn.commit()
         return {"outcome": "updated", "revision": revision + 1,
                 "cron_expression": expression or None, "enabled": enabled}

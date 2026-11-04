@@ -51,11 +51,7 @@ def build_artwork_generation_jobs(conn, media_dir: Path, *, limit: int = MAX_ART
     limit = min(limit, MAX_ARTWORK_GENERATION_ITEMS)
     media_dir = Path(media_dir)
     if bumper_hashes is None:
-        try:
-            from .thumbnails import known_bumper_hashes
-        except ImportError:
-            from thumbnails import known_bumper_hashes
-        bumper_hashes = known_bumper_hashes()
+        bumper_hashes = _default_bumper_hashes()
 
     rows = conn.execute(
         "SELECT v.id,v.duration,sf.file_path FROM videos v "
@@ -74,14 +70,7 @@ def build_artwork_generation_jobs(conn, media_dir: Path, *, limit: int = MAX_ART
         if not video_id or video_id in seen or not isinstance(stored_path, str) or not stored_path:
             continue
         seen.add(video_id)
-        try:
-            stream_path = resolve_media_path(stored_path, media_dir)
-        except (OSError, ValueError, TypeError):
-            continue
-        if stream_path.is_symlink() or not stream_path.is_file():
-            continue
-        artwork_path = stream_path.with_suffix(".jpg")
-        if not artwork_needs_generation(artwork_path, bumper_hashes=bumper_hashes):
+        if not _artwork_generation_needed(stored_path, media_dir, resolve_media_path, bumper_hashes):
             continue
         jobs.append(("artwork_generate", {
             "video_id": video_id,
@@ -92,6 +81,25 @@ def build_artwork_generation_jobs(conn, media_dir: Path, *, limit: int = MAX_ART
         if len(jobs) >= limit:
             break
     return jobs
+
+
+def _default_bumper_hashes():
+    try:
+        from .thumbnails import known_bumper_hashes
+    except ImportError:
+        from thumbnails import known_bumper_hashes
+    return known_bumper_hashes()
+
+
+def _artwork_generation_needed(stored_path: str, media_dir: Path, resolve_media_path, bumper_hashes) -> bool:
+    """Return True when a stored path is a regular media file that lacks valid artwork."""
+    try:
+        stream_path = resolve_media_path(stored_path, media_dir)
+    except (OSError, ValueError, TypeError):
+        return False
+    if stream_path.is_symlink() or not stream_path.is_file():
+        return False
+    return artwork_needs_generation(stream_path.with_suffix(".jpg"), bumper_hashes=bumper_hashes)
 
 
 def queue_artwork_generation_batch(db_url: str | None, media_dir: Path, *, limit: int = MAX_ARTWORK_GENERATION_ITEMS) -> dict:

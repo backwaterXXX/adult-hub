@@ -207,31 +207,38 @@ def _active_orphan_file_job(conn, mode: str, scope: dict, revisions: dict) -> st
         if not isinstance(payload, dict) or payload.get("mode") != mode:
             continue
         if mode == "restore":
-            if operation_id and str(payload.get("operation_id") or "") == operation_id:
+            if _restore_job_matches(payload, operation_id):
                 return str(job_id)
             continue
-
-        plan_id = str(payload.get("plan_id") or "")
-        if not plan_id:
-            continue
-        plan = conn.execute(
-            "SELECT scope,revisions FROM admin_operation_plans WHERE plan_id=%s", (plan_id,)
-        ).fetchone()
-        if plan is None:
-            continue
-        other_scope, other_revisions = plan
-        try:
-            if isinstance(other_scope, str):
-                other_scope = json.loads(other_scope)
-            if isinstance(other_revisions, str):
-                other_revisions = json.loads(other_revisions)
-        except (TypeError, ValueError):
-            continue
-        if (isinstance(other_scope, dict) and isinstance(other_revisions, dict)
-                and _canonical(other_scope) == _canonical(scope)
-                and _canonical(other_revisions) == _canonical(revisions)):
+        if _quarantine_plan_matches(conn, payload, scope, revisions):
             return str(job_id)
     return None
+
+
+def _restore_job_matches(payload: dict, operation_id: str) -> bool:
+    return bool(operation_id) and str(payload.get("operation_id") or "") == operation_id
+
+
+def _quarantine_plan_matches(conn, payload: dict, scope: dict, revisions: dict) -> bool:
+    plan_id = str(payload.get("plan_id") or "")
+    if not plan_id:
+        return False
+    plan = conn.execute(
+        "SELECT scope,revisions FROM admin_operation_plans WHERE plan_id=%s", (plan_id,)
+    ).fetchone()
+    if plan is None:
+        return False
+    other_scope, other_revisions = plan
+    try:
+        if isinstance(other_scope, str):
+            other_scope = json.loads(other_scope)
+        if isinstance(other_revisions, str):
+            other_revisions = json.loads(other_revisions)
+    except (TypeError, ValueError):
+        return False
+    return (isinstance(other_scope, dict) and isinstance(other_revisions, dict)
+            and _canonical(other_scope) == _canonical(scope)
+            and _canonical(other_revisions) == _canonical(revisions))
 
 
 def _active_metadata_job(conn, video_id: str, expected_revision: int, source_fingerprint: str,
