@@ -137,6 +137,162 @@ def _remove_sync_history(channel_id: str) -> tuple[int, int]:
     return removed_runs, removed_source_rows
 
 
+def _source_match_clause(aliases, prefixes):
+    """SQL condition and parameters selecting ``video_sources`` rows owned by the channel."""
+    source_conditions = ["channel_id = ANY(%s)"]
+    source_params: list[Any] = [aliases]
+    for prefix in prefixes:
+        source_conditions.append("source_id LIKE %s ESCAPE '\\'")
+        source_params.append(_escape_like_prefix(prefix))
+    return " OR ".join(source_conditions), source_params
+
+
+def _direct_video_ids(conn, prefixes) -> set[str]:
+    conditions = ["id LIKE %s ESCAPE '\\'" for _ in prefixes]
+    params = [_escape_like_prefix(prefix) for prefix in prefixes]
+    direct_rows = conn.execute(
+        "SELECT id FROM videos WHERE provider='telegram' AND (" + " OR ".join(conditions) + ")",
+        params,
+    ).fetchall()
+    return {str(row[0]) for row in direct_rows}
+
+
+def _target_edges(conn, tables, aliases, prefixes) -> list:
+    if "video_sources" not in tables:
+        return []
+    clause, params = _source_match_clause(aliases, prefixes)
+    return conn.execute(
+        "SELECT video_id, source_id FROM video_sources WHERE provider='telegram' AND (" + clause + ")",
+        params,
+    ).fetchall()
+
+
+def _deletable_videos(conn, tables, candidate_ids, target_source_ids, aliases) -> tuple[list[str], int]:
+    """Split candidate videos into ones safe to delete and ones kept for another active source."""
+    deletable_ids: list[str] = []
+    preserved_shared = 0
+    if not candidate_ids:
+        return deletable_ids, preserved_shared
+
+    existing_rows = conn.execute(
+        "SELECT id FROM videos WHERE id = ANY(%s)",
+        (candidate_ids,),
+    ).fetchall()
+    existing_ids = {str(row[0]) for row in existing_rows}
+
+    video_sources_map: dict[str, list[tuple]] = {}
+    if "video_sources" in tables and existing_ids:
+        source_rows = conn.execute(
+            "SELECT video_id, source_id, provider, channel_id, is_active "
+            "FROM video_sources WHERE video_id = ANY(%s)",
+            (list(existing_ids),),
+        ).fetchall()
+        for s_row in source_rows:
+            v_id = str(s_row[0])
+            video_sources_map.setdefault(v_id, []).append(s_row)
+
+    for video_id in sorted(existing_ids):
+        other_active = False
+        if "video_sources" in tables:
+            rows = video_sources_map.get(video_id, [])
+            other_active = any(
+                bool(row[4]) and not (
+                    str(row[1]) in target_source_ids
+                    or (str(row[2]) == "telegram" and str(row[3] or "") in aliases)
+                )
+                for row in rows
+            )
+        if other_active:
+            preserved_shared += 1
+        else:
+            deletable_ids.append(video_id)
+    return deletable_ids, preserved_shared
+
+
+def _files_by_video(conn, tables, deletable_ids) -> dict[str, list[str]]:
+    video_files_map: dict[str, list[str]] = {}
+    if deletable_ids and "synced_files" in tables:
+        file_rows = conn.execute(
+            "SELECT video_id, file_path FROM synced_files WHERE video_id = ANY(%s) ORDER BY file_path",
+            (deletable_ids,),
+        ).fetchall()
+        for row in file_rows:
+            v_id = str(row[0])
+            video_files_map.setdefault(v_id, []).append(str(row[1]))
+    return video_files_map
+
+
+def _validate_catalog_paths(services, media_dir: Path, video_id_list, video_files_map) -> None:
+    """Check every file path before any destructive action (W6)."""
+    for video_id in video_id_list:
+        for stored_path in video_files_map.get(video_id, []):
+            try:
+                services.resolve_media_path(stored_path, media_dir)
+            except ValueError as exc:
+                services.logger.warning("Refusing unsafe channel-removal path for %s", video_id)
+                raise RuntimeError(
+                    "A catalog file path failed safety checks; no catalog row was deleted."
+                ) from exc
+
+
+def _remove_managed_files(paths, media_dir: Path, services, deleted_videos: int, deleted_files: int) -> int:
+    """Delete the managed sidecar files for one video; returns the updated file count."""
+    file_families = []
+    for stored_path in paths:
+        stream_path = services.resolve_media_path(stored_path, media_dir)
+        file_families.append(stream_path)
+
+    for stream_path in file_families:
+        for suffix in (".strm", ".nfo", ".jpg", ".thumb_fail"):
+            candidate = stream_path.with_suffix(suffix)
+            try:
+                if candidate.exists() or candidate.is_symlink():
+                    candidate.unlink()
+                    deleted_files += 1
+            except OSError as exc:
+                raise RuntimeError(
+                    f"A managed video file could not be removed; catalog cleanup stopped after deleting {deleted_videos} videos and {deleted_files} files."
+                ) from exc
+    return deleted_files
+
+
+def _delete_video_rows(conn, tables, video_id: str) -> int:
+    """Delete one video's dependent rows and the video; returns the removed synced_files count."""
+    deleted_synced_files = 0
+    if "synced_files" in tables:
+        cur = conn.execute("DELETE FROM synced_files WHERE video_id=%s", (video_id,))
+        deleted_synced_files += getattr(cur, "rowcount", 0) or 0
+    if "video_sources" in tables:
+        conn.execute("DELETE FROM video_sources WHERE video_id=%s", (video_id,))
+    if "dead_streams" in tables:
+        conn.execute("DELETE FROM dead_streams WHERE video_id=%s", (video_id,))
+    if "video_duplicate_decisions" in tables:
+        conn.execute(
+            "DELETE FROM video_duplicate_decisions WHERE loser_id=%s OR keeper_id=%s",
+            (video_id, video_id),
+        )
+    if "video_duplicate_dismissals" in tables:
+        conn.execute(
+            "DELETE FROM video_duplicate_dismissals WHERE left_id=%s OR right_id=%s",
+            (video_id, video_id),
+        )
+    if "admin_quality_acknowledgements" in tables:
+        conn.execute("DELETE FROM admin_quality_acknowledgements WHERE video_id=%s", (video_id,))
+    conn.execute("DELETE FROM videos WHERE id=%s", (video_id,))
+    return deleted_synced_files
+
+
+def _delete_channel_sources(conn, tables, aliases, prefixes) -> None:
+    if "video_sources" not in tables:
+        return
+    clause, params = _source_match_clause(aliases, prefixes)
+    with conn:
+        conn.execute(
+            "DELETE FROM video_sources WHERE provider='telegram' AND (" + clause + ")",
+            params,
+        )
+
+
 def remove_telegram_channel(conn, media_dir: Path, channel_id: str, job_id: str, services,
                             record_progress) -> dict:
     """Delete channel-owned videos, their managed files, and source sync history.
@@ -156,86 +312,15 @@ def remove_telegram_channel(conn, media_dir: Path, channel_id: str, job_id: str,
         prefixes = [f"telegram:{value}:" for value in aliases]
         tables = set(db.table_names(conn))
 
-        conditions = ["id LIKE %s ESCAPE '\\'" for _ in prefixes]
-        params = [_escape_like_prefix(prefix) for prefix in prefixes]
-        direct_rows = conn.execute(
-            "SELECT id FROM videos WHERE provider='telegram' AND (" + " OR ".join(conditions) + ")",
-            params,
-        ).fetchall()
-        direct_ids = {str(row[0]) for row in direct_rows}
-
-        target_edges = []
-        if "video_sources" in tables:
-            source_conditions = ["channel_id = ANY(%s)"]
-            source_params: list[Any] = [aliases]
-            for prefix in prefixes:
-                source_conditions.append("source_id LIKE %s ESCAPE '\\'")
-                source_params.append(_escape_like_prefix(prefix))
-            target_edges = conn.execute(
-                "SELECT video_id, source_id FROM video_sources WHERE provider='telegram' AND ("
-                + " OR ".join(source_conditions) + ")",
-                source_params,
-            ).fetchall()
+        direct_ids = _direct_video_ids(conn, prefixes)
+        target_edges = _target_edges(conn, tables, aliases, prefixes)
         target_source_ids = {str(row[1]) for row in target_edges}
         candidate_ids = sorted(direct_ids | {str(row[0]) for row in target_edges})
 
-        deletable_ids: list[str] = []
-        preserved_shared = 0
-
-        if candidate_ids:
-            existing_rows = conn.execute(
-                "SELECT id FROM videos WHERE id = ANY(%s)",
-                (candidate_ids,),
-            ).fetchall()
-            existing_ids = {str(row[0]) for row in existing_rows}
-
-            video_sources_map: dict[str, list[tuple]] = {}
-            if "video_sources" in tables and existing_ids:
-                source_rows = conn.execute(
-                    "SELECT video_id, source_id, provider, channel_id, is_active "
-                    "FROM video_sources WHERE video_id = ANY(%s)",
-                    (list(existing_ids),),
-                ).fetchall()
-                for s_row in source_rows:
-                    v_id = str(s_row[0])
-                    video_sources_map.setdefault(v_id, []).append(s_row)
-
-            for video_id in sorted(existing_ids):
-                other_active = False
-                if "video_sources" in tables:
-                    rows = video_sources_map.get(video_id, [])
-                    other_active = any(
-                        bool(row[4]) and not (
-                            str(row[1]) in target_source_ids
-                            or (str(row[2]) == "telegram" and str(row[3] or "") in aliases)
-                        )
-                        for row in rows
-                    )
-                if other_active:
-                    preserved_shared += 1
-                else:
-                    deletable_ids.append(video_id)
-
-        video_files_map: dict[str, list[str]] = {}
-        if deletable_ids and "synced_files" in tables:
-            file_rows = conn.execute(
-                "SELECT video_id, file_path FROM synced_files WHERE video_id = ANY(%s) ORDER BY file_path",
-                (deletable_ids,),
-            ).fetchall()
-            for row in file_rows:
-                v_id = str(row[0])
-                video_files_map.setdefault(v_id, []).append(str(row[1]))
-
-        # Validate all file paths upfront before taking any destructive action (W6)
-        for video_id in deletable_ids:
-            for stored_path in video_files_map.get(video_id, []):
-                try:
-                    services.resolve_media_path(stored_path, media_dir)
-                except ValueError as exc:
-                    services.logger.warning("Refusing unsafe channel-removal path for %s", video_id)
-                    raise RuntimeError(
-                        "A catalog file path failed safety checks; no catalog row was deleted."
-                    ) from exc
+        deletable_ids, preserved_shared = _deletable_videos(
+            conn, tables, candidate_ids, target_source_ids, aliases)
+        video_files_map = _files_by_video(conn, tables, deletable_ids)
+        _validate_catalog_paths(services, media_dir, deletable_ids, video_files_map)
 
         record_progress(conn, job_id, "removing_source_data", completed=0,
                         total=len(deletable_ids))
@@ -244,61 +329,15 @@ def remove_telegram_channel(conn, media_dir: Path, channel_id: str, job_id: str,
         deleted_files = 0
         deleted_synced_files = 0
         for index, video_id in enumerate(deletable_ids, start=1):
-            paths = video_files_map.get(video_id, [])
-            file_families = []
-            for stored_path in paths:
-                stream_path = services.resolve_media_path(stored_path, media_dir)
-                file_families.append(stream_path)
-
-            for stream_path in file_families:
-                for suffix in (".strm", ".nfo", ".jpg", ".thumb_fail"):
-                    candidate = stream_path.with_suffix(suffix)
-                    try:
-                        if candidate.exists() or candidate.is_symlink():
-                            candidate.unlink()
-                            deleted_files += 1
-                    except OSError as exc:
-                        raise RuntimeError(
-                            f"A managed video file could not be removed; catalog cleanup stopped after deleting {deleted_videos} videos and {deleted_files} files."
-                        ) from exc
-
+            deleted_files = _remove_managed_files(
+                video_files_map.get(video_id, []), media_dir, services, deleted_videos, deleted_files)
             with conn:
-                if "synced_files" in tables:
-                    cur = conn.execute("DELETE FROM synced_files WHERE video_id=%s", (video_id,))
-                    deleted_synced_files += getattr(cur, "rowcount", 0) or 0
-                if "video_sources" in tables:
-                    conn.execute("DELETE FROM video_sources WHERE video_id=%s", (video_id,))
-                if "dead_streams" in tables:
-                    conn.execute("DELETE FROM dead_streams WHERE video_id=%s", (video_id,))
-                if "video_duplicate_decisions" in tables:
-                    conn.execute(
-                        "DELETE FROM video_duplicate_decisions WHERE loser_id=%s OR keeper_id=%s",
-                        (video_id, video_id),
-                    )
-                if "video_duplicate_dismissals" in tables:
-                    conn.execute(
-                        "DELETE FROM video_duplicate_dismissals WHERE left_id=%s OR right_id=%s",
-                        (video_id, video_id),
-                    )
-                if "admin_quality_acknowledgements" in tables:
-                    conn.execute("DELETE FROM admin_quality_acknowledgements WHERE video_id=%s", (video_id,))
-                conn.execute("DELETE FROM videos WHERE id=%s", (video_id,))
+                deleted_synced_files += _delete_video_rows(conn, tables, video_id)
                 deleted_videos += 1
             record_progress(conn, job_id, "removing_source_data", completed=index,
                             total=len(deletable_ids))
 
-        if "video_sources" in tables:
-            source_conditions = ["channel_id = ANY(%s)"]
-            source_params = [aliases]
-            for prefix in prefixes:
-                source_conditions.append("source_id LIKE %s ESCAPE '\\'")
-                source_params.append(_escape_like_prefix(prefix))
-            with conn:
-                conn.execute(
-                    "DELETE FROM video_sources WHERE provider='telegram' AND ("
-                    + " OR ".join(source_conditions) + ")",
-                    source_params,
-                )
+        _delete_channel_sources(conn, tables, aliases, prefixes)
         if "telegram_channel_state" in tables:
             with conn:
                 conn.execute("DELETE FROM telegram_channel_state WHERE channel_id = ANY(%s)", (aliases,))
