@@ -62,6 +62,18 @@ def _issue(kind, severity, title, message, object_type, object_id,
     return issue
 
 
+def _is_failed_source(source: dict) -> bool:
+    if source.get("success") is True:
+        return False
+    warnings = source.get("warnings")
+    if isinstance(warnings, list) and any(
+            isinstance(item, str) and item.startswith("history batch: ") for item in warnings):
+        return False
+    # Old history formats may not carry a success flag. Treat it as failed
+    # only when a failure marker is present, never by assuming falsy means bad.
+    return source.get("success") is False or bool(source.get("error"))
+
+
 def _latest_source_failures(history):
     """Return failures from the newest recorded run for each source."""
     runs = history.get("runs") if isinstance(history, dict) else None
@@ -86,17 +98,8 @@ def _latest_source_failures(history):
 
     failures = []
     for source_id, (source, run_time) in latest.items():
-        if source.get("success") is True:
-            continue
-        warnings = source.get("warnings")
-        if isinstance(warnings, list) and any(
-                isinstance(item, str) and item.startswith("history batch: ") for item in warnings):
-            continue
-        # Old history formats may not carry a success flag. Treat it as failed
-        # only when a failure marker is present, never by assuming falsy means bad.
-        if source.get("success") is not False and not source.get("error"):
-            continue
-        failures.append((source_id, source, run_time))
+        if _is_failed_source(source):
+            failures.append((source_id, source, run_time))
     return failures
 
 

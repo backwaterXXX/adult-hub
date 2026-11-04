@@ -45,6 +45,21 @@ def record_event(db_url: str | None, *, method: str, route: str,
         conn.close()
 
 
+def _event_filters(method: str, outcome: str, area: str) -> tuple[list[str], list]:
+    clauses, params = [], []
+    if method:
+        clauses.append("method=%s")
+        params.append(method)
+    if outcome:
+        clauses.append("outcome=%s")
+        params.append(outcome)
+    if area:
+        prefixes = _AREA_ROUTE_PREFIXES[area]
+        clauses.append("(" + " OR ".join("route LIKE %s" for _ in prefixes) + ")")
+        params.extend(f"/admin/api/v2/{prefix}/%" for prefix in prefixes)
+    return clauses, params
+
+
 def list_events(db_url: str | None, *, limit: int = 50, offset: int = 0,
                 method: str | None = None, outcome: str | None = None,
                 area: str | None = None) -> dict:
@@ -62,17 +77,7 @@ def list_events(db_url: str | None, *, limit: int = 50, offset: int = 0,
         raise ValueError("outcome is not supported")
     if area and area not in _AREAS:
         raise ValueError("area is not supported")
-    clauses, params = [], []
-    if method:
-        clauses.append("method=%s")
-        params.append(method)
-    if outcome:
-        clauses.append("outcome=%s")
-        params.append(outcome)
-    if area:
-        prefixes = _AREA_ROUTE_PREFIXES[area]
-        clauses.append("(" + " OR ".join("route LIKE %s" for _ in prefixes) + ")")
-        params.extend(f"/admin/api/v2/{prefix}/%" for prefix in prefixes)
+    clauses, params = _event_filters(method, outcome, area)
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     conn = db.connect(db_url)
     try:

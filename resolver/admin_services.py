@@ -13,33 +13,30 @@ def _safe_job_failure_code(result, action: str | None = None) -> str | None:
     return classify_job_failure(action, result)
 
 
+def _safe_progress_entry(raw) -> dict | None:
+    if not isinstance(raw, dict) or raw.get("stage") not in _JOB_PROGRESS_STAGES:
+        return None
+    progress = {"stage": raw["stage"]}
+    stamp = raw.get("updated_at")
+    if isinstance(stamp, int) and stamp >= 0:
+        progress["updated_at"] = stamp
+    for key in ("completed", "total"):
+        value = raw.get(key)
+        if isinstance(value, int) and value >= 0:
+            progress[key] = value
+    return progress
+
+
 def _safe_job_progress(result: dict) -> tuple[dict | None, list[dict]]:
     raw = result.get("progress") if isinstance(result, dict) else None
-    progress = None
-    if isinstance(raw, dict) and raw.get("stage") in _JOB_PROGRESS_STAGES:
-        progress = {"stage": raw["stage"]}
-        stamp = raw.get("updated_at")
-        if isinstance(stamp, int) and stamp >= 0:
-            progress["updated_at"] = stamp
-        for key in ("completed", "total"):
-            value = raw.get(key)
-            if isinstance(value, int) and value >= 0:
-                progress[key] = value
+    progress = _safe_progress_entry(raw)
     events = []
     raw_events = result.get("events") if isinstance(result, dict) else None
     if isinstance(raw_events, list):
         for event in raw_events[-20:]:
-            if not isinstance(event, dict) or event.get("stage") not in _JOB_PROGRESS_STAGES:
-                continue
-            safe = {"stage": event["stage"]}
-            stamp = event.get("updated_at")
-            if isinstance(stamp, int) and stamp >= 0:
-                safe["updated_at"] = stamp
-            for key in ("completed", "total"):
-                value = event.get(key)
-                if isinstance(value, int) and value >= 0:
-                    safe[key] = value
-            events.append(safe)
+            safe = _safe_progress_entry(event)
+            if safe is not None:
+                events.append(safe)
     return progress, events
 
 

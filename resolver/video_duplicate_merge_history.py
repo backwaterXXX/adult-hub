@@ -7,6 +7,37 @@ from common import db
 from video_duplicate_scoring import _prepare
 
 
+def _load_page_videos(conn, db_api, page_ids) -> dict[str, dict]:
+    """Load display rows and OSHASH/PHASH fingerprints for the videos on one page."""
+    placeholders = ",".join(["%s"] * len(page_ids))
+    columns = set(db_api.table_columns(conn, "videos"))
+    optional = {"provider": "''", "title": "''", "slug": "''", "duration": "NULL",
+                "performers": "'[]'", "studio": "''", "thumbnail": "NULL"}
+    select = ["id"] + [name if name in columns else f"{fallback} AS {name}"
+                        for name, fallback in optional.items()]
+    if "url" in columns:
+        select.append("url AS source_url")
+    elif "source_url" in columns:
+        select.append("source_url")
+    else:
+        select.append("'' AS source_url")
+    videos = {str(row["id"]): dict(row) for row in conn.execute(
+        f"SELECT {', '.join(select)} FROM videos WHERE id IN ({placeholders})", list(page_ids)
+    ).fetchall()}
+    _prepare(list(videos.values()))
+    if "video_fingerprints" in db_api.table_names(conn):
+        for video_id, algorithm, fingerprint in conn.execute(
+            "SELECT video_id,algorithm,fingerprint FROM video_fingerprints "
+            "WHERE video_id=ANY(%s) AND algorithm=ANY(%s)",
+            (list(page_ids), ["OSHASH", "PHASH"]),
+        ).fetchall():
+            key = str(algorithm or "").lower()
+            value = str(fingerprint or "").lower()
+            if key in {"oshash", "phash"} and re.fullmatch(r"[0-9a-f]{16}", value):
+                videos[str(video_id)][key] = value
+    return videos
+
+
 def find_active_oshash_merges(
     db_url: str | None, limit: int = 25, offset: int = 0, *, db_api=db, public_row_fn,
 ) -> dict:
@@ -46,32 +77,7 @@ def find_active_oshash_merges(
 
         page_ids = {group["keeper_id"] for group in page}
         page_ids.update(loser_id for group in page for loser_id in group["loser_ids"])
-        placeholders = ",".join(["%s"] * len(page_ids))
-        columns = set(db_api.table_columns(conn, "videos"))
-        optional = {"provider": "''", "title": "''", "slug": "''", "duration": "NULL",
-                    "performers": "'[]'", "studio": "''", "thumbnail": "NULL"}
-        select = ["id"] + [name if name in columns else f"{fallback} AS {name}"
-                            for name, fallback in optional.items()]
-        if "url" in columns:
-            select.append("url AS source_url")
-        elif "source_url" in columns:
-            select.append("source_url")
-        else:
-            select.append("'' AS source_url")
-        videos = {str(row["id"]): dict(row) for row in conn.execute(
-            f"SELECT {', '.join(select)} FROM videos WHERE id IN ({placeholders})", list(page_ids)
-        ).fetchall()}
-        _prepare(list(videos.values()))
-        if "video_fingerprints" in db_api.table_names(conn):
-            for video_id, algorithm, fingerprint in conn.execute(
-                "SELECT video_id,algorithm,fingerprint FROM video_fingerprints "
-                "WHERE video_id=ANY(%s) AND algorithm=ANY(%s)",
-                (list(page_ids), ["OSHASH", "PHASH"]),
-            ).fetchall():
-                key = str(algorithm or "").lower()
-                value = str(fingerprint or "").lower()
-                if key in {"oshash", "phash"} and re.fullmatch(r"[0-9a-f]{16}", value):
-                    videos[str(video_id)][key] = value
+        videos = _load_page_videos(conn, db_api, page_ids)
 
         operation_ids = list(dict.fromkeys(group["operation_id"] for group in page))
         operation_sizes = {

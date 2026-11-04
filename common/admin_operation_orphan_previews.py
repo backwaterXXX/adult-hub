@@ -14,6 +14,33 @@ from common import db
 from common.admin_operations import MAX_ORPHAN_QUARANTINE_BATCH, PLAN_TTL_SECONDS, _canonical
 
 
+def _orphan_relative_posix(relative) -> PurePosixPath | None:
+    if not isinstance(relative, str) or not relative or len(relative) > 2048 or "\x00" in relative:
+        return None
+    posix = PurePosixPath(relative)
+    if posix.is_absolute() or ".." in posix.parts or "" in posix.parts or "\\" in relative:
+        return None
+    return posix
+
+
+def _orphan_identity(item: dict) -> dict | None:
+    identity = {key: item.get(key) for key in ("size", "mtime_ns", "dev", "ino")}
+    if any(type(value) is not int or value < 0 for value in identity.values()):
+        return None
+    return identity
+
+
+def _orphan_file_is_unchanged(original: Path, root: Path, identity: dict) -> bool:
+    """Return True when the file is still a regular file under root with the recorded identity."""
+    try:
+        stat = original.lstat()
+    except OSError:
+        return False
+    return not (original.is_symlink() or not original.is_file() or not original.resolve().is_relative_to(root)
+                or any(getattr(stat, key) != identity[stored] for key, stored in
+                       (("st_size", "size"), ("st_mtime_ns", "mtime_ns"), ("st_dev", "dev"), ("st_ino", "ino"))))
+
+
 def _safe_orphan_files(raw, media_root: Path) -> list[dict] | None:
     if not isinstance(raw, list) or not 1 <= len(raw) <= 25:
         return None
@@ -23,10 +50,8 @@ def _safe_orphan_files(raw, media_root: Path) -> list[dict] | None:
         if not isinstance(item, dict):
             return None
         relative = item.get("path")
-        if not isinstance(relative, str) or not relative or len(relative) > 2048 or "\x00" in relative:
-            return None
-        posix = PurePosixPath(relative)
-        if posix.is_absolute() or ".." in posix.parts or "" in posix.parts or "\\" in relative:
+        posix = _orphan_relative_posix(relative)
+        if posix is None:
             return None
         suffix = Path(relative).suffix.lower()
         if suffix not in {".strm", ".nfo", ".jpg"} or item.get("suffix") != suffix:
@@ -37,17 +62,11 @@ def _safe_orphan_files(raw, media_root: Path) -> list[dict] | None:
         if family != family_key or relative in seen:
             return None
         seen.add(relative)
-        identity = {key: item.get(key) for key in ("size", "mtime_ns", "dev", "ino")}
-        if any(type(value) is not int or value < 0 for value in identity.values()):
+        identity = _orphan_identity(item)
+        if identity is None:
             return None
         original = root / Path(*posix.parts)
-        try:
-            stat = original.lstat()
-        except OSError:
-            return None
-        if (original.is_symlink() or not original.is_file() or not original.resolve().is_relative_to(root)
-                or any(getattr(stat, key) != identity[stored] for key, stored in
-                       (("st_size", "size"), ("st_mtime_ns", "mtime_ns"), ("st_dev", "dev"), ("st_ino", "ino")))):
+        if not _orphan_file_is_unchanged(original, root, identity):
             return None
         files.append({"path": relative, "suffix": suffix, **identity})
     files.sort(key=lambda item: (item["path"].casefold(), item["path"]))
