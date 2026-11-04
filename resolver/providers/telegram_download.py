@@ -107,27 +107,10 @@ async def _download_sequential(
       - Chunks limit is ceil((prefix_skip + length) / request_size); length=None streams to EOF.
       - Cleanly closes the download iterator on success, error, or cancellation.
     """
-    offset = max(0, int(offset or 0))
-    if length is not None:
-        length = int(length)
-        if length <= 0:
-            return
-
-    if request_size is not None:
-        req_size = _legal_request_size(request_size)
-    elif length is not None and length < 524288:
-        req_size = _legal_request_size(length)
-    else:
-        req_size = 524288
-
-    aligned_offset = (offset // req_size) * req_size
-    prefix_skip = offset - aligned_offset
-
-    if length is not None:
-        total_needed = prefix_skip + length
-        chunk_limit = max(1, (total_needed + req_size - 1) // req_size)
-    else:
-        chunk_limit = None
+    plan = _plan_download(offset, length, request_size)
+    if plan is None:
+        return
+    aligned_offset, prefix_skip, req_size, chunk_limit, length = plan
 
     iterator = client.iter_download(
         media, offset=aligned_offset, limit=chunk_limit, request_size=req_size
@@ -148,24 +131,60 @@ async def _download_sequential(
             data = bytes(chunk)
             if not data:
                 continue
-            if skip > 0:
-                if len(data) <= skip:
-                    skip -= len(data)
-                    continue
-                data = data[skip:]
-                skip = 0
-            if remaining is not None:
-                if remaining <= 0:
-                    break
-                if len(data) > remaining:
-                    data = data[:remaining]
-                remaining -= len(data)
-            if data:
-                yield data
-            if remaining is not None and remaining <= 0:
+            out, skip, remaining, stop = _consume_chunk(data, skip, remaining)
+            if out:
+                yield out
+            if stop:
                 break
     finally:
         await _close_download_iterator(iterator)
+
+
+def _plan_download(offset: int, length: Optional[int], request_size: Optional[int]):
+    """Return (aligned_offset, prefix_skip, req_size, chunk_limit, length), or None for an empty range."""
+    offset = max(0, int(offset or 0))
+    if length is not None:
+        length = int(length)
+        if length <= 0:
+            return None
+
+    if request_size is not None:
+        req_size = _legal_request_size(request_size)
+    elif length is not None and length < 524288:
+        req_size = _legal_request_size(length)
+    else:
+        req_size = 524288
+
+    aligned_offset = (offset // req_size) * req_size
+    prefix_skip = offset - aligned_offset
+
+    if length is not None:
+        total_needed = prefix_skip + length
+        chunk_limit = max(1, (total_needed + req_size - 1) // req_size)
+    else:
+        chunk_limit = None
+    return aligned_offset, prefix_skip, req_size, chunk_limit, length
+
+
+def _consume_chunk(data: bytes, skip: int, remaining: Optional[int]) -> tuple[bytes, int, Optional[int], bool]:
+    """Apply the leading skip and the length limit to one non-empty chunk.
+
+    Returns (bytes to yield, skip left, remaining left, stop). ``stop`` means
+    the requested range is complete and the download should end.
+    """
+    if skip > 0:
+        if len(data) <= skip:
+            return b"", skip - len(data), remaining, False
+        data = data[skip:]
+        skip = 0
+    if remaining is not None:
+        if remaining <= 0:
+            return b"", skip, remaining, True
+        if len(data) > remaining:
+            data = data[:remaining]
+        remaining -= len(data)
+    stop = remaining is not None and remaining <= 0
+    return data, skip, remaining, stop
 
 
 async def _download_block(client, media, block_offset: int, block_length: int) -> bytes:

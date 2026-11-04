@@ -86,26 +86,16 @@ async def _download_thumb_uncached_impl(provider, ref: str) -> Optional[bytes]:
         return None
     if message is None:
         return None
-    candidates = []
     try:
-        doc = getattr(getattr(message, "media", None), "document", None)
-        doc_id = getattr(doc, "id", None)
-        if doc_id is not None and str(doc_id) != str(unique_id):
-            return None
-        thumbs = list(getattr(doc, "thumbs", None) or [])
-        # Largest first: higher quality and sync won't reject (<1000 B).
-        for size_obj in reversed(thumbs):
-            candidates.append((doc, size_obj))
-        photo = getattr(message, "photo", None)
-        photo_id = getattr(photo, "id", None)
-        if doc is None and photo_id is not None and str(photo_id) != str(unique_id):
-            return None
-        sizes = list(getattr(photo, "sizes", None) or [])
-        if photo is not None:
-            for size_obj in reversed(sizes):
-                candidates.append((photo, size_obj))
+        candidates = _thumb_candidates(message, unique_id)
     except Exception:
         return None
+    if candidates is None:
+        return None
+    return await _first_valid_thumb(client, candidates)
+
+
+async def _first_valid_thumb(client, candidates) -> Optional[bytes]:
     for media_obj, size_obj in candidates:
         try:
             data = await client.download_media(
@@ -118,3 +108,27 @@ async def _download_thumb_uncached_impl(provider, ref: str) -> Optional[bytes]:
         if 0 < len(raw) <= 2_000_000:
             return raw
     return None
+
+
+def _thumb_candidates(message, unique_id):
+    """Return (media, size) pairs, largest first, or None if the message belongs to another file."""
+    candidates = []
+    doc = getattr(getattr(message, "media", None), "document", None)
+    doc_id = getattr(doc, "id", None)
+    if doc_id is not None and str(doc_id) != str(unique_id):
+        return None
+    thumbs = list(getattr(doc, "thumbs", None) or [])
+    # Largest first: higher quality and sync won't reject (<1000 B).
+    for size_obj in reversed(thumbs):
+        candidates.append((doc, size_obj))
+    photo = getattr(message, "photo", None)
+    photo_id = getattr(photo, "id", None)
+    if doc is None and photo_id is not None and str(photo_id) != str(unique_id):
+        return None
+    sizes = list(getattr(photo, "sizes", None) or [])
+    if photo is not None:
+        for size_obj in reversed(sizes):
+            candidates.append((photo, size_obj))
+    return candidates
+
+

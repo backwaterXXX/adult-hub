@@ -70,57 +70,16 @@ def handle_hide(conn, db_url, plan_id, row, config, scope, revisions, now):
 def handle_hide_batch(conn, db_url, plan_id, row, config, scope, revisions, now):
     if row['operation_type'] == 'hide_batch':
         groups = scope.get('groups') if isinstance(scope, dict) else None
-        if not isinstance(groups, list) or not groups or len(groups) > _core.MAX_QUARANTINE_BATCH:
+        normalized_groups = _normalize_hide_groups(groups)
+        if normalized_groups is None:
             conn.rollback()
-            return {'outcome': 'conflict', 'message': 'The saved operation scope is invalid.'}
-        stale_ids = []
-        normalized_groups = []
-        total_losers = 0
-        for group in groups:
-            if not isinstance(group, dict):
-                conn.rollback()
-                return {'outcome': 'conflict', 'message': 'The saved operation scope is invalid.'}
-            keeper_id = str(group.get('keeper_id') or '')
-            loser_ids = group.get('loser_ids')
-            if not keeper_id or not isinstance(loser_ids, list) or (not loser_ids):
-                conn.rollback()
-                return {'outcome': 'conflict', 'message': 'The saved operation scope is invalid.'}
-            loser_ids = list(map(str, loser_ids))
-            total_losers += len(loser_ids)
-            if total_losers > _core.MAX_QUARANTINE_BATCH:
-                conn.rollback()
-                return {'outcome': 'conflict', 'message': 'The saved operation scope is invalid.'}
-            normalized_groups.append((keeper_id, loser_ids))
+            return _invalid_hide_scope()
         snapshot_ids = list(dict.fromkeys(
             video_id for keeper_id, loser_ids in normalized_groups for video_id in [keeper_id, *loser_ids]
         ))
         snapshots = _core._video_snapshots(conn, snapshot_ids, config)
-        dismissal_pairs = {
-            tuple(sorted((keeper_id, loser_id)))
-            for keeper_id, loser_ids in normalized_groups
-            for loser_id in loser_ids
-        }
-        dismissed_pairs = set()
-        if dismissal_pairs:
-            pair_values = sorted(dismissal_pairs)
-            pair_predicate = " OR ".join("(left_id=%s AND right_id=%s)" for _pair in pair_values)
-            pair_params = [video_id for pair in pair_values for video_id in pair]
-            dismissed_pairs = {
-                tuple(sorted((str(left_id), str(right_id))))
-                for left_id, right_id in conn.execute(
-                    "SELECT left_id,right_id FROM video_duplicate_dismissals "
-                    f"WHERE active=1 AND ({pair_predicate})",
-                    pair_params,
-                ).fetchall()
-            }
-        for keeper_id, loser_ids in normalized_groups:
-            for video_id in [keeper_id, *loser_ids]:
-                current, snapshot = snapshots.get(video_id, (None, None))
-                if current is None or current != revisions.get(video_id) or snapshot['active_decision'] or snapshot['source_disabled'] or (video_id != keeper_id and snapshot['shared_paths']):
-                    stale_ids.append(video_id)
-            for loser_id in loser_ids:
-                if tuple(sorted((keeper_id, loser_id))) in dismissed_pairs:
-                    stale_ids.append(loser_id)
+        dismissed_pairs = _dismissed_hide_pairs(conn, normalized_groups)
+        stale_ids = _stale_hide_ids(normalized_groups, snapshots, revisions, dismissed_pairs)
         if stale_ids:
             conn.commit()
             return {'outcome': 'stale', 'stale_ids': list(dict.fromkeys(stale_ids)), 'message': 'Library data changed after this preview. Create a new preview.'}
@@ -128,26 +87,93 @@ def handle_hide_batch(conn, db_url, plan_id, row, config, scope, revisions, now)
         active_jobs = _core._active_hide_jobs(conn, [
             (keeper_id, tuple(loser_ids)) for keeper_id, loser_ids in normalized_groups
         ])
-        jobs = []
-        queued_entries = []
-        for keeper_id, loser_ids in normalized_groups:
-            target = (keeper_id, tuple(sorted(set(loser_ids))))
-            job_id = active_jobs.get(target)
-            reused = job_id is not None
-            if not reused:
-                job_id = _core.uuid.uuid4().hex
-                group_revisions = {video_id: revisions[video_id] for video_id in [keeper_id, *loser_ids]}
-                payload = {'keeper_id': keeper_id, 'loser_ids': loser_ids, 'expected_revisions': group_revisions}
-                queued_entries.append((job_id, _core.json.dumps(payload, ensure_ascii=False)))
-                active_jobs[target] = job_id
-            jobs.append({'job_id': job_id, 'reused': reused})
+        jobs, queued_entries = _plan_hide_jobs(normalized_groups, active_jobs, revisions)
         _core._insert_queued_jobs(conn, 'hide', queued_entries, now)
         result = {'jobs': jobs}
         conn.execute("UPDATE admin_operation_plans SET state='queued',result=%s,consumed_at=to_timestamp(%s) WHERE plan_id=%s AND state='previewed'", (_core.Jsonb(result), now, plan_id))
-        _core._record_operation_queue_audit(conn, plan_id, row['operation_type'], scope, jobs, all((job['reused'] for job in jobs)))
+        reused = all((job['reused'] for job in jobs))
+        _core._record_operation_queue_audit(conn, plan_id, row['operation_type'], scope, jobs, reused)
         conn.commit()
-        return {'outcome': 'queued', 'plan_id': plan_id, 'jobs': jobs, 'reused': all((job['reused'] for job in jobs))}
+        return {'outcome': 'queued', 'plan_id': plan_id, 'jobs': jobs, 'reused': reused}
     return None
+
+
+def _invalid_hide_scope() -> dict:
+    return {'outcome': 'conflict', 'message': 'The saved operation scope is invalid.'}
+
+
+def _normalize_hide_groups(groups):
+    """Return (keeper_id, loser_ids) pairs, or None when the saved scope is not usable."""
+    if not isinstance(groups, list) or not groups or len(groups) > _core.MAX_QUARANTINE_BATCH:
+        return None
+    normalized_groups = []
+    total_losers = 0
+    for group in groups:
+        if not isinstance(group, dict):
+            return None
+        keeper_id = str(group.get('keeper_id') or '')
+        loser_ids = group.get('loser_ids')
+        if not keeper_id or not isinstance(loser_ids, list) or (not loser_ids):
+            return None
+        loser_ids = list(map(str, loser_ids))
+        total_losers += len(loser_ids)
+        if total_losers > _core.MAX_QUARANTINE_BATCH:
+            return None
+        normalized_groups.append((keeper_id, loser_ids))
+    return normalized_groups
+
+
+def _dismissed_hide_pairs(conn, normalized_groups) -> set:
+    dismissal_pairs = {
+        tuple(sorted((keeper_id, loser_id)))
+        for keeper_id, loser_ids in normalized_groups
+        for loser_id in loser_ids
+    }
+    if not dismissal_pairs:
+        return set()
+    pair_values = sorted(dismissal_pairs)
+    pair_predicate = " OR ".join("(left_id=%s AND right_id=%s)" for _pair in pair_values)
+    pair_params = [video_id for pair in pair_values for video_id in pair]
+    return {
+        tuple(sorted((str(left_id), str(right_id))))
+        for left_id, right_id in conn.execute(
+            "SELECT left_id,right_id FROM video_duplicate_dismissals "
+            f"WHERE active=1 AND ({pair_predicate})",
+            pair_params,
+        ).fetchall()
+    }
+
+
+def _stale_hide_ids(normalized_groups, snapshots, revisions, dismissed_pairs) -> list:
+    stale_ids = []
+    for keeper_id, loser_ids in normalized_groups:
+        for video_id in [keeper_id, *loser_ids]:
+            current, snapshot = snapshots.get(video_id, (None, None))
+            if current is None or current != revisions.get(video_id) or snapshot['active_decision'] or snapshot['source_disabled'] or (video_id != keeper_id and snapshot['shared_paths']):
+                stale_ids.append(video_id)
+        for loser_id in loser_ids:
+            if tuple(sorted((keeper_id, loser_id))) in dismissed_pairs:
+                stale_ids.append(loser_id)
+    return stale_ids
+
+
+def _plan_hide_jobs(normalized_groups, active_jobs, revisions):
+    """Reuse an active job for an identical group or prepare a new queue entry."""
+    jobs = []
+    queued_entries = []
+    for keeper_id, loser_ids in normalized_groups:
+        target = (keeper_id, tuple(sorted(set(loser_ids))))
+        job_id = active_jobs.get(target)
+        reused = job_id is not None
+        if not reused:
+            job_id = _core.uuid.uuid4().hex
+            group_revisions = {video_id: revisions[video_id] for video_id in [keeper_id, *loser_ids]}
+            payload = {'keeper_id': keeper_id, 'loser_ids': loser_ids, 'expected_revisions': group_revisions}
+            queued_entries.append((job_id, _core.json.dumps(payload, ensure_ascii=False)))
+            active_jobs[target] = job_id
+        jobs.append({'job_id': job_id, 'reused': reused})
+    return jobs, queued_entries
+
 
 def handle_performer_merge(conn, db_url, plan_id, row, config, scope, revisions, now):
     if row['operation_type'] == 'performer_merge':

@@ -179,23 +179,42 @@ async def api_thumb(provider: str = Query(...), ref: str = Query(...)):
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Provider '{provider}' not found")
     if provider == "telegram":
-        channel_ref = (ref or "").split(":", 1)[0]
-        auth_check = getattr(prov, "is_channel_authorized", None)
-        if callable(auth_check) and not auth_check(channel_ref):
-            raise HTTPException(status_code=403, detail="Channel not authorized")
-        try:
-            import admin as admin_mod
-            from admin_catalog_queries import _get_video_artwork_path
-            from fastapi.responses import FileResponse
-            local_art = await asyncio.to_thread(_get_video_artwork_path, getattr(admin_mod, "HUB_DB_URL", None), f"telegram:{ref}", getattr(admin_mod, "MEDIA_DIR", "/media/adult"))
-            if local_art is not None and local_art.is_file():
-                return FileResponse(
-                    str(local_art),
-                    media_type="image/jpeg",
-                    headers={"Cache-Control": "public, max-age=3600"},
-                )
-        except Exception:
-            pass
+        _require_authorized_thumb_channel(prov, ref)
+        local_response = await _local_artwork_response(ref)
+        if local_response is not None:
+            return local_response
+    data = await _download_preview(prov, provider, ref)
+    raw = bytes(data)
+    await _reject_black_preview(raw)
+    return Response(content=raw, media_type=_preview_media_type(raw))
+
+
+def _require_authorized_thumb_channel(prov, ref: str) -> None:
+    channel_ref = (ref or "").split(":", 1)[0]
+    auth_check = getattr(prov, "is_channel_authorized", None)
+    if callable(auth_check) and not auth_check(channel_ref):
+        raise HTTPException(status_code=403, detail="Channel not authorized")
+
+
+async def _local_artwork_response(ref: str):
+    """Serve artwork already synced next to the STRM file, or None."""
+    try:
+        import admin as admin_mod
+        from admin_catalog_queries import _get_video_artwork_path
+        from fastapi.responses import FileResponse
+        local_art = await asyncio.to_thread(_get_video_artwork_path, getattr(admin_mod, "HUB_DB_URL", None), f"telegram:{ref}", getattr(admin_mod, "MEDIA_DIR", "/media/adult"))
+        if local_art is not None and local_art.is_file():
+            return FileResponse(
+                str(local_art),
+                media_type="image/jpeg",
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+    except Exception:
+        pass
+    return None
+
+
+async def _download_preview(prov, provider: str, ref: str):
     fetch_fn = getattr(prov, "download_thumb", None)
     if not callable(fetch_fn):
         raise HTTPException(status_code=404, detail=f"Thumbs not supported for '{provider}'")
@@ -211,7 +230,10 @@ async def api_thumb(provider: str = Query(...), ref: str = Query(...)):
         raise HTTPException(status_code=502, detail="Preview download failed")
     if not data:
         raise HTTPException(status_code=404, detail="No preview available")
-    raw = bytes(data)
+    return data
+
+
+async def _reject_black_preview(raw: bytes) -> None:
     try:
         from common.image_utils import is_black_image
         if await asyncio.to_thread(is_black_image, raw):
@@ -220,12 +242,15 @@ async def api_thumb(provider: str = Query(...), ref: str = Query(...)):
         raise
     except Exception:
         pass
+
+
+def _preview_media_type(raw: bytes) -> str:
     if raw.startswith(b"\xff\xd8"):
-        media_type = "image/jpeg"
-    elif raw.startswith(b"\x89PNG"):
-        media_type = "image/png"
-    elif raw.startswith(b"RIFF") and b"WEBP" in raw[:16]:
-        media_type = "image/webp"
-    else:
-        media_type = "application/octet-stream"
-    return Response(content=raw, media_type=media_type)
+        return "image/jpeg"
+    if raw.startswith(b"\x89PNG"):
+        return "image/png"
+    if raw.startswith(b"RIFF") and b"WEBP" in raw[:16]:
+        return "image/webp"
+    return "application/octet-stream"
+
+
