@@ -6,6 +6,7 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import yaml
 from common import db
@@ -20,6 +21,11 @@ def _channel_ids(channel_id: str) -> set[str]:
     return values
 
 
+def _escape_like_prefix(prefix: str) -> str:
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{escaped}%"
+
+
 def _source_matches(value, channel_ids: set[str]) -> bool:
     if not isinstance(value, str):
         return False
@@ -27,39 +33,64 @@ def _source_matches(value, channel_ids: set[str]) -> bool:
     return candidate in channel_ids
 
 
-def _acquire_removed_channel_lock(channel_id: str, timeout: float = 30.0):
-    """Wait for the API to disable the channel, then hold its config lock."""
+def _acquire_channel_removal_lock(channel_id: str, timeout: float = 30.0):
+    """Acquire a channel-scoped lock so this channel cannot be concurrently removed or re-added."""
+    from common.managed_sources import channel_lock_path
+
+    target = channel_lock_path(channel_id)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout
+    while True:
+        f = target.open("a+b")
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except (BlockingIOError, OSError):
+            f.close()
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Could not acquire channel removal lock; another removal is in progress.")
+            time.sleep(0.1)
+
+
+def _release_channel_removal_lock(lock_file):
+    if lock_file is not None:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            lock_file.close()
+        except OSError:
+            pass
+
+
+def _verify_channel_not_configured(channel_id: str, timeout: float = 30.0) -> None:
+    """Verify that the channel is disabled/removed in effective config within a bounded timeout."""
     from common.config_loader import find_config_file
-    from common.managed_sources import apply_overrides, overrides_path, read_overrides
+    from common.managed_sources import apply_overrides, config_lock, overrides_path, read_overrides
 
     aliases = _channel_ids(channel_id)
     target = overrides_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = target.with_name(target.name + ".lock")
     deadline = time.monotonic() + timeout
     while True:
-        lock = lock_path.open("a+b")
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
-            base = yaml.safe_load(find_config_file().read_text(encoding="utf-8")) or {}
-            effective = apply_overrides(base, read_overrides(target))
-            telegram = next((source for source in effective.get("sources", [])
-                             if source.get("provider") == "telegram"), {})
-            still_configured = any(
-                isinstance(item, dict) and str(item.get("id", "")).strip() in aliases
-                for item in telegram.get("channels", [])
-            )
-            if not still_configured:
-                return lock
-        except Exception:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-            lock.close()
-            raise
-        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-        lock.close()
+            with config_lock(target, timeout=min(5.0, max(0.5, deadline - time.monotonic()))):
+                base = yaml.safe_load(find_config_file().read_text(encoding="utf-8")) or {}
+                effective = apply_overrides(base, read_overrides(target))
+                telegram = next((source for source in effective.get("sources", [])
+                                 if source.get("provider") == "telegram"), {})
+                still_configured = any(
+                    isinstance(item, dict) and str(item.get("id", "")).strip() in aliases
+                    for item in telegram.get("channels", [])
+                )
+                if not still_configured:
+                    return
+        except Exception as exc:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Channel remains configured; no videos or history were deleted.") from exc
         if time.monotonic() >= deadline:
             raise RuntimeError("Channel remains configured; no videos or history were deleted.")
-        time.sleep(0.25)
+        time.sleep(0.1)
 
 
 def _remove_sync_history(channel_id: str) -> tuple[int, int]:
@@ -116,17 +147,16 @@ def remove_telegram_channel(conn, media_dir: Path, channel_id: str, job_id: str,
     if not isinstance(channel_id, str) or not channel_id or len(channel_id) > 256:
         raise ValueError("Channel removal requires a valid Telegram channel ID.")
 
-    config_lock = _acquire_removed_channel_lock(channel_id)
+    channel_lock = _acquire_channel_removal_lock(channel_id)
     try:
+        _verify_channel_not_configured(channel_id)
+
         aliases = sorted(_channel_ids(channel_id))
         prefixes = [f"telegram:{value}:" for value in aliases]
         tables = set(db.table_names(conn))
 
-        conditions = []
-        params = []
-        for prefix in prefixes:
-            conditions.append("left(id, length(%s)) = %s")
-            params.extend((prefix, prefix))
+        conditions = ["id LIKE %s ESCAPE '\\'" for _ in prefixes]
+        params = [_escape_like_prefix(prefix) for prefix in prefixes]
         direct_rows = conn.execute(
             "SELECT id FROM videos WHERE provider='telegram' AND (" + " OR ".join(conditions) + ")",
             params,
@@ -136,64 +166,87 @@ def remove_telegram_channel(conn, media_dir: Path, channel_id: str, job_id: str,
         target_edges = []
         if "video_sources" in tables:
             source_conditions = ["channel_id = ANY(%s)"]
-            source_params = [aliases]
+            source_params: list[Any] = [aliases]
             for prefix in prefixes:
-                source_conditions.append("left(source_id, length(%s)) = %s")
-                source_params.extend((prefix, prefix))
+                source_conditions.append("source_id LIKE %s ESCAPE '\\'")
+                source_params.append(_escape_like_prefix(prefix))
             target_edges = conn.execute(
                 "SELECT video_id, source_id FROM video_sources WHERE provider='telegram' AND ("
                 + " OR ".join(source_conditions) + ")",
                 source_params,
             ).fetchall()
         target_source_ids = {str(row[1]) for row in target_edges}
-        candidate_ids = direct_ids | {str(row[0]) for row in target_edges}
-        deletable_ids = []
+        candidate_ids = sorted(direct_ids | {str(row[0]) for row in target_edges})
+
+        deletable_ids: list[str] = []
         preserved_shared = 0
-        for video_id in sorted(candidate_ids):
-            other_active = False
-            if "video_sources" in tables:
-                rows = conn.execute(
-                    "SELECT source_id, provider, channel_id, is_active FROM video_sources WHERE video_id=%s",
-                    (video_id,),
+
+        if candidate_ids:
+            existing_rows = conn.execute(
+                "SELECT id FROM videos WHERE id = ANY(%s)",
+                (candidate_ids,),
+            ).fetchall()
+            existing_ids = {str(row[0]) for row in existing_rows}
+
+            video_sources_map: dict[str, list[tuple]] = {}
+            if "video_sources" in tables and existing_ids:
+                source_rows = conn.execute(
+                    "SELECT video_id, source_id, provider, channel_id, is_active "
+                    "FROM video_sources WHERE video_id = ANY(%s)",
+                    (list(existing_ids),),
                 ).fetchall()
-                other_active = any(
-                    bool(row[3]) and not (
-                        str(row[0]) in target_source_ids
-                        or (str(row[1]) == "telegram" and str(row[2] or "") in aliases)
+                for s_row in source_rows:
+                    v_id = str(s_row[0])
+                    video_sources_map.setdefault(v_id, []).append(s_row)
+
+            for video_id in sorted(existing_ids):
+                other_active = False
+                if "video_sources" in tables:
+                    rows = video_sources_map.get(video_id, [])
+                    other_active = any(
+                        bool(row[4]) and not (
+                            str(row[1]) in target_source_ids
+                            or (str(row[2]) == "telegram" and str(row[3] or "") in aliases)
+                        )
+                        for row in rows
                     )
-                    for row in rows
-                )
-            exists = conn.execute("SELECT 1 FROM videos WHERE id=%s", (video_id,)).fetchone()
-            if exists and other_active:
-                preserved_shared += 1
-            elif exists:
-                deletable_ids.append(video_id)
+                if other_active:
+                    preserved_shared += 1
+                else:
+                    deletable_ids.append(video_id)
+
+        video_files_map: dict[str, list[str]] = {}
+        if deletable_ids and "synced_files" in tables:
+            file_rows = conn.execute(
+                "SELECT video_id, file_path FROM synced_files WHERE video_id = ANY(%s) ORDER BY file_path",
+                (deletable_ids,),
+            ).fetchall()
+            for row in file_rows:
+                v_id = str(row[0])
+                video_files_map.setdefault(v_id, []).append(str(row[1]))
+
+        # Validate all file paths upfront before taking any destructive action (W6)
+        for video_id in deletable_ids:
+            for stored_path in video_files_map.get(video_id, []):
+                try:
+                    services.resolve_media_path(stored_path, media_dir)
+                except ValueError as exc:
+                    services.logger.warning("Refusing unsafe channel-removal path for %s", video_id)
+                    raise RuntimeError(
+                        "A catalog file path failed safety checks; no catalog row was deleted."
+                    ) from exc
 
         record_progress(conn, job_id, "removing_source_data", completed=0,
                         total=len(deletable_ids))
 
         deleted_videos = 0
         deleted_files = 0
+        deleted_synced_files = 0
         for index, video_id in enumerate(deletable_ids, start=1):
-            paths = conn.execute(
-                "SELECT file_path FROM synced_files WHERE video_id=%s ORDER BY file_path",
-                (video_id,),
-            ).fetchall()
+            paths = video_files_map.get(video_id, [])
             file_families = []
-            for (stored_path,) in paths:
-                shared = conn.execute(
-                    "SELECT 1 FROM synced_files WHERE file_path=%s AND video_id<>%s LIMIT 1",
-                    (stored_path, video_id),
-                ).fetchone()
-                if shared:
-                    continue
-                try:
-                    stream_path = services.resolve_media_path(stored_path, media_dir)
-                except ValueError as exc:
-                    services.logger.warning("Refusing unsafe channel-removal path for %s", video_id)
-                    raise RuntimeError(
-                        "A catalog file path failed safety checks; no catalog row was deleted."
-                    ) from exc
+            for stored_path in paths:
+                stream_path = services.resolve_media_path(stored_path, media_dir)
                 file_families.append(stream_path)
 
             for stream_path in file_families:
@@ -204,9 +257,14 @@ def remove_telegram_channel(conn, media_dir: Path, channel_id: str, job_id: str,
                             candidate.unlink()
                             deleted_files += 1
                     except OSError as exc:
-                        raise RuntimeError("A managed video file could not be removed; catalog cleanup stopped.") from exc
+                        raise RuntimeError(
+                            f"A managed video file could not be removed; catalog cleanup stopped after deleting {deleted_videos} videos and {deleted_files} files."
+                        ) from exc
 
             with conn:
+                if "synced_files" in tables:
+                    cur = conn.execute("DELETE FROM synced_files WHERE video_id=%s", (video_id,))
+                    deleted_synced_files += getattr(cur, "rowcount", 0) or 0
                 if "video_sources" in tables:
                     conn.execute("DELETE FROM video_sources WHERE video_id=%s", (video_id,))
                 if "dead_streams" in tables:
@@ -232,8 +290,8 @@ def remove_telegram_channel(conn, media_dir: Path, channel_id: str, job_id: str,
             source_conditions = ["channel_id = ANY(%s)"]
             source_params = [aliases]
             for prefix in prefixes:
-                source_conditions.append("left(source_id, length(%s)) = %s")
-                source_params.extend((prefix, prefix))
+                source_conditions.append("source_id LIKE %s ESCAPE '\\'")
+                source_params.append(_escape_like_prefix(prefix))
             with conn:
                 conn.execute(
                     "DELETE FROM video_sources WHERE provider='telegram' AND ("
@@ -250,10 +308,10 @@ def remove_telegram_channel(conn, media_dir: Path, channel_id: str, job_id: str,
             "channel_id": channel_id,
             "videos_deleted": deleted_videos,
             "files_deleted": deleted_files,
+            "synced_files_deleted": deleted_synced_files,
             "shared_videos_preserved": preserved_shared,
             "history_runs_removed": removed_runs,
             "history_source_rows_removed": removed_source_rows,
         }
     finally:
-        fcntl.flock(config_lock.fileno(), fcntl.LOCK_UN)
-        config_lock.close()
+        _release_channel_removal_lock(channel_lock)

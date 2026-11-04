@@ -19,7 +19,11 @@ if str(REPO_ROOT) not in sys.path:
 
 # These imports require the repository root when the tool is run as a script.
 from common import db  # noqa: E402
-from common.image_utils import extract_video_frame, is_black_image  # noqa: E402
+from common.image_utils import (  # noqa: E402
+    DEFAULT_ARTWORK_EXTRACTION_TIMEOUT,
+    extract_video_frame,
+    is_black_image,
+)
 from common.video_variants import fetch_and_select_best_variant  # noqa: E402
 from sync.jellyfin_db import trigger_library_refresh  # noqa: E402
 
@@ -104,7 +108,7 @@ def process_single_video(
     item: dict,
     api_base: str,
     offset_seconds: int = 60,
-    timeout: float = 45.0,
+    timeout: float = DEFAULT_ARTWORK_EXTRACTION_TIMEOUT,
 ) -> dict:
     """Extract a thumbnail frame for a single video."""
     vid = item["video_id"]
@@ -258,7 +262,12 @@ def main():
     parser.add_argument("--limit", type=int, default=None, help="Maximum number of videos to process")
     parser.add_argument("--concurrency", type=int, default=2, help="Number of concurrent worker threads (default: 2)")
     parser.add_argument("--offset-seconds", type=int, default=60, help="Frame seek offset in seconds (default: 60)")
-    parser.add_argument("--timeout", type=float, default=45.0, help="Timeout in seconds per frame extraction (default: 45.0)")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_ARTWORK_EXTRACTION_TIMEOUT,
+        help=f"Timeout in seconds per frame extraction (default: {DEFAULT_ARTWORK_EXTRACTION_TIMEOUT})",
+    )
     parser.add_argument("--dry-run", action="store_true", help="List missing artwork without generating")
     parser.add_argument("--skip-jellyfin", action="store_true", help="Skip Jellyfin library refresh at the end")
     args = parser.parse_args()

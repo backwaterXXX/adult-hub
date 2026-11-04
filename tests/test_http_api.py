@@ -1679,6 +1679,52 @@ class TestResolverHttpApi(unittest.TestCase):
             self.assertEqual([channel.id for channel in effective.sources["telegram"].channels],
                              ["-100111", "@new_channel"])
 
+    def test_v2_can_add_new_telegram_channel_during_database_outage(self):
+        import os
+        from common.managed_sources import read_overrides, read_pending_source_audit
+        with tempfile.TemporaryDirectory() as directory, self.admin_config():
+            root = Path(directory)
+            config = root / "config.yaml"
+            config.write_text(
+                "sync:\n  interval_minutes: 60\n"
+                "sources:\n  - provider: telegram\n    channels:\n"
+                "      - id: '-100111'\n        studio: 'Base'\n",
+                encoding="utf-8",
+            )
+            overlay = root / "managed.json"
+            headers = {"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}
+            body = {"expected_revision": 0, "channel": {"id": "@offline_channel", "studio": "Offline Studio"}}
+            with patch.object(admin_module, "CONFIG_PATH", config), \
+                 patch.object(admin_module, "HUB_DB_URL", BAD_URL), \
+                 patch.dict(os.environ, {"ADMIN_SOURCE_OVERRIDES_PATH": str(overlay)}):
+                # 1. Legitimately new channel succeeds offline
+                created = self.request("POST", "/admin/api/v2/sources", base_url="http://localhost", headers=headers, json=body)
+                self.assertEqual(created.status_code, 200, created.text)
+                self.assertTrue(created.json()["audit_pending"])
+                self.assertEqual(created.json()["revision"], 1)
+                self.assertEqual(read_overrides(overlay)["revision"], 1)
+                self.assertIsNotNone(read_pending_source_audit(overlay))
+
+                # 2. Re-adding a channel that was marked removed fails closed with 503 while DB is down
+                from common.managed_sources import audit_outbox_path
+                audit_outbox_path(overlay).unlink(missing_ok=True)
+                overlay.write_text(
+                    json.dumps({
+                        "revision": 2,
+                        "overrides": {
+                            "telegram": {
+                                "channels": {"-100111": {"studio": "Base"}},
+                                "removed_channels": ["-100999"]
+                            }
+                        }
+                    }),
+                    encoding="utf-8"
+                )
+                readd_body = {"expected_revision": 2, "channel": {"id": "-100999", "studio": "Restored"}}
+                readd_blocked = self.request("POST", "/admin/api/v2/sources", base_url="http://localhost", headers=headers, json=readd_body)
+                self.assertEqual(readd_blocked.status_code, 503, readd_blocked.text)
+                self.assertIn("Could not verify active channel operations", readd_blocked.text)
+
 
     def test_v2_quarantine_report_pages_more_than_one_thousand_active_items(self):
         snapshot_template = {"video": {"provider": "telegram"},

@@ -353,6 +353,17 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
                 request("/admin/api/v2/jobs/job-1/cancel", "POST"), "job-1")
         self.assertEqual(cancelled["state"], "cancelled")
 
+    async def test_cancel_source_remove_returns_409_in_any_state(self):
+        stub = make_admin()
+        routes = {route.path: route.endpoint for route in admin_v2_jobs.build_router(stub).routes}
+        for state in ("queued", "processing", "running", "completed", "failed"):
+            with patch("common.job_queue.read_job", return_value={"action": "source_remove", "state": state}):
+                resp = await routes["/api/v2/jobs/{job_id}/cancel"](
+                    request("/admin/api/v2/jobs/job-1/cancel", "POST"), "job-1")
+            self.assertEqual(resp.status_code, 409)
+            body = json.loads(resp.body)
+            self.assertIn("cannot be cancelled after it is accepted", body["error"])
+
     async def test_duplicate_scan_uses_bounded_v2_contract(self):
         routes = {route.path: route.endpoint for route in admin_v2_jobs.build_router(make_admin()).routes}
         endpoint = routes["/api/v2/duplicates"]

@@ -11,8 +11,10 @@ import fcntl
 import json
 import os
 import tempfile
+import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from common.config_loader import ConfigError, parse_and_validate_config
 
@@ -36,6 +38,77 @@ class ManagedConfigConflict(RuntimeError):
 
 class ManagedAuditPending(RuntimeError):
     """A prior source revision still needs its durable audit event recorded."""
+
+
+class ManagedConfigLockTimeout(RuntimeError):
+    """The source configuration lock could not be acquired within the timeout."""
+
+
+DEFAULT_CONFIG_LOCK_TIMEOUT = 5.0
+
+
+@contextmanager
+def config_lock(
+    target: Path,
+    timeout: float = DEFAULT_CONFIG_LOCK_TIMEOUT,
+    poll_interval: float = 0.05,
+) -> Iterator[Any]:
+    """Acquire an exclusive lock on the configuration target within a bounded timeout."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target.with_name(target.name + ".lock")
+    deadline = time.monotonic() + max(0.0, timeout)
+    with lock_path.open("a+b") as lock:
+        fileno = lock.fileno()
+        acquired = False
+        while True:
+            try:
+                fcntl.flock(fileno, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(poll_interval)
+        if not acquired:
+            raise ManagedConfigLockTimeout(
+                "Source configuration is temporarily locked by another operation. Retry shortly."
+            )
+        try:
+            yield lock
+        finally:
+            try:
+                fcntl.flock(fileno, fcntl.LOCK_UN)
+            except OSError:
+                pass
+
+
+def canonical_channel_id(channel_id: str) -> str:
+    clean = channel_id.strip()
+    if clean.startswith("-100"):
+        return clean[4:]
+    return clean.lstrip("-")
+
+
+def channel_lock_path(channel_id: str, path: str | Path | None = None) -> Path:
+    target = overrides_path(path)
+    clean = canonical_channel_id(channel_id)
+    return target.with_name(f"{target.name}.channel-{clean}.lock")
+
+
+def is_channel_locked(channel_id: str, path: str | Path | None = None) -> bool:
+    lock_file = channel_lock_path(channel_id, path)
+    if not lock_file.exists():
+        return False
+    try:
+        with lock_file.open("a+b") as f:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                return False
+            except (BlockingIOError, OSError):
+                return True
+    except OSError:
+        return False
 
 
 def overrides_path(path: str | Path | None = None) -> Path:
@@ -154,13 +227,11 @@ def _remove_audit_outbox(target: Path) -> None:
 
 
 def clear_pending_source_audit(*, expected_revision: int, audit_revision: int,
-                               path: str | Path | None = None) -> bool:
+                               path: str | Path | None = None,
+                               lock_timeout: float = DEFAULT_CONFIG_LOCK_TIMEOUT) -> bool:
     """Clear an outbox item only after its idempotent PostgreSQL insert succeeds."""
     target = overrides_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = target.with_name(target.name + ".lock")
-    with lock_path.open("a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    with config_lock(target, timeout=lock_timeout):
         current = read_overrides(target)
         pending = read_pending_source_audit(target)
         if current["revision"] != expected_revision or not pending:
@@ -351,6 +422,8 @@ def update_overrides(
     expected_revision: int,
     audit_event: dict[str, Any] | None = None,
     path: str | Path | None = None,
+    lock_timeout: float = DEFAULT_CONFIG_LOCK_TIMEOUT,
+    allow_compensation: bool = False,
 ) -> dict[str, Any]:
     """Replace the partial override map under a process-shared lock.
 
@@ -360,24 +433,33 @@ def update_overrides(
     import yaml
 
     target = overrides_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = target.with_name(target.name + ".lock")
-    with lock_path.open("a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    with config_lock(target, timeout=lock_timeout):
+        tg_patch = patch.get("telegram")
+        if isinstance(tg_patch, dict):
+            channels_patch = tg_patch.get("channels")
+            if isinstance(channels_patch, dict):
+                for ch_id, ch_conf in channels_patch.items():
+                    if isinstance(ch_conf, dict) and ch_conf.get("enabled", True) is not False:
+                        if is_channel_locked(ch_id, target):
+                            raise ManagedConfigConflict(
+                                f"Channel {ch_id} is currently being deleted; retry after deletion completes."
+                            )
         current = read_overrides(target)
         if (isinstance(expected_revision, bool) or not isinstance(expected_revision, int)
                 or expected_revision != current["revision"]):
             raise ManagedConfigConflict("Managed source settings changed; reload and retry.")
         pending = read_pending_source_audit(target)
         if pending and pending["revision"] == current["revision"]:
-            raise ManagedAuditPending("A prior source change is waiting for its audit record.")
-        if pending:
+            if not allow_compensation:
+                raise ManagedAuditPending("A prior source change is waiting for its audit record.")
+        elif pending:
             if pending["revision"] == current["revision"] + 1:
                 # An interrupted write left an outbox for a revision that never published.
                 _remove_audit_outbox(audit_outbox_path(target))
             else:
                 raise ManagedAuditPending("A source audit is waiting for manual reconciliation.")
         candidate = validate_overlay({"revision": current["revision"] + 1, "overrides": patch})
+        outbox_event = None
         if audit_event is not None:
             if (not isinstance(audit_event, dict) or set(audit_event) != {"changes", "truncated"}
                     or not isinstance(audit_event["changes"], list)
@@ -396,7 +478,9 @@ def update_overrides(
         if base is None:
             base = {}
         apply_overrides(base, candidate)
-        if audit_event is not None and (audit_event["changes"] or audit_event["truncated"]):
+        if outbox_event is not None:
             _publish_overlay(audit_outbox_path(target), outbox_event)
+        elif allow_compensation:
+            _remove_audit_outbox(audit_outbox_path(target))
         _publish_overlay(target, candidate)
         return candidate

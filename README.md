@@ -82,7 +82,7 @@ cp .env.example .env
 
 Edit `.env` and `config.yaml`:
 * **`.env`**: Set your `HOST_IP`, `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `DATABASE_URL`, your Telegram MTProto API credentials (`TELEGRAM_API_ID`, `TELEGRAM_API_HASH`), and your public playback URL (`RESOLVER_PUBLIC_URL`).
-* **Optional source hints**: `TELEGRAM_SIGNATURE_CHANNEL` is a channel handle used in captions to accept a first-line cast list. `TELEGRAM_CHANNEL_NAME_HINTS` is a comma-separated list of channel titles that should be treated as Telegram sources rather than production studios.
+* **Optional source hints**: Set in `.env` to forward to resolver and sync: `TELEGRAM_SIGNATURE_CHANNEL` is a channel handle used in captions to accept a first-line cast list; `TELEGRAM_CHANNEL_NAME_HINTS` is a comma-separated list of channel titles that should be treated as Telegram sources rather than production studios.
 * **`config.yaml`**: Add your authorized Telegram channels under the `sources` section (the default example channel is fictional and disabled).
 
 Advanced environment variables and fallback behavior are documented in the example configuration and Compose files.

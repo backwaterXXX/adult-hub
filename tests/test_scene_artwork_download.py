@@ -263,7 +263,7 @@ class ArtworkJobQueueTests(PgTestCase):
             self.assertEqual(completed, 1)
             self.assertEqual(extract.call_args.args[1], stream.with_suffix(".jpg"))
             self.assertTrue(extract.call_args.args[0].endswith("/play/telegram%3A123/stream"))
-            self.assertEqual(extract.call_args.kwargs, {"offset_seconds": 90})
+            self.assertEqual(extract.call_args.kwargs, {"offset_seconds": 90, "timeout": 90.0})
             state, raw = self.conn.execute(
                 "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,),
             ).fetchone()

@@ -1,10 +1,11 @@
 import json
 import logging
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
@@ -21,6 +22,8 @@ from video_persistence import (
     sync_unique_video,
     flush_collected,
     write_media_files,
+    reset_channel_hints_warning,
+    warn_if_channel_hints_missing,
 )
 from common.performer_catalog import load_catalog, match_catalog
 
@@ -485,6 +488,225 @@ class TestVideoPersistence(PgTestCase):
                               ("testprov:v9",))
         self.assertEqual(publication_pending_ids(self.conn, 10), ["testprov:v9"],
                          "the row is otherwise a genuine publication candidate")
+
+
+class TestVideoPersistenceChannelHints(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.media_dir = Path(self.temp_dir.name) / "media"
+        self.media_dir.mkdir()
+        self.conn = MagicMock()
+        self.conn.execute.side_effect = Exception("No DB in mock")
+
+    def _make_services(self, **overrides):
+        defaults = {
+            "stable_media_basename": lambda cid: cid.replace(":", "_"),
+            "map_categories": lambda cats, title="": set(cats),
+            "normalize_performers": lambda perfs: list(perfs),
+            "thumbnail_urls": lambda url: (url or "", url or ""),
+            "load_performer_thumbs": lambda conn, perfs: {},
+            "format_dateadded": lambda ts: "2026-01-01 00:00:00",
+            "create_nfo_file": MagicMock(),
+            "download_image": MagicMock(),
+            "write_stream_file": MagicMock(return_value=True),
+            "sync_unique_video": None,
+            "persist_prepared_video": None,
+            "logger": logging.getLogger("test"),
+            "time_fn": lambda: 1700000000.0,
+        }
+        defaults.update(overrides)
+        if defaults["persist_prepared_video"] is None:
+            defaults["persist_prepared_video"] = lambda conn, prep: persist_prepared_video(conn, prep, time_fn=defaults["time_fn"])
+        if defaults["sync_unique_video"] is None:
+            defaults["sync_unique_video"] = lambda **kwargs: sync_unique_video(services=services_obj, **kwargs)
+        services_obj = VideoPersistenceServices(**defaults)
+        return services_obj
+
+    def test_telegram_channel_name_hints_distinguishes_channel_from_studio(self):
+        services = self._make_services()
+        video_with_hint = {
+            "provider": "telegram",
+            "provider_video_id": "-100123:42:1",
+            "title": "Scene with channel title",
+            "studio": "CustomChannel",
+            "duration": 600,
+            "performers": [],
+        }
+        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": "CustomChannel,OtherChannel"}):
+            prep_hint = sync_unique_video(
+                video=dict(video_with_hint),
+                genres=set(),
+                tags=set(),
+                target_dir=self.media_dir,
+                conn=self.conn,
+                commit=False,
+                _prepare_only=True,
+                services=services,
+            )
+            self.assertEqual(prep_hint["video"].get("channel"), "CustomChannel")
+            self.assertEqual(prep_hint["video"].get("studio"), "")
+            self.assertIsNone(prep_hint.get("studio"))
+
+        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": ""}):
+            prep_no_hint = sync_unique_video(
+                video=dict(video_with_hint),
+                genres=set(),
+                tags=set(),
+                target_dir=self.media_dir,
+                conn=self.conn,
+                commit=False,
+                _prepare_only=True,
+                services=services,
+            )
+            self.assertIsNone(prep_no_hint["video"].get("channel"))
+            self.assertEqual(prep_no_hint["video"].get("studio"), "CustomChannel")
+            self.assertEqual(prep_no_hint.get("studio"), "CustomChannel")
+
+    def test_telegram_channel_name_hints_downstream_nfo_behavior(self):
+        from nfo import create_nfo_file
+        services = self._make_services()
+        video_base = {
+            "provider": "telegram",
+            "provider_video_id": "-100123:42:2",
+            "title": "[BelAmi] Scene Title",
+            "studio": "MyTelegramSource",
+            "duration": 600,
+            "performers": [],
+        }
+
+        # With hints configured: channel is recognized as channel, and BelAmi as production studio
+        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": "MyTelegramSource"}):
+            prep_hint = sync_unique_video(
+                video=dict(video_base),
+                genres=set(),
+                tags=set(),
+                target_dir=self.media_dir,
+                conn=self.conn,
+                commit=False,
+                _prepare_only=True,
+                services=services,
+            )
+            self.assertEqual(prep_hint["video"].get("channel"), "MyTelegramSource")
+            self.assertEqual(prep_hint["video"].get("studio"), "BelAmi")
+            self.assertEqual(prep_hint.get("studio"), "BelAmi")
+            nfo_path_hint = self.media_dir / "hint_test.nfo"
+            create_nfo_file(
+                prep_hint["video"],
+                set(),
+                set(),
+                nfo_path_hint,
+                get_provider_info_fn=lambda _: {"name": "Telegram", "domain": "t.me"},
+                clean_display_title_fn=lambda t, **_: t,
+                normalize_performers_fn=lambda p: p,
+                map_categories_fn=lambda c, **_: c,
+            )
+            content_hint = nfo_path_hint.read_text(encoding="utf-8")
+            self.assertIn("<tagline>Kanał: MyTelegramSource</tagline>", content_hint)
+            self.assertIn("<studio>BelAmi</studio>", content_hint)
+            self.assertNotIn("<studio>MyTelegramSource</studio>", content_hint)
+
+        # Without hints: channel is not recognized, so production studio falls back to channel_name in NFO
+        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": ""}):
+            prep_no_hint = sync_unique_video(
+                video=dict(video_base),
+                genres=set(),
+                tags=set(),
+                target_dir=self.media_dir,
+                conn=self.conn,
+                commit=False,
+                _prepare_only=True,
+                services=services,
+            )
+            self.assertIsNone(prep_no_hint["video"].get("channel"))
+            self.assertEqual(prep_no_hint["video"].get("studio"), "BelAmi")
+            nfo_path_no_hint = self.media_dir / "no_hint_test.nfo"
+            create_nfo_file(
+                prep_no_hint["video"],
+                set(),
+                set(),
+                nfo_path_no_hint,
+                get_provider_info_fn=lambda _: {"name": "Telegram", "domain": "t.me"},
+                clean_display_title_fn=lambda t, **_: t,
+                normalize_performers_fn=lambda p: p,
+                map_categories_fn=lambda c, **_: c,
+            )
+            content_no_hint = nfo_path_no_hint.read_text(encoding="utf-8")
+            # Without hints, MyTelegramSource channel was lost; BelAmi became the channel_name tagline
+            self.assertNotIn("Kanał: MyTelegramSource", content_no_hint)
+            self.assertIn("<tagline>Kanał: BelAmi</tagline>", content_no_hint)
+
+    def test_startup_warning_when_telegram_configured_and_hints_empty(self):
+        reset_channel_hints_warning()
+        mock_logger = MagicMock()
+        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": "", "TELEGRAM_API_ID": "12345", "SYNC_TELEGRAM": "true"}):
+            warned = warn_if_channel_hints_missing(mock_logger)
+            self.assertTrue(warned)
+            mock_logger.warning.assert_called_once()
+            warning_text = mock_logger.warning.call_args[0][0]
+            self.assertIn("TELEGRAM_CHANNEL_NAME_HINTS is empty", warning_text)
+            # Ensure no private channel identifiers or secrets are logged
+            self.assertNotIn("12345", warning_text)
+
+            # Subsequent call does NOT warn again (once-per-startup / not repeated per video)
+            mock_logger.reset_mock()
+            warned_second = warn_if_channel_hints_missing(mock_logger)
+            self.assertFalse(warned_second)
+            mock_logger.warning.assert_not_called()
+
+    def test_startup_warning_not_repeated_across_videos_in_sync_unique_video(self):
+        reset_channel_hints_warning()
+        mock_logger = MagicMock()
+        services = self._make_services(logger=mock_logger)
+        video = {
+            "provider": "telegram",
+            "provider_video_id": "tg-vid-1",
+            "title": "Video 1",
+            "studio": "SomeChan",
+            "duration": 600,
+        }
+        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": ""}):
+            # Processing first video triggers once-per-startup check
+            sync_unique_video(
+                video=dict(video),
+                genres=set(),
+                tags=set(),
+                target_dir=self.media_dir,
+                conn=self.conn,
+                services=services,
+                _prepare_only=True,
+            )
+            self.assertEqual(mock_logger.warning.call_count, 1)
+
+            # Processing second video must NOT repeat warning
+            video2 = dict(video, provider_video_id="tg-vid-2", title="Video 2")
+            sync_unique_video(
+                video=video2,
+                genres=set(),
+                tags=set(),
+                target_dir=self.media_dir,
+                conn=self.conn,
+                services=services,
+                _prepare_only=True,
+            )
+            self.assertEqual(mock_logger.warning.call_count, 1, "Warning must not be repeated per video")
+
+    def test_no_startup_warning_when_hints_are_set(self):
+        reset_channel_hints_warning()
+        mock_logger = MagicMock()
+        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": "ExplicitHint", "TELEGRAM_API_ID": "12345", "SYNC_TELEGRAM": "true"}):
+            warned = warn_if_channel_hints_missing(mock_logger)
+            self.assertFalse(warned)
+            mock_logger.warning.assert_not_called()
+
+    def test_no_startup_warning_when_telegram_not_configured(self):
+        reset_channel_hints_warning()
+        mock_logger = MagicMock()
+        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": "", "TELEGRAM_API_ID": "", "SYNC_TELEGRAM": "false", "TELEGRAM_CHANNELS": ""}, clear=True):
+            with patch("video_persistence._is_telegram_configured", return_value=False):
+                warned = warn_if_channel_hints_missing(mock_logger)
+                self.assertFalse(warned)
+                mock_logger.warning.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -24,6 +24,10 @@ KNOWN_BLACK_IMAGE_MD5S = {
     "9d8f8d9b15b3c3741829e1f91c9d89d4",
 }
 
+# Timeout limits for frame extraction attempts
+DEFAULT_FRAME_EXTRACTION_TIMEOUT = 20.0
+DEFAULT_ARTWORK_EXTRACTION_TIMEOUT = 90.0
+
 
 def is_black_image(
     data_or_path: Union[bytes, str, Path, Image.Image],
@@ -311,7 +315,7 @@ def extract_video_frame(
     stream_url: str,
     dest_path: Union[str, Path],
     offset_seconds: int = 60,
-    timeout: float = 20.0,
+    timeout: float = DEFAULT_FRAME_EXTRACTION_TIMEOUT,
     fallback_seconds: int = 15,
 ) -> Tuple[bool, str]:
     """Extract a representative artwork frame from video stream using ffmpeg.

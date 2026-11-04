@@ -16,6 +16,61 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 
+_WARNED_MISSING_CHANNEL_HINTS: bool = False
+
+
+def reset_channel_hints_warning() -> None:
+    """Reset the channel hints warning latch (primarily for test isolation)."""
+    global _WARNED_MISSING_CHANNEL_HINTS
+    _WARNED_MISSING_CHANNEL_HINTS = False
+
+
+def _is_telegram_configured() -> bool:
+    """Return True if Telegram is configured as an active or enabled source."""
+    try:
+        from common.config_loader import load_config
+        cfg = load_config()
+        if cfg:
+            tg = cfg.get_source("telegram")
+            if tg and getattr(tg, "enabled", True):
+                channels = getattr(tg, "channels", [])
+                if channels and any(getattr(ch, "enabled", True) for ch in channels):
+                    return True
+    except Exception:
+        pass
+    if os.getenv("TELEGRAM_API_ID") and (
+        os.getenv("TELEGRAM_CHANNELS") or os.getenv("SYNC_TELEGRAM", "").lower() in ("true", "1", "yes")
+    ):
+        return True
+    return False
+
+
+def warn_if_channel_hints_missing(
+    logger: Optional[logging.Logger] = None, *, is_configured: Optional[bool] = None
+) -> bool:
+    """Emit a once-per-startup warning if Telegram is configured but channel hints are empty.
+
+    Returns True if a warning was emitted, False otherwise.
+    Does not log private channel names or repeat per video.
+    """
+    global _WARNED_MISSING_CHANNEL_HINTS
+    if _WARNED_MISSING_CHANNEL_HINTS:
+        return False
+    hints = (os.getenv("TELEGRAM_CHANNEL_NAME_HINTS") or "").strip()
+    if hints:
+        return False
+    tg_configured = _is_telegram_configured() if is_configured is None else is_configured
+    if not tg_configured:
+        return False
+    _WARNED_MISSING_CHANNEL_HINTS = True
+    log = logger or logging.getLogger("sync.video_persistence")
+    log.warning(
+        "Telegram is configured but TELEGRAM_CHANNEL_NAME_HINTS is empty; "
+        "channel titles may be misclassified as production studios."
+    )
+    return True
+
+
 @dataclass
 class VideoPersistenceServices:
     stable_media_basename: Callable[[str], str]
@@ -32,6 +87,9 @@ class VideoPersistenceServices:
     logger: logging.Logger
     time_fn: Callable[[], float] = time.time
     load_performer_links: Optional[Callable[[db.Connection, List[str]], Dict[str, Dict[str, str]]]] = None
+
+    def __post_init__(self) -> None:
+        warn_if_channel_hints_missing(self.logger)
 
 
 def _merge_video_fields(existing: Dict[str, Any], new: Dict[str, Any]) -> None:
@@ -330,6 +388,8 @@ def sync_unique_video(
     # For Telegram, distinguish actual production studios from source channel names.
     # Deployment-specific channel titles can be supplied through the environment
     # instead of being hardcoded in the public repository.
+    if provider == "telegram":
+        warn_if_channel_hints_missing(services.logger if services else None, is_configured=True)
     extra_channel_hints = tuple(
         hint.strip().casefold()
         for hint in (os.getenv("TELEGRAM_CHANNEL_NAME_HINTS") or "").split(",")

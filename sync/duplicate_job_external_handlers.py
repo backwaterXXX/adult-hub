@@ -143,7 +143,10 @@ def _execute(action, conn, job_id, payload, media_dir, services):
 
     if action == "artwork_generate":
         from urllib.parse import quote
-        from common.image_utils import extract_video_frame
+        from common.image_utils import (
+            DEFAULT_ARTWORK_EXTRACTION_TIMEOUT,
+            extract_video_frame,
+        )
         if __package__:
             from .media_files import resolve_media_path
         else:
@@ -155,6 +158,10 @@ def _execute(action, conn, job_id, payload, media_dir, services):
             raise ValueError("Artwork generation requires one valid video ID.")
         if type(offset) is not int or offset <= 0:
             raise ValueError("Artwork generation requires a positive offset.")
+        raw_timeout = payload.get("timeout", DEFAULT_ARTWORK_EXTRACTION_TIMEOUT)
+        if type(raw_timeout) not in (int, float) or raw_timeout <= 0:
+            raise ValueError("Artwork generation requires a positive timeout.")
+        timeout = float(raw_timeout)
         _core._record_job_progress(conn, job_id, "generating_artwork")
         rows = conn.execute(
             "SELECT sf.file_path FROM synced_files sf JOIN videos v ON v.id=sf.video_id "
@@ -193,7 +200,7 @@ def _execute(action, conn, job_id, payload, media_dir, services):
         stream_query = f"?variant={quote(str(variant), safe='')}" if variant else ""
         stream_url = f"{api_base}/play/{quote(video_id, safe='')}/stream{stream_query}"
         success, error = extract_video_frame(
-            stream_url, dest, offset_seconds=offset,
+            stream_url, dest, offset_seconds=offset, timeout=timeout,
         )
         if not success:
             raise RuntimeError(f"Failed to generate artwork: {error}")

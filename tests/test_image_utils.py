@@ -1,12 +1,16 @@
 import io
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 from PIL import Image
 
-from pathlib import Path
-import tempfile
-
 from common.image_utils import (
+    DEFAULT_ARTWORK_EXTRACTION_TIMEOUT,
+    DEFAULT_FRAME_EXTRACTION_TIMEOUT,
     compute_dhash,
+    extract_video_frame,
     find_bumper_clusters,
     hamming_distance,
     is_black_image,
@@ -135,6 +139,125 @@ class TestImageUtils(unittest.TestCase):
 
             # Test loading non-existent file
             self.assertEqual(load_bumper_hashes(Path(tmp_dir) / "does_not_exist.json"), set())
+
+    def _write_dummy_jpeg(self, path, color=(128, 64, 200)):
+        img = Image.new("RGB", (64, 64), color=color)
+        img.save(path, format="JPEG")
+
+    @patch("subprocess.run")
+    def test_extract_video_frame_default_timeout_is_20_seconds(self, mock_run):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = Path(tmp_dir) / "output.jpg"
+
+            def fake_run(cmd, **kwargs):
+                self._write_dummy_jpeg(cmd[-1])
+                return subprocess.CompletedProcess(cmd, 0)
+
+            mock_run.side_effect = fake_run
+
+            success, err = extract_video_frame("http://example.test/stream", dest)
+            self.assertTrue(success)
+            self.assertEqual(err, "")
+            self.assertTrue(dest.exists())
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args.kwargs.get("timeout"), DEFAULT_FRAME_EXTRACTION_TIMEOUT)
+            self.assertEqual(mock_run.call_args.kwargs.get("timeout"), 20.0)
+
+    @patch("subprocess.run")
+    def test_extract_video_frame_forwards_custom_90s_timeout(self, mock_run):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = Path(tmp_dir) / "output.jpg"
+
+            def fake_run(cmd, **kwargs):
+                self._write_dummy_jpeg(cmd[-1])
+                return subprocess.CompletedProcess(cmd, 0)
+
+            mock_run.side_effect = fake_run
+
+            success, err = extract_video_frame(
+                "http://example.test/stream", dest, timeout=DEFAULT_ARTWORK_EXTRACTION_TIMEOUT
+            )
+            self.assertTrue(success)
+            self.assertEqual(err, "")
+            self.assertTrue(dest.exists())
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args.kwargs.get("timeout"), 90.0)
+
+    @patch("subprocess.run")
+    def test_extract_video_frame_fast_seek_timeout_sequential_fallback_with_same_timeout(self, mock_run):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = Path(tmp_dir) / "output.jpg"
+
+            def fake_run(cmd, **kwargs):
+                if mock_run.call_count == 1:
+                    # Fast seek timed out at 90s
+                    raise subprocess.TimeoutExpired(cmd, 90.0)
+                # Fallback sequential seek succeeds
+                self._write_dummy_jpeg(cmd[-1])
+                return subprocess.CompletedProcess(cmd, 0)
+
+            mock_run.side_effect = fake_run
+
+            success, err = extract_video_frame("http://example.test/stream", dest, timeout=90.0)
+            self.assertTrue(success)
+            self.assertEqual(err, "")
+            self.assertTrue(dest.exists())
+            self.assertEqual(mock_run.call_count, 2)
+
+            # Both fast seek and sequential fallback attempts received timeout=90.0
+            call1, call2 = mock_run.call_args_list
+            self.assertEqual(call1.kwargs.get("timeout"), 90.0)
+            self.assertEqual(call2.kwargs.get("timeout"), 90.0)
+
+            # Verify call1 was fast input seeking (-ss before -i)
+            cmd1 = call1.args[0]
+            self.assertIn("-ss", cmd1)
+            self.assertLess(cmd1.index("-ss"), cmd1.index("-i"))
+
+            # Verify call2 was sequential fallback seeking (-i before -ss)
+            cmd2 = call2.args[0]
+            self.assertIn("-ss", cmd2)
+            self.assertLess(cmd2.index("-i"), cmd2.index("-ss"))
+
+    @patch("subprocess.run")
+    def test_extract_video_frame_both_attempts_timeout_returns_error(self, mock_run):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = Path(tmp_dir) / "output.jpg"
+            mock_run.side_effect = subprocess.TimeoutExpired(["ffmpeg"], 90.0)
+
+            success, err = extract_video_frame("http://example.test/stream", dest, timeout=90.0)
+            self.assertFalse(success)
+            self.assertEqual(err, "ffmpeg failed to extract a video frame from stream.")
+            self.assertFalse(dest.exists())
+            self.assertEqual(mock_run.call_count, 2)
+            for c in mock_run.call_args_list:
+                self.assertEqual(c.kwargs.get("timeout"), 90.0)
+
+    @patch("subprocess.run")
+    def test_extract_video_frame_black_image_retry_passes_timeout(self, mock_run):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = Path(tmp_dir) / "output.jpg"
+
+            def fake_run(cmd, **kwargs):
+                if mock_run.call_count == 1:
+                    # First attempt produces pure black image
+                    self._write_dummy_jpeg(cmd[-1], color=(0, 0, 0))
+                else:
+                    # Retry with offset + 30s produces colorful image
+                    self._write_dummy_jpeg(cmd[-1], color=(100, 150, 200))
+                return subprocess.CompletedProcess(cmd, 0)
+
+            mock_run.side_effect = fake_run
+
+            success, err = extract_video_frame("http://example.test/stream", dest, timeout=90.0)
+            self.assertTrue(success)
+            self.assertEqual(err, "")
+            self.assertTrue(dest.exists())
+            # Fast seek, then retry due to black image
+            self.assertEqual(mock_run.call_count, 2)
+            call1, call2 = mock_run.call_args_list
+            self.assertEqual(call1.kwargs.get("timeout"), 90.0)
+            self.assertEqual(call2.kwargs.get("timeout"), 90.0)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,9 @@ from common.migrations.m0061_schedule_stages import current_migration as current
 from common.migrations.m0062_artwork_generation_schedule import (
     current_migration as current_artwork_generation_schedule,
 )
+from common.migrations.m0063_source_removal_indexes import (
+    current_migration as current_source_removal_indexes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,7 @@ CURRENT_MIGRATIONS: tuple[Migration, ...] = (
     current_duplicate_reconcile_opt_in, current_performer_alias_canonical_index,
     current_split_phash_jobs, current_cron_schedules, current_metadata_proposal_retries,
     current_video_job_lease_token, current_schedule_stages, current_artwork_generation_schedule,
+    current_source_removal_indexes,
 )
 MIGRATIONS: tuple[Migration, ...] = (baseline, *CURRENT_MIGRATIONS)
 

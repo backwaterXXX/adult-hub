@@ -76,6 +76,7 @@ from common.migrations.m0059_metadata_proposal_retries import migration as metad
 from common.migrations.m0060_video_job_lease_token import migration as video_job_lease_token
 from common.migrations.m0061_schedule_stages import migration as schedule_stages
 from common.migrations.m0062_artwork_generation_schedule import migration as artwork_generation_schedule
+from common.migrations.m0063_source_removal_indexes import migration as source_removal_indexes
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -142,4 +143,5 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     video_job_lease_token,
     schedule_stages,
     artwork_generation_schedule,
+    source_removal_indexes,
 )

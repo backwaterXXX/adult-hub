@@ -1013,9 +1013,13 @@ CREATE INDEX idx_video_availability_latest ON public.video_availability_checks U
 
 CREATE INDEX idx_video_duplicate_decisions_history_retention ON public.video_duplicate_decisions USING btree (created_at, loser_id) WHERE (state = 'undone'::text);
 
+CREATE INDEX idx_video_duplicate_decisions_keeper_id ON public.video_duplicate_decisions USING btree (keeper_id);
+
 CREATE INDEX idx_video_duplicate_decisions_operation_state ON public.video_duplicate_decisions USING btree (operation_id, state);
 
 CREATE INDEX idx_video_duplicate_dismissals_history_retention ON public.video_duplicate_dismissals USING btree (created_at, left_id, right_id) WHERE (active = 0);
+
+CREATE INDEX idx_video_duplicate_dismissals_right_id ON public.video_duplicate_dismissals USING btree (right_id);
 
 CREATE INDEX idx_video_duplicate_jobs_history_retention ON public.video_duplicate_jobs USING btree (created_at, id) WHERE (state = ANY (ARRAY['done'::text, 'failed'::text, 'cancelled'::text]));
 

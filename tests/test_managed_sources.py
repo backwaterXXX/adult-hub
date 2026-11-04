@@ -16,8 +16,11 @@ from common.config_loader import ConfigError, load_config
 from common.managed_sources import (
     ManagedAuditPending,
     ManagedConfigConflict,
+    ManagedConfigLockTimeout,
     audit_outbox_path,
+    channel_lock_path,
     clear_pending_source_audit,
+    is_channel_locked,
     read_pending_source_audit,
     read_overrides,
     update_overrides,
@@ -170,6 +173,37 @@ class TestManagedSourceOverrides(unittest.TestCase):
         self.assertIsNone(read_pending_source_audit(self.overlay_path))
         self.assertFalse(audit_outbox_path(self.overlay_path).exists())
 
+    def test_allow_compensation_permits_rollback_without_cleared_outbox(self):
+        # Forward write creating revision 1 with outbox
+        update_overrides(
+            self.base_path, {"telegram": {"enabled": False}}, expected_revision=0,
+            audit_event={"changes": [{"path": ["telegram", "enabled"], "before": True, "after": False}],
+                         "truncated": False},
+            path=self.overlay_path,
+        )
+        self.assertEqual(read_overrides(self.overlay_path)["revision"], 1)
+        self.assertIsNotNone(read_pending_source_audit(self.overlay_path))
+
+        # Standard update is blocked
+        with self.assertRaises(ManagedAuditPending):
+            update_overrides(self.base_path, {}, expected_revision=1, path=self.overlay_path)
+
+        # Mismatched revision with allow_compensation still raises conflict
+        with self.assertRaises(ManagedConfigConflict):
+            update_overrides(self.base_path, {}, expected_revision=0, path=self.overlay_path, allow_compensation=True)
+
+        # Compensating update succeeds, publishing revision 2 and updating outbox
+        update_overrides(
+            self.base_path, {}, expected_revision=1, path=self.overlay_path,
+            audit_event={"changes": [{"path": ["telegram", "enabled"], "before": False, "after": True}],
+                         "truncated": False},
+            allow_compensation=True,
+        )
+        self.assertEqual(read_overrides(self.overlay_path)["revision"], 2)
+        pending = read_pending_source_audit(self.overlay_path)
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["revision"], 2)
+
     def test_invalid_audit_outbox_structures_are_rejected(self):
         for pending in (
             {"revision": 0, "changes": [], "truncated": False},
@@ -218,3 +252,44 @@ class TestManagedSourceOverrides(unittest.TestCase):
             self.assertFalse(public["sources"][0]["enabled"])
         finally:
             os.environ["ADMIN_SOURCE_OVERRIDES_PATH"] = str(self.overlay_path)
+
+    def test_bounded_config_lock_timeout_raises_managed_config_lock_timeout(self):
+        lock_file = self.overlay_path.with_name(self.overlay_path.name + ".lock")
+        import fcntl
+        with lock_file.open("a+b") as holder:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+            with self.assertRaises(ManagedConfigLockTimeout):
+                update_overrides(
+                    self.base_path,
+                    {"telegram": {"enabled": False}},
+                    expected_revision=0,
+                    path=self.overlay_path,
+                    lock_timeout=0.1,
+                )
+
+    def test_update_overrides_refuses_channel_with_active_channel_lock(self):
+        ch_lock = channel_lock_path("-100999", path=self.overlay_path)
+        import fcntl
+        with ch_lock.open("a+b") as holder:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+            self.assertTrue(is_channel_locked("-100999", path=self.overlay_path))
+            self.assertTrue(is_channel_locked("999", path=self.overlay_path))
+
+            # Attempting to add channel while locked raises ManagedConfigConflict
+            with self.assertRaises(ManagedConfigConflict):
+                update_overrides(
+                    self.base_path,
+                    {"telegram": {"channels": {"-100999": {"studio": "Studio", "enabled": True}}}},
+                    expected_revision=0,
+                    path=self.overlay_path,
+                )
+
+        # After releasing lock, is_channel_locked is False and adding succeeds
+        self.assertFalse(is_channel_locked("-100999", path=self.overlay_path))
+        saved = update_overrides(
+            self.base_path,
+            {"telegram": {"channels": {"-100999": {"studio": "Studio", "enabled": True}}}},
+            expected_revision=0,
+            path=self.overlay_path,
+        )
+        self.assertEqual(saved["revision"], 1)

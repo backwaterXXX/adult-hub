@@ -215,6 +215,7 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
         called_url = mock_extract.call_args[0][0]
         self.assertIn("?variant=alt_480_av1", called_url)
         self.assertEqual(called_url.split("/play/")[0], "http://resolver:8090/admin")
+        self.assertEqual(mock_extract.call_args.kwargs.get("timeout"), 90.0)
 
     @patch("common.image_utils.extract_video_frame", return_value=(True, None))
     @patch("sync.media_files.resolve_media_path", return_value=Path("/tmp/test.mp4"))
@@ -239,6 +240,41 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
         mock_fetch_variant.assert_not_called()
         called_url = mock_extract.call_args[0][0]
         self.assertNotIn("?variant=", called_url)
+        self.assertEqual(mock_extract.call_args.kwargs.get("timeout"), 90.0)
+
+    @patch("common.image_utils.extract_video_frame", return_value=(True, None))
+    @patch("sync.media_files.resolve_media_path", return_value=Path("/tmp/test.mp4"))
+    @patch("sync.duplicate_job_external_handlers._core._refresh_jellyfin_with_progress", return_value=True)
+    def test_artwork_generate_forwards_custom_timeout(
+        self, mock_refresh, mock_resolve_path, mock_extract,
+    ):
+        from sync.duplicate_job_external_handlers import execute_external_operation
+
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchall.return_value = [("test.mp4",)]
+        mock_services = MagicMock()
+
+        payload = {"video_id": "telegram:10:20:30", "offset_seconds": 60, "variant": "original", "timeout": 120.0}
+        result, ok = execute_external_operation(
+            "artwork_generate", mock_conn, 105, payload, "/tmp/media", mock_services,
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(mock_extract.call_args.kwargs.get("timeout"), 120.0)
+
+    def test_artwork_generate_rejects_invalid_timeout(self):
+        from sync.duplicate_job_external_handlers import execute_external_operation
+
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchall.return_value = [("test.mp4",)]
+        mock_services = MagicMock()
+
+        for bad_timeout in [0, -5, "90", False]:
+            payload = {"video_id": "telegram:10:20:30", "offset_seconds": 60, "timeout": bad_timeout}
+            with self.assertRaises(ValueError, msg=f"Should reject timeout={bad_timeout!r}"):
+                execute_external_operation(
+                    "artwork_generate", mock_conn, 106, payload, "/tmp/media", mock_services,
+                )
 
     def test_admin_base_is_not_nested_twice(self):
         # Import the handler the flat way the sync image does, so this does not
