@@ -40,6 +40,14 @@ def search_tpdb_scene_by_exact_title(
     if not token or client is None:
         return None
 
+    results = _tpdb_title_results(query_title, token, client)
+    if results is None:
+        return None
+    candidates = _tpdb_exact_matches(results, query_key, runtime, tolerance)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _tpdb_title_results(query_title: str, token: str, client) -> Optional[list]:
     response = _core.request_with_host_limit(
         client,
         "get",
@@ -53,9 +61,11 @@ def search_tpdb_scene_by_exact_title(
         response.raise_for_status()
     payload = response.json() if callable(getattr(response, "json", None)) else _core._decode_scene_payload(response)
     results = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(results, list):
-        return None
+    return results if isinstance(results, list) else None
 
+
+def _tpdb_exact_matches(results: list, query_key: str, runtime: int, tolerance: int) -> list:
+    """Return ScrapedScene candidates whose normalized title and runtime match, de-duplicated."""
     candidates = []
     seen_ids = set()
     for item in results:
@@ -98,7 +108,7 @@ def search_tpdb_scene_by_exact_title(
             confidence=0.99,
             source="theporndb:title_exact",
         ))
-    return candidates[0] if len(candidates) == 1 else None
+    return candidates
 
 
 def fetch_tpdb_scene_by_id(

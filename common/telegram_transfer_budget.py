@@ -64,21 +64,7 @@ def reserve_telegram_fingerprint_bytes(
     upstream request fails, the reservation remains charged for safety.
     Concurrent sync and resolver workers share the same locked ledger file.
     """
-    try:
-        byte_count = int(byte_count)
-        daily_limit = int(os.environ.get(
-            "TELEGRAM_FINGERPRINT_DAILY_BYTE_BUDGET",
-            str(DEFAULT_DAILY_BYTE_BUDGET),
-        ))
-        configured_rate = int(os.environ.get(
-            "TELEGRAM_FINGERPRINT_MAX_BYTES_PER_SECOND",
-            str(DEFAULT_MAX_BYTES_PER_SECOND),
-        ))
-        override_rate = int(max_bytes_per_second) if max_bytes_per_second is not None else configured_rate
-    except (TypeError, ValueError) as exc:
-        raise DailyTelegramTransferBudgetUnavailable("Invalid fingerprint transfer budget configuration") from exc
-    if byte_count <= 0 or daily_limit <= 0 or configured_rate <= 0 or override_rate <= 0:
-        raise DailyTelegramTransferBudgetUnavailable("Fingerprint transfer budgets must be positive")
+    byte_count, daily_limit, configured_rate, override_rate = _budget_settings(byte_count, max_bytes_per_second)
     rate = (override_rate if allow_rate_above_configured
             else min(configured_rate, override_rate))
     ledger_path = _resolve_ledger_path()
@@ -102,22 +88,7 @@ def reserve_telegram_fingerprint_bytes(
             )
             day_end = next_midnight.timestamp()
 
-            try:
-                with ledger_path.open("r", encoding="utf-8") as handle:
-                    state = json.load(handle)
-                if not isinstance(state, dict):
-                    raise ValueError("ledger root is not an object")
-                previous_date = state.get("date")
-                previous_bytes = state.get("bytes_reserved", 0)
-                next_allowed_at = state.get("next_allowed_at", now_seconds)
-                if (not isinstance(previous_date, str)
-                        or type(previous_bytes) is not int or previous_bytes < 0
-                        or type(next_allowed_at) not in (int, float)):
-                    raise ValueError("ledger fields are invalid")
-            except FileNotFoundError:
-                previous_date, previous_bytes, next_allowed_at = day_key, 0, now_seconds
-            except (OSError, ValueError, json.JSONDecodeError) as exc:
-                raise DailyTelegramTransferBudgetUnavailable("Shared fingerprint transfer ledger is invalid") from exc
+            previous_date, previous_bytes, next_allowed_at = _read_ledger(ledger_path, day_key, now_seconds)
 
             used_today = previous_bytes if previous_date == day_key else 0
             scheduled_at = max(now_seconds, float(next_allowed_at))
@@ -136,24 +107,7 @@ def reserve_telegram_fingerprint_bytes(
                 "bytes_reserved": used_today + byte_count,
                 "next_allowed_at": scheduled_at + transfer_seconds,
             }
-            try:
-                fd, temporary = tempfile.mkstemp(prefix="telegram-transfer-", dir=ledger_path.parent)
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                        json.dump(state, handle, separators=(",", ":"))
-                        handle.flush()
-                        os.fsync(handle.fileno())
-                    os.replace(temporary, ledger_path)
-                    directory_fd = os.open(ledger_path.parent, os.O_RDONLY)
-                    try:
-                        os.fsync(directory_fd)
-                    finally:
-                        os.close(directory_fd)
-                finally:
-                    if os.path.exists(temporary):
-                        os.unlink(temporary)
-            except OSError as exc:
-                raise DailyTelegramTransferBudgetUnavailable("Cannot update shared fingerprint transfer ledger") from exc
+            _write_ledger_atomically(ledger_path, state)
             wait_seconds = max(0.0, scheduled_at - now_seconds)
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
     except OSError as exc:
@@ -162,3 +116,65 @@ def reserve_telegram_fingerprint_bytes(
     if wait_seconds > 0:
         time.sleep(wait_seconds)
     return wait_seconds
+
+
+def _budget_settings(byte_count, max_bytes_per_second) -> tuple[int, int, int, int]:
+    """Validate budget env settings and the request; return (bytes, daily limit, configured rate, override rate)."""
+    try:
+        byte_count = int(byte_count)
+        daily_limit = int(os.environ.get(
+            "TELEGRAM_FINGERPRINT_DAILY_BYTE_BUDGET",
+            str(DEFAULT_DAILY_BYTE_BUDGET),
+        ))
+        configured_rate = int(os.environ.get(
+            "TELEGRAM_FINGERPRINT_MAX_BYTES_PER_SECOND",
+            str(DEFAULT_MAX_BYTES_PER_SECOND),
+        ))
+        override_rate = int(max_bytes_per_second) if max_bytes_per_second is not None else configured_rate
+    except (TypeError, ValueError) as exc:
+        raise DailyTelegramTransferBudgetUnavailable("Invalid fingerprint transfer budget configuration") from exc
+    if byte_count <= 0 or daily_limit <= 0 or configured_rate <= 0 or override_rate <= 0:
+        raise DailyTelegramTransferBudgetUnavailable("Fingerprint transfer budgets must be positive")
+    return byte_count, daily_limit, configured_rate, override_rate
+
+
+def _read_ledger(ledger_path: Path, day_key: str, now_seconds: float) -> tuple:
+    """Return (date, bytes reserved, next allowed time); a missing ledger starts empty."""
+    try:
+        with ledger_path.open("r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        if not isinstance(state, dict):
+            raise ValueError("ledger root is not an object")
+        previous_date = state.get("date")
+        previous_bytes = state.get("bytes_reserved", 0)
+        next_allowed_at = state.get("next_allowed_at", now_seconds)
+        if (not isinstance(previous_date, str)
+                or type(previous_bytes) is not int or previous_bytes < 0
+                or type(next_allowed_at) not in (int, float)):
+            raise ValueError("ledger fields are invalid")
+    except FileNotFoundError:
+        return day_key, 0, now_seconds
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise DailyTelegramTransferBudgetUnavailable("Shared fingerprint transfer ledger is invalid") from exc
+    return previous_date, previous_bytes, next_allowed_at
+
+
+def _write_ledger_atomically(ledger_path: Path, state: dict) -> None:
+    try:
+        fd, temporary = tempfile.mkstemp(prefix="telegram-transfer-", dir=ledger_path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(state, handle, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, ledger_path)
+            directory_fd = os.open(ledger_path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    except OSError as exc:
+        raise DailyTelegramTransferBudgetUnavailable("Cannot update shared fingerprint transfer ledger") from exc
