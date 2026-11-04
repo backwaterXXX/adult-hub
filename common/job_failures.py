@@ -33,44 +33,59 @@ def classify_job_failure(action: str | None, result: object) -> str | None:
     if isinstance(code, str) and code in _SAFE_CODES:
         return code
     if result.get("local_state") == "sync failed":
-        failures = result.get("source_failures")
-        if isinstance(failures, list) and any(
-            isinstance(item, dict)
-            and item.get("detail") == "Telegram fetch/history operation failed."
-            for item in failures
-        ):
-            return "telegram_history_failed"
-        return "sync_failed"
+        return _sync_failure_code(result)
 
     error = result.get("error")
     if not isinstance(error, str):
         return None
     normalized = error.casefold()
+    if action == "artwork_generate":
+        return _artwork_failure_code(normalized, _failure_stage(result))
+    return _generic_failure_code(normalized)
+
+
+def _sync_failure_code(result: dict) -> str:
+    failures = result.get("source_failures")
+    if isinstance(failures, list) and any(
+        isinstance(item, dict)
+        and item.get("detail") == "Telegram fetch/history operation failed."
+        for item in failures
+    ):
+        return "telegram_history_failed"
+    return "sync_failed"
+
+
+def _failure_stage(result: dict) -> str | None:
     progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
     failure_stage = progress.get("stage")
     if not isinstance(failure_stage, str):
         events = result.get("events") if isinstance(result.get("events"), list) else []
         failure_stage = next((event.get("stage") for event in reversed(events)
                               if isinstance(event, dict) and isinstance(event.get("stage"), str)), None)
-    if action == "artwork_generate":
-        if "target media file not found" in normalized or "no such file or directory" in normalized:
-            return "artwork_source_missing"
-        if "artwork destination must not be a symlink" in normalized:
-            return "artwork_destination_unsafe"
-        if "timed out" in normalized or "timeout" in normalized:
-            return "operation_timeout"
-        if "permission denied" in normalized or "permissionerror" in normalized:
-            return "permission_denied"
-        if any(marker in normalized for marker in (
-            "connection refused", "connectionerror",
-            "connecterror", "could not connect", "network is unreachable",
-            "httpstatuserror", "http 4", "http 5", "status code 4", "status code 5",
-        )):
-            return "artwork_source_unavailable"
-        if failure_stage == "generating_artwork" or "failed to generate artwork" in normalized:
-            return "artwork_frame_extraction_failed"
-        return None
+    return failure_stage
 
+
+def _artwork_failure_code(normalized: str, failure_stage: str | None) -> str | None:
+    if "target media file not found" in normalized or "no such file or directory" in normalized:
+        return "artwork_source_missing"
+    if "artwork destination must not be a symlink" in normalized:
+        return "artwork_destination_unsafe"
+    if "timed out" in normalized or "timeout" in normalized:
+        return "operation_timeout"
+    if "permission denied" in normalized or "permissionerror" in normalized:
+        return "permission_denied"
+    if any(marker in normalized for marker in (
+        "connection refused", "connectionerror",
+        "connecterror", "could not connect", "network is unreachable",
+        "httpstatuserror", "http 4", "http 5", "status code 4", "status code 5",
+    )):
+        return "artwork_source_unavailable"
+    if failure_stage == "generating_artwork" or "failed to generate artwork" in normalized:
+        return "artwork_frame_extraction_failed"
+    return None
+
+
+def _generic_failure_code(normalized: str) -> str | None:
     if "timed out" in normalized or "timeout" in normalized:
         return "operation_timeout"
     if any(marker in normalized for marker in (

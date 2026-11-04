@@ -78,6 +78,10 @@ def _telegram_document_id(video_id: str) -> str | None:
     return None
 
 
+_PAIR_NAMES = ('id', 'duration', 'file_size_bytes', 'title', 'source_filename', 'source_text',
+               'scene_match_source', 'oshash', 'phash')
+
+
 def pair_evidence(conn, left_id: str, right_id: str) -> dict | None:
     left_id, right_id = sorted((left_id, right_id))
     if left_id == right_id:
@@ -89,23 +93,14 @@ def pair_evidence(conn, left_id: str, right_id: str) -> dict | None:
           AND EXISTS (SELECT 1 FROM video_phash_provenance pp WHERE pp.video_id=p.video_id
               AND pp.fingerprint=p.fingerprint AND pp.generator_version=%s)
         WHERE v.id=ANY(%s) ORDER BY v.id''', (PHASH_GENERATOR, [left_id,right_id])).fetchall()
-    names = ('id','duration','file_size_bytes','title','source_filename','source_text','scene_match_source','oshash','phash')
     if len(rows) != 2:
         return None
-    a, b = (dict(zip(names, row)) for row in rows)
+    a, b = (dict(zip(_PAIR_NAMES, row)) for row in rows)
     doc_a = _telegram_document_id(a['id'])
     doc_b = _telegram_document_id(b['id'])
     same_tg_doc = bool(doc_a and doc_b and doc_a == doc_b)
-    try:
-        x, y = float(a['duration'] or 0), float(b['duration'] or 0)
-        if x > 0 and y > 0:
-            if abs(x-y) > min(15, max(5, .01*max(x,y))):
-                return None
-        elif not same_tg_doc:
-            return None
-    except (ValueError, TypeError):
-        if not same_tg_doc:
-            return None
+    if not _durations_compatible(a, b, same_tg_doc):
+        return None
     ap, an = _part(a)
     bp, bn = _part(b)
     if (ap or bp) and (not an or an != bn):
@@ -116,6 +111,24 @@ def pair_evidence(conn, left_id: str, right_id: str) -> dict | None:
         return {'type': 'telegram_file_id', 'file_id': doc_a}
     if a['oshash'] and a['oshash'] == b['oshash']:
         return {'type': 'oshash'}
+    phash = _phash_evidence(a, b)
+    if phash:
+        return phash
+    return _visual_evidence(conn, left_id, right_id, a, b)
+
+
+def _durations_compatible(a: dict, b: dict, same_tg_doc: bool) -> bool:
+    """Runtimes must agree within tolerance; unknown runtimes need the same Telegram document."""
+    try:
+        x, y = float(a['duration'] or 0), float(b['duration'] or 0)
+        if x > 0 and y > 0:
+            return abs(x-y) <= min(15, max(5, .01*max(x,y)))
+        return same_tg_doc
+    except (ValueError, TypeError):
+        return same_tg_doc
+
+
+def _phash_evidence(a: dict, b: dict) -> dict | None:
     try:
         ah, bh = str(a['phash'] or ''), str(b['phash'] or '')
         if re.fullmatch(r'[0-9a-fA-F]{16}', ah) and re.fullmatch(r'[0-9a-fA-F]{16}', bh):
@@ -124,6 +137,10 @@ def pair_evidence(conn, left_id: str, right_id: str) -> dict | None:
                 return {'type': 'phash', 'distance': distance}
     except ValueError:
         pass
+    return None
+
+
+def _visual_evidence(conn, left_id: str, right_id: str, a: dict, b: dict) -> dict | None:
     row = conn.execute('''SELECT evidence FROM video_visual_comparisons WHERE left_id=%s AND right_id=%s
         AND state='confirmed' AND algorithm_version='visual-sequence-v1' AND left_source_key=%s AND right_source_key=%s''',
         (left_id,right_id,_source(a),_source(b))).fetchone()
