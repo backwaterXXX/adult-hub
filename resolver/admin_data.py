@@ -177,110 +177,126 @@ def db_stats(db_url: str | None, config_path: Path | str,
             out["error"] = f"brak połączenia z PostgreSQL: {exc}"[:200]
             return out
         try:
-            out["db_size_mb"] = conn.execute(
-                "SELECT round(pg_database_size(current_database()) / 1024.0 / 1024.0, 2)"
-            ).fetchone()[0]
-        except Exception:
-            pass
-        try:
-            out["videos_total"] = conn.execute("SELECT count(*) FROM videos").fetchone()[0]
-            if media_dir is not None:
-                out["artwork_total"] = _local_artwork_count(conn, media_dir)
-            try:
-                out["files_total"] = conn.execute("SELECT count(*) FROM synced_files").fetchone()[0]
-            except Exception:
-                pass
-            try:
-                tg_ch_map = channel_labels(config_path)
-                # Telegram IDs look like ``telegram:<channel>:...``. Use this
-                # stable source identity; videos.studio is production metadata
-                # and can be changed by enrichment.
-                query = """
-                    SELECT
-                        provider,
-                        CASE
-                            WHEN provider = 'telegram' THEN
-                                NULLIF(split_part(id, ':', 2), '')
-                            ELSE ''
-                        END AS ch,
-                        count(*)
-                    FROM videos
-                    GROUP BY provider, ch
-                    ORDER BY count(*) DESC
-                """
-                rows = conn.execute(query).fetchall()
-                by_provider: dict = {}
-                tg_channels: dict = {}
-                tg_total = 0
-                for prov, ch, cnt in rows:
-                    prov_key = prov or "?"
-                    if prov_key == "telegram":
-                        channel_id = str(ch or "unknown")
-                        ch_name = tg_ch_map.get(channel_id, channel_id)
-                        tg_channels[ch_name] = tg_channels.get(ch_name, 0) + cnt
-                        tg_total += cnt
-                        key = f"tg:[{trim_channel_name(ch_name)}]"
-                        by_provider[key] = by_provider.get(key, 0) + cnt
-                    else:
-                        by_provider[prov_key] = by_provider.get(prov_key, 0) + cnt
-
-                out["by_provider"] = dict(sorted(by_provider.items(), key=lambda item: item[1], reverse=True))
-                if tg_total > 0:
-                    out["telegram_total"] = tg_total
-                    out["telegram_channels"] = tg_channels
-            except Exception:
-                pass
-            try:
-                mx = conn.execute("SELECT MAX(last_seen) FROM videos").fetchone()[0]
-                if mx:
-                    out["last_seen"] = int(mx)
-                    out["last_seen_human"] = datetime.fromtimestamp(int(mx)).strftime("%Y-%m-%d %H:%M")
-            except Exception:
-                pass
-            try:
-                day_ago = int(time.time()) - 86400
-                out["fresh_24h"] = conn.execute(
-                    "SELECT count(*) FROM videos WHERE last_seen > %s", (day_ago,)
-                ).fetchone()[0]
-            except Exception:
-                pass
-
-            tables = db.table_names(conn)
-            if "video_fingerprints" in tables:
-                coverage = conn.execute(
-                    "SELECT count(*) FILTER (WHERE algorithm = 'OSHASH'), "
-                    "count(*) FILTER (WHERE algorithm = 'PHASH') FROM video_fingerprints"
-                ).fetchone()
-                out["oshash_total"], out["phash_total"] = coverage
-            if "performer_photos" in tables:
-                out["photos_total"] = conn.execute(
-                    "SELECT count(*) FROM performer_photos "
-                    "WHERE btrim(COALESCE(thumb, ''), chr(32) || chr(9) || chr(10) || chr(13)) <> ''"
-                ).fetchone()[0]
-            if "performer_bios" in tables:
-                out["bios_total"] = conn.execute(
-                    "SELECT count(*) FROM performer_bios "
-                    "WHERE btrim(COALESCE(bio, ''), chr(32) || chr(9) || chr(10) || chr(13)) <> ''"
-                ).fetchone()[0]
-            if "performer_aliases" in tables:
-                out["aliases_total"] = conn.execute(
-                    "SELECT count(*) FROM performer_aliases "
-                    "WHERE btrim(COALESCE(alias, ''), chr(32) || chr(9) || chr(10) || chr(13)) <> '' "
-                    "AND btrim(COALESCE(canonical, ''), chr(32) || chr(9) || chr(10) || chr(13)) <> ''"
-                ).fetchone()[0]
-            if "dead_streams" in tables:
-                out["dead_streams_total"] = conn.execute("SELECT count(*) FROM dead_streams").fetchone()[0]
-            if "videos" in tables:
-                cols = db.table_columns(conn, "videos")
-                if "playable" in cols:
-                    out["unplayable_total"] = conn.execute("SELECT count(*) FROM videos WHERE playable = 0").fetchone()[0]
-
+            _collect_db_stats(conn, out, config_path, media_dir)
             out["db_ok"] = True
         finally:
             conn.close()
     except Exception as e:
         out["error"] = str(e)[:200]
     return out
+
+
+def _collect_db_stats(conn, out: dict, config_path, media_dir) -> None:
+    """Fill ``out`` in place. Errors in the core counts propagate to the caller."""
+    try:
+        out["db_size_mb"] = conn.execute(
+            "SELECT round(pg_database_size(current_database()) / 1024.0 / 1024.0, 2)"
+        ).fetchone()[0]
+    except Exception:
+        pass
+    out["videos_total"] = conn.execute("SELECT count(*) FROM videos").fetchone()[0]
+    if media_dir is not None:
+        out["artwork_total"] = _local_artwork_count(conn, media_dir)
+    try:
+        out["files_total"] = conn.execute("SELECT count(*) FROM synced_files").fetchone()[0]
+    except Exception:
+        pass
+    try:
+        _collect_provider_breakdown(conn, out, config_path)
+    except Exception:
+        pass
+    try:
+        mx = conn.execute("SELECT MAX(last_seen) FROM videos").fetchone()[0]
+        if mx:
+            out["last_seen"] = int(mx)
+            out["last_seen_human"] = datetime.fromtimestamp(int(mx)).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        pass
+    try:
+        day_ago = int(time.time()) - 86400
+        out["fresh_24h"] = conn.execute(
+            "SELECT count(*) FROM videos WHERE last_seen > %s", (day_ago,)
+        ).fetchone()[0]
+    except Exception:
+        pass
+    _collect_table_totals(conn, out)
+
+
+def _collect_provider_breakdown(conn, out: dict, config_path) -> None:
+    tg_ch_map = channel_labels(config_path)
+    # Telegram IDs look like ``telegram:<channel>:...``. Use this
+    # stable source identity; videos.studio is production metadata
+    # and can be changed by enrichment.
+    query = """
+        SELECT
+            provider,
+            CASE
+                WHEN provider = 'telegram' THEN
+                    NULLIF(split_part(id, ':', 2), '')
+                ELSE ''
+            END AS ch,
+            count(*)
+        FROM videos
+        GROUP BY provider, ch
+        ORDER BY count(*) DESC
+    """
+    rows = conn.execute(query).fetchall()
+    by_provider, tg_channels, tg_total = _provider_totals(rows, tg_ch_map)
+    out["by_provider"] = dict(sorted(by_provider.items(), key=lambda item: item[1], reverse=True))
+    if tg_total > 0:
+        out["telegram_total"] = tg_total
+        out["telegram_channels"] = tg_channels
+
+
+def _provider_totals(rows, tg_ch_map: dict) -> tuple[dict, dict, int]:
+    """Group video counts by provider and, for Telegram, by channel label."""
+    by_provider: dict = {}
+    tg_channels: dict = {}
+    tg_total = 0
+    for prov, ch, cnt in rows:
+        prov_key = prov or "?"
+        if prov_key == "telegram":
+            channel_id = str(ch or "unknown")
+            ch_name = tg_ch_map.get(channel_id, channel_id)
+            tg_channels[ch_name] = tg_channels.get(ch_name, 0) + cnt
+            tg_total += cnt
+            key = f"tg:[{trim_channel_name(ch_name)}]"
+            by_provider[key] = by_provider.get(key, 0) + cnt
+        else:
+            by_provider[prov_key] = by_provider.get(prov_key, 0) + cnt
+    return by_provider, tg_channels, tg_total
+
+
+def _collect_table_totals(conn, out: dict) -> None:
+    tables = db.table_names(conn)
+    if "video_fingerprints" in tables:
+        coverage = conn.execute(
+            "SELECT count(*) FILTER (WHERE algorithm = 'OSHASH'), "
+            "count(*) FILTER (WHERE algorithm = 'PHASH') FROM video_fingerprints"
+        ).fetchone()
+        out["oshash_total"], out["phash_total"] = coverage
+    if "performer_photos" in tables:
+        out["photos_total"] = conn.execute(
+            "SELECT count(*) FROM performer_photos "
+            "WHERE btrim(COALESCE(thumb, ''), chr(32) || chr(9) || chr(10) || chr(13)) <> ''"
+        ).fetchone()[0]
+    if "performer_bios" in tables:
+        out["bios_total"] = conn.execute(
+            "SELECT count(*) FROM performer_bios "
+            "WHERE btrim(COALESCE(bio, ''), chr(32) || chr(9) || chr(10) || chr(13)) <> ''"
+        ).fetchone()[0]
+    if "performer_aliases" in tables:
+        out["aliases_total"] = conn.execute(
+            "SELECT count(*) FROM performer_aliases "
+            "WHERE btrim(COALESCE(alias, ''), chr(32) || chr(9) || chr(10) || chr(13)) <> '' "
+            "AND btrim(COALESCE(canonical, ''), chr(32) || chr(9) || chr(10) || chr(13)) <> ''"
+        ).fetchone()[0]
+    if "dead_streams" in tables:
+        out["dead_streams_total"] = conn.execute("SELECT count(*) FROM dead_streams").fetchone()[0]
+    if "videos" in tables:
+        cols = db.table_columns(conn, "videos")
+        if "playable" in cols:
+            out["unplayable_total"] = conn.execute("SELECT count(*) FROM videos WHERE playable = 0").fetchone()[0]
 
 
 def sync_status(status_file: Path | str) -> dict:

@@ -36,15 +36,41 @@ async def _jellyfin_items(client, url: str, params: dict, headers: dict, *, max_
 
 async def refresh_managed_collections(client, base_url: str, api_key: str, db_url=None) -> dict:
     """Create and reconcile Adult Hub collections from its synced metadata."""
+    records = _catalog_records(db_url)
+    headers = _jellyfin_headers(api_key)
+    items_by_file = await _jellyfin_file_index(client, base_url, headers)
+    videos = _catalog_videos(records, items_by_file)
+    desired = await _desired_collections(client, base_url, headers, videos)
+
+    response = await client.get(
+        f"{base_url}/Items", params={"recursive": "true", "includeItemTypes": "BoxSet", "limit": 1000}, headers=headers,
+    )
+    response.raise_for_status()
+    existing = {item.get("Name"): item.get("Id") for item in response.json().get("Items", []) if item.get("Name", "").startswith("Adult Hub · ")}
+    changes = []
+    # Keep the membership of previously managed groups reconciled even when
+    # their desired set drops below the creation threshold or their metadata
+    # label changes. Empty collections are retained; only stale membership is
+    # removed, and no media item or operator-owned collection is deleted.
+    for name in sorted(set(desired) | set(existing)):
+        change = await _reconcile_collection(
+            client, base_url, headers, name, desired.get(name, []), existing.get(name))
+        if change is not None:
+            changes.append(change)
+    return {"collections": changes, "matched_videos": len(videos)}
+
+
+def _catalog_records(db_url) -> list:
     conn = connect(db_url)
     try:
-        records = conn.execute("""SELECT v.id, v.title, v.studio, v.performers, v.tags,
+        return conn.execute("""SELECT v.id, v.title, v.studio, v.performers, v.tags,
                                        v.first_seen, s.file_path
                                 FROM videos v LEFT JOIN synced_files s ON s.video_id = v.id""").fetchall()
     finally:
         conn.close()
 
-    headers = _jellyfin_headers(api_key)
+
+async def _jellyfin_file_index(client, base_url: str, headers: dict) -> dict[str, set[str]]:
     # The catalog stores the library-relative STRM name, while Jellyfin returns
     # an absolute path. Match on the name only when it identifies exactly one
     # Jellyfin item; basename collisions across directories are ambiguous and
@@ -59,27 +85,33 @@ async def refresh_managed_collections(client, base_url: str, api_key: str, db_ur
         item_id = item.get("Id")
         if path and item_id:
             items_by_file.setdefault(Path(path).name, set()).add(item_id)
+    return items_by_file
 
+
+def _json_list(raw) -> list:
+    try:
+        value = json.loads(raw) if raw else []
+    except (ValueError, TypeError):
+        value = []
+    return value if isinstance(value, list) else []
+
+
+def _catalog_videos(records, items_by_file: dict[str, set[str]]) -> list[dict]:
     videos = []
     for video_id, title, studio, performers_raw, tags_raw, first_seen, file_path in records:
         matching_ids = items_by_file.get(Path(file_path).name, set()) if file_path else set()
         jellyfin_id = next(iter(matching_ids)) if len(matching_ids) == 1 else None
         if not jellyfin_id:
             continue
-        try:
-            performers = json.loads(performers_raw) if performers_raw else []
-        except (ValueError, TypeError):
-            performers = []
-        try:
-            tags = json.loads(tags_raw) if tags_raw else []
-        except (ValueError, TypeError):
-            tags = []
         videos.append({
             "id": jellyfin_id, "title": title or video_id, "studio": (studio or "").strip(),
-            "performers": performers if isinstance(performers, list) else [],
-            "tags": tags if isinstance(tags, list) else [], "first_seen": first_seen or 0,
+            "performers": _json_list(performers_raw), "tags": _json_list(tags_raw),
+            "first_seen": first_seen or 0,
         })
+    return videos
 
+
+async def _desired_collections(client, base_url: str, headers: dict, videos: list[dict]) -> dict[str, list[str]]:
     desired: dict[str, list[str]] = {
         "Adult Hub · Recently Added": [v["id"] for v in sorted(videos, key=lambda v: v["first_seen"], reverse=True)[:60]],
     }
@@ -90,63 +122,67 @@ async def refresh_managed_collections(client, base_url: str, api_key: str, db_ur
     favorite_ids = {item.get("Id") for item in favorite_items if item.get("Id")}
     desired["Adult Hub · Favorites"] = sorted(favorite_ids & {video["id"] for video in videos})
     for field, label in (("studio", "Studio"), ("performers", "Performer"), ("tags", "Tag")):
-        groups: dict[str, set[str]] = {}
-        for video in videos:
-            values = video[field] if isinstance(video[field], list) else [video[field]]
-            for value in values:
-                name = str(value or "").strip()
-                if name:
-                    groups.setdefault(name, set()).add(video["id"])
-        for name, ids in sorted(groups.items(), key=lambda pair: (-len(pair[1]), pair[0].casefold())):
-            if len(ids) >= 3 and len([n for n in desired if n.startswith(f"Adult Hub · {label} · ")]) < 10:
-                desired[f"Adult Hub · {label} · {name}"] = sorted(ids)
+        _add_attribute_collections(desired, videos, field, label)
+    return desired
 
-    response = await client.get(
-        f"{base_url}/Items", params={"recursive": "true", "includeItemTypes": "BoxSet", "limit": 1000}, headers=headers,
-    )
+
+def _add_attribute_collections(desired: dict[str, list[str]], videos: list[dict], field: str, label: str) -> None:
+    """Add up to 10 studio, performer, or tag collections with at least 3 videos."""
+    groups: dict[str, set[str]] = {}
+    for video in videos:
+        values = video[field] if isinstance(video[field], list) else [video[field]]
+        for value in values:
+            name = str(value or "").strip()
+            if name:
+                groups.setdefault(name, set()).add(video["id"])
+    for name, ids in sorted(groups.items(), key=lambda pair: (-len(pair[1]), pair[0].casefold())):
+        if len(ids) >= 3 and len([n for n in desired if n.startswith(f"Adult Hub · {label} · ")]) < 10:
+            desired[f"Adult Hub · {label} · {name}"] = sorted(ids)
+
+
+async def _reconcile_collection(client, base_url: str, headers: dict, name: str, wanted_ids, collection_id):
+    """Bring one managed collection in line with its desired membership.
+
+    Returns the change record, or None when a collection is not needed yet.
+    """
+    wanted = set(wanted_ids)
+    if not collection_id:
+        if not wanted:
+            return None
+        await _create_collection(client, base_url, headers, name, wanted)
+        return {"name": name, "items": len(wanted), "created": True}
+    await _sync_membership(client, base_url, headers, collection_id, wanted)
+    return {"name": name, "items": len(wanted), "created": False}
+
+
+async def _create_collection(client, base_url: str, headers: dict, name: str, wanted: set[str]) -> None:
+    batches = _chunks(wanted)
+    response = await client.post(f"{base_url}/Collections", params={"name": name, "ids": ",".join(batches[0])}, headers=headers)
     response.raise_for_status()
-    existing = {item.get("Name"): item.get("Id") for item in response.json().get("Items", []) if item.get("Name", "").startswith("Adult Hub · ")}
-    changes = []
-    # Keep the membership of previously managed groups reconciled even when
-    # their desired set drops below the creation threshold or their metadata
-    # label changes. Empty collections are retained; only stale membership is
-    # removed, and no media item or operator-owned collection is deleted.
-    for name in sorted(set(desired) | set(existing)):
-        wanted_ids = desired.get(name, [])
-        collection_id = existing.get(name)
-        wanted = set(wanted_ids)
-        if not collection_id:
-            if not wanted:
-                continue
-            batches = _chunks(wanted)
-            response = await client.post(f"{base_url}/Collections", params={"name": name, "ids": ",".join(batches[0])}, headers=headers)
-            response.raise_for_status()
-            created_id = response.json().get("Id")
-            if len(batches) > 1 and not created_id:
-                raise RuntimeError("Jellyfin did not return the collection identifier")
-            if created_id:
-                for batch in batches[1:]:
-                    response = await client.post(
-                        f"{base_url}/Collections/{created_id}/Items", params={"ids": ",".join(batch)}, headers=headers,
-                    )
-                    response.raise_for_status()
-            changes.append({"name": name, "items": len(wanted), "created": True})
-            continue
-
-        current_items = await _jellyfin_items(
-            client, f"{base_url}/Items", {"parentId": collection_id, "recursive": "true"}, headers,
-        )
-        current = {item.get("Id") for item in current_items if item.get("Id")}
-        add_ids, remove_ids = wanted - current, current - wanted
-        for batch in _chunks(add_ids):
+    created_id = response.json().get("Id")
+    if len(batches) > 1 and not created_id:
+        raise RuntimeError("Jellyfin did not return the collection identifier")
+    if created_id:
+        for batch in batches[1:]:
             response = await client.post(
-                f"{base_url}/Collections/{collection_id}/Items", params={"ids": ",".join(batch)}, headers=headers,
+                f"{base_url}/Collections/{created_id}/Items", params={"ids": ",".join(batch)}, headers=headers,
             )
             response.raise_for_status()
-        for batch in _chunks(remove_ids):
-            response = await client.delete(
-                f"{base_url}/Collections/{collection_id}/Items", params={"ids": ",".join(batch)}, headers=headers,
-            )
-            response.raise_for_status()
-        changes.append({"name": name, "items": len(wanted), "created": False})
-    return {"collections": changes, "matched_videos": len(videos)}
+
+
+async def _sync_membership(client, base_url: str, headers: dict, collection_id, wanted: set[str]) -> None:
+    current_items = await _jellyfin_items(
+        client, f"{base_url}/Items", {"parentId": collection_id, "recursive": "true"}, headers,
+    )
+    current = {item.get("Id") for item in current_items if item.get("Id")}
+    add_ids, remove_ids = wanted - current, current - wanted
+    for batch in _chunks(add_ids):
+        response = await client.post(
+            f"{base_url}/Collections/{collection_id}/Items", params={"ids": ",".join(batch)}, headers=headers,
+        )
+        response.raise_for_status()
+    for batch in _chunks(remove_ids):
+        response = await client.delete(
+            f"{base_url}/Collections/{collection_id}/Items", params={"ids": ",".join(batch)}, headers=headers,
+        )
+        response.raise_for_status()
