@@ -62,22 +62,32 @@ def _parse_range_request(value: Optional[str], total: Optional[int] = None) -> O
     if not spec or "," in spec:
         return None
     if spec.startswith("-"):
-        # Suffix range: last N bytes. Needs known total to be truthful.
-        try:
-            suffix = int(spec[1:].strip())
-        except ValueError:
-            return None
-        if suffix <= 0 or total is None:
-            return None
-        try:
-            size = int(total)
-        except (TypeError, ValueError):
-            return None
-        if size <= 0:
-            return None
-        if suffix >= size:
-            return (0, size)
-        return (size - suffix, suffix)
+        return _parse_suffix_range(spec[1:], total)
+    return _parse_start_range(spec)
+
+
+def _parse_suffix_range(digits: str, total: Optional[int]) -> Optional[Tuple[int, Optional[int]]]:
+    """Resolve ``-N`` (last N bytes) against the known total size."""
+    # Suffix range: last N bytes. Needs known total to be truthful.
+    try:
+        suffix = int(digits.strip())
+    except ValueError:
+        return None
+    if suffix <= 0 or total is None:
+        return None
+    try:
+        size = int(total)
+    except (TypeError, ValueError):
+        return None
+    if size <= 0:
+        return None
+    if suffix >= size:
+        return (0, size)
+    return (size - suffix, suffix)
+
+
+def _parse_start_range(spec: str) -> Optional[Tuple[int, Optional[int]]]:
+    """Parse ``start-`` or ``start-end`` (both inclusive) into offset and length."""
     parts = spec.split("-", 1)
     if len(parts) != 2:
         return None

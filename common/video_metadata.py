@@ -52,35 +52,47 @@ def validate_override_patch(patch: object, reset_fields: object = ()) -> tuple[d
     normalized: dict[str, object] = {}
     for field, value in patch.items():
         if field in EDITABLE_TEXT_FIELDS:
-            if not isinstance(value, str):
-                raise MetadataValidationError(f"{field} must be text.")
-            value = value.strip()
-            if len(value) > EDITABLE_TEXT_FIELDS[field]:
-                raise MetadataValidationError(f"{field} is too long.")
-            normalized[field] = value
+            normalized[field] = _normalize_text_field(field, value)
         elif field in EDITABLE_LIST_FIELDS:
-            if (not isinstance(value, list) or len(value) > 100
-                    or any(not isinstance(item, str) for item in value)):
-                raise MetadataValidationError(f"{field} must be a list of at most 100 text values.")
-            items = [item.strip() for item in value]
-            if any(not item or len(item) > 200 for item in items):
-                raise MetadataValidationError(f"{field} values must contain 1 to 200 characters.")
-            normalized[field] = list(dict.fromkeys(items))
+            normalized[field] = _normalize_list_field(field, value)
         else:
-            if not isinstance(value, str):
-                raise MetadataValidationError("date_released must be a date or empty text.")
-            value = value.strip()
-            if value:
-                try:
-                    from datetime import date
-                    date.fromisoformat(value)
-                except ValueError as exc:
-                    raise MetadataValidationError("date_released must use YYYY-MM-DD.") from exc
-                if len(value) != 10:
-                    raise MetadataValidationError("date_released must use YYYY-MM-DD.")
-            normalized[field] = value
+            normalized[field] = _normalize_date_field(value)
     resets = list(dict.fromkeys(reset_fields))
     return normalized, resets
+
+
+def _normalize_text_field(field: str, value: object) -> str:
+    if not isinstance(value, str):
+        raise MetadataValidationError(f"{field} must be text.")
+    value = value.strip()
+    if len(value) > EDITABLE_TEXT_FIELDS[field]:
+        raise MetadataValidationError(f"{field} is too long.")
+    return value
+
+
+def _normalize_list_field(field: str, value: object) -> list[str]:
+    if (not isinstance(value, list) or len(value) > 100
+            or any(not isinstance(item, str) for item in value)):
+        raise MetadataValidationError(f"{field} must be a list of at most 100 text values.")
+    items = [item.strip() for item in value]
+    if any(not item or len(item) > 200 for item in items):
+        raise MetadataValidationError(f"{field} values must contain 1 to 200 characters.")
+    return list(dict.fromkeys(items))
+
+
+def _normalize_date_field(value: object) -> str:
+    if not isinstance(value, str):
+        raise MetadataValidationError("date_released must be a date or empty text.")
+    value = value.strip()
+    if value:
+        try:
+            from datetime import date
+            date.fromisoformat(value)
+        except ValueError as exc:
+            raise MetadataValidationError("date_released must use YYYY-MM-DD.") from exc
+        if len(value) != 10:
+            raise MetadataValidationError("date_released must use YYYY-MM-DD.")
+    return value
 
 
 def effective_value(source_value, overrides: dict, field: str):
