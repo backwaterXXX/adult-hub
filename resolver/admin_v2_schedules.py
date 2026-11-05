@@ -16,20 +16,38 @@ from common import system_schedules
 logger = logging.getLogger(__name__)
 
 
-def build_router(admin):
-    router = APIRouter(route_class=V2ErrorRoute)
+def title_cleanup_status():
+    path = Path(os.getenv(
+        "TELEGRAM_TITLE_CLEANUP_STATUS_PATH",
+        "/data/cache/telegram-title-cleanup.json",
+    ))
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
-    def title_cleanup_status():
-        path = Path(os.getenv(
-            "TELEGRAM_TITLE_CLEANUP_STATUS_PATH",
-            "/data/cache/telegram-title-cleanup.json",
-        ))
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, TypeError):
-            return {}
-        return value if isinstance(value, dict) else {}
 
+async def _queue_run(admin, request: Request, schedule_id: str, *, system: bool):
+    denied = admin._write_denied(request)
+    if denied is not None:
+        return denied
+    try:
+        run = system_schedules.request_system_run if system else admin_schedules.run_schedule_now
+        result = await admin.asyncio.to_thread(run, admin.HUB_DB_URL, schedule_id)
+        if result["outcome"] == "not_found":
+            return admin.JSONResponse({"ok": False, "error": "Schedule not found."}, status_code=404)
+        if result["outcome"] == "conflict":
+            return admin.JSONResponse({"ok": False, "error": "A run is already queued or processing."}, status_code=409)
+        if not system:
+            admin._wake_worker("jobs")
+        return admin.JSONResponse({"ok": True, **result}, status_code=202)
+    except Exception:
+        logger.warning("Request failed in queue_run", exc_info=True)
+        return admin.JSONResponse({"ok": False, "error": "Could not run schedule."}, status_code=503)
+
+
+def _route_list_schedules(router, admin):
     @router.get("/api/v2/schedules")
     async def list_schedules(request: Request):
         if admin._admin_blocked(request):
@@ -150,6 +168,8 @@ def build_router(admin):
             logger.warning("Request failed in list_schedules", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Schedule list is unavailable."}, status_code=503)
 
+
+def _route_preview_cron(router, admin):
     @router.get("/api/v2/schedules/cron-preview")
     async def preview_cron(request: Request, expression: str = Query(..., max_length=100)):
         if admin._admin_blocked(request):
@@ -167,6 +187,8 @@ def build_router(admin):
         except ValueError as exc:
             return admin.JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
+
+def _route_create_schedule(router, admin):
     @router.post("/api/v2/schedules")
     async def create_schedule(request: Request):
         denied = admin._write_denied(request)
@@ -200,6 +222,8 @@ def build_router(admin):
             logger.warning("Request failed in create_schedule", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not create schedule."}, status_code=503)
 
+
+def _route_set_schedule_enabled(router, admin):
     @router.post("/api/v2/schedules/{schedule_id}/enabled")
     async def set_schedule_enabled(request: Request, schedule_id: str):
         denied = admin._write_denied(request)
@@ -224,6 +248,8 @@ def build_router(admin):
             logger.warning("Request failed in set_schedule_enabled", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not update schedule."}, status_code=503)
 
+
+def _route_set_schedule_cron(router, admin):
     @router.post("/api/v2/schedules/{schedule_id}/cron")
     async def set_schedule_cron(request: Request, schedule_id: str):
         denied = admin._write_denied(request)
@@ -248,6 +274,8 @@ def build_router(admin):
             logger.warning("Request failed in set_schedule_cron", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not update cron schedule."}, status_code=503)
 
+
+def _route_update_system_schedule(router, admin):
     @router.post("/api/v2/schedules/system/{schedule_id}")
     async def update_system_schedule(request: Request, schedule_id: str):
         denied = admin._write_denied(request)
@@ -272,32 +300,20 @@ def build_router(admin):
             logger.warning("Request failed in update_system_schedule", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not update system schedule."}, status_code=503)
 
-    async def queue_run(request: Request, schedule_id: str, *, system: bool):
-        denied = admin._write_denied(request)
-        if denied is not None:
-            return denied
-        try:
-            run = system_schedules.request_system_run if system else admin_schedules.run_schedule_now
-            result = await admin.asyncio.to_thread(run, admin.HUB_DB_URL, schedule_id)
-            if result["outcome"] == "not_found":
-                return admin.JSONResponse({"ok": False, "error": "Schedule not found."}, status_code=404)
-            if result["outcome"] == "conflict":
-                return admin.JSONResponse({"ok": False, "error": "A run is already queued or processing."}, status_code=409)
-            if not system:
-                admin._wake_worker("jobs")
-            return admin.JSONResponse({"ok": True, **result}, status_code=202)
-        except Exception:
-            logger.warning("Request failed in queue_run", exc_info=True)
-            return admin.JSONResponse({"ok": False, "error": "Could not run schedule."}, status_code=503)
 
+def _route_run_admin_schedule(router, admin):
     @router.post("/api/v2/schedules/{schedule_id}/run")
     async def run_admin_schedule(request: Request, schedule_id: str):
-        return await queue_run(request, schedule_id, system=False)
+        return await _queue_run(admin, request, schedule_id, system=False)
 
+
+def _route_run_system_schedule(router, admin):
     @router.post("/api/v2/schedules/system/{schedule_id}/run")
     async def run_system_schedule(request: Request, schedule_id: str):
-        return await queue_run(request, schedule_id, system=True)
+        return await _queue_run(admin, request, schedule_id, system=True)
 
+
+def _route_set_stage_enabled(router, admin):
     @router.post("/api/v2/schedules/system/{schedule_id}/stages/{stage_id}/enabled")
     async def set_stage_enabled(request: Request, schedule_id: str, stage_id: str):
         denied = admin._write_denied(request)
@@ -323,6 +339,8 @@ def build_router(admin):
             logger.warning("Request failed in set_stage_enabled", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not update stage."}, status_code=503)
 
+
+def _route_run_stage(router, admin):
     @router.post("/api/v2/schedules/system/{schedule_id}/stages/{stage_id}/run")
     async def run_stage(request: Request, schedule_id: str, stage_id: str):
         denied = admin._write_denied(request)
@@ -347,4 +365,17 @@ def build_router(admin):
         admin._wake_worker("jobs")
         return admin.JSONResponse({"ok": True, **result}, status_code=202)
 
+
+def build_router(admin):
+    router = APIRouter(route_class=V2ErrorRoute)
+    _route_list_schedules(router, admin)
+    _route_preview_cron(router, admin)
+    _route_create_schedule(router, admin)
+    _route_set_schedule_enabled(router, admin)
+    _route_set_schedule_cron(router, admin)
+    _route_update_system_schedule(router, admin)
+    _route_run_admin_schedule(router, admin)
+    _route_run_system_schedule(router, admin)
+    _route_set_stage_enabled(router, admin)
+    _route_run_stage(router, admin)
     return router

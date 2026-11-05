@@ -177,9 +177,7 @@ def _list_tasks(db_url: str | None, *, queue: str, state: str, action: str,
         conn.close()
 
 
-def build_router(admin):
-    router = APIRouter(route_class=V2ErrorRoute)
-
+def _route_list_tasks(router, admin):
     @router.get("/api/v2/tasks")
     async def list_tasks(
         request: Request,
@@ -218,6 +216,8 @@ def build_router(admin):
             logger.warning("Request failed in list_tasks", exc_info=True)
             return admin.JSONResponse({"error": "Could not load task history."}, status_code=503)
 
+
+def _route_read_task(router, admin):
     @router.get("/api/v2/tasks/{queue}/{task_id}")
     async def read_task(request: Request, queue: str, task_id: str):
         if admin._admin_blocked(request):
@@ -238,4 +238,9 @@ def build_router(admin):
             logger.warning("Request failed in read_task", exc_info=True)
             return admin.JSONResponse({"error": "Could not load task details."}, status_code=503)
 
+
+def build_router(admin):
+    router = APIRouter(route_class=V2ErrorRoute)
+    _route_list_tasks(router, admin)
+    _route_read_task(router, admin)
     return router

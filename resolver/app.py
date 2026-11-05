@@ -492,6 +492,39 @@ def _get_stream_candidate_ids(requested_id: str) -> list[str]:
         return [requested_id]
 
 
+async def _telegram_variants(cand_id: str, raw_id: str):
+    """Ask the Telegram provider for variants. Returns ``(variants, error)``.
+
+    ``variants`` is None when this candidate should be skipped. ``error`` is
+    set when the candidate failed and should be reported if nothing else works.
+    """
+    channel_ref = (raw_id or "").split(":", 1)[0]
+    try:
+        tg_prov = get_provider("telegram")
+    except KeyError:
+        return None, HTTPException(status_code=502, detail="Telegram provider not available")
+
+    auth_check = getattr(tg_prov, "is_channel_authorized", None)
+    if callable(auth_check) and not auth_check(channel_ref):
+        return None, HTTPException(status_code=403, detail="Telegram channel is not authorized")
+
+    variants_fn = getattr(tg_prov, "get_video_variants", None)
+    if not callable(variants_fn):
+        return None, None
+
+    try:
+        res = await variants_fn(raw_id)
+        res["video_id"] = cand_id
+        return res, None
+    except HTTPException as exc:
+        return None, exc
+    except ValueError:
+        return None, HTTPException(status_code=404, detail="Video variants are unavailable")
+    except Exception as exc:
+        logger.warning(f"Failed to fetch variants for {cand_id}: {exc}")
+        return None, exc
+
+
 @api.get("/play/{video_id:path}/variants")
 @api.get("/api/videos/{video_id:path}/variants")
 async def get_video_variants(video_id: str):
@@ -513,37 +546,13 @@ async def get_video_variants(video_id: str):
             logger.debug("Ignored exception in get_video_variants", exc_info=True)
             continue
 
-        if provider_name == "telegram":
-            channel_ref = (raw_id or "").split(":", 1)[0]
-            try:
-                tg_prov = get_provider("telegram")
-            except KeyError:
-                last_error = HTTPException(status_code=502, detail="Telegram provider not available")
-                continue
-
-            auth_check = getattr(tg_prov, "is_channel_authorized", None)
-            if callable(auth_check) and not auth_check(channel_ref):
-                last_error = HTTPException(status_code=403, detail="Telegram channel is not authorized")
-                continue
-
-            variants_fn = getattr(tg_prov, "get_video_variants", None)
-            if not callable(variants_fn):
-                continue
-
-            try:
-                res = await variants_fn(raw_id)
-                res["video_id"] = cand_id
-                return res
-            except HTTPException as exc:
-                last_error = exc
-                continue
-            except ValueError:
-                last_error = HTTPException(status_code=404, detail="Video variants are unavailable")
-                continue
-            except Exception as exc:
-                last_error = exc
-                logger.warning(f"Failed to fetch variants for {cand_id}: {exc}")
-                continue
+        if provider_name != "telegram":
+            continue
+        res, error = await _telegram_variants(cand_id, raw_id)
+        if error is not None:
+            last_error = error
+        if res is not None:
+            return res
 
     if last_error is not None:
         if isinstance(last_error, HTTPException):
@@ -755,10 +764,8 @@ async def _proxy_telegram_response(request: Request, url: str, cache_key: Option
     )
     return await _proxy_telegram_response_impl(request, url, cache_key, services=services)
 
-async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[str] = None):
-    """Fetch a supported upstream stream, or a Telegram range stream."""
-    if (url or "").startswith("tg://"):
-        return await _proxy_telegram_response(request, url, cache_key)
+async def _open_upstream(request: Request, url: str, cache_key: Optional[str]):
+    """Open the upstream response, returning ``(stream_context, response)``."""
     await _validate_proxy_url_async(url)
     parsed = urlparse(url)
     if looks_like_playlist(url):
@@ -789,7 +796,10 @@ async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[s
         if sresp.status_code in (502, 504) and cache_key:
             await asyncio.to_thread(cache.invalidate, cache_key)
         raise HTTPException(status_code=502, detail=f"Upstream fetch failed (HTTP {sresp.status_code})")
+    return ctx, sresp
 
+
+def _upstream_framing_headers(sresp) -> dict:
     # Keep the upstream's framing and media type visible to Jellyfin/FFmpeg.
     # In particular, a known Content-Length makes a finite media resource
     # distinguishable from an open-ended stream for arbitrary containers.
@@ -798,6 +808,28 @@ async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[s
         value = sresp.headers.get(name)
         if value is not None:
             out_headers[name] = value
+    return out_headers
+
+
+async def _relay_upstream_body(ctx, sresp):
+    try:
+        async for chunk in sresp.aiter_bytes(chunk_size=65536):
+            yield chunk
+    except asyncio.CancelledError:
+        raise
+    finally:
+        try:
+            await ctx.__aexit__(None, None, None)
+        except Exception:
+            logger.debug("Ignored exception in proxy_stream", exc_info=True)
+
+
+async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[str] = None):
+    """Fetch a supported upstream stream, or a Telegram range stream."""
+    if (url or "").startswith("tg://"):
+        return await _proxy_telegram_response(request, url, cache_key)
+    ctx, sresp = await _open_upstream(request, url, cache_key)
+    out_headers = _upstream_framing_headers(sresp)
     media_type = sresp.headers.get("content-type", "application/octet-stream")
 
     if (request.method or "GET").upper() == "HEAD":
@@ -807,19 +839,7 @@ async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[s
             logger.debug("Ignored exception in proxy_fetch_response", exc_info=True)
         return Response(status_code=sresp.status_code, headers=out_headers, media_type=media_type)
 
-    async def proxy_stream():
-        try:
-            async for chunk in sresp.aiter_bytes(chunk_size=65536):
-                yield chunk
-        except asyncio.CancelledError:
-            raise
-        finally:
-            try:
-                await ctx.__aexit__(None, None, None)
-            except Exception:
-                logger.debug("Ignored exception in proxy_stream", exc_info=True)
-
-    return StreamingResponse(proxy_stream(), status_code=sresp.status_code,
+    return StreamingResponse(_relay_upstream_body(ctx, sresp), status_code=sresp.status_code,
                              headers=out_headers, media_type=media_type)
 
 

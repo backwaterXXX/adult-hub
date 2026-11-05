@@ -14,7 +14,6 @@ from admin_v2_sync_history import safe_sync_history as _safe_sync_history
 logger = logging.getLogger(__name__)
 
 
-
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_CHECK_REQUEST_BYTES = 4096
 _LOG = logging.getLogger("resolver.admin_v2")
@@ -56,12 +55,97 @@ def is_channel_removal_active(admin, channel_id: str) -> bool:
     return False
 
 
-def build_router(admin):
-    router = APIRouter(route_class=V2ErrorRoute)
+async def parse_body(request: Request):
+    length = request.headers.get("content-length")
+    try:
+        if length is not None and int(length) > MAX_REQUEST_BYTES:
+            return None
+        body = await request.json()
+    except Exception:
+        logger.debug("Ignored exception in parse_body", exc_info=True)
+        return None
+    if (not isinstance(body, dict) or set(body) != {"expected_revision", "overrides"}
+            or type(body["expected_revision"]) is not int or body["expected_revision"] < 0
+            or not isinstance(body["overrides"], dict)):
+        return None
+    try:
+        if len(json.dumps(body, ensure_ascii=False).encode("utf-8")) > MAX_REQUEST_BYTES:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return body
 
-    def _is_channel_removal_active(channel_id: str) -> bool:
-        return is_channel_removal_active(admin, channel_id)
+async def preview(admin, body):
+    from common.managed_sources import preview_overrides
+    return await admin.asyncio.to_thread(
+        preview_overrides,
+        admin.CONFIG_PATH,
+        body["overrides"],
+        expected_revision=body["expected_revision"],
+    )
 
+async def flush_source_audit(admin):
+    """Idempotently drain the durable file outbox into PostgreSQL."""
+    try:
+        from common.managed_sources import clear_pending_source_audit, read_overrides, read_pending_source_audit
+        current = await admin.asyncio.to_thread(read_overrides)
+        pending = await admin.asyncio.to_thread(read_pending_source_audit)
+        if pending is None:
+            return True
+        if pending["revision"] == current["revision"] + 1:
+            # The writer crashed before publishing the corresponding config revision.
+            cleared = await admin.asyncio.to_thread(
+                clear_pending_source_audit, expected_revision=current["revision"],
+                audit_revision=pending["revision"],
+            )
+            return cleared
+        if pending["revision"] != current["revision"]:
+            return False
+        from common.admin_audit_events import record_source_settings_change
+        recorded = await admin.asyncio.to_thread(
+            record_source_settings_change, admin.HUB_DB_URL,
+            revision=pending["revision"], changes=pending["changes"],
+            truncated=pending["truncated"],
+        )
+        if not recorded:
+            raise RuntimeError("Pending source audit could not be validated or replayed.")
+        cleared = await admin.asyncio.to_thread(
+            clear_pending_source_audit, expected_revision=current["revision"],
+            audit_revision=pending["revision"],
+        )
+        if cleared:
+            return True
+        latest = await admin.asyncio.to_thread(read_pending_source_audit)
+        return latest is None
+    except Exception as exc:
+        _LOG.warning("Admin source change audit could not be recorded (%s)", type(exc).__name__)
+        return False
+
+def safe_error(admin, exc):
+    from common.managed_sources import ManagedAuditPending, ManagedConfigConflict, ManagedConfigLockTimeout
+    if isinstance(exc, ManagedConfigConflict):
+        return admin.JSONResponse(
+            {"error": "Source configuration changed. Reload it before saving."}, status_code=409
+        )
+    if isinstance(exc, ManagedAuditPending):
+        return admin.JSONResponse(
+            {"error": "A previous source change is saved, but its audit record is still syncing. Retry after the database recovers."},
+            status_code=503,
+        )
+    if isinstance(exc, ManagedConfigLockTimeout):
+        return admin.JSONResponse(
+            {"error": "Source configuration is temporarily locked by another operation. Retry shortly."},
+            status_code=503,
+        )
+    if isinstance(exc, ChannelRemovalLookupError):
+        return admin.JSONResponse(
+            {"error": "Could not verify active channel operations. Retry shortly."},
+            status_code=503,
+        )
+    return admin.JSONResponse({"error": "Source configuration is invalid or unavailable."}, status_code=400)
+
+
+def _route_list_sources(router, admin):
     @router.get("/api/v2/sources/list")
     async def list_sources(request: Request):
         """List validated source configuration and the last applied revision."""
@@ -90,6 +174,8 @@ def build_router(admin):
             logger.warning("Request failed in list_sources", exc_info=True)
             return admin.JSONResponse({"error": "Could not load configured sources."}, status_code=500)
 
+
+def _route_source_sync_history(router, admin):
     @router.get("/api/v2/sources/sync-history")
     async def source_sync_history(request: Request, limit: int = 30, offset: int = 0):
         if admin._admin_blocked(request):
@@ -103,6 +189,8 @@ def build_router(admin):
             logger.warning("Request failed in source_sync_history", exc_info=True)
             return admin.JSONResponse({"error": "Sync history is unavailable."}, status_code=503)
 
+
+def _route_get_source_settings(router, admin):
     @router.get("/api/v2/sources/settings")
     async def get_source_settings(request: Request):
         if admin._admin_blocked(request):
@@ -119,7 +207,7 @@ def build_router(admin):
             base = await admin.asyncio.to_thread(read_base)
             if base is None:
                 base = {}
-            audit_pending = not await flush_source_audit()
+            audit_pending = not await flush_source_audit(admin)
             overlay = await admin.asyncio.to_thread(read_overrides)
             await admin.asyncio.to_thread(apply_overrides, base, overlay)
             return {"ok": True, "revision": overlay["revision"], "overrides": overlay["overrides"],
@@ -128,72 +216,8 @@ def build_router(admin):
             logger.warning("Request failed in get_source_settings", exc_info=True)
             return admin.JSONResponse({"error": "Source settings are unavailable."}, status_code=503)
 
-    async def parse_body(request: Request):
-        length = request.headers.get("content-length")
-        try:
-            if length is not None and int(length) > MAX_REQUEST_BYTES:
-                return None
-            body = await request.json()
-        except Exception:
-            logger.debug("Ignored exception in parse_body", exc_info=True)
-            return None
-        if (not isinstance(body, dict) or set(body) != {"expected_revision", "overrides"}
-                or type(body["expected_revision"]) is not int or body["expected_revision"] < 0
-                or not isinstance(body["overrides"], dict)):
-            return None
-        try:
-            if len(json.dumps(body, ensure_ascii=False).encode("utf-8")) > MAX_REQUEST_BYTES:
-                return None
-        except (TypeError, ValueError):
-            return None
-        return body
 
-    async def preview(body):
-        from common.managed_sources import preview_overrides
-        return await admin.asyncio.to_thread(
-            preview_overrides,
-            admin.CONFIG_PATH,
-            body["overrides"],
-            expected_revision=body["expected_revision"],
-        )
-
-    async def flush_source_audit():
-        """Idempotently drain the durable file outbox into PostgreSQL."""
-        try:
-            from common.managed_sources import clear_pending_source_audit, read_overrides, read_pending_source_audit
-            current = await admin.asyncio.to_thread(read_overrides)
-            pending = await admin.asyncio.to_thread(read_pending_source_audit)
-            if pending is None:
-                return True
-            if pending["revision"] == current["revision"] + 1:
-                # The writer crashed before publishing the corresponding config revision.
-                cleared = await admin.asyncio.to_thread(
-                    clear_pending_source_audit, expected_revision=current["revision"],
-                    audit_revision=pending["revision"],
-                )
-                return cleared
-            if pending["revision"] != current["revision"]:
-                return False
-            from common.admin_audit_events import record_source_settings_change
-            recorded = await admin.asyncio.to_thread(
-                record_source_settings_change, admin.HUB_DB_URL,
-                revision=pending["revision"], changes=pending["changes"],
-                truncated=pending["truncated"],
-            )
-            if not recorded:
-                raise RuntimeError("Pending source audit could not be validated or replayed.")
-            cleared = await admin.asyncio.to_thread(
-                clear_pending_source_audit, expected_revision=current["revision"],
-                audit_revision=pending["revision"],
-            )
-            if cleared:
-                return True
-            latest = await admin.asyncio.to_thread(read_pending_source_audit)
-            return latest is None
-        except Exception as exc:
-            _LOG.warning("Admin source change audit could not be recorded (%s)", type(exc).__name__)
-            return False
-
+def _route_create_source(router, admin):
     @router.post("/api/v2/sources")
     async def create_source(request: Request):
         """Add one Telegram channel to the shared managed configuration."""
@@ -236,7 +260,7 @@ def build_router(admin):
             observed = await admin.asyncio.to_thread(read_overrides)
             if observed["revision"] != body["expected_revision"]:
                 raise ManagedConfigConflict("Stale source revision.")
-            if not await flush_source_audit():
+            if not await flush_source_audit(admin):
                 from common.managed_sources import ManagedAuditPending
                 raise ManagedAuditPending("A prior source audit is still pending.")
             current = await admin.asyncio.to_thread(read_overrides)
@@ -267,7 +291,7 @@ def build_router(admin):
             ch_is_locked = is_channel_locked(channel_id)
             ch_is_removing = False
             if restoring:
-                ch_is_removing = await admin.asyncio.to_thread(_is_channel_removal_active, channel_id)
+                ch_is_removing = await admin.asyncio.to_thread(is_channel_removal_active, admin, channel_id)
 
             if ch_is_locked or ch_is_removing:
                 try:
@@ -320,35 +344,14 @@ def build_router(admin):
             )
         except Exception as exc:
             logger.debug("Ignored exception in create_source", exc_info=True)
-            return safe_error(exc)
-        audit_pending = not await flush_source_audit()
+            return safe_error(admin, exc)
+        audit_pending = not await flush_source_audit(admin)
         return {"ok": True, "revision": saved["revision"], "source_id": channel_id,
                 "changes": preview_result["changes"],
                 "application": "next sync or resolver config reload", "audit_pending": audit_pending}
 
-    def safe_error(exc):
-        from common.managed_sources import ManagedAuditPending, ManagedConfigConflict, ManagedConfigLockTimeout
-        if isinstance(exc, ManagedConfigConflict):
-            return admin.JSONResponse(
-                {"error": "Source configuration changed. Reload it before saving."}, status_code=409
-            )
-        if isinstance(exc, ManagedAuditPending):
-            return admin.JSONResponse(
-                {"error": "A previous source change is saved, but its audit record is still syncing. Retry after the database recovers."},
-                status_code=503,
-            )
-        if isinstance(exc, ManagedConfigLockTimeout):
-            return admin.JSONResponse(
-                {"error": "Source configuration is temporarily locked by another operation. Retry shortly."},
-                status_code=503,
-            )
-        if isinstance(exc, ChannelRemovalLookupError):
-            return admin.JSONResponse(
-                {"error": "Could not verify active channel operations. Retry shortly."},
-                status_code=503,
-            )
-        return admin.JSONResponse({"error": "Source configuration is invalid or unavailable."}, status_code=400)
 
+def _route_remove_source(router, admin):
     @router.post("/api/v2/sources/remove")
     async def remove_source(request: Request):
         """Remove a Telegram channel and queue deletion of its catalog data."""
@@ -387,7 +390,7 @@ def build_router(admin):
             observed = await admin.asyncio.to_thread(read_overrides)
             if observed["revision"] != body["expected_revision"]:
                 raise ManagedConfigConflict("Stale source revision.")
-            if not await flush_source_audit():
+            if not await flush_source_audit(admin):
                 raise ManagedAuditPending("A prior source audit is still pending.")
             current = await admin.asyncio.to_thread(read_overrides)
             if current["revision"] != body["expected_revision"]:
@@ -411,7 +414,7 @@ def build_router(admin):
             }
             if channel_id not in configured_ids:
                 return admin.JSONResponse({"error": "This channel is not configured."}, status_code=404)
-            if await admin.asyncio.to_thread(_is_channel_removal_active, channel_id):
+            if await admin.asyncio.to_thread(is_channel_removal_active, admin, channel_id):
                 return admin.JSONResponse(
                     {"error": "Channel deletion is already queued or in progress."},
                     status_code=409,
@@ -444,7 +447,7 @@ def build_router(admin):
             except Exception as enqueue_exc:
                 _LOG.error("Failed to enqueue source_remove job: %s", enqueue_exc)
                 try:
-                    await flush_source_audit()
+                    await flush_source_audit(admin)
                 except Exception:
                     logger.debug("Ignored exception in remove_source", exc_info=True)
                 try:
@@ -467,7 +470,7 @@ def build_router(admin):
                         allow_compensation=True,
                     )
                     try:
-                        await flush_source_audit()
+                        await flush_source_audit(admin)
                     except Exception:
                         logger.debug("Ignored exception in remove_source", exc_info=True)
                 except Exception as rollback_exc:
@@ -482,9 +485,9 @@ def build_router(admin):
                 )
         except Exception as exc:
             logger.debug("Ignored exception in remove_source", exc_info=True)
-            return safe_error(exc)
+            return safe_error(admin, exc)
         admin._wake_worker("jobs")
-        audit_pending = not await flush_source_audit()
+        audit_pending = not await flush_source_audit(admin)
         return {"ok": True, "revision": saved["revision"], "source_id": channel_id,
                 "job_id": job_id, "state": "queued",
                 "changes": preview_result["changes"],
@@ -492,6 +495,8 @@ def build_router(admin):
                 "audit_pending": audit_pending,
                 "message": "Channel removed from future syncs. Its channel-only videos and channel sync history are queued for deletion."}
 
+
+def _route_preview_sources(router, admin):
     @router.post("/api/v2/sources/preview")
     async def preview_sources(request: Request):
         if admin._admin_blocked(request):
@@ -500,12 +505,14 @@ def build_router(admin):
         if body is None:
             return admin.JSONResponse({"error": "Specify the current revision and source settings."}, status_code=400)
         try:
-            result = await preview(body)
+            result = await preview(admin, body)
         except Exception as exc:
             logger.debug("Ignored exception in preview_sources", exc_info=True)
-            return safe_error(exc)
+            return safe_error(admin, exc)
         return {"ok": True, **result}
 
+
+def _route_save_sources(router, admin):
     @router.post("/api/v2/sources/save")
     async def save_sources(request: Request):
         denied = admin._write_denied(request)
@@ -522,7 +529,7 @@ def build_router(admin):
             observed = await admin.asyncio.to_thread(read_overrides)
             if observed["revision"] != body["expected_revision"]:
                 raise ManagedConfigConflict("Stale source revision.")
-            if not await flush_source_audit():
+            if not await flush_source_audit(admin):
                 from common.managed_sources import ManagedAuditPending
                 raise ManagedAuditPending("A prior source audit is still pending.")
             tg_candidate = body.get("overrides", {}).get("telegram", {})
@@ -544,7 +551,7 @@ def build_router(admin):
                                 continue
                             if is_channel_locked(ch_str) or (
                                 (canon in current_removed_canon or ch_str in current_removed)
-                                and await admin.asyncio.to_thread(_is_channel_removal_active, ch_str)
+                                and await admin.asyncio.to_thread(is_channel_removal_active, admin, ch_str)
                             ):
                                 try:
                                     from common.job_queue import enqueue_job
@@ -581,7 +588,7 @@ def build_router(admin):
                 if "removed_channels" in tg_candidate:
                     for canon, orig_id in current_removed_canon.items():
                         if canon not in new_removed_canon:
-                            if is_channel_locked(orig_id) or await admin.asyncio.to_thread(_is_channel_removal_active, orig_id):
+                            if is_channel_locked(orig_id) or await admin.asyncio.to_thread(is_channel_removal_active, admin, orig_id):
                                 try:
                                     from common.job_queue import enqueue_job
                                     job_id = await admin.asyncio.to_thread(
@@ -610,7 +617,7 @@ def build_router(admin):
                                         {"error": f"Channel deletion is in progress for '{orig_id}'; wait for it to complete before re-adding."},
                                         status_code=409,
                                     )
-            preview_result = await preview(body)
+            preview_result = await preview(admin, body)
             saved = await admin.asyncio.to_thread(
                 update_overrides,
                 admin.CONFIG_PATH,
@@ -620,12 +627,14 @@ def build_router(admin):
             )
         except Exception as exc:
             logger.debug("Ignored exception in save_sources", exc_info=True)
-            return safe_error(exc)
-        audit_pending = not await flush_source_audit()
+            return safe_error(admin, exc)
+        audit_pending = not await flush_source_audit(admin)
         return {"ok": True, "revision": saved["revision"], "changes": preview_result["changes"],
                 "truncated": preview_result["truncated"],
                 "application": "next sync or resolver config reload", "audit_pending": audit_pending}
 
+
+def _route_check_source_access(router, admin):
     @router.post("/api/v2/sources/check")
     async def check_source_access(request: Request):
         denied = admin._write_denied(request)
@@ -689,4 +698,15 @@ def build_router(admin):
             "message": "Telegram read access confirmed.",
         }
 
+
+def build_router(admin):
+    router = APIRouter(route_class=V2ErrorRoute)
+    _route_list_sources(router, admin)
+    _route_source_sync_history(router, admin)
+    _route_get_source_settings(router, admin)
+    _route_create_source(router, admin)
+    _route_remove_source(router, admin)
+    _route_preview_sources(router, admin)
+    _route_save_sources(router, admin)
+    _route_check_source_access(router, admin)
     return router

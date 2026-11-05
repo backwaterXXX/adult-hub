@@ -169,15 +169,15 @@ async def _jellyfin_probe():
     return {"status": status, "checked_at": datetime.now(timezone.utc).isoformat()}
 
 
-def build_router(admin):
-    router = APIRouter(route_class=V2ErrorRoute)
-
+def _route_admin_v2_capabilities(router, admin):
     @router.get("/api/v2/capabilities")
     async def admin_v2_capabilities(request: Request):
         if admin._admin_blocked(request):
             return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
         return {"ok": True, **admin._capabilities()}
 
+
+def _route_admin_v2_sync_status(router, admin):
     @router.get("/api/v2/status/sync")
     async def admin_v2_sync_status(request: Request):
         if admin._admin_blocked(request):
@@ -188,12 +188,16 @@ def build_router(admin):
         )
         return {"ok": True, "sync": _sanitized_sync_status(sync, stale_after)}
 
+
+def _route_admin_v2_jellyfin_status(router, admin):
     @router.get("/api/v2/status/jellyfin")
     async def admin_v2_jellyfin_status(request: Request):
         if admin._admin_blocked(request):
             return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
         return {"ok": True, **(await _jellyfin_probe())}
 
+
+def _route_admin_v2_status(router, admin):
     @router.get("/api/v2/status")
     async def admin_v2_status(request: Request):
         if admin._admin_blocked(request):
@@ -292,4 +296,11 @@ def build_router(admin):
             "capabilities": admin._capabilities(),
         }
 
+
+def build_router(admin):
+    router = APIRouter(route_class=V2ErrorRoute)
+    _route_admin_v2_capabilities(router, admin)
+    _route_admin_v2_sync_status(router, admin)
+    _route_admin_v2_jellyfin_status(router, admin)
+    _route_admin_v2_status(router, admin)
     return router
