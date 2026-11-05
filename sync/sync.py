@@ -844,8 +844,8 @@ def safe_process_duplicate_jobs_checkpoint(
                     payload = json.loads(trig.read_text()) if trig.stat().st_size else {}
                     if isinstance(payload, dict) and payload.get("action") == "jobs":
                         trig.unlink(missing_ok=True)
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "safe_process_duplicate_jobs_checkpoint", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in safe_process_duplicate_jobs_checkpoint", exc_info=True)
         return completed
     except Exception as e:
         logger.warning("Could not process queued duplicate decisions at checkpoint: %s", e)
