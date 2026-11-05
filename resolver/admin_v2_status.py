@@ -49,45 +49,49 @@ def _sync_stale_after_seconds(config_path, db_url=None):
         return None
 
 
+def _sync_freshness(sync, running, sync_stale_after):
+    """Classify an available, idle sync status file as fresh, stale, or unknown."""
+    if running:
+        return "fresh"
+    updated_at = sync.get("updated_at")
+    if (sync_stale_after is None or type(updated_at) not in {int, float}
+            or not math.isfinite(updated_at)):
+        return "unknown"
+    age = time.time() - updated_at
+    if age < 0:
+        return "unknown"
+    return "stale" if age > sync_stale_after else "fresh"
+
+
+def _sync_status_text(sync_available, running, freshness, last_success):
+    """Return the short human label for the sync state."""
+    if not sync_available:
+        return "Status unavailable"
+    if running:
+        return "Sync in progress"
+    if freshness == "stale":
+        return "Status stale"
+    if last_success is True:
+        return "Last run succeeded"
+    if last_success is False:
+        return "Last run failed"
+    return "No completed run"
+
+
 def _sanitized_sync_status(sync, sync_stale_after):
     """Return the small, safe sync-freshness contract shared by status views."""
-    sync_result = {}
-    if isinstance(sync, dict):
-        sync_available = (not sync.get("error") and sync.get("available", True) is not False
-                          and sync.get("exists", True) is not False)
-        sync_result["available"] = sync_available
-        sync_result["running"] = sync_available and sync.get("running") is True
-        sync_result["freshness"] = "unknown"
-        if sync_available:
-            if sync_result["running"]:
-                sync_result["freshness"] = "fresh"
-            else:
-                updated_at = sync.get("updated_at")
-                if (sync_stale_after is not None and type(updated_at) in {int, float}
-                        and math.isfinite(updated_at)):
-                    age = time.time() - updated_at
-                    if age >= 0:
-                        sync_result["freshness"] = (
-                            "stale" if age > sync_stale_after else "fresh"
-                        )
-        last_success = sync.get("last_success") if sync_available else None
-        if type(last_success) is bool:
-            sync_result["last_success"] = last_success
-        if not sync_available:
-            sync_result["status_text"] = "Status unavailable"
-        elif sync_result["running"]:
-            sync_result["status_text"] = "Sync in progress"
-        elif sync_result["freshness"] == "stale":
-            sync_result["status_text"] = "Status stale"
-        elif last_success is True:
-            sync_result["status_text"] = "Last run succeeded"
-        elif last_success is False:
-            sync_result["status_text"] = "Last run failed"
-        else:
-            sync_result["status_text"] = "No completed run"
-    else:
-        sync_result = {"available": False, "running": False, "freshness": "unknown",
-                       "status_text": "Status unavailable"}
+    if not isinstance(sync, dict):
+        return {"available": False, "running": False, "freshness": "unknown",
+                "status_text": "Status unavailable"}
+    sync_available = (not sync.get("error") and sync.get("available", True) is not False
+                      and sync.get("exists", True) is not False)
+    running = sync_available and sync.get("running") is True
+    freshness = _sync_freshness(sync, running, sync_stale_after) if sync_available else "unknown"
+    last_success = sync.get("last_success") if sync_available else None
+    sync_result = {"available": sync_available, "running": running, "freshness": freshness}
+    if type(last_success) is bool:
+        sync_result["last_success"] = last_success
+    sync_result["status_text"] = _sync_status_text(sync_available, running, freshness, last_success)
     return sync_result
 
 
