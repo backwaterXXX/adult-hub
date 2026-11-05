@@ -10,13 +10,12 @@ import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
+import logging
 from fastapi import APIRouter, Request
 from admin_v2_errors import V2ErrorRoute
 from common import db
-import logging
 
 logger = logging.getLogger(__name__)
-
 
 
 _SHA256_LINE = re.compile(r"^([0-9a-f]{64})\s+(.+)$")
@@ -113,8 +112,8 @@ def build_router(admin):
                         getattr(admin, "BACKUP_RESTORE_DATABASE_URL", ""),
                         getattr(admin, "HUB_DB_URL", ""),
                     )}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "backups", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in backups", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Backup inventory is unavailable."}, status_code=503)
 
     @router.get("/api/v2/backups/verify")
@@ -127,8 +126,8 @@ def build_router(admin):
         try:
             result = await admin.asyncio.to_thread(_verify, path)
             return {"ok": True, "name": path.name, **result}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "verify", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in verify", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Backup verification failed."}, status_code=503)
 
     @router.post("/api/v2/backups/create")
@@ -143,8 +142,8 @@ def build_router(admin):
             )
             admin._wake_worker("jobs")
             return admin.JSONResponse({"ok": True, "job_id": job_id, "state": "queued"}, status_code=202)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "create_backup", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in create_backup", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not queue the database backup."}, status_code=503)
 
     @router.post("/api/v2/backups/restore-test")
@@ -172,8 +171,8 @@ def build_router(admin):
             )
             admin._wake_worker("jobs")
             return admin.JSONResponse({"ok": True, "job_id": job_id, "state": "queued"}, status_code=202)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "restore_test", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in restore_test", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not queue the backup restore test."}, status_code=503)
 
     return router

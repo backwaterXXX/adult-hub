@@ -6,6 +6,7 @@ import re
 import stat
 from pathlib import Path
 from typing import Any
+import logging
 
 from common import db
 from admin_catalog_serialization import _local_file_status, _resolve_local_artwork_path, _serialize_video
@@ -17,10 +18,8 @@ from admin_catalog_pagination import (
     sort_clause as _sort_clause_impl,
     sort_value_expression as _sort_value_expression_impl,
 )
-import logging
 
 logger = logging.getLogger(__name__)
-
 
 
 _MISSING_FIELDS = {"title", "performers", "studio", "plot", "thumbnail"}
@@ -65,8 +64,6 @@ def _missing_local_artwork_ids(conn, media_root: str | os.PathLike[str]) -> list
             if stat.S_ISLNK(artwork_info.st_mode) or not stat.S_ISREG(artwork_info.st_mode):
                 missing.add(str(video_id))
     return sorted(missing)
-
-
 
 
 def _missing_clause(field: str, columns: set[str]) -> str:
@@ -147,8 +144,6 @@ def _select_video_fields(columns: set[str], has_overrides: bool = False) -> str:
         "COALESCE(mo.revision, 0) AS metadata_revision" if has_overrides else "0 AS metadata_revision",
     ])
     return ", ".join(expressions)
-
-
 
 
 def _sort_clause(sort: str, columns: set[str], has_overrides: bool = False) -> str:
@@ -474,8 +469,8 @@ def _get_video_artwork_path(db_url: str | None, video_id: str, media_root: str |
         return None
     try:
         conn = db.connect(db_url)
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_get_video_artwork_path", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _get_video_artwork_path", exc_info=True)
         return None
     try:
         tables = db.table_names(conn)
@@ -487,8 +482,8 @@ def _get_video_artwork_path(db_url: str | None, video_id: str, media_root: str |
         ).fetchall()
         file_names = [entry["file_path"] if hasattr(entry, "keys") else entry[0] for entry in rows]
         return _resolve_local_artwork_path(file_names, media_root)
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_get_video_artwork_path", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _get_video_artwork_path", exc_info=True)
         return None
     finally:
         conn.close()
@@ -500,8 +495,8 @@ def _get_target_artwork_path(db_url: str | None, video_id: str, media_root: str 
         return None
     try:
         conn = db.connect(db_url)
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_get_target_artwork_path", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _get_target_artwork_path", exc_info=True)
         return None
     try:
         tables = db.table_names(conn)
@@ -520,8 +515,8 @@ def _get_target_artwork_path(db_url: str | None, video_id: str, media_root: str 
                 if candidate.parent == root:
                     return candidate
         return None
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_get_target_artwork_path", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _get_target_artwork_path", exc_info=True)
         return None
     finally:
         conn.close()

@@ -89,7 +89,7 @@ def has_active_playback() -> bool:
             active = bool(_read(path, time.time()))
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
             return active
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "has_active_playback", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in has_active_playback", exc_info=True)
         # An unreadable lease file must keep background reads at the safe rate.
         return True

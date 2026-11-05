@@ -24,8 +24,8 @@ def cache_ttl_for_provider(provider_name: str) -> int:
     try:
         env_key = f"CACHE_TTL_{str(provider_name).upper()}_SECONDS"
         return int(os.getenv(env_key, str(CACHE_TTL_SECONDS)))
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "cache_ttl_for_provider", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in cache_ttl_for_provider", exc_info=True)
         return CACHE_TTL_SECONDS
 
 class PersistentLRUCache:
@@ -140,8 +140,8 @@ class PersistentLRUCache:
             logger.debug(f"PostgreSQL cache get error: {e}")
             try:
                 conn.rollback()
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "_get_from_postgres", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in _get_from_postgres", exc_info=True)
         finally:
             conn.close()
 
@@ -205,8 +205,8 @@ class PersistentLRUCache:
                         return cur.fetchone()[0]
                     finally:
                         conn.close()
-                except Exception as _exc:
-                    logger.debug("Ignored exception in %s", "__len__", exc_info=True)
+                except Exception:
+                    logger.debug("Ignored exception in __len__", exc_info=True)
             return sum(1 for _, exp, _ in self._memory.values() if exp > now)
 
     def clear(self) -> int:

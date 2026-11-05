@@ -42,8 +42,8 @@ def find_fuzzy_performer_candidates(db_url=None, similarity_threshold=0.88, *, _
                                             "provider": str(provider or ""),
                                             "studio": str(studio or ""),
                                         })
-                except Exception as _exc:
-                    logger.debug("Ignored exception in %s", "find_fuzzy_performer_candidates", exc_info=True)
+                except Exception:
+                    logger.debug("Ignored exception in find_fuzzy_performer_candidates", exc_info=True)
 
         # 2. Zdjecia i biografie
         photos_set: Set[str] = set()

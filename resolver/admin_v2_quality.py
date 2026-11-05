@@ -1,12 +1,11 @@
 """Metadata suggestion review API for Admin v2."""
 
-from fastapi import APIRouter, Query, Request
-from admin_v2_errors import V2ErrorRoute
 import logging
 
+from fastapi import APIRouter, Query, Request
+from admin_v2_errors import V2ErrorRoute
+
 logger = logging.getLogger(__name__)
-
-
 
 
 def build_router(admin):
@@ -21,8 +20,8 @@ def build_router(admin):
             from common.metadata_review import list_metadata_review_proposals
             return await admin.asyncio.to_thread(list_metadata_review_proposals, admin.HUB_DB_URL,
                                                  limit=limit, offset=offset)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "proposals", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in proposals", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Metadata proposals are unavailable."}, status_code=503)
 
     @router.post("/api/v2/quality/proposals/{proposal_id}/refresh")
@@ -34,8 +33,8 @@ def build_router(admin):
             from common.metadata_review import refresh_metadata_review_proposal
             result = await admin.asyncio.to_thread(refresh_metadata_review_proposal,
                                                    admin.HUB_DB_URL, proposal_id)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "refresh_proposal", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in refresh_proposal", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not refresh this metadata proposal."}, status_code=503)
         if result["outcome"] == "not_found":
             return admin.JSONResponse({"ok": False, "error": "Metadata proposal was not found."}, status_code=404)
@@ -52,8 +51,8 @@ def build_router(admin):
             from common.metadata_review import reject_metadata_review_proposal
             result = await admin.asyncio.to_thread(reject_metadata_review_proposal,
                                                    admin.HUB_DB_URL, proposal_id)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "reject_proposal", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in reject_proposal", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not reject this metadata proposal."}, status_code=503)
         if result["outcome"] == "not_found":
             return admin.JSONResponse({"ok": False, "error": "Metadata proposal was not found."}, status_code=404)

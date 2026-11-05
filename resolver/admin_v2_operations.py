@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import APIRouter, Query, Request
 from admin_v2_errors import V2ErrorRoute
-import logging
 
 logger = logging.getLogger(__name__)
-
 
 
 MAX_OPERATION_REQUEST_BYTES = 16 * 1024
@@ -31,8 +30,8 @@ async def _read_operation_body(request: Request):
                 return None, 413
             raw.extend(chunk)
         body = json.loads(raw)
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_read_operation_body", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _read_operation_body", exc_info=True)
         return None, 413 if len(raw) > MAX_OPERATION_REQUEST_BYTES else 400
     if not isinstance(body, dict):
         return None, 400
@@ -118,8 +117,8 @@ def build_router(admin):
                 )
             else:
                 return admin.JSONResponse({"error": "This operation scope is invalid or unsupported."}, status_code=400)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "preview_operation", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in preview_operation", exc_info=True)
             return admin.JSONResponse({"error": "Could not create the operation preview."}, status_code=503)
         if result["outcome"] == "invalid":
             return admin.JSONResponse({"error": result["message"]}, status_code=400)
@@ -149,8 +148,8 @@ def build_router(admin):
             result = await admin.asyncio.to_thread(
                 execute_operation, admin.HUB_DB_URL, body["plan_id"], str(admin.CONFIG_PATH)
             )
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "execute_operation", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in execute_operation", exc_info=True)
             return admin.JSONResponse({"error": "Could not execute the operation."}, status_code=503)
         if result["outcome"] == "not_found":
             return admin.JSONResponse({"error": "Operation plan not found."}, status_code=404)
@@ -170,8 +169,8 @@ def build_router(admin):
         try:
             from common.admin_operations import operation_status
             result = await admin.asyncio.to_thread(operation_status, admin.HUB_DB_URL, plan_id)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "get_operation", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in get_operation", exc_info=True)
             return admin.JSONResponse({"error": "Could not load operation status."}, status_code=503)
         if result is None:
             return admin.JSONResponse({"error": "Operation plan not found."}, status_code=404)
@@ -188,8 +187,8 @@ def build_router(admin):
         try:
             from common.admin_operations import list_operations
             result = await admin.asyncio.to_thread(list_operations, admin.HUB_DB_URL, limit, offset)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "list_operation_history", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in list_operation_history", exc_info=True)
             return admin.JSONResponse({"error": "Could not load operation history."}, status_code=503)
         return {"ok": True, **result}
 

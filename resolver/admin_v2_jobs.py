@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import logging
 
 from fastapi import APIRouter, Query, Request
 from admin_v2_errors import V2ErrorRoute
@@ -14,10 +15,8 @@ from admin_v2_duplicate_routes import (
     MAX_DUPLICATE_ACTION_BYTES as MAX_DUPLICATE_ACTION_BYTES,
     register_duplicate_routes,
 )
-import logging
 
 logger = logging.getLogger(__name__)
-
 
 
 JOB_STATES = {"all", "active", "queued", "processing", "done", "failed", "cancelled"}
@@ -309,8 +308,8 @@ def build_router(admin):
                 return admin.JSONResponse({"error": "This task cannot be retried."}, status_code=400)
             admin._wake_worker("sync" if existing.get("action") == "sync" else "jobs")
             return {"ok": True, "job_id": new_id, "state": "queued", "message": "Task re-queued."}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "retry_job", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in retry_job", exc_info=True)
             return admin.JSONResponse({"error": "Could not retry task."}, status_code=500)
 
     @router.post("/api/v2/jobs/{job_id}/cancel")
@@ -335,8 +334,8 @@ def build_router(admin):
                     status_code=409,
                 )
             return {"ok": True, "state": "cancelled", "message": "Task cancelled."}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "cancel_job", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in cancel_job", exc_info=True)
             return admin.JSONResponse({"error": "Could not cancel task."}, status_code=500)
 
     @router.get("/api/v2/jobs")
@@ -368,8 +367,8 @@ def build_router(admin):
                 offset,
                 include_failure_code=True,
             )
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "admin_v2_jobs", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in admin_v2_jobs", exc_info=True)
             return admin.JSONResponse({"error": "Could not load job history."}, status_code=503)
 
         available = bool(page.get("available"))
@@ -396,8 +395,8 @@ def build_router(admin):
             from admin_services import get_job_v2
 
             result = await admin.asyncio.to_thread(get_job_v2, admin.HUB_DB_URL, job_id)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "admin_v2_job", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in admin_v2_job", exc_info=True)
             return admin.JSONResponse({"error": "Could not load job details."}, status_code=503)
         if not result.get("available"):
             return admin.JSONResponse({"error": "Job data is temporarily unavailable."}, status_code=503)

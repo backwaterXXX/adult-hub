@@ -91,5 +91,5 @@ async def login(
     finally:
         try:
             await client.disconnect()
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "login", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in login", exc_info=True)

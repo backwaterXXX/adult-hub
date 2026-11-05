@@ -229,8 +229,8 @@ def execute_performer_merges(db_url, media_dir, merges, skip_backup=False, *, _c
                         arr = _core["_json_list"](raw_json)
                         if not arr:
                             continue
-                    except Exception as _exc:
-                        logger.debug("Ignored exception in %s", "execute_performer_merges", exc_info=True)
+                    except Exception:
+                        logger.debug("Ignored exception in execute_performer_merges", exc_info=True)
                         continue
 
                     changed = False

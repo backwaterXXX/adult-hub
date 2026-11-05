@@ -83,15 +83,15 @@ async def _close_download_iterator(iterator):
             res = iterator.close()
             if inspect.isawaitable(res):
                 await res
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "_close_download_iterator", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in _close_download_iterator", exc_info=True)
     if hasattr(iterator, "aclose"):
         try:
             res = iterator.aclose()
             if inspect.isawaitable(res):
                 await res
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "_close_download_iterator", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in _close_download_iterator", exc_info=True)
 
 
 async def _download_sequential(

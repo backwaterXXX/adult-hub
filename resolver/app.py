@@ -178,8 +178,8 @@ app.state.admin_cache_clear = _admin_cache_clear
 async def _on_shutdown():
     try:
         await aclose_shared_client()
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_on_shutdown", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _on_shutdown", exc_info=True)
     # Bounded parallel Telegram streaming (v1, opt-in): let the provider
     # close its own resources (including the shared stream manager, if one
     # was created). provider.close() creates nothing; never fail shutdown.
@@ -191,14 +191,14 @@ async def _on_shutdown():
                 _res = _close()
                 if inspect.isawaitable(_res):
                     await asyncio.wait_for(_res, timeout=5.0)
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "_on_shutdown", exc_info=True)
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_on_shutdown", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in _on_shutdown", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _on_shutdown", exc_info=True)
     try:
         cache.close()
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_on_shutdown", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _on_shutdown", exc_info=True)
 
 # Concurrency limit for upstream stream resolutions (#28)
 RESOLVER_CONCURRENCY_LIMIT = int(os.getenv("RESOLVER_CONCURRENCY_LIMIT", "10"))
@@ -294,8 +294,8 @@ async def health_readiness():
     """Readiness for requests that depend on the shared catalog database."""
     try:
         await asyncio.to_thread(_check_database_ready)
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "health_readiness", exc_info=True)
+    except Exception:
+        logger.warning("Request failed in health_readiness", exc_info=True)
         return JSONResponse({"status": "not_ready", "database": "unavailable"}, status_code=503)
     return {**(await asyncio.to_thread(_provider_health)), "database": "ok"}
 
@@ -332,8 +332,8 @@ async def prometheus_metrics(request: Request):
                 "# TYPE adult_hub_sync_last_duration_seconds gauge",
                 f'adult_hub_sync_last_duration_seconds {float(history[0]["duration_seconds"]):.3f}',
             ])
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "prometheus_metrics", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in prometheus_metrics", exc_info=True)
     try:
         def read_job_counts():
             conn = db.connect(admin_module.HUB_DB_URL)
@@ -509,8 +509,8 @@ async def get_video_variants(video_id: str):
     for cand_id in candidates:
         try:
             provider_name, raw_id = _parse_play_id_or_400(cand_id)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "get_video_variants", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in get_video_variants", exc_info=True)
             continue
 
         if provider_name == "telegram":
@@ -577,8 +577,8 @@ async def play_stream(
     for cand_id in candidates:
         try:
             provider_name, raw_id = _parse_play_id_or_400(cand_id)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "play_stream", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in play_stream", exc_info=True)
             continue
         cache_key = f"{provider_name}:{raw_id}"
         if chosen_variant and chosen_variant.lower() != "original":
@@ -761,8 +761,8 @@ async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[s
     if sresp.status_code >= 400:
         try:
             await ctx.__aexit__(None, None, None)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "proxy_fetch_response", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in proxy_fetch_response", exc_info=True)
         if sresp.status_code in (502, 504) and cache_key:
             await asyncio.to_thread(cache.invalidate, cache_key)
         raise HTTPException(status_code=502, detail=f"Upstream fetch failed (HTTP {sresp.status_code})")
@@ -780,8 +780,8 @@ async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[s
     if (request.method or "GET").upper() == "HEAD":
         try:
             await ctx.__aexit__(None, None, None)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "proxy_fetch_response", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in proxy_fetch_response", exc_info=True)
         return Response(status_code=sresp.status_code, headers=out_headers, media_type=media_type)
 
     async def proxy_stream():
@@ -793,8 +793,8 @@ async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[s
         finally:
             try:
                 await ctx.__aexit__(None, None, None)
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "proxy_stream", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in proxy_stream", exc_info=True)
 
     return StreamingResponse(proxy_stream(), status_code=sresp.status_code,
                              headers=out_headers, media_type=media_type)

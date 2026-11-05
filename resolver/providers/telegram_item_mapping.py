@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional
+import logging
 
 from common.telegram_metadata import extract_telegram_metadata, resolve_explicit_cast
 from common.title_cleaning import clean_title_text
@@ -17,10 +18,8 @@ from .telegram_messages import (
     parse_caption_title,
     thumb_api_path,
 )
-import logging
 
 logger = logging.getLogger(__name__)
-
 
 
 def prepare_legacy_catalog(known_performers, aliases):
@@ -54,8 +53,8 @@ def prepare_legacy_catalog(known_performers, aliases):
 def _load_catalog(load_performer_catalog_fn) -> list:
     try:
         return load_performer_catalog_fn()
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_load_catalog", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _load_catalog", exc_info=True)
         return []
 
 

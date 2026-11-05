@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import PurePosixPath
+import logging
 from fastapi import APIRouter, Request
 from admin_v2_errors import V2ErrorRoute
 
 from common import db
 from admin_library_v2 import _safe_thumbnail
-import logging
 
 logger = logging.getLogger(__name__)
-
 
 
 def build_router(admin):
@@ -28,8 +27,8 @@ def build_router(admin):
             report = await admin.asyncio.to_thread(admin.admin_data.quarantine_report,
                                                    admin.HUB_DB_URL, limit, offset)
             return {"ok": True, **report}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "quarantine", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in quarantine", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not load quarantine history."}, status_code=503)
 
     @router.get("/api/v2/organize/quarantine/files")
@@ -61,8 +60,8 @@ def build_router(admin):
                               if hasattr(created_at, "isoformat") else str(created_at)})
             return {"ok": True, "items": items, "total": total, "offset": offset, "limit": limit,
                     "truncated": offset + len(items) < total}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "file_quarantine", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in file_quarantine", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not load file quarantine history."}, status_code=503)
         finally:
             if conn is not None:
@@ -166,8 +165,8 @@ def build_router(admin):
                               "aliases": combined_aliases})
             return {"ok": True, "items": items, "total": int(total), "offset": offset,
                     "limit": limit, "available": True}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "people", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in people", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not load the people catalog."}, status_code=503)
         finally:
             if conn is not None:
@@ -203,8 +202,8 @@ def build_router(admin):
                 {"id": row[0], "title": row[1], "studio": row[2], "duration": row[3],
                  "thumbnail": _safe_thumbnail(row[4])} for row in rows
             ], "total": int(total), "offset": offset, "limit": limit}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "person_detail", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in person_detail", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not load performer details."}, status_code=503)
         finally:
             if conn is not None:
@@ -226,8 +225,8 @@ def build_router(admin):
             if not exists:
                 return admin.JSONResponse({"ok": False, "error": "Performer not found."}, status_code=404)
             return {"ok": True, "profile": read_profile(conn, name)}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "person_profile", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in person_profile", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not load performer profile."}, status_code=503)
         finally:
             if conn is not None:
@@ -286,8 +285,8 @@ def build_router(admin):
             return admin.JSONResponse({"ok": False, "error": str(exc), "revision": exc.revision}, status_code=409)
         except PerformerProfileError as exc:
             return admin.JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "update_person_profile", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in update_person_profile", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not update performer profile."}, status_code=503)
         finally:
             if conn is not None:

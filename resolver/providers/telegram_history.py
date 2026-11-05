@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from typing import Optional
-
-from .base import VideoItem
 import logging
 
-logger = logging.getLogger(__name__)
+from .base import VideoItem
 
+logger = logging.getLogger(__name__)
 
 
 PAGE_SIZE = 50
@@ -25,8 +24,8 @@ async def channel_title(client, channel_ref, entity=None, *, config_fn, entity_r
         name = getattr(resolved, "title", None) or getattr(resolved, "username", None)
         if name:
             return str(name)
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "channel_title", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in channel_title", exc_info=True)
     return str(channel_ref)
 
 

@@ -77,8 +77,8 @@ def build_router(admin):
                        if part.strip()}
             is_admin = bool(((user.get("Policy") or {}).get("IsAdministrator")))
             return user if is_admin or user_id.lower() in allowed else None
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "authorized_user", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in authorized_user", exc_info=True)
             return None
 
     def phash_status(video_id: str, decoder_profile: str) -> tuple[bool, bool]:
@@ -117,8 +117,8 @@ def build_router(admin):
             return admin.JSONResponse({"error": "Unsupported decoder profile."}, status_code=400)
         try:
             exists, already = await asyncio.to_thread(phash_status, video_id, decoder_profile)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "get_status", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in get_status", exc_info=True)
             return admin.JSONResponse({"error": "Fingerprint service unavailable."}, status_code=503)
         if not exists:
             return admin.JSONResponse({"error": "Video not found."}, status_code=404)
@@ -144,16 +144,16 @@ def build_router(admin):
                     return admin.JSONResponse({"error": "Request is too large."}, status_code=413)
                 raw.extend(chunk)
             body = json.loads(raw)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "submit_frames", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in submit_frames", exc_info=True)
             return admin.JSONResponse({"error": "Invalid frame request."}, status_code=400)
         profiles = accepted_profiles()
         if not _valid_frame_request(body, profiles):
             return admin.JSONResponse({"error": "Invalid frame request."}, status_code=400)
         try:
             frames = _decode_frames(body["frames"], body["duration_us"])
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "submit_frames", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in submit_frames", exc_info=True)
             return admin.JSONResponse({"error": "Invalid or incomplete frames."}, status_code=400)
 
         thumbnail_bytes = None
@@ -172,15 +172,15 @@ def build_router(admin):
             )
             if result == "conflict":
                 return admin.JSONResponse({"error": "A different validated fingerprint already exists."}, status_code=409)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "submit_frames", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in submit_frames", exc_info=True)
             return admin.JSONResponse({"error": "Could not save video fingerprint."}, status_code=503)
 
         match_found = None
         try:
             match_found = await _find_stashdb_match(fingerprint)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "submit_frames", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in submit_frames", exc_info=True)
         return {"ok": True, "fingerprint": fingerprint, "match_found": match_found}
 
     @router.post("/api/v2/video-phash/generate")
@@ -193,8 +193,8 @@ def build_router(admin):
             return admin.JSONResponse({"error": "Unauthorized."}, status_code=401)
         try:
             body = await request.json()
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "generate_phash", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in generate_phash", exc_info=True)
             return admin.JSONResponse({"error": "Invalid generation request."}, status_code=400)
         if (not isinstance(body, dict) or set(body) != {"video_id", "duration_us"}
                 or not isinstance(body.get("video_id"), str)
@@ -244,8 +244,8 @@ def build_router(admin):
         try:
             from common.phash_jobs import read_job
             job = await asyncio.to_thread(read_job, admin.HUB_DB_URL, job_id)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "get_phash_job", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in get_phash_job", exc_info=True)
             return admin.JSONResponse({"error": "Could not load pHash task."}, status_code=503)
         if job is None:
             return admin.JSONResponse({"error": "Task not found."}, status_code=404)
@@ -260,8 +260,8 @@ def build_router(admin):
             return admin.JSONResponse({"error": "Video not found."}, status_code=404)
         try:
             image = await asyncio.to_thread(_read_thumbnail, admin, video_id)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "get_phash_thumbnail", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in get_phash_thumbnail", exc_info=True)
             return admin.JSONResponse({"error": "Thumbnail service unavailable."}, status_code=503)
         if image is None:
             return admin.JSONResponse({"error": "Thumbnail not found."}, status_code=404)

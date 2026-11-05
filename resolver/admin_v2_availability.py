@@ -1,11 +1,11 @@
 """Bounded playback availability preview, durable execution, and evidence API."""
 
 from __future__ import annotations
+import logging
 
 from fastapi import APIRouter, Request
 from admin_v2_errors import V2ErrorRoute
 from common import db
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +81,8 @@ def build_router(admin):
             return admin.JSONResponse({"ok": False, "error": f"Choose 1 to {MAX_ITEMS} distinct videos."}, status_code=400)
         try:
             return {"ok": True, **await admin.asyncio.to_thread(_preview, admin.HUB_DB_URL, video_ids)}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "preview", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in preview", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not preview availability checks."}, status_code=503)
 
     @router.post("/api/v2/availability/execute")
@@ -107,8 +107,8 @@ def build_router(admin):
             )
             admin._wake_worker("jobs")
             return admin.JSONResponse({"ok": True, "job_id": job_id, "preview": preview}, status_code=202)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "execute", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in execute", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not queue availability check."}, status_code=503)
 
     @router.get("/api/v2/availability/history")
@@ -130,8 +130,8 @@ def build_router(admin):
                 items.append({"status": status, "checked_at": row[1].isoformat(),
                               "evidence": _STATUS_LABELS[status]})
             return {"ok": True, "items": items}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "history", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in history", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Availability history is unavailable."}, status_code=503)
         finally:
             if conn is not None:

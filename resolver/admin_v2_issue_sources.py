@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from urllib.parse import quote
+import logging
 
 from admin_v2_issue_builder import (
     _issue,
@@ -10,10 +11,8 @@ from admin_v2_issue_builder import (
     _latest_source_ids,
     _timestamp,
 )
-import logging
 
 logger = logging.getLogger(__name__)
-
 
 
 def collect_source_issues(admin, now, health, issues):
@@ -41,8 +40,8 @@ def _load_configured_sources(admin, health):
         configured = admin.admin_data.configured_sources(admin.CONFIG_PATH)
         health["available"]["config"] = bool(configured.get("available"))
         return configured
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_load_configured_sources", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _load_configured_sources", exc_info=True)
         return {"sources": [], "available": False}
 
 

@@ -432,8 +432,8 @@ def review_proposal(
             from video_duplicates import enqueue_job
             refresh_job_id = enqueue_job(db_url, "performer_refresh", {"video_ids": [video_id]})
             wake_worker("jobs")
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "review_proposal", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in review_proposal", exc_info=True)
             # The reviewed catalog change is committed; refresh is best-effort
             # and its absence is reported explicitly for later recovery.
         return {"ok": True, "status": "approved", "performer": canonical,

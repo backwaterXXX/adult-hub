@@ -2,9 +2,9 @@
 import os
 import re
 from typing import Dict, List, Optional, Tuple
+import logging
 
 from common.performers import is_valid_performer_name, prune_redundant_performers
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +37,8 @@ def load_performer_catalog() -> List[dict]:
         conn = _db.connect(_hub_db_url())
         from common.performer_catalog import load_catalog
         records = load_catalog(conn)
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "load_performer_catalog", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in load_performer_catalog", exc_info=True)
         return list(_CATALOG_CACHE.get("records") or [])
     finally:
         if conn is not None:
@@ -70,15 +70,15 @@ def load_known_performers() -> List[str]:
             ).fetchall()
         finally:
             conn.close()
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "load_known_performers", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in load_known_performers", exc_info=True)
         return list(cache.get("names") or [])  # type: ignore[arg-type]
     alias_map = load_alias_map()
     for (raw,) in rows:
         try:
             parsed = _json.loads(raw) if isinstance(raw, str) else []
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "load_known_performers", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in load_known_performers", exc_info=True)
             continue
         if not isinstance(parsed, list):
             continue
@@ -119,8 +119,8 @@ def load_alias_map() -> Dict[str, str]:
             ).fetchall()
         finally:
             conn.close()
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "load_alias_map", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in load_alias_map", exc_info=True)
         return dict(cache.get("entries") or {})  # type: ignore[arg-type]
     for alias, canonical in rows:
         a = str(alias or "").strip().lower()

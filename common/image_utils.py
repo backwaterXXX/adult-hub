@@ -82,7 +82,7 @@ def is_black_image(
             try:
                 img.close()
             except Exception:
-                pass
+                logger.debug("Ignored exception in is_black_image", exc_info=True)
 
 
 def compute_dhash(
@@ -126,7 +126,7 @@ def compute_dhash(
             try:
                 img.close()
             except Exception:
-                pass
+                logger.debug("Ignored exception in compute_dhash", exc_info=True)
 
 
 def hamming_distance(h1: str, h2: str) -> int:
@@ -395,8 +395,8 @@ def extract_video_frame(
         # Ensure file permissions allow reading by all containers and host
         try:
             os.chmod(str(tmp_path), 0o666)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "extract_video_frame", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in extract_video_frame", exc_info=True)
 
         # Atomically replace destination file
         shutil.move(str(tmp_path), str(dest))

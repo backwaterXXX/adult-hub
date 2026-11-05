@@ -1,11 +1,10 @@
 """Admin v2 routes for duplicate suggestions and decisions."""
 from __future__ import annotations
-
-from fastapi import APIRouter, Query, Request
 import logging
 
-logger = logging.getLogger(__name__)
+from fastapi import APIRouter, Query, Request
 
+logger = logging.getLogger(__name__)
 
 
 MAX_DUPLICATE_ACTION_BYTES = 8192
@@ -58,8 +57,8 @@ def register_duplicate_routes(router: APIRouter, admin) -> None:
                                   "signatures_ready": ready_signatures, "signatures_total": total_signatures}}
             finally:
                 conn.close()
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "admin_v2_visual_duplicates", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in admin_v2_visual_duplicates", exc_info=True)
             return admin.JSONResponse({"error": "Could not load visual duplicate comparisons."}, status_code=503)
 
     @router.get("/api/v2/duplicates/visual/{comparison_id}/sheet")
@@ -77,8 +76,8 @@ def register_duplicate_routes(router: APIRouter, admin) -> None:
                 return admin.JSONResponse({"error": "Frame comparison is not available."}, status_code=404)
             from fastapi.responses import Response
             return Response(content=bytes(row[0]), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "admin_v2_visual_sheet", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in admin_v2_visual_sheet", exc_info=True)
             return admin.JSONResponse({"error": "Could not load frame comparison."}, status_code=503)
 
     @router.post("/api/v2/duplicates/visual/verify")
@@ -96,8 +95,8 @@ def register_duplicate_routes(router: APIRouter, admin) -> None:
             if not job_id:
                 return admin.JSONResponse({"error": "Both items must be Telegram videos with known durations."}, status_code=400)
             return {"ok": True, "job_id": job_id, "state": "queued"}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "admin_v2_visual_verify", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in admin_v2_visual_verify", exc_info=True)
             return admin.JSONResponse({"error": "Could not queue visual comparison."}, status_code=503)
 
     @router.get("/api/v2/duplicates")
@@ -121,8 +120,8 @@ def register_duplicate_routes(router: APIRouter, admin) -> None:
             # Preserve the bounded candidate set while omitting backend diagnostics.
             allowed = {"pairs", "total", "scanned", "candidate_limit_reached", "complete", "offset", "limit", "rules_version"}
             return {"ok": True, **{key: value for key, value in result.items() if key in allowed}}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "admin_v2_duplicate_candidates", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in admin_v2_duplicate_candidates", exc_info=True)
             return admin.JSONResponse({"error": "Could not scan for duplicate videos."}, status_code=503)
 
     @router.get("/api/v2/duplicates/linked")
@@ -139,8 +138,8 @@ def register_duplicate_routes(router: APIRouter, admin) -> None:
                 find_active_oshash_merges, admin.HUB_DB_URL, limit, offset
             )
             return {"ok": True, **result}
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "admin_v2_linked_oshash_duplicates", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in admin_v2_linked_oshash_duplicates", exc_info=True)
             return admin.JSONResponse({"error": "Could not load OSHASH-linked videos."}, status_code=503)
 
     @router.post("/api/v2/duplicates/actions")
@@ -234,7 +233,7 @@ def register_duplicate_routes(router: APIRouter, admin) -> None:
             return {"ok": True, "job_id": job_id, "state": "queued"}
         except (ValueError, TypeError):
             return admin.JSONResponse({"error": "Invalid request data."}, status_code=400)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "admin_v2_duplicate_action", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in admin_v2_duplicate_action", exc_info=True)
             return admin.JSONResponse({"error": "Failed to save decision."}, status_code=503)
 

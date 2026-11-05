@@ -9,9 +9,6 @@ from fastapi import HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from common import telegram_playback_activity
 
-logger = logging.getLogger(__name__)
-
-
 _LOGGER = logging.getLogger(__name__)
 
 # Fire-and-forget size-recording tasks need a reference until they finish.
@@ -188,14 +185,14 @@ async def proxy_telegram_response(
                     await services.asyncio.to_thread(
                         telegram_playback_activity.end_playback, playback_handle,
                     )
-                except Exception as _exc:
-                    logger.debug("Ignored exception in %s", "_tg_gen", exc_info=True)
+                except Exception:
+                    _LOGGER.debug("Ignored exception in _tg_gen", exc_info=True)
             close_iterator = getattr(iterator, "aclose", None)
             if callable(close_iterator):
                 try:
                     await close_iterator()
-                except Exception as _exc:
-                    logger.debug("Ignored exception in %s", "_tg_gen", exc_info=True)
+                except Exception:
+                    _LOGGER.debug("Ignored exception in _tg_gen", exc_info=True)
 
     if rng is not None and total is not None:
         end = (offset + length - 1) if length is not None else (total - 1)

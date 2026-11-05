@@ -1,13 +1,12 @@
 """Admin domain services, independent of HTTP handlers."""
 import json
 import time
+import logging
 from common import db
 from common.job_stages import ALL_STAGES
 from common.job_failures import classify_job_failure
-import logging
 
 logger = logging.getLogger(__name__)
-
 
 
 _JOB_PROGRESS_STAGES = ALL_STAGES
@@ -48,8 +47,8 @@ def _jobs_connection(db_url: str | None) -> db.Connection | None:
     """Inspection never initializes a DB or writes schema/data."""
     try:
         conn = db.connect(db_url)
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_jobs_connection", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _jobs_connection", exc_info=True)
         return None
     conn.row_factory = db.Record
     try:
@@ -249,10 +248,10 @@ def unresolved_failed_task_summary(db_url: str | None) -> dict:
               )
         """).fetchone()
         return {"available": True, "count": int(row[0] or 0)}
-    except Exception as _exc:
+    except Exception:
         # Invalid historical payloads or a database error must remain unknown,
         # never turn into a false zero on Home.
-        logger.debug("Ignored exception in %s", "unresolved_failed_task_summary", exc_info=True)
+        logger.debug("Ignored exception in unresolved_failed_task_summary", exc_info=True)
         return {"available": False, "count": None}
     finally:
         conn.close()
@@ -320,9 +319,9 @@ def unresolved_failed_task_listing(db_url: str | None, limit: int = 1000) -> dic
             "available": True, "jobs": jobs, "total": total,
             "truncated": len(jobs) < total,
         }
-    except Exception as _exc:
+    except Exception:
         # Invalid legacy payloads or database errors must not look like zero issues.
-        logger.debug("Ignored exception in %s", "unresolved_failed_task_listing", exc_info=True)
+        logger.debug("Ignored exception in unresolved_failed_task_listing", exc_info=True)
         return {"available": False, "jobs": [], "total": None, "truncated": False}
     finally:
         conn.close()

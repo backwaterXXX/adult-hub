@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import logging
 
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, RedirectResponse
@@ -45,10 +46,8 @@ from admin_catalog_queries import (
     _sort_value_expression,  # noqa: F401 - compatibility alias
     _tables_and_columns,  # noqa: F401 - compatibility alias
 )
-import logging
 
 logger = logging.getLogger(__name__)
-
 
 
 def build_router(admin):
@@ -133,8 +132,8 @@ def build_router(admin):
             return admin.JSONResponse({"ok": False, "error": "Invalid video ID."}, status_code=400)
         try:
             artwork_path = await admin.asyncio.to_thread(_get_video_artwork_path, admin.HUB_DB_URL, video_id, admin.MEDIA_DIR)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "admin_v2_library_video_artwork", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in admin_v2_library_video_artwork", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not access media library."}, status_code=503)
         if artwork_path is None or not artwork_path.is_file():
             try:
@@ -143,8 +142,8 @@ def build_router(admin):
                     thumb_str = str(video["thumbnail"]).strip()
                     if thumb_str.startswith("http") and "/admin/api/thumb" not in thumb_str:
                         return RedirectResponse(thumb_str, status_code=307)
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "admin_v2_library_video_artwork", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in admin_v2_library_video_artwork", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Artwork not found."}, status_code=404)
         return FileResponse(
             str(artwork_path),
@@ -166,15 +165,15 @@ def build_router(admin):
                 val = int(body["offset_seconds"])
                 if val > 0:
                     offset_seconds = val
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "admin_v2_library_video_generate_artwork", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in admin_v2_library_video_generate_artwork", exc_info=True)
 
         try:
             dest_path = await admin.asyncio.to_thread(
                 _get_target_artwork_path, admin.HUB_DB_URL, video_id, admin.MEDIA_DIR
             )
         except Exception as e:
-            logger.debug("Ignored exception in %s", "admin_v2_library_video_generate_artwork", exc_info=True)
+            logger.warning("Request failed in admin_v2_library_video_generate_artwork", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": f"Database lookup failed: {e}"}, status_code=500)
 
         if dest_path is None:
@@ -186,8 +185,8 @@ def build_router(admin):
                 enqueue_job, admin.HUB_DB_URL, "artwork_generate",
                 {"video_id": video_id, "offset_seconds": offset_seconds},
             )
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "admin_v2_library_video_generate_artwork", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in admin_v2_library_video_generate_artwork", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not queue artwork generation."}, status_code=503)
         admin._wake_worker("jobs")
         return admin.JSONResponse({"ok": True, "job_id": job_id, "state": "queued"}, status_code=202)
@@ -204,8 +203,8 @@ def build_router(admin):
             job_id = await admin.asyncio.to_thread(
                 enqueue_job, admin.HUB_DB_URL, "artwork_download", {"video_id": video_id},
             )
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "admin_v2_library_video_download_artwork", exc_info=True)
+        except Exception:
+            logger.warning("Request failed in admin_v2_library_video_download_artwork", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not queue the artwork download."}, status_code=503)
         admin._wake_worker("jobs")
         return admin.JSONResponse({"ok": True, "job_id": job_id, "state": "queued"}, status_code=202)
@@ -228,8 +227,8 @@ def build_router(admin):
                     duration_us = body["duration_us"]
                 elif isinstance(body.get("duration_seconds"), (int, float)) and body["duration_seconds"] > 0:
                     duration_us = int(body["duration_seconds"] * 1_000_000)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "admin_v2_library_video_generate_phash", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in admin_v2_library_video_generate_phash", exc_info=True)
 
         def _enqueue_phash():
             conn = db.connect(admin.HUB_DB_URL)
@@ -291,7 +290,7 @@ def build_router(admin):
         try:
             result = await admin.asyncio.to_thread(_enqueue_phash)
         except Exception as exc:
-            logger.debug("Ignored exception in %s", "admin_v2_library_video_generate_phash", exc_info=True)
+            logger.warning("Request failed in admin_v2_library_video_generate_phash", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": f"Database operation failed: {exc}"}, status_code=500)
 
         if "error" in result:

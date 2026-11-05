@@ -208,8 +208,8 @@ def _local_file_status(file_names: list[Any], media_root: str | os.PathLike[str]
                         from common.image_utils import is_black_image
                         if is_black_image(candidate):
                             state = "missing"
-                    except Exception as _exc:
-                        logger.debug("Ignored exception in %s", "_local_file_status", exc_info=True)
+                    except Exception:
+                        logger.debug("Ignored exception in _local_file_status", exc_info=True)
             except FileNotFoundError:
                 state = "missing"
             except OSError:
@@ -247,8 +247,8 @@ def _resolve_local_artwork_path(file_names: list[Any], media_root: str | os.Path
                     from common.image_utils import is_black_image
                     if is_black_image(candidate):
                         continue
-                except Exception as _exc:
-                    logger.debug("Ignored exception in %s", "_resolve_local_artwork_path", exc_info=True)
+                except Exception:
+                    logger.debug("Ignored exception in _resolve_local_artwork_path", exc_info=True)
                 return candidate
         except (OSError, ValueError):
             continue
