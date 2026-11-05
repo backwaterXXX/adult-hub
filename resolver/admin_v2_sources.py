@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 MAX_REQUEST_BYTES = 256 * 1024
-MAX_CHECK_REQUEST_BYTES = 4096
 _LOG = logging.getLogger("resolver.admin_v2")
 
 
@@ -589,6 +588,142 @@ def _route_preview_sources(router, admin):
         return {"ok": True, **result}
 
 
+async def _check_save_revision(admin, expected_revision):
+    """Check the revision, drain the audit outbox, and return the observed overrides."""
+    from common.managed_sources import ManagedConfigConflict, read_overrides
+
+    observed = await admin.asyncio.to_thread(read_overrides)
+    if observed["revision"] != expected_revision:
+        raise ManagedConfigConflict("Stale source revision.")
+    if not await flush_source_audit(admin):
+        from common.managed_sources import ManagedAuditPending
+        raise ManagedAuditPending("A prior source audit is still pending.")
+    return observed
+
+
+async def _queue_channel_update(admin, body, observed, ch_str, ch_conf):
+    """Queue a channel update that must wait for a running deletion. Returns the response."""
+    try:
+        from common.job_queue import enqueue_job
+        ch_studio = ch_conf.get("studio") if isinstance(ch_conf, dict) else None
+        job_id = await admin.asyncio.to_thread(
+            enqueue_job, admin.HUB_DB_URL, "source_readd", {
+                "channel_id": ch_str,
+                "studio": ch_studio,
+                "channel_config": ch_conf if isinstance(ch_conf, dict) else None,
+                "overrides": body["overrides"],
+                "action_type": "save",
+            }
+        )
+        admin._wake_worker("jobs")
+        return admin.JSONResponse(
+            {
+                "ok": True,
+                "queued": True,
+                "job_id": job_id,
+                "state": "queued",
+                "source_id": ch_str,
+                "revision": observed["revision"],
+                "message": f"Channel deletion is in progress for '{ch_str}'. Channel updates are queued and will execute after deletion.",
+            },
+            status_code=202,
+        )
+    except Exception:
+        logger.debug("Ignored exception in save_sources", exc_info=True)
+        return admin.JSONResponse(
+            {"error": f"Channel deletion is in progress for '{ch_str}'; wait for it to complete before re-adding."},
+            status_code=409,
+        )
+
+
+async def _queue_channel_restore(admin, body, observed, orig_id):
+    """Queue re-adding a removed channel whose deletion is still running. Returns the response."""
+    try:
+        from common.job_queue import enqueue_job
+        job_id = await admin.asyncio.to_thread(
+            enqueue_job, admin.HUB_DB_URL, "source_readd", {
+                "channel_id": orig_id,
+                "overrides": body["overrides"],
+                "action_type": "restore",
+            }
+        )
+        admin._wake_worker("jobs")
+        return admin.JSONResponse(
+            {
+                "ok": True,
+                "queued": True,
+                "job_id": job_id,
+                "state": "queued",
+                "source_id": orig_id,
+                "revision": observed["revision"],
+                "message": f"Channel deletion is in progress for '{orig_id}'. Re-adding is queued and will execute after deletion.",
+            },
+            status_code=202,
+        )
+    except Exception:
+        logger.debug("Ignored exception in save_sources", exc_info=True)
+        return admin.JSONResponse(
+            {"error": f"Channel deletion is in progress for '{orig_id}'; wait for it to complete before re-adding."},
+            status_code=409,
+        )
+
+
+async def _pending_channel_update_response(admin, body, observed, tg_candidate):
+    """Return a queued response when an enabled channel is still being deleted, else None."""
+    from common.managed_sources import canonical_channel_id, is_channel_locked
+
+    current_removed = list(observed.get("overrides", {}).get("telegram", {}).get("removed_channels", []))
+    current_removed_canon = {canonical_channel_id(cid): cid for cid in current_removed}
+    new_removed = list(tg_candidate.get("removed_channels", [])) if "removed_channels" in tg_candidate else []
+    new_removed_canon = {canonical_channel_id(cid) for cid in new_removed}
+
+    new_channels = tg_candidate.get("channels", {})
+    if not isinstance(new_channels, dict):
+        return None
+    for ch_id, ch_conf in new_channels.items():
+        ch_str = str(ch_id).strip()
+        canon = canonical_channel_id(ch_str)
+        is_enabled = isinstance(ch_conf, dict) and ch_conf.get("enabled", True) is not False
+        if not is_enabled:
+            continue
+        if canon in new_removed_canon or ch_str in new_removed:
+            continue
+        if is_channel_locked(ch_str) or (
+            (canon in current_removed_canon or ch_str in current_removed)
+            and await admin.asyncio.to_thread(is_channel_removal_active, admin, ch_str)
+        ):
+            return await _queue_channel_update(admin, body, observed, ch_str, ch_conf)
+    return None
+
+
+async def _pending_channel_restore_response(admin, body, observed, tg_candidate):
+    """Return a queued response when a removed channel is being restored during deletion, else None."""
+    from common.managed_sources import canonical_channel_id, is_channel_locked
+
+    if "removed_channels" not in tg_candidate:
+        return None
+    current_removed = list(observed.get("overrides", {}).get("telegram", {}).get("removed_channels", []))
+    current_removed_canon = {canonical_channel_id(cid): cid for cid in current_removed}
+    new_removed_canon = {canonical_channel_id(cid) for cid in tg_candidate.get("removed_channels", [])}
+    for canon, orig_id in current_removed_canon.items():
+        if canon in new_removed_canon:
+            continue
+        if is_channel_locked(orig_id) or await admin.asyncio.to_thread(is_channel_removal_active, admin, orig_id):
+            return await _queue_channel_restore(admin, body, observed, orig_id)
+    return None
+
+
+async def _pending_channel_response(admin, body, observed):
+    """Return a queued or conflict response when channel changes must wait, else None."""
+    tg_candidate = body.get("overrides", {}).get("telegram", {})
+    if not isinstance(tg_candidate, dict):
+        return None
+    response = await _pending_channel_update_response(admin, body, observed, tg_candidate)
+    if response is not None:
+        return response
+    return await _pending_channel_restore_response(admin, body, observed, tg_candidate)
+
+
 def _route_save_sources(router, admin):
     @router.post("/api/v2/sources/save")
     async def save_sources(request: Request):
@@ -599,101 +734,11 @@ def _route_save_sources(router, admin):
         if body is None:
             return admin.JSONResponse({"error": "Specify the current revision and source settings."}, status_code=400)
         try:
-            from common.managed_sources import (
-                ManagedConfigConflict, canonical_channel_id, is_channel_locked,
-                read_overrides, update_overrides,
-            )
-            observed = await admin.asyncio.to_thread(read_overrides)
-            if observed["revision"] != body["expected_revision"]:
-                raise ManagedConfigConflict("Stale source revision.")
-            if not await flush_source_audit(admin):
-                from common.managed_sources import ManagedAuditPending
-                raise ManagedAuditPending("A prior source audit is still pending.")
-            tg_candidate = body.get("overrides", {}).get("telegram", {})
-            if isinstance(tg_candidate, dict):
-                current_removed = list(observed.get("overrides", {}).get("telegram", {}).get("removed_channels", []))
-                current_removed_canon = {canonical_channel_id(cid): cid for cid in current_removed}
-
-                new_removed = list(tg_candidate.get("removed_channels", [])) if "removed_channels" in tg_candidate else []
-                new_removed_canon = {canonical_channel_id(cid) for cid in new_removed}
-
-                new_channels = tg_candidate.get("channels", {})
-                if isinstance(new_channels, dict):
-                    for ch_id, ch_conf in new_channels.items():
-                        ch_str = str(ch_id).strip()
-                        canon = canonical_channel_id(ch_str)
-                        is_enabled = isinstance(ch_conf, dict) and ch_conf.get("enabled", True) is not False
-                        if is_enabled:
-                            if canon in new_removed_canon or ch_str in new_removed:
-                                continue
-                            if is_channel_locked(ch_str) or (
-                                (canon in current_removed_canon or ch_str in current_removed)
-                                and await admin.asyncio.to_thread(is_channel_removal_active, admin, ch_str)
-                            ):
-                                try:
-                                    from common.job_queue import enqueue_job
-                                    ch_studio = ch_conf.get("studio") if isinstance(ch_conf, dict) else None
-                                    job_id = await admin.asyncio.to_thread(
-                                        enqueue_job, admin.HUB_DB_URL, "source_readd", {
-                                            "channel_id": ch_str,
-                                            "studio": ch_studio,
-                                            "channel_config": ch_conf if isinstance(ch_conf, dict) else None,
-                                            "overrides": body["overrides"],
-                                            "action_type": "save",
-                                        }
-                                    )
-                                    admin._wake_worker("jobs")
-                                    return admin.JSONResponse(
-                                        {
-                                            "ok": True,
-                                            "queued": True,
-                                            "job_id": job_id,
-                                            "state": "queued",
-                                            "source_id": ch_str,
-                                            "revision": observed["revision"],
-                                            "message": f"Channel deletion is in progress for '{ch_str}'. Channel updates are queued and will execute after deletion.",
-                                        },
-                                        status_code=202,
-                                    )
-                                except Exception:
-                                    logger.debug("Ignored exception in save_sources", exc_info=True)
-                                    return admin.JSONResponse(
-                                        {"error": f"Channel deletion is in progress for '{ch_str}'; wait for it to complete before re-adding."},
-                                        status_code=409,
-                                    )
-
-                if "removed_channels" in tg_candidate:
-                    for canon, orig_id in current_removed_canon.items():
-                        if canon not in new_removed_canon:
-                            if is_channel_locked(orig_id) or await admin.asyncio.to_thread(is_channel_removal_active, admin, orig_id):
-                                try:
-                                    from common.job_queue import enqueue_job
-                                    job_id = await admin.asyncio.to_thread(
-                                        enqueue_job, admin.HUB_DB_URL, "source_readd", {
-                                            "channel_id": orig_id,
-                                            "overrides": body["overrides"],
-                                            "action_type": "restore",
-                                        }
-                                    )
-                                    admin._wake_worker("jobs")
-                                    return admin.JSONResponse(
-                                        {
-                                            "ok": True,
-                                            "queued": True,
-                                            "job_id": job_id,
-                                            "state": "queued",
-                                            "source_id": orig_id,
-                                            "revision": observed["revision"],
-                                            "message": f"Channel deletion is in progress for '{orig_id}'. Re-adding is queued and will execute after deletion.",
-                                        },
-                                        status_code=202,
-                                    )
-                                except Exception:
-                                    logger.debug("Ignored exception in save_sources", exc_info=True)
-                                    return admin.JSONResponse(
-                                        {"error": f"Channel deletion is in progress for '{orig_id}'; wait for it to complete before re-adding."},
-                                        status_code=409,
-                                    )
+            from common.managed_sources import update_overrides
+            observed = await _check_save_revision(admin, body["expected_revision"])
+            pending = await _pending_channel_response(admin, body, observed)
+            if pending is not None:
+                return pending
             preview_result = await preview(admin, body)
             saved = await admin.asyncio.to_thread(
                 update_overrides,
@@ -711,68 +756,75 @@ def _route_save_sources(router, admin):
                 "application": "next sync or resolver config reload", "audit_pending": audit_pending}
 
 
+def _source_access_channel_id(body):
+    """Return the stripped channel ID of a valid check body, else None."""
+    if (not isinstance(body, dict) or set(body) != {"source_id"}
+            or not isinstance(body["source_id"], str)
+            or not body["source_id"].strip() or len(body["source_id"]) > 256):
+        return None
+    return body["source_id"].strip()
+
+
+async def _telegram_channel_configured(admin, channel_id):
+    """Return (is_configured, error_response). The response is set when the config cannot load."""
+    try:
+        from common.config_loader import load_config
+        cfg = await admin.asyncio.to_thread(load_config, str(admin.CONFIG_PATH))
+        telegram = cfg.get_source("telegram")
+        return bool(telegram and any(channel.id == channel_id for channel in telegram.channels)), None
+    except Exception:
+        logger.warning("Request failed in check_source_access", exc_info=True)
+        return False, admin.JSONResponse({"error": "Source configuration is unavailable."}, status_code=503)
+
+
+async def _probe_channel_access(admin, channel_id):
+    """Return 'accessible', 'inaccessible', or 'unknown' for a configured Telegram channel."""
+    try:
+        from providers import get_provider
+        provider = get_provider("telegram")
+        await admin.asyncio.wait_for(
+            provider.check_configured_channel_access(channel_id), timeout=15.0
+        )
+    except Exception as exc:
+        inaccessible = type(exc).__name__ in {
+            "ChannelPrivateError", "ChannelInvalidError", "UsernameInvalidError",
+            "PeerIdInvalidError",
+        }
+        return "inaccessible" if inaccessible else "unknown"
+    return "accessible"
+
+
+_ACCESS_MESSAGES = {
+    "accessible": "Telegram read access confirmed.",
+    "inaccessible": "Telegram did not grant access to this channel.",
+    "unknown": "Telegram could not confirm read access to this channel.",
+}
+
+
 def _route_check_source_access(router, admin):
     @router.post("/api/v2/sources/check")
     async def check_source_access(request: Request):
         denied = admin._write_denied(request)
         if denied is not None:
             return denied
-        declared_length = request.headers.get("content-length")
-        try:
-            if declared_length is not None and int(declared_length) > MAX_CHECK_REQUEST_BYTES:
-                return admin.JSONResponse({"error": "Request is too large."}, status_code=413)
-        except ValueError:
-            return admin.JSONResponse({"error": "Invalid request size."}, status_code=400)
-        raw_body = bytearray()
-        try:
-            async for chunk in request.stream():
-                if len(raw_body) + len(chunk) > MAX_CHECK_REQUEST_BYTES:
-                    return admin.JSONResponse({"error": "Request is too large."}, status_code=413)
-                raw_body.extend(chunk)
-            body = json.loads(raw_body)
-        except Exception:
-            body = None
-        if (not isinstance(body, dict) or set(body) != {"source_id"}
-                or not isinstance(body["source_id"], str)
-                or not body["source_id"].strip() or len(body["source_id"]) > 256):
+        body, error = await _read_channel_body(admin, request)
+        if error is not None:
+            return error
+        channel_id = _source_access_channel_id(body)
+        if channel_id is None:
             return admin.JSONResponse({"error": "Choose one configured Telegram channel."}, status_code=400)
-        channel_id = body["source_id"].strip()
-        try:
-            from common.config_loader import load_config
-            cfg = await admin.asyncio.to_thread(load_config, str(admin.CONFIG_PATH))
-            telegram = cfg.get_source("telegram")
-            configured = telegram and any(channel.id == channel_id for channel in telegram.channels)
-            if not configured:
-                return admin.JSONResponse({"error": "Channel is not configured."}, status_code=400)
-        except Exception:
-            logger.warning("Request failed in check_source_access", exc_info=True)
-            return admin.JSONResponse({"error": "Source configuration is unavailable."}, status_code=503)
-
-        try:
-            from providers import get_provider
-            provider = get_provider("telegram")
-            await admin.asyncio.wait_for(
-                provider.check_configured_channel_access(channel_id), timeout=15.0
-            )
-        except Exception as exc:
-            inaccessible = type(exc).__name__ in {
-                "ChannelPrivateError", "ChannelInvalidError", "UsernameInvalidError",
-                "PeerIdInvalidError",
-            }
-            return {
-                "ok": True,
-                "source_id": channel_id,
-                "status": "inaccessible" if inaccessible else "unknown",
-                "checked_at": datetime.now(timezone.utc).isoformat(),
-                "message": ("Telegram did not grant access to this channel."
-                            if inaccessible else "Telegram could not confirm read access to this channel."),
-            }
+        configured, error = await _telegram_channel_configured(admin, channel_id)
+        if error is not None:
+            return error
+        if not configured:
+            return admin.JSONResponse({"error": "Channel is not configured."}, status_code=400)
+        status = await _probe_channel_access(admin, channel_id)
         return {
             "ok": True,
             "source_id": channel_id,
-            "status": "accessible",
+            "status": status,
             "checked_at": datetime.now(timezone.utc).isoformat(),
-            "message": "Telegram read access confirmed.",
+            "message": _ACCESS_MESSAGES[status],
         }
 
 

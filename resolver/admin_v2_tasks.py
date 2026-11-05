@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import logging
+from typing import NamedTuple
 
 from fastapi import APIRouter, Query, Request
 from admin_v2_errors import V2ErrorRoute
@@ -51,10 +52,153 @@ def _count(conn, table: str, state: str, action: str | None = None,
     return int(conn.execute(f"SELECT count(*) FROM {table}{where}", params).fetchone()[0])
 
 
+class _TaskScope(NamedTuple):
+    """Which queues a task listing reads, and the action filter each one uses."""
+    state: str
+    job_id: str | None
+    jobs: bool
+    jobs_action: str | None
+    phash: bool
+    phash_action: str | None
+    visual: bool
+    visual_action: str | None
+
+
+def _task_scope(queue: str, action: str, state: str, job_id: str | None) -> _TaskScope:
+    include_jobs = queue in {"all", "jobs"} and action not in {*_VIDEO_ACTIONS, *_VISUAL_ACTIONS}
+    include_phash = queue in {"all", "phash"} and action in {"", *_VIDEO_ACTIONS}
+    include_visual = queue in {"all", "visual"} and action in {"", *_VISUAL_ACTIONS}
+    return _TaskScope(
+        state=state,
+        job_id=job_id,
+        jobs=include_jobs,
+        jobs_action=action if include_jobs else None,
+        phash=include_phash,
+        phash_action=_VIDEO_ACTIONS.get(action),
+        visual=include_visual,
+        visual_action=_VISUAL_ACTIONS.get(action),
+    )
+
+
+def _count_tasks(conn, scope: _TaskScope) -> dict:
+    """Return the matching total and the active total across the scoped queues."""
+    jobs_total = _count(conn, "video_duplicate_jobs", scope.state, scope.jobs_action, scope.job_id) if scope.jobs else 0
+    phash_total = _count(conn, "video_phash_jobs", scope.state, scope.phash_action, scope.job_id, "job_kind") if scope.phash else 0
+    visual_total = _count(conn, "video_visual_jobs", scope.state, scope.visual_action, scope.job_id, "kind") if scope.visual else 0
+    jobs_active = _count(conn, "video_duplicate_jobs", "active", scope.jobs_action, scope.job_id) if scope.jobs else 0
+    phash_active = _count(conn, "video_phash_jobs", "active", scope.phash_action, scope.job_id, "job_kind") if scope.phash else 0
+    visual_active = _count(conn, "video_visual_jobs", "active", scope.visual_action, scope.job_id, "kind") if scope.visual else 0
+    return {
+        "total": jobs_total + phash_total + visual_total,
+        "active_total": jobs_active + phash_active + visual_active,
+    }
+
+
+def _task_rows(conn, scope: _TaskScope, limit: int, offset: int) -> list:
+    """Return (queue, id) pairs for one page of tasks, newest first."""
+    branches = []
+    params = []
+    if scope.jobs:
+        job_where, job_params = _where(scope.state, scope.jobs_action, scope.job_id)
+        branches.append(
+            "SELECT 'jobs'::text AS queue,id,created_at AS sort_at "
+            f"FROM video_duplicate_jobs{job_where}"
+        )
+        params.extend(job_params)
+    if scope.phash:
+        phash_where, phash_params = _where(scope.state, scope.phash_action, scope.job_id, "job_kind")
+        branches.append(
+            "SELECT 'phash'::text AS queue,id,created_at AS sort_at "
+            f"FROM video_phash_jobs{phash_where}"
+        )
+        params.extend(phash_params)
+    if scope.visual:
+        visual_where, visual_params = _where(scope.state, scope.visual_action, scope.job_id, "kind")
+        branches.append("SELECT 'visual'::text AS queue,id,created_at AS sort_at "
+                        f"FROM video_visual_jobs{visual_where}")
+        params.extend(visual_params)
+    if not branches:
+        return []
+    return conn.execute(
+        "WITH task_keys AS (" + " UNION ALL ".join(branches) + ") "
+        "SELECT queue,id FROM task_keys ORDER BY sort_at DESC,id DESC,queue "
+        "LIMIT %s OFFSET %s",
+        (*params, limit, offset),
+    ).fetchall()
+
+
+def _hydrate_jobs(conn, job_ids: list) -> dict:
+    from admin_services import _job_undo_available, _public_job
+    from admin_v2_jobs import _safe_job
+
+    general = {}
+    if not job_ids:
+        return general
+    placeholders = ",".join(["%s"] * len(job_ids))
+    for raw in conn.execute(
+        f"SELECT * FROM video_duplicate_jobs WHERE id IN ({placeholders})", job_ids,
+    ).fetchall():
+        job = _public_job(raw, include_failure_code=True)
+        job["undo_available"] = _job_undo_available(conn, job)
+        projected = _safe_job(job)
+        projected["queue"] = "jobs"
+        general[str(projected["id"])] = projected
+    return general
+
+
+def _hydrate_phash(conn, job_ids: list) -> dict:
+    phash = {}
+    if not job_ids:
+        return phash
+    from common.phash_jobs import _processing_time_select, _public_job as phash_public_job
+
+    placeholders = ",".join(["%s"] * len(job_ids))
+    for raw in conn.execute(
+        "SELECT j.*,v.title," + _processing_time_select("j") +
+        " FROM video_phash_jobs j JOIN videos v ON v.id=j.video_id "
+        f"WHERE j.id IN ({placeholders})", job_ids,
+    ).fetchall():
+        item = phash_public_job(conn, raw)
+        error_code = item.get("error_code")
+        phash[str(item["id"])] = {
+            "queue": "phash", "id": str(item["id"]),
+            "action": {value: key for key, value in _VIDEO_ACTIONS.items()}.get(item.get("job_kind"), "phash_thumbnail_legacy"), "state": str(item["state"]),
+            "created_at": item.get("created_at"), "updated_at": item.get("updated_at"),
+            "title": item.get("title"), "video_id": str(item["video_id"]),
+            "attempts": int(item.get("attempts") or 0),
+            "processing_time_ms": int(item.get("processing_time_ms") or 0),
+            "thumbnail_ready": item.get("thumbnail_ready") is True,
+            "error_code": error_code if error_code in _PHASH_ERRORS else None,
+            "error_detail": str(item.get("error_detail") or "")[:2000],
+            "stage": str(item["state"]), "events": [], "undo_available": False,
+        }
+    return phash
+
+
+def _hydrate_visual(conn, job_ids: list) -> dict:
+    visual = {}
+    if not job_ids:
+        return visual
+    placeholders = ",".join(["%s"] * len(job_ids))
+    for raw in conn.execute(
+        "SELECT id,kind,state,created_at,updated_at,attempts,video_id,left_id,right_id,error_code "
+        f"FROM video_visual_jobs WHERE id IN ({placeholders})", job_ids,
+    ).fetchall():
+        identifier, kind, status, created, updated, attempts, video, left, right, error = raw
+        visual[str(identifier)] = {
+            "queue": "visual", "id": str(identifier),
+            "action": "visual_signature" if kind == "signature" else "visual_compare",
+            "state": status, "created_at": created, "updated_at": updated,
+            "stage": status, "progress": {}, "events": [], "undo_available": False,
+            "parameters": {"attempts": attempts, **({"video_id": video} if video else {"left_id": left, "right_id": right})},
+            "error": "Visual processing failed. Review worker logs for details." if error else None,
+        }
+    return visual
+
+
 def _list_tasks(db_url: str | None, *, queue: str, state: str, action: str,
                 offset: int, limit: int, job_id: str | None = None) -> dict:
-    from admin_services import _job_undo_available, _jobs_connection, _public_job
-    from admin_v2_jobs import _safe_job
+    from admin_services import _jobs_connection
     from common import db
 
     conn = _jobs_connection(db_url)
@@ -65,112 +209,24 @@ def _list_tasks(db_url: str | None, *, queue: str, state: str, action: str,
         if "video_phash_jobs" not in tables or "videos" not in tables:
             return {"available": False, "tasks": [], "total": None, "active_total": None}
 
-        include_jobs = queue in {"all", "jobs"} and action not in {*_VIDEO_ACTIONS, *_VISUAL_ACTIONS}
-        include_phash = queue in {"all", "phash"} and action in {"", *_VIDEO_ACTIONS}
-        include_visual = queue in {"all", "visual"} and action in {"", *_VISUAL_ACTIONS}
-        visual_action = _VISUAL_ACTIONS.get(action)
-        jobs_action = action if include_jobs else None
-        phash_action = _VIDEO_ACTIONS.get(action)
-        job_where, job_params = _where(state, jobs_action, job_id) if include_jobs else (" WHERE false", [])
-        phash_where, phash_params = _where(state, phash_action, job_id, "job_kind") if include_phash else (" WHERE false", [])
-
-        jobs_total = _count(conn, "video_duplicate_jobs", state, jobs_action, job_id) if include_jobs else 0
-        phash_total = _count(conn, "video_phash_jobs", state, phash_action, job_id, "job_kind") if include_phash else 0
-        jobs_active = _count(conn, "video_duplicate_jobs", "active", jobs_action, job_id) if include_jobs else 0
-        phash_active = _count(conn, "video_phash_jobs", "active", phash_action, job_id, "job_kind") if include_phash else 0
-
-        branches = []
-        if include_jobs:
-            branches.append(
-                "SELECT 'jobs'::text AS queue,id,created_at AS sort_at "
-                f"FROM video_duplicate_jobs{job_where}"
-            )
-        if include_phash:
-            branches.append(
-                "SELECT 'phash'::text AS queue,id,created_at AS sort_at "
-                f"FROM video_phash_jobs{phash_where}"
-            )
-        if include_visual:
-            visual_where, visual_params = _where(state, visual_action, job_id, "kind")
-            branches.append("SELECT 'visual'::text AS queue,id,created_at AS sort_at "
-                            f"FROM video_visual_jobs{visual_where}")
-        else:
-            visual_params = []
-        visual_total = _count(conn, "video_visual_jobs", state, visual_action, job_id, "kind") if include_visual else 0
-        visual_active = _count(conn, "video_visual_jobs", "active", visual_action, job_id, "kind") if include_visual else 0
-        total = jobs_total + phash_total + visual_total
-        if not branches:
-            rows = []
-        else:
-            rows = conn.execute(
-                "WITH task_keys AS (" + " UNION ALL ".join(branches) + ") "
-                "SELECT queue,id FROM task_keys ORDER BY sort_at DESC,id DESC,queue "
-                "LIMIT %s OFFSET %s",
-                (*job_params, *phash_params, *visual_params, limit, offset),
-            ).fetchall()
+        scope = _task_scope(queue, action, state, job_id)
+        counts = _count_tasks(conn, scope)
+        rows = _task_rows(conn, scope, limit, offset)
 
         ids = {"jobs": [], "phash": [], "visual": []}
         for row in rows:
             ids[row[0]].append(row[1])
-
-        general = {}
-        if ids["jobs"]:
-            placeholders = ",".join(["%s"] * len(ids["jobs"]))
-            for raw in conn.execute(
-                f"SELECT * FROM video_duplicate_jobs WHERE id IN ({placeholders})", ids["jobs"],
-            ).fetchall():
-                job = _public_job(raw, include_failure_code=True)
-                job["undo_available"] = _job_undo_available(conn, job)
-                projected = _safe_job(job)
-                projected["queue"] = "jobs"
-                general[str(projected["id"])] = projected
-
-        phash = {}
-        if ids["phash"]:
-            placeholders = ",".join(["%s"] * len(ids["phash"]))
-            from common.phash_jobs import _processing_time_select, _public_job as phash_public_job
-            for raw in conn.execute(
-                "SELECT j.*,v.title," + _processing_time_select("j") +
-                " FROM video_phash_jobs j JOIN videos v ON v.id=j.video_id "
-                f"WHERE j.id IN ({placeholders})", ids["phash"],
-            ).fetchall():
-                item = phash_public_job(conn, raw)
-                error_code = item.get("error_code")
-                phash[str(item["id"])] = {
-                    "queue": "phash", "id": str(item["id"]),
-                    "action": {value: key for key, value in _VIDEO_ACTIONS.items()}.get(item.get("job_kind"), "phash_thumbnail_legacy"), "state": str(item["state"]),
-                    "created_at": item.get("created_at"), "updated_at": item.get("updated_at"),
-                    "title": item.get("title"), "video_id": str(item["video_id"]),
-                    "attempts": int(item.get("attempts") or 0),
-                    "processing_time_ms": int(item.get("processing_time_ms") or 0),
-                    "thumbnail_ready": item.get("thumbnail_ready") is True,
-                    "error_code": error_code if error_code in _PHASH_ERRORS else None,
-                    "error_detail": str(item.get("error_detail") or "")[:2000],
-                    "stage": str(item["state"]), "events": [], "undo_available": False,
-                }
-
-        visual = {}
-        if ids["visual"]:
-            placeholders = ",".join(["%s"] * len(ids["visual"]))
-            for raw in conn.execute(
-                "SELECT id,kind,state,created_at,updated_at,attempts,video_id,left_id,right_id,error_code "
-                f"FROM video_visual_jobs WHERE id IN ({placeholders})", ids["visual"],
-            ).fetchall():
-                identifier, kind, status, created, updated, attempts, video, left, right, error = raw
-                visual[str(identifier)] = {
-                    "queue": "visual", "id": str(identifier),
-                    "action": "visual_signature" if kind == "signature" else "visual_compare",
-                    "state": status, "created_at": created, "updated_at": updated,
-                    "stage": status, "progress": {}, "events": [], "undo_available": False,
-                    "parameters": {"attempts": attempts, **({"video_id": video} if video else {"left_id": left, "right_id": right})},
-                    "error": "Visual processing failed. Review worker logs for details." if error else None,
-                }
-        queues = {"jobs": general, "phash": phash, "visual": visual}
+        queues = {
+            "jobs": _hydrate_jobs(conn, ids["jobs"]),
+            "phash": _hydrate_phash(conn, ids["phash"]),
+            "visual": _hydrate_visual(conn, ids["visual"]),
+        }
         tasks = [queues[row[0]].get(str(row[1])) for row in rows]
         tasks = [task for task in tasks if task is not None]
+        total = counts["total"]
         return {
             "available": True, "tasks": tasks, "total": total,
-            "active_total": jobs_active + phash_active + visual_active, "offset": offset,
+            "active_total": counts["active_total"], "offset": offset,
             "limit": limit, "truncated": offset + len(tasks) < total,
         }
     finally:

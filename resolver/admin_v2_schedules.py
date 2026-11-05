@@ -47,6 +47,139 @@ async def _queue_run(admin, request: Request, schedule_id: str, *, system: bool)
         return admin.JSONResponse({"ok": False, "error": "Could not run schedule."}, status_code=503)
 
 
+_CLEANUP_DESCRIPTION = "Up to 500 stored Telegram videos per library sync."
+_ARTWORK_DESCRIPTION = (
+    "Queues artwork generation for up to 100 recent items per run when artwork is "
+    "missing, black or matches a known studio logo. Each job rechecks before generation."
+)
+
+
+async def _library_sync_fields(admin, base_problem: bool):
+    """Return (status, details, problem, running) for the library sync system row."""
+    try:
+        from admin_v2_status import _sanitized_sync_status, _sync_stale_after_seconds
+        raw_status = await admin.asyncio.to_thread(admin._sync_status)
+        safe = _sanitized_sync_status(
+            raw_status, await admin.asyncio.to_thread(
+                _sync_stale_after_seconds, admin.CONFIG_PATH, admin.HUB_DB_URL
+            )
+        )
+        running = bool(safe.get("running"))
+        status = "running" if safe.get("running") else safe.get("freshness", "unknown")
+        details = safe.get("status_text", "Sync status unavailable")
+        problem = base_problem or safe.get("last_success") is False or safe.get("freshness") == "stale"
+        return status, details, problem, running
+    except Exception:
+        return "unknown", "Sync status unavailable.", base_problem, False
+
+
+async def _system_row(admin, item):
+    """Return (row, running) for one configured system schedule. running is set for library sync only."""
+    status = "unknown"
+    details = "Independent system task."
+    task_description = None
+    problem = bool(item["needs_conversion"])
+    running = False
+    if item["id"] == "library-sync":
+        status, details, problem, running = await _library_sync_fields(admin, problem)
+    elif item["id"] == "artwork-generation":
+        task_description = _ARTWORK_DESCRIPTION
+        status = item.get("last_result") or "unknown"
+        details = f"Last result: {item['last_result']}." if item.get("last_result") else ""
+        if item.get("last_result"):
+            problem = problem or item["last_result"] == "failed"
+    elif item.get("last_result"):
+        status = item["last_result"]
+        details = f"Last result: {item['last_result']}"
+        problem = problem or item["last_result"] == "failed"
+    if item["needs_conversion"]:
+        details = "Legacy interval cannot be represented exactly; enter a cron expression to convert it."
+    row = {**item, "group": "system", "source": "System worker",
+           "task_description": task_description,
+           "details": details, "status": status, "problem": problem}
+    return row, running
+
+
+def _cleanup_summary(cleanup: dict, library_sync_running: bool) -> dict:
+    """Summarise the title-cleanup status file for the dependent stage row."""
+    status = str(cleanup.get("status") or "unknown")
+    result = str(cleanup.get("last_result") or "")
+    orphaned = status == "running" and not library_sync_running
+    if orphaned:
+        status = "failed"
+        result = "failed"
+    display_status = (
+        "running" if status == "running" else
+        "failed" if status == "failed" else
+        "done" if status == "complete" else
+        "pending" if status == "pending" else "unknown"
+    )
+    progress = []
+    if cleanup.get("total") is not None:
+        progress.append(
+            f"{int(cleanup.get('processed') or 0)}/{int(cleanup.get('total') or 0)} scanned; "
+            f"{int(cleanup.get('titles_changed') or 0)} titles cleaned; "
+            f"{int(cleanup.get('tags_added') or 0)} tags added; "
+            f"{int(cleanup.get('categories_added') or 0)} categories added"
+        )
+    if cleanup.get("nfos_missing"):
+        progress.append(f"{int(cleanup['nfos_missing'])} NFO files were missing")
+    if cleanup.get("nfos_failed"):
+        progress.append(f"{int(cleanup['nfos_failed'])} NFO files could not be updated")
+    if status == "pending":
+        progress.append("It resumes with the next library sync")
+    progress_details = ". ".join(progress)
+    if progress_details:
+        progress_details += "."
+    error = str(cleanup.get("last_error") or "")[:120]
+    if orphaned and not error:
+        error = "Sync stopped before the batch checkpoint."
+    return {
+        "failed": status == "failed",
+        "result": result,
+        "display_status": display_status,
+        "progress_details": progress_details,
+        "error": error,
+    }
+
+
+def _dependent_row(stage, cleanup: dict, summary: dict) -> dict:
+    """Build the listing row for one stage run of a parent schedule."""
+    parent = stage["schedule_id"]
+    row = {
+        **stage,
+        "group": "dependent",
+        "parent_id": parent,
+        "source": "System database backup" if parent == "database-backup" else "Library sync",
+        "status": stage["last_result"] or "unknown",
+        "problem": stage["last_result"] == "failed",
+    }
+    if stage["id"] != "telegram-title-cleanup":
+        return row
+    row["task_description"] = _CLEANUP_DESCRIPTION
+    row["details"] = _CLEANUP_DESCRIPTION
+    row["progress_details"] = summary["progress_details"]
+    row["progress"] = {
+        "processed": cleanup.get("processed", 0),
+        "total": cleanup.get("total"),
+        "titles_changed": cleanup.get("titles_changed", 0),
+        "tags_added": cleanup.get("tags_added", 0),
+        "categories_added": cleanup.get("categories_added", 0),
+    }
+    # Installations upgraded before the first recorded pass still have
+    # the batch file but no stage row, so the file fills in for it.
+    if stage["last_result"] is None:
+        row["status"] = summary["display_status"]
+        row["last_result"] = summary["result"] or None
+        row["last_run_at"] = cleanup.get("last_run_at")
+    row["error"] = stage["last_error"] or summary["error"]
+    row["problem"] = bool(
+        row["problem"] or summary["failed"]
+        or int(cleanup.get("nfos_failed") or 0) > 0
+    )
+    return row
+
+
 def _route_list_schedules(router, admin):
     @router.get("/api/v2/schedules")
     async def list_schedules(request: Request):
@@ -58,111 +191,15 @@ def _route_list_schedules(router, admin):
             system = []
             library_sync_running = False
             for item in configured:
-                status = "unknown"
-                details = "Independent system task."
-                task_description = None
-                problem = bool(item["needs_conversion"])
+                row, running = await _system_row(admin, item)
                 if item["id"] == "library-sync":
-                    try:
-                        from admin_v2_status import _sanitized_sync_status, _sync_stale_after_seconds
-                        raw_status = await admin.asyncio.to_thread(admin._sync_status)
-                        safe = _sanitized_sync_status(
-                            raw_status, await admin.asyncio.to_thread(
-                                _sync_stale_after_seconds, admin.CONFIG_PATH, admin.HUB_DB_URL
-                            )
-                        )
-                        library_sync_running = bool(safe.get("running"))
-                        status = "running" if safe.get("running") else safe.get("freshness", "unknown")
-                        details = safe.get("status_text", "Sync status unavailable")
-                        problem = problem or safe.get("last_success") is False or safe.get("freshness") == "stale"
-                    except Exception:
-                        details = "Sync status unavailable."
-                elif item["id"] == "artwork-generation":
-                    task_description = (
-                        "Queues artwork generation for up to 100 recent items per run when artwork is "
-                        "missing, black or matches a known studio logo. Each job rechecks before generation."
-                    )
-                    status = item.get("last_result") or "unknown"
-                    details = f"Last result: {item['last_result']}." if item.get("last_result") else ""
-                    if item.get("last_result"):
-                        problem = problem or item["last_result"] == "failed"
-                elif item.get("last_result"):
-                    status = item["last_result"]
-                    details = f"Last result: {item['last_result']}"
-                    problem = problem or item["last_result"] == "failed"
-                if item["needs_conversion"]:
-                    details = "Legacy interval cannot be represented exactly; enter a cron expression to convert it."
-                system.append({**item, "group": "system", "source": "System worker",
-                               "task_description": task_description,
-                               "details": details, "status": status, "problem": problem})
+                    library_sync_running = running
+                system.append(row)
             stages = await admin.asyncio.to_thread(schedule_stages.list_stage_runs, admin.HUB_DB_URL)
             cleanup = await admin.asyncio.to_thread(title_cleanup_status)
-            cleanup_status = str(cleanup.get("status") or "unknown")
-            cleanup_result = str(cleanup.get("last_result") or "")
-            cleanup_orphaned_run = cleanup_status == "running" and not library_sync_running
-            if cleanup_orphaned_run:
-                cleanup_status = "failed"
-                cleanup_result = "failed"
-            cleanup_display_status = (
-                "running" if cleanup_status == "running" else
-                "failed" if cleanup_status == "failed" else
-                "done" if cleanup_status == "complete" else
-                "pending" if cleanup_status == "pending" else "unknown"
-            )
-            cleanup_progress = []
-            if cleanup.get("total") is not None:
-                cleanup_progress.append(
-                    f"{int(cleanup.get('processed') or 0)}/{int(cleanup.get('total') or 0)} scanned; "
-                    f"{int(cleanup.get('titles_changed') or 0)} titles cleaned; "
-                    f"{int(cleanup.get('tags_added') or 0)} tags added; "
-                    f"{int(cleanup.get('categories_added') or 0)} categories added"
-                )
-            cleanup_description = "Up to 500 stored Telegram videos per library sync."
-            if cleanup.get("nfos_missing"):
-                cleanup_progress.append(f"{int(cleanup['nfos_missing'])} NFO files were missing")
-            if cleanup.get("nfos_failed"):
-                cleanup_progress.append(f"{int(cleanup['nfos_failed'])} NFO files could not be updated")
-            if cleanup_status == "pending":
-                cleanup_progress.append("It resumes with the next library sync")
-            cleanup_progress_details = ". ".join(cleanup_progress)
-            if cleanup_progress_details:
-                cleanup_progress_details += "."
-            cleanup_error = str(cleanup.get("last_error") or "")[:120]
-            if cleanup_orphaned_run and not cleanup_error:
-                cleanup_error = "Sync stopped before the batch checkpoint."
+            summary = _cleanup_summary(cleanup, library_sync_running)
             for stage in stages:
-                parent = stage["schedule_id"]
-                row = {
-                    **stage,
-                    "group": "dependent",
-                    "parent_id": parent,
-                    "source": "System database backup" if parent == "database-backup" else "Library sync",
-                    "status": stage["last_result"] or "unknown",
-                    "problem": stage["last_result"] == "failed",
-                }
-                if stage["id"] == "telegram-title-cleanup":
-                    row["task_description"] = cleanup_description
-                    row["details"] = cleanup_description
-                    row["progress_details"] = cleanup_progress_details
-                    row["progress"] = {
-                        "processed": cleanup.get("processed", 0),
-                        "total": cleanup.get("total"),
-                        "titles_changed": cleanup.get("titles_changed", 0),
-                        "tags_added": cleanup.get("tags_added", 0),
-                        "categories_added": cleanup.get("categories_added", 0),
-                    }
-                    # Installations upgraded before the first recorded pass still have
-                    # the batch file but no stage row, so the file fills in for it.
-                    if stage["last_result"] is None:
-                        row["status"] = cleanup_display_status
-                        row["last_result"] = cleanup_result or None
-                        row["last_run_at"] = cleanup.get("last_run_at")
-                    row["error"] = stage["last_error"] or cleanup_error
-                    row["problem"] = bool(
-                        row["problem"] or cleanup_status == "failed"
-                        or int(cleanup.get("nfos_failed") or 0) > 0
-                    )
-                system.append(row)
+                system.append(_dependent_row(stage, cleanup, summary))
             return {"ok": True, "items": items, "system_items": system}
         except Exception:
             logger.warning("Request failed in list_schedules", exc_info=True)
