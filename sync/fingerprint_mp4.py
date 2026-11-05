@@ -106,6 +106,31 @@ def _box_header(data: bytes, offset: int) -> tuple[int, bytes, int]:
     return size, kind, header_size
 
 
+def _window_at(budget: FingerprintBudget, offset: int, total_size: int) -> bytes:
+    _end, buf = budget.fetch(offset, min(offset + 65535, total_size - 1))
+    return buf
+
+
+def _refetch_if_short(buf: bytes, buffer_offset: int, offset: int, need: int,
+                      budget: Optional[FingerprintBudget], total_size: int) -> tuple[bytes, int, int]:
+    """Refetch a window starting at offset when the buffered bytes are too short for `need` bytes."""
+    rel = offset - buffer_offset
+    if rel + need > len(buf) and budget is not None:
+        buf = _window_at(budget, offset, total_size)
+        buffer_offset = offset
+        rel = 0
+    return buf, buffer_offset, rel
+
+
+def _moov_front_size(buf: bytes, buffer_offset: int, offset: int, size: int,
+                     budget: Optional[FingerprintBudget], total_size: int) -> int:
+    if size == 1:
+        buf, buffer_offset, rel = _refetch_if_short(buf, buffer_offset, offset, 16, budget, total_size)
+        if rel + 16 <= len(buf):
+            size = int.from_bytes(buf[rel + 8:rel + 16], "big")
+    return size
+
+
 def _top_level_layout(header: bytes, budget: Optional[FingerprintBudget] = None) -> tuple[int, Optional[tuple[int, int]]]:
     offset = 0
     buffer_offset = 0
@@ -117,19 +142,13 @@ def _top_level_layout(header: bytes, budget: Optional[FingerprintBudget] = None)
         if rel + 8 > len(buf):
             if budget is None:
                 break
-            _end, buf = budget.fetch(offset, min(offset + 65535, total_size - 1))
+            buf = _window_at(budget, offset, total_size)
             buffer_offset = offset
             rel = 0
         size = int.from_bytes(buf[rel:rel + 4], "big")
         kind = buf[rel + 4:rel + 8]
         if kind == b"moov":
-            if size == 1:
-                if rel + 16 > len(buf) and budget is not None:
-                    _end, buf = budget.fetch(offset, min(offset + 65535, total_size - 1))
-                    buffer_offset = offset
-                    rel = 0
-                if rel + 16 <= len(buf):
-                    size = int.from_bytes(buf[rel + 8:rel + 16], "big")
+            size = _moov_front_size(buf, buffer_offset, offset, size, budget, total_size)
             front_moov = (offset, size)
             # We only need to know whether moov precedes mdat. A front-loaded
             # moov can be passed through unchanged, even when the 64 KiB
@@ -139,10 +158,7 @@ def _top_level_layout(header: bytes, budget: Optional[FingerprintBudget] = None)
             return offset, front_moov
         header_size = 8
         if size == 1:
-            if rel + 16 > len(buf) and budget is not None:
-                _end, buf = budget.fetch(offset, min(offset + 65535, total_size - 1))
-                buffer_offset = offset
-                rel = 0
+            buf, buffer_offset, rel = _refetch_if_short(buf, buffer_offset, offset, 16, budget, total_size)
             if rel + 16 > len(buf):
                 break
             size = int.from_bytes(buf[rel + 8:rel + 16], "big")
@@ -155,42 +171,50 @@ def _top_level_layout(header: bytes, budget: Optional[FingerprintBudget] = None)
     raise ValueError("Could not find MP4 media data header")
 
 
+_RELOCATION_CONTAINER_BOXES = frozenset({b"moov", b"trak", b"mdia", b"minf", b"stbl", b"edts", b"dinf", b"mvex"})
+
+
+def _shift_chunk_offset_table(output: bytearray, payload: int, box_end: int, kind: bytes, shift: int) -> None:
+    if payload + 8 > box_end:
+        raise ValueError("Invalid MP4 chunk offset table")
+    count = int.from_bytes(output[payload + 4:payload + 8], "big")
+    width = 4 if kind == b"stco" else 8
+    entries = payload + 8
+    if entries + count * width > box_end:
+        raise ValueError("Truncated MP4 chunk offset table")
+    for index in range(count):
+        position = entries + index * width
+        value = int.from_bytes(output[position:position + width], "big") + shift
+        if value >= 1 << (width * 8):
+            raise ValueError("MP4 chunk offset overflow")
+        output[position:position + width] = value.to_bytes(width, "big")
+
+
+def _walk_relocated_boxes(output: bytearray, start: int, end: int, shift: int) -> None:
+    offset = start
+    while offset + 8 <= end:
+        size, kind, header_size = _box_header(output, offset)
+        box_end = offset + size
+        if box_end > end:
+            raise ValueError("Invalid nested MP4 atom")
+        payload = offset + header_size
+        if kind in _RELOCATION_CONTAINER_BOXES:
+            _walk_relocated_boxes(output, payload, box_end, shift)
+        elif kind in {b"stco", b"co64"}:
+            _shift_chunk_offset_table(output, payload, box_end, kind, shift)
+        offset = box_end
+
+
 def _relocated_moov(data: bytes, shift: int) -> bytes:
     """Patch chunk offsets for a moov atom moved in front of mdat."""
     output = bytearray(data)
-    containers = {b"moov", b"trak", b"mdia", b"minf", b"stbl", b"edts", b"dinf", b"mvex"}
-
-    def walk(start: int, end: int) -> None:
-        offset = start
-        while offset + 8 <= end:
-            size, kind, header_size = _box_header(output, offset)
-            box_end = offset + size
-            if box_end > end:
-                raise ValueError("Invalid nested MP4 atom")
-            payload = offset + header_size
-            if kind in containers:
-                walk(payload, box_end)
-            elif kind in {b"stco", b"co64"}:
-                if payload + 8 > box_end:
-                    raise ValueError("Invalid MP4 chunk offset table")
-                count = int.from_bytes(output[payload + 4:payload + 8], "big")
-                width = 4 if kind == b"stco" else 8
-                entries = payload + 8
-                if entries + count * width > box_end:
-                    raise ValueError("Truncated MP4 chunk offset table")
-                for index in range(count):
-                    position = entries + index * width
-                    value = int.from_bytes(output[position:position + width], "big") + shift
-                    if value >= 1 << (width * 8):
-                        raise ValueError("MP4 chunk offset overflow")
-                    output[position:position + width] = value.to_bytes(width, "big")
-            offset = box_end
 
     size, kind, header_size = _box_header(data, 0)
     if kind != b"moov" or size != len(data):
         raise ValueError("Invalid MP4 moov atom")
-    walk(header_size, len(data))
+    _walk_relocated_boxes(output, header_size, len(data), shift)
     return bytes(output)
+
 
 
 class _FaststartMP4:

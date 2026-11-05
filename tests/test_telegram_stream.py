@@ -61,6 +61,26 @@ except Exception as exc:
     _RESOLVER_IMPORT_ERROR = exc
 
 
+def _retained_future_bytes(mgr, job_cls) -> int:
+    """Bytes held by completed job futures whose blocks are no longer cached."""
+    import gc as _gc
+    _gc.collect()
+    cached_ids = {id(e.data) for e in mgr._cache.values()}
+    fut_only = 0
+    for obj in _gc.get_objects():
+        if isinstance(obj, job_cls):
+            f = obj.future
+            if f.done() and not f.cancelled():
+                try:
+                    if f.exception() is None:
+                        d = f.result()
+                        if d is not None and id(d) not in cached_ids:
+                            fut_only += len(d)
+                except Exception:
+                    pass
+    return fut_only
+
+
 def _require_stream(testcase):
     if not STREAM_AVAILABLE:
         testcase.skipTest(
@@ -435,7 +455,6 @@ class TestParallelStreamBehavior(unittest.IsolatedAsyncioTestCase):
             from telegram_stream import _Job  # internal; skip if refactored
         except ImportError:
             self.skipTest("telegram_stream internals refactored")
-        import gc as _gc
         mgr = await self._mgr(workers=3, block_size=8192,
                               read_ahead_bytes=16 * 8192,
                               max_cache_bytes=4 * 8192)
@@ -455,20 +474,7 @@ class TestParallelStreamBehavior(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.005)
                 if got >= 20 * 8192:
                     break
-            _gc.collect()
-            cached_ids = {id(e.data) for e in mgr._cache.values()}
-            fut_only = 0
-            for obj in _gc.get_objects():
-                if isinstance(obj, _Job):
-                    f = obj.future
-                    if f.done() and not f.cancelled():
-                        try:
-                            if f.exception() is None:
-                                d = f.result()
-                                if d is not None and id(d) not in cached_ids:
-                                    fut_only += len(d)
-                        except Exception:
-                            pass
+            fut_only = _retained_future_bytes(mgr, _Job)
             actual = mgr._current_cache_bytes + mgr._reserved_inflight_bytes + fut_only
             self.assertLessEqual(
                 actual, mgr.max_cache_bytes,
@@ -489,7 +495,6 @@ class TestParallelStreamBehavior(unittest.IsolatedAsyncioTestCase):
             from telegram_stream import _Job  # internal; skip if refactored
         except ImportError:
             self.skipTest("telegram_stream internals refactored")
-        import gc as _gc
         mgr = await self._mgr(workers=3, global_workers=6, block_size=8192,
                               read_ahead_bytes=8 * 8192,
                               max_cache_bytes=8 * 8192)
@@ -511,20 +516,7 @@ class TestParallelStreamBehavior(unittest.IsolatedAsyncioTestCase):
             readers = [asyncio.create_task(slow_reader(f"slow{i}", total))
                        for i in range(3)]
             await asyncio.sleep(0.15)  # let pressure build mid-stream
-            _gc.collect()
-            cached_ids = {id(e.data) for e in mgr._cache.values()}
-            fut_only = 0
-            for obj in _gc.get_objects():
-                if isinstance(obj, _Job):
-                    f = obj.future
-                    if f.done() and not f.cancelled():
-                        try:
-                            if f.exception() is None:
-                                d = f.result()
-                                if d is not None and id(d) not in cached_ids:
-                                    fut_only += len(d)
-                        except Exception:
-                            pass
+            fut_only = _retained_future_bytes(mgr, _Job)
             actual = mgr._current_cache_bytes + mgr._reserved_inflight_bytes + fut_only
             self.assertLessEqual(
                 actual, mgr.max_cache_bytes,

@@ -30,6 +30,20 @@ LOG_TIMESTAMP = re.compile(
     r"(?:[.,]\d+)?(?P<zone>Z|[+-]\d{2}:\d{2})?"
 )
 PARAMETER = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
+PRIVACY_EMITTED_FIELDS = [
+    "day", "surface", "method", "status_class", "count",
+    "access_log_observation.parsed_requests",
+    "access_log_observation.days_with_records[].day",
+    "access_log_observation.days_with_records[].request_count",
+    "access_log_observation.days_with_records[].first_request_at",
+    "access_log_observation.days_with_records[].last_request_at",
+    "access_log_observation.unknown_timestamp_requests",
+    "access_log_observation.note",
+]
+PRIVACY_OMITTED_FIELDS = [
+    "client_address", "query_string", "user_agent", "request_body",
+    "raw_unmatched_path", "dynamic_unmatched_segments",
+]
 
 
 def _route_regex(route: str) -> re.Pattern[str]:
@@ -72,6 +86,20 @@ def _route_inventory(manifest_path: Path):
     return legacy, shared, clients
 
 
+def _segment_is_known(pattern: list[str], index: int, segments: list[str]) -> bool:
+    return (
+        len(pattern) > index
+        and not PARAMETER.fullmatch(pattern[index])
+        and re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", pattern[index])
+        and pattern[index] == segments[index]
+        and all(
+            PARAMETER.fullmatch(pattern[prefix_index])
+            or pattern[prefix_index] == segments[prefix_index]
+            for prefix_index in range(index)
+        )
+    )
+
+
 def _unmapped_route_surface(path: str, routes: list[tuple[str, str, re.Pattern[str]]]) -> str:
     """Keep only route words plausible at this position; mask other segments."""
     segments = [segment for segment in path.split("/") if segment]
@@ -79,16 +107,7 @@ def _unmapped_route_surface(path: str, routes: list[tuple[str, str, re.Pattern[s
     shape = []
     for index, segment in enumerate(segments):
         known_here = any(
-            len(pattern) > index
-            and not PARAMETER.fullmatch(pattern[index])
-            and re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", pattern[index])
-            and pattern[index] == segment
-            and all(
-                PARAMETER.fullmatch(pattern[prefix_index])
-                or pattern[prefix_index] == segments[prefix_index]
-                for prefix_index in range(index)
-            )
-            for pattern in patterns
+            _segment_is_known(pattern, index, segments) for pattern in patterns
         )
         shape.append(segment if known_here else "{segment}")
     return "unmapped_classic_api /" + "/".join(shape)
@@ -96,6 +115,138 @@ def _unmapped_route_surface(path: str, routes: list[tuple[str, str, re.Pattern[s
 
 def _status_class(status: str) -> str:
     return f"{status[0]}xx"
+
+
+def _log_day(line: str) -> str:
+    day_match = LOG_DAY.match(line)
+    return day_match.group("day") if day_match else "unknown"
+
+
+def _record_access_window(
+    windows: dict[str, dict[str, str | None]], day: str, line: str
+) -> None:
+    timestamp_match = LOG_TIMESTAMP.match(line)
+    if day == "unknown" or not timestamp_match:
+        return
+    stamp = timestamp_match.group("timestamp") + (timestamp_match.group("zone") or "")
+    sort_key = stamp[:19].replace("T", " ")
+    window = windows.setdefault(
+        day, {"first": stamp, "last": stamp, "first_key": sort_key, "last_key": sort_key}
+    )
+    if sort_key < window["first_key"]:
+        window["first"], window["first_key"] = stamp, sort_key
+    if sort_key > window["last_key"]:
+        window["last"], window["last_key"] = stamp, sort_key
+
+
+def _non_classic_entry(
+    method: str,
+    path: str,
+    day: str,
+    status_class: str,
+    shared_routes: list[tuple[str, str, re.Pattern[str]]],
+    client_routes: list[tuple[str, str, re.Pattern[str]]],
+) -> tuple[str, str, str, str] | None:
+    for classification, inventory in (("shared_resolver", shared_routes),
+                                       ("client_integration", client_routes)):
+        for route_method, route, route_pattern in inventory:
+            if method == route_method and route_pattern.fullmatch(path):
+                public_route = route[len("/admin"):] if route.startswith("/admin/") else route
+                return (
+                    day, f"{classification} {route_method} {public_route}",
+                    route_method, status_class,
+                )
+    return None
+
+
+def _legacy_api_entry(
+    method: str,
+    legacy_path: str,
+    day: str,
+    status_class: str,
+    routes: list[tuple[str, str, re.Pattern[str]]],
+) -> tuple[str, str, str, str] | None:
+    for route_method, route, route_pattern in routes:
+        if method == route_method and route_pattern.fullmatch(legacy_path):
+            return (day, route_method + " " + route, route_method, status_class)
+    return None
+
+
+def _classify_request(
+    method: str,
+    path: str,
+    day: str,
+    status_class: str,
+    routes: list[tuple[str, str, re.Pattern[str]]],
+    shared_routes: list[tuple[str, str, re.Pattern[str]]],
+    client_routes: list[tuple[str, str, re.Pattern[str]]],
+) -> tuple[str, tuple[str, str, str, str] | None]:
+    """Return (bucket, entry); bucket is skip, non_classic, counted, or unmapped."""
+    if path in {"/admin/classic", "/admin/classic/"} and method in {"GET", "HEAD"}:
+        return "counted", (day, "classic_page", method, status_class)
+    if path.startswith("/admin/assets/"):
+        return "counted", (day, "classic_asset", method, status_class)
+    if not path.startswith("/admin/api/"):
+        return "skip", None
+
+    non_classic = _non_classic_entry(
+        method, path, day, status_class, shared_routes, client_routes
+    )
+    if non_classic:
+        return "non_classic", non_classic
+    legacy_path = path[len("/admin"):]
+    entry = _legacy_api_entry(method, legacy_path, day, status_class, routes)
+    if entry is not None:
+        return "counted", entry
+    surface = _unmapped_route_surface(legacy_path, routes)
+    return "unmapped", (day, surface, method, status_class)
+
+
+def _counter_records(counter: Counter) -> list[dict]:
+    return [
+        {"day": day, "surface": surface, "method": method,
+         "status_class": status_class, "count": count}
+        for (day, surface, method, status_class), count in sorted(counter.items())
+    ]
+
+
+def _days_with_records(
+    access_log_days: Counter[str], access_log_windows: dict[str, dict[str, str | None]]
+) -> list[dict]:
+    return [
+        {"day": day, "request_count": count,
+         "first_request_at": access_log_windows.get(day, {}).get("first"),
+         "last_request_at": access_log_windows.get(day, {}).get("last")}
+        for day, count in sorted(access_log_days.items())
+    ]
+
+
+def _build_report(
+    observed: int,
+    unmapped_api: int,
+    counts: Counter,
+    non_classic_counts: Counter,
+    parsed_access_requests: int,
+    access_log_days: Counter[str],
+    access_log_windows: dict[str, dict[str, str | None]],
+) -> dict:
+    return {
+        "observed_requests": observed,
+        "unmapped_classic_api_requests": unmapped_api,
+        "counts": _counter_records(counts),
+        "non_classic_api_requests": sum(non_classic_counts.values()),
+        "non_classic_api_counts": _counter_records(non_classic_counts),
+        "access_log_observation": {
+            "parsed_requests": parsed_access_requests,
+            "days_with_records": _days_with_records(access_log_days, access_log_windows),
+            "unknown_timestamp_requests": access_log_days.get("unknown", 0),
+            "note": "Observed log records are not proof of complete retention or uptime.",
+        },
+        "privacy": {
+            "emitted_fields": list(PRIVACY_EMITTED_FIELDS),
+            "omitted": list(PRIVACY_OMITTED_FIELDS),
+        },
+    }
 
 
 def summarize(lines: Iterable[str], manifest_path: Path = DEFAULT_MANIFEST) -> dict:
@@ -118,102 +269,31 @@ def summarize(lines: Iterable[str], manifest_path: Path = DEFAULT_MANIFEST) -> d
         # Strip query data before any classification. Never include `target`
         # itself in output, even when the request path contains a private ID.
         path = match.group("target").split("?", 1)[0]
-        day_match = LOG_DAY.match(line)
-        day = day_match.group("day") if day_match else "unknown"
+        day = _log_day(line)
         access_log_days[day] += 1
-        timestamp_match = LOG_TIMESTAMP.match(line)
-        if day != "unknown" and timestamp_match:
-            stamp = timestamp_match.group("timestamp") + (timestamp_match.group("zone") or "")
-            sort_key = stamp[:19].replace("T", " ")
-            window = access_log_windows.setdefault(
-                day, {"first": stamp, "last": stamp, "first_key": sort_key, "last_key": sort_key}
-            )
-            if sort_key < window["first_key"]:
-                window["first"], window["first_key"] = stamp, sort_key
-            if sort_key > window["last_key"]:
-                window["last"], window["last_key"] = stamp, sort_key
+        _record_access_window(access_log_windows, day, line)
         if path.startswith("/admin/api/v2/"):
             continue
 
-        status_class = _status_class(match.group("status"))
-        entry = None
-
-        if path in {"/admin/classic", "/admin/classic/"} and method in {"GET", "HEAD"}:
-            entry = (day, "classic_page", method, status_class)
-        elif path.startswith("/admin/assets/"):
-            entry = (day, "classic_asset", method, status_class)
-        elif path.startswith("/admin/api/"):
-            non_classic_entry = None
-            for classification, inventory in (("shared_resolver", shared_routes),
-                                               ("client_integration", client_routes)):
-                for route_method, route, route_pattern in inventory:
-                    if method == route_method and route_pattern.fullmatch(path):
-                        public_route = route[len("/admin"):] if route.startswith("/admin/") else route
-                        non_classic_entry = (
-                            day, f"{classification} {route_method} {public_route}",
-                            route_method, status_class,
-                        )
-                        break
-                if non_classic_entry:
-                    break
-            if non_classic_entry:
-                non_classic_counts[non_classic_entry] += 1
-                continue
-            legacy_path = path[len("/admin"):]
-            for route_method, route, route_pattern in routes:
-                if method == route_method and route_pattern.fullmatch(legacy_path):
-                    entry = (day, route_method + " " + route, route_method, status_class)
-                    break
-            if entry is None:
-                unmapped_api += 1
-                entry = (day, _unmapped_route_surface(legacy_path, routes), method, status_class)
-        else:
+        bucket, entry = _classify_request(
+            method, path, day, _status_class(match.group("status")),
+            routes, shared_routes, client_routes,
+        )
+        if bucket == "skip":
             continue
+        if bucket == "non_classic":
+            non_classic_counts[entry] += 1
+            continue
+        if bucket == "unmapped":
+            unmapped_api += 1
 
         observed += 1
         counts[entry] += 1
 
-    records = [
-        {"day": day, "surface": surface, "method": method,
-         "status_class": status_class, "count": count}
-        for (day, surface, method, status_class), count in sorted(counts.items())
-    ]
-    non_classic_records = [
-        {"day": day, "surface": surface, "method": method,
-         "status_class": status_class, "count": count}
-        for (day, surface, method, status_class), count in sorted(non_classic_counts.items())
-    ]
-    return {
-        "observed_requests": observed,
-        "unmapped_classic_api_requests": unmapped_api,
-        "counts": records,
-        "non_classic_api_requests": sum(non_classic_counts.values()),
-        "non_classic_api_counts": non_classic_records,
-        "access_log_observation": {
-            "parsed_requests": parsed_access_requests,
-            "days_with_records": [
-                {"day": day, "request_count": count,
-                 "first_request_at": access_log_windows.get(day, {}).get("first"),
-                 "last_request_at": access_log_windows.get(day, {}).get("last")}
-                for day, count in sorted(access_log_days.items())
-            ],
-            "unknown_timestamp_requests": access_log_days.get("unknown", 0),
-            "note": "Observed log records are not proof of complete retention or uptime.",
-        },
-        "privacy": {
-            "emitted_fields": [
-                "day", "surface", "method", "status_class", "count",
-                "access_log_observation.parsed_requests",
-                "access_log_observation.days_with_records[].day",
-                "access_log_observation.days_with_records[].request_count",
-                "access_log_observation.days_with_records[].first_request_at",
-                "access_log_observation.days_with_records[].last_request_at",
-                "access_log_observation.unknown_timestamp_requests",
-                "access_log_observation.note",
-            ],
-            "omitted": ["client_address", "query_string", "user_agent", "request_body", "raw_unmatched_path", "dynamic_unmatched_segments"],
-        },
-    }
+    return _build_report(
+        observed, unmapped_api, counts, non_classic_counts,
+        parsed_access_requests, access_log_days, access_log_windows,
+    )
 
 
 def _read_logs(paths: list[str]) -> Iterable[str]:
@@ -245,3 +325,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

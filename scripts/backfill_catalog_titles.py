@@ -175,6 +175,90 @@ def _push_to_jellyfin(changed_ids: list) -> str:
             f"updated={result.get('updated')} failed={result.get('failed')}")
 
 
+def _fetch_catalog_title(report: dict, video_id, source, external_id) -> str | None:
+    """Return the catalogue title, or None after recording why the entry failed."""
+    try:
+        scene = _fetch_scene(source, external_id)
+    except Exception as exc:
+        report["failed"].append({"video_id": video_id,
+                                 "error": type(exc).__name__})
+        return None
+    catalog_title = str(getattr(scene, "title", "") or "").strip()
+    if not catalog_title:
+        report["failed"].append({"video_id": video_id, "error": "no_catalogue_title"})
+        return None
+    return catalog_title
+
+
+def _display_title(catalog_title: str, performers_raw, slug) -> str:
+    performers = []
+    try:
+        performers = json.loads(performers_raw) if performers_raw else []
+    except (TypeError, ValueError):
+        performers = []
+    return clean_display_title(
+        catalog_title, performers=performers, provider="telegram", slug=slug or "",
+    ) or catalog_title
+
+
+def _update_sidecar(report: dict, video_id, source, external_id, display_title: str) -> None:
+    path = _nfo_path(video_id)
+    if not path.is_file():
+        report["nfos_missing"] += 1
+        return
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError):
+        report["nfos_missing"] += 1
+        return
+    current_title = str(root.findtext("title") or "").strip()
+    current_original = str(root.findtext("originaltitle") or "").strip()
+    # The sidecar still shows the provider caption when it matches the
+    # stored title; that caption becomes the original title.
+    provider_title = current_original or current_title
+    if _patch_nfo(path, display_title, provider_title,
+                  _catalog_uid_type(source), str(external_id or "")):
+        report["nfos_updated"] += 1
+
+
+def _process_candidate(conn, report: dict, apply: bool, row) -> None:
+    video_id, title, slug, performers_raw, source, external_id = row
+    catalog_title = _fetch_catalog_title(report, video_id, source, external_id)
+    if catalog_title is None:
+        return
+    if catalog_title == str(title or "").strip():
+        report["unchanged"] += 1
+        return
+    display_title = _display_title(catalog_title, performers_raw, slug)
+    report["changed"].append({
+        "video_id": video_id,
+        "old_title": title,
+        "catalogue_title": catalog_title,
+        "display_title": display_title,
+        "source": source,
+    })
+    if not apply:
+        return
+    with conn:
+        conn.execute("UPDATE videos SET title=%s WHERE id=%s", (catalog_title, video_id))
+    _update_sidecar(report, video_id, source, external_id, display_title)
+
+
+def _run_jellyfin_steps(report: dict) -> None:
+    try:
+        report["jellyfin_import"] = _push_to_jellyfin(
+            [entry["video_id"] for entry in report["changed"]])
+    except Exception as exc:
+        report["jellyfin_import"] = f"failed: {type(exc).__name__}"
+    try:
+        import sync as sync_module
+        report["jellyfin_refresh"] = (
+            "triggered" if sync_module.trigger_jellyfin_refresh() else "not_confirmed"
+        )
+    except Exception as exc:
+        report["jellyfin_refresh"] = f"failed: {type(exc).__name__}"
+
+
 def run(apply: bool = False, limit: int | None = None, sleep_sec: float = 0.5,
         skip_jellyfin: bool = False) -> dict:
     conn = db.connect((os.getenv("DATABASE_URL") or "").strip() or None)
@@ -183,73 +267,14 @@ def run(apply: bool = False, limit: int | None = None, sleep_sec: float = 0.5,
     try:
         rows = _load_candidates(conn, limit)
         report["videos"] = len(rows)
-        for index, (video_id, title, slug, performers_raw, source, external_id) in enumerate(rows):
+        for index, row in enumerate(rows):
             if index and sleep_sec > 0:
                 time.sleep(sleep_sec)
-            try:
-                scene = _fetch_scene(source, external_id)
-            except Exception as exc:
-                report["failed"].append({"video_id": video_id,
-                                         "error": type(exc).__name__})
-                continue
-            catalog_title = str(getattr(scene, "title", "") or "").strip()
-            if not catalog_title:
-                report["failed"].append({"video_id": video_id, "error": "no_catalogue_title"})
-                continue
-            if catalog_title == str(title or "").strip():
-                report["unchanged"] += 1
-                continue
-            performers = []
-            try:
-                performers = json.loads(performers_raw) if performers_raw else []
-            except (TypeError, ValueError):
-                performers = []
-            display_title = clean_display_title(
-                catalog_title, performers=performers, provider="telegram", slug=slug or "",
-            ) or catalog_title
-            report["changed"].append({
-                "video_id": video_id,
-                "old_title": title,
-                "catalogue_title": catalog_title,
-                "display_title": display_title,
-                "source": source,
-            })
-            if not apply:
-                continue
-            with conn:
-                conn.execute("UPDATE videos SET title=%s WHERE id=%s", (catalog_title, video_id))
-            path = _nfo_path(video_id)
-            if not path.is_file():
-                report["nfos_missing"] += 1
-                continue
-            try:
-                root = ET.parse(path).getroot()
-            except (OSError, ET.ParseError):
-                report["nfos_missing"] += 1
-                continue
-            current_title = str(root.findtext("title") or "").strip()
-            current_original = str(root.findtext("originaltitle") or "").strip()
-            # The sidecar still shows the provider caption when it matches the
-            # stored title; that caption becomes the original title.
-            provider_title = current_original or current_title
-            if _patch_nfo(path, display_title, provider_title,
-                          _catalog_uid_type(source), str(external_id or "")):
-                report["nfos_updated"] += 1
+            _process_candidate(conn, report, apply, row)
     finally:
         conn.close()
     if apply and report["changed"] and not skip_jellyfin:
-        try:
-            report["jellyfin_import"] = _push_to_jellyfin(
-                [entry["video_id"] for entry in report["changed"]])
-        except Exception as exc:
-            report["jellyfin_import"] = f"failed: {type(exc).__name__}"
-        try:
-            import sync as sync_module
-            report["jellyfin_refresh"] = (
-                "triggered" if sync_module.trigger_jellyfin_refresh() else "not_confirmed"
-            )
-        except Exception as exc:
-            report["jellyfin_refresh"] = f"failed: {type(exc).__name__}"
+        _run_jellyfin_steps(report)
     return report
 
 

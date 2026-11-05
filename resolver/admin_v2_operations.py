@@ -185,9 +185,20 @@ def _preview_response(admin, result):
     return {"ok": True, **{key: value for key, value in result.items() if key != "outcome"}}
 
 
-def build_router(admin):
-    router = APIRouter(route_class=V2ErrorRoute)
+def _execute_response(admin, result):
+    if result["outcome"] == "not_found":
+        return admin.JSONResponse({"error": "Operation plan not found."}, status_code=404)
+    if result["outcome"] == "expired":
+        return admin.JSONResponse({"error": "Operation preview expired. Create a new preview."}, status_code=409)
+    if result["outcome"] == "stale":
+        return admin.JSONResponse({"error": result["message"], "stale_ids": result["stale_ids"]}, status_code=409)
+    if result["outcome"] in {"conflict", "invalid"}:
+        return admin.JSONResponse({"error": result.get("message", "Operation plan cannot be executed.")}, status_code=409)
+    admin._wake_worker("jobs")
+    return admin.JSONResponse({"ok": True, **{key: value for key, value in result.items() if key != "outcome"}}, status_code=202)
 
+
+def _route_preview_operation(router, admin):
     @router.post("/api/v2/operations/preview")
     async def preview_operation(request: Request):
         denied = admin._write_denied(request)
@@ -207,6 +218,8 @@ def build_router(admin):
             return result.response
         return _preview_response(admin, result)
 
+
+def _route_execute_operation(router, admin):
     @router.post("/api/v2/operations/execute")
     async def execute_operation(request: Request):
         denied = admin._write_denied(request)
@@ -225,17 +238,10 @@ def build_router(admin):
         except Exception:
             logger.warning("Request failed in execute_operation", exc_info=True)
             return admin.JSONResponse({"error": "Could not execute the operation."}, status_code=503)
-        if result["outcome"] == "not_found":
-            return admin.JSONResponse({"error": "Operation plan not found."}, status_code=404)
-        if result["outcome"] == "expired":
-            return admin.JSONResponse({"error": "Operation preview expired. Create a new preview."}, status_code=409)
-        if result["outcome"] == "stale":
-            return admin.JSONResponse({"error": result["message"], "stale_ids": result["stale_ids"]}, status_code=409)
-        if result["outcome"] in {"conflict", "invalid"}:
-            return admin.JSONResponse({"error": result.get("message", "Operation plan cannot be executed.")}, status_code=409)
-        admin._wake_worker("jobs")
-        return admin.JSONResponse({"ok": True, **{key: value for key, value in result.items() if key != "outcome"}}, status_code=202)
+        return _execute_response(admin, result)
 
+
+def _route_get_operation(router, admin):
     @router.get("/api/v2/operations/{plan_id}")
     async def get_operation(request: Request, plan_id: str):
         if admin._admin_blocked(request):
@@ -250,6 +256,8 @@ def build_router(admin):
             return admin.JSONResponse({"error": "Operation plan not found."}, status_code=404)
         return {"ok": True, "operation": result}
 
+
+def _route_list_operation_history(router, admin):
     @router.get("/api/v2/operations")
     async def list_operation_history(
         request: Request,
@@ -266,4 +274,11 @@ def build_router(admin):
             return admin.JSONResponse({"error": "Could not load operation history."}, status_code=503)
         return {"ok": True, **result}
 
+
+def build_router(admin):
+    router = APIRouter(route_class=V2ErrorRoute)
+    _route_preview_operation(router, admin)
+    _route_execute_operation(router, admin)
+    _route_get_operation(router, admin)
+    _route_list_operation_history(router, admin)
     return router

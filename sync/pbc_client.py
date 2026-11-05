@@ -34,26 +34,25 @@ def page_title(name: str) -> str:
     return re.sub(r"\s+", "_", name.strip())
 
 
-def _decode_http_payload(payload) -> Optional[dict]:
-    """Best-effort conversion of an http_get result to parsed JSON."""
-    if payload is None:
+def _decode_bytes_payload(payload) -> Optional[dict]:
+    try:
+        return json.loads(bytes(payload).decode("utf-8", errors="ignore"))
+    except Exception:
+        logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
         return None
-    if isinstance(payload, dict):
-        return payload
-    if isinstance(payload, (bytes, bytearray)):
-        try:
-            return json.loads(bytes(payload).decode("utf-8", errors="ignore"))
-        except Exception:
-            logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
-            return None
-    if isinstance(payload, str):
-        try:
-            parsed = json.loads(payload)
-            return parsed if isinstance(parsed, dict) else None
-        except Exception:
-            logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
-            return None
-    # Response-like objects (httpx / requests / mocks).
+
+
+def _decode_str_payload(payload: str) -> Optional[dict]:
+    try:
+        parsed = json.loads(payload)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
+        return None
+
+
+def _decode_response_object(payload) -> Optional[dict]:
+    """Decode a response-like object (httpx / requests / mocks) via .json(), .content or .text."""
     try:
         if callable(getattr(payload, "json", None)):
             data = payload.json()
@@ -72,6 +71,70 @@ def _decode_http_payload(payload) -> Optional[dict]:
     return None
 
 
+def _decode_http_payload(payload) -> Optional[dict]:
+    """Best-effort conversion of an http_get result to parsed JSON."""
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload, (bytes, bytearray)):
+        return _decode_bytes_payload(payload)
+    if isinstance(payload, str):
+        return _decode_str_payload(payload)
+    # Response-like objects (httpx / requests / mocks).
+    return _decode_response_object(payload)
+
+
+def _api_get_json(url: str, http_get):
+    """GET a MediaWiki API URL and return the decoded (not yet validated) JSON value."""
+    if http_get is not None:
+        wait_for_host_slot(url)
+        try:
+            raw = http_get(url, timeout=TIMEOUT)
+        except TypeError:
+            raw = http_get(url)
+        return _decode_http_payload(raw)
+    headers = {"User-Agent": USER_AGENT}
+    if httpx is not None:
+        resp = request_with_host_limit(
+            httpx, "get", url, headers=headers, timeout=TIMEOUT,
+            follow_redirects=True,
+        )
+        if getattr(resp, "status_code", 200) != 200:
+            return None
+        return resp.json()
+    import urllib.request  # stdlib fallback, mirrors sync/sync.py
+
+    req = urllib.request.Request(url, headers=headers)
+    wait_for_host_slot(url)
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="ignore"))
+
+
+def _revision_wikitext(rev: dict) -> Optional[str]:
+    content = rev.get("content")
+    if not isinstance(content, str):
+        slots = rev.get("slots") or {}
+        main = (slots.get("main") or {}) if isinstance(slots, dict) else {}
+        content = main.get("content") if isinstance(main, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        return None
+    return content
+
+
+def _extract_wikitext(data: dict) -> Optional[str]:
+    pages = (data.get("query") or {}).get("pages") or []
+    if not pages:
+        return None
+    page = pages[0] if isinstance(pages[0], dict) else {}
+    if page.get("missing"):
+        return None
+    revisions = page.get("revisions") or []
+    if not revisions or not isinstance(revisions[0], dict):
+        return None
+    return _revision_wikitext(revisions[0])
+
+
 def fetch_wikitext(title, http_get=None, *, strict: bool = False) -> Optional[str]:
     """Fetch raw wikitext for a MediaWiki page title via the API.
 
@@ -83,50 +146,10 @@ def fetch_wikitext(title, http_get=None, *, strict: bool = False) -> Optional[st
         return None
     url = API_URL + quote(title.strip(), safe="")
     try:
-        if http_get is not None:
-            wait_for_host_slot(url)
-            try:
-                raw = http_get(url, timeout=TIMEOUT)
-            except TypeError:
-                raw = http_get(url)
-            data = _decode_http_payload(raw)
-        else:
-            headers = {"User-Agent": USER_AGENT}
-            if httpx is not None:
-                resp = request_with_host_limit(
-                    httpx, "get", url, headers=headers, timeout=TIMEOUT,
-                    follow_redirects=True,
-                )
-                if getattr(resp, "status_code", 200) != 200:
-                    return None
-                data = resp.json()
-            else:  # stdlib fallback, mirrors sync/sync.py
-                import urllib.request
-
-                req = urllib.request.Request(url, headers=headers)
-                wait_for_host_slot(url)
-                with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-                    data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        data = _api_get_json(url, http_get)
         if not isinstance(data, dict):
             return None
-        pages = (data.get("query") or {}).get("pages") or []
-        if not pages:
-            return None
-        page = pages[0] if isinstance(pages[0], dict) else {}
-        if page.get("missing"):
-            return None
-        revisions = page.get("revisions") or []
-        if not revisions or not isinstance(revisions[0], dict):
-            return None
-        rev = revisions[0]
-        content = rev.get("content")
-        if not isinstance(content, str):
-            slots = rev.get("slots") or {}
-            main = (slots.get("main") or {}) if isinstance(slots, dict) else {}
-            content = main.get("content") if isinstance(main, dict) else None
-        if not isinstance(content, str) or not content.strip():
-            return None
-        return content
+        return _extract_wikitext(data)
     except Exception as e:
         logger.debug("fetch_wikitext(%r) failed: %s", title, e)
         if strict:
@@ -150,30 +173,7 @@ def search_page_title(name: str, http_get=None, *, strict: bool = False) -> Opti
         return None
     url = SEARCH_API_URL + quote(name.strip(), safe="")
     try:
-        if http_get is not None:
-            wait_for_host_slot(url)
-            try:
-                raw = http_get(url, timeout=TIMEOUT)
-            except TypeError:
-                raw = http_get(url)
-            data = _decode_http_payload(raw)
-        else:
-            headers = {"User-Agent": USER_AGENT}
-            if httpx is not None:
-                resp = request_with_host_limit(
-                    httpx, "get", url, headers=headers, timeout=TIMEOUT,
-                    follow_redirects=True,
-                )
-                if getattr(resp, "status_code", 200) != 200:
-                    return None
-                data = resp.json()
-            else:
-                import urllib.request
-
-                req = urllib.request.Request(url, headers=headers)
-                wait_for_host_slot(url)
-                with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-                    data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        data = _api_get_json(url, http_get)
         if not isinstance(data, dict):
             return None
         search_results = (data.get("query") or {}).get("search") or []

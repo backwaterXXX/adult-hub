@@ -104,99 +104,142 @@ def known_bumper_hashes() -> Set[int]:
     return _get_cached_bumper_hashes()
 
 
-def _valid_thumbnail_bytes(data: bytes, url: str, bumper_hashes: Optional[Set[int]] = None,
-                           minimum_size: Optional[Tuple[int, int]] = None) -> bool:
-    """Validate that image payload looks like a real preview and is not blank/black or a known bumper."""
-    if not isinstance(data, (bytes, bytearray)):
-        return False
-    is_tg = urlparse(url).path == "/admin/api/thumb"
-    if len(data) <= 1000:
-        # Telegram can return a tiny JPEG preview (observed: 644 bytes).
-        if not (is_tg and len(data) >= 100
-                and data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")):
-            return False
-    if minimum_size is not None:
-        try:
-            from io import BytesIO
-            from PIL import Image
-            with Image.open(BytesIO(data)) as image:
-                minimum_short, minimum_long = minimum_size
-                if min(image.size) < minimum_short or max(image.size) < minimum_long:
-                    return False
-        except Exception:
-            logger.debug("Ignored exception in _valid_thumbnail_bytes", exc_info=True)
-            return False
+def _tiny_telegram_preview_ok(data: bytes, is_tg: bool) -> bool:
+    # Telegram can return a tiny JPEG preview (observed: 644 bytes).
+    return (is_tg and len(data) >= 100
+            and data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"))
+
+
+def _is_too_small_image(data: bytes, minimum_size: Tuple[int, int]) -> bool:
+    """True when the image is below the minimum size, or cannot be decoded."""
+    try:
+        from io import BytesIO
+        from PIL import Image
+        with Image.open(BytesIO(data)) as image:
+            minimum_short, minimum_long = minimum_size
+            if min(image.size) < minimum_short or max(image.size) < minimum_long:
+                return True
+    except Exception:
+        logger.debug("Ignored exception in _valid_thumbnail_bytes", exc_info=True)
+        return True
+    return False
+
+
+def _is_blank_or_bumper_image(data: bytes, bumper_hashes: Optional[Set[int]]) -> bool:
+    """True for black frames and known studio bumpers/logos."""
     try:
         try:
             from common.image_utils import compute_dhash, is_black_image, is_bumper_hash
         except ImportError:
             from sync.image_utils import compute_dhash, is_black_image, is_bumper_hash  # fallback
         if is_black_image(data):
-            return False
+            return True
 
         known_bumpers = bumper_hashes if bumper_hashes is not None else _get_cached_bumper_hashes()
         if known_bumpers:
             try:
                 dh = compute_dhash(data)
                 if is_bumper_hash(dh, known_bumpers, max_distance=4):
-                    return False
+                    return True
             except Exception:
                 logger.debug("Ignored exception in _valid_thumbnail_bytes", exc_info=True)
     except Exception:
         logger.debug("Ignored exception in _valid_thumbnail_bytes", exc_info=True)
+    return False
+
+
+def _valid_thumbnail_bytes(data: bytes, url: str, bumper_hashes: Optional[Set[int]] = None,
+                           minimum_size: Optional[Tuple[int, int]] = None) -> bool:
+    """Validate that image payload looks like a real preview and is not blank/black or a known bumper."""
+    if not isinstance(data, (bytes, bytearray)):
+        return False
+    is_tg = urlparse(url).path == "/admin/api/thumb"
+    if len(data) <= 1000 and not _tiny_telegram_preview_ok(data, is_tg):
+        return False
+    if minimum_size is not None and _is_too_small_image(data, minimum_size):
+        return False
+    if _is_blank_or_bumper_image(data, bumper_hashes):
+        return False
     return True
+
+
+def _reuse_existing_thumbnail(dest_path: Path, url: str) -> bool:
+    """Return True when dest_path already holds a valid thumbnail (clearing any fail marker)."""
+    if not dest_path.exists():
+        return False
+    try:
+        existing = dest_path.read_bytes()
+        if _valid_thumbnail_bytes(existing, url):
+            try:
+                _thumb_fail_marker(dest_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def _recently_failed(dest_path: Path, svc: ThumbnailServices) -> bool:
+    """Negative cache: True while a recent permanent-failure marker exists."""
+    try:
+        marker = _thumb_fail_marker(dest_path)
+        if marker.exists() and (svc.time.time() - marker.stat().st_mtime) < svc.fail_ttl_seconds:
+            svc.logger.debug(f"Skipping thumbnail retry (recent permanent failure): {dest_path.name}")
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def _persist_thumbnail(tmp_path: Path, dest_path: Path, data: bytes) -> None:
+    with open(tmp_path, "wb") as f:
+        f.write(data)
+    os.replace(tmp_path, dest_path)
+    try:
+        _thumb_fail_marker(dest_path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _log_download_failure(svc: ThumbnailServices, url: str, dest_path: Path, exc: Exception) -> None:
+    if "404" in str(exc) or "Not Found" in str(exc):
+        try:
+            _thumb_fail_marker(dest_path).touch(exist_ok=True)
+        except OSError:
+            pass
+        svc.logger.warning(f"Thumbnail permanently unavailable (404, will skip for 7d): {url} -> {dest_path.name}")
+    else:
+        svc.logger.warning(f"Could not download thumb {url} -> {dest_path.name}: {exc}")
+
+
+def _remove_partial_download(tmp_path: Path) -> None:
+    if tmp_path.exists():
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
 
 
 def download_image(url: str, dest_path: Path, *,
                    services: Optional[ThumbnailServices] = None) -> None:
     """Download image to dest_path with negative caching on 404 permanent failures."""
     svc = _resolve_default_services(services)
-    if dest_path.exists():
-        try:
-            existing = dest_path.read_bytes()
-            if _valid_thumbnail_bytes(existing, url):
-                try:
-                    _thumb_fail_marker(dest_path).unlink(missing_ok=True)
-                except OSError:
-                    pass
-                return
-        except OSError:
-            pass
-    # Negative cache: skip retry while a recent permanent-failure marker exists.
-    try:
-        marker = _thumb_fail_marker(dest_path)
-        if marker.exists() and (svc.time.time() - marker.stat().st_mtime) < svc.fail_ttl_seconds:
-            svc.logger.debug(f"Skipping thumbnail retry (recent permanent failure): {dest_path.name}")
-            return
-    except OSError:
-        pass
+    if _reuse_existing_thumbnail(dest_path, url):
+        return
+    if _recently_failed(dest_path, svc):
+        return
     tmp_path = dest_path.with_suffix(".jpg.tmp")
     try:
         data = svc.http_get(url, timeout=15.0)
         if _valid_thumbnail_bytes(data, url):
-            with open(tmp_path, "wb") as f:
-                f.write(data)
-            os.replace(tmp_path, dest_path)
-            try:
-                _thumb_fail_marker(dest_path).unlink(missing_ok=True)
-            except OSError:
-                pass
+            _persist_thumbnail(tmp_path, dest_path, data)
         else:
             svc.logger.warning(f"Downloaded thumbnail too small ({len(data)} bytes) for {url}")
     except Exception as e:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
-        if "404" in str(e) or "Not Found" in str(e):
-            try:
-                _thumb_fail_marker(dest_path).touch(exist_ok=True)
-            except OSError:
-                pass
-            svc.logger.warning(f"Thumbnail permanently unavailable (404, will skip for 7d): {url} -> {dest_path.name}")
-        else:
-            svc.logger.warning(f"Could not download thumb {url} -> {dest_path.name}: {e}")
+        _remove_partial_download(tmp_path)
+        _log_download_failure(svc, url, dest_path, e)
+
 
 
 def download_image_if_missing(url: str, dest_path: Path, *,

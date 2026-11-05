@@ -253,6 +253,59 @@ class ClientPhashStatusTests(unittest.TestCase):
         self.assertTrue(connection.closed)
 
 
+class _ConcurrencyGate:
+    def __init__(self):
+        self.first_has_video_lock = threading.Event()
+        self.release_first = threading.Event()
+        self.second_query_attempted = threading.Event()
+        self.second_query_returned = threading.Event()
+
+
+class _PausingConnection:
+    def __init__(self, inner, gate, pause_after_video_lock=False, track_second=False):
+        self.inner = inner
+        self.gate = gate
+        self.pause_after_video_lock = pause_after_video_lock
+        self.track_second = track_second
+
+    def execute(self, statement, params=()):
+        is_video_lock = "SELECT provider FROM videos" in statement
+        if self.track_second and is_video_lock:
+            self.gate.second_query_attempted.set()
+        result = self.inner.execute(statement, params)
+        if self.track_second and is_video_lock:
+            self.gate.second_query_returned.set()
+        if self.pause_after_video_lock and is_video_lock:
+            self.gate.first_has_video_lock.set()
+            if not self.gate.release_first.wait(timeout=10):
+                raise TimeoutError("test did not release the first row lock")
+        return result
+
+    def commit(self):
+        return self.inner.commit()
+
+    def rollback(self):
+        return self.inner.rollback()
+
+    def close(self):
+        return self.inner.close()
+
+
+def _pausing_connect(real_connect, gate):
+    connect_lock = threading.Lock()
+    connect_count = 0
+
+    def connect(url=None):
+        nonlocal connect_count
+        with connect_lock:
+            connect_count += 1
+            number = connect_count
+        return _PausingConnection(real_connect(url), gate, pause_after_video_lock=(number == 1),
+                                  track_second=(number == 2))
+
+    return connect
+
+
 class ClientPhashConcurrentStoreTests(PgTestCase):
     def test_first_concurrent_submissions_cannot_replace_each_others_hash(self):
         video_id = "telegram:-100123:42:99"
@@ -260,66 +313,25 @@ class ClientPhashConcurrentStoreTests(PgTestCase):
         self.conn.commit()
         admin = type("Admin", (), {"HUB_DB_URL": self.db_url})()
 
-        first_has_video_lock = threading.Event()
-        release_first = threading.Event()
-        second_query_attempted = threading.Event()
-        second_query_returned = threading.Event()
-        connect_lock = threading.Lock()
-        connect_count = 0
+        gate = _ConcurrencyGate()
         real_connect = phash_api.db.connect
-
-        class PausingConnection:
-            def __init__(self, inner, pause_after_video_lock=False, track_second=False):
-                self.inner = inner
-                self.pause_after_video_lock = pause_after_video_lock
-                self.track_second = track_second
-
-            def execute(self, statement, params=()):
-                is_video_lock = "SELECT provider FROM videos" in statement
-                if self.track_second and is_video_lock:
-                    second_query_attempted.set()
-                result = self.inner.execute(statement, params)
-                if self.track_second and is_video_lock:
-                    second_query_returned.set()
-                if self.pause_after_video_lock and is_video_lock:
-                    first_has_video_lock.set()
-                    if not release_first.wait(timeout=10):
-                        raise TimeoutError("test did not release the first row lock")
-                return result
-
-            def commit(self):
-                return self.inner.commit()
-
-            def rollback(self):
-                return self.inner.rollback()
-
-            def close(self):
-                return self.inner.close()
-
-        def connect(url=None):
-            nonlocal connect_count
-            with connect_lock:
-                connect_count += 1
-                number = connect_count
-            return PausingConnection(real_connect(url), pause_after_video_lock=(number == 1),
-                                     track_second=(number == 2))
 
         def save(fingerprint):
             return phash_api._store(
                 admin, video_id, fingerprint, "android-metadata-retriever-v1", "user-id",
             )
 
-        with patch.object(phash_api.db, "connect", side_effect=connect):
+        with patch.object(phash_api.db, "connect", side_effect=_pausing_connect(real_connect, gate)):
             with ThreadPoolExecutor(max_workers=2) as pool:
                 first = pool.submit(save, "0123456789abcdef")
-                self.assertTrue(first_has_video_lock.wait(timeout=10))
+                self.assertTrue(gate.first_has_video_lock.wait(timeout=10))
                 second = pool.submit(save, "fedcba9876543210")
                 try:
-                    self.assertTrue(second_query_attempted.wait(timeout=10))
-                    self.assertFalse(second_query_returned.wait(timeout=0.2),
+                    self.assertTrue(gate.second_query_attempted.wait(timeout=10))
+                    self.assertFalse(gate.second_query_returned.wait(timeout=0.2),
                                      "second submission should wait for the per-video lock")
                 finally:
-                    release_first.set()
+                    gate.release_first.set()
                 self.assertEqual(first.result(timeout=10), "saved")
                 self.assertEqual(second.result(timeout=10), "conflict")
 

@@ -97,93 +97,102 @@ def _committed_result_without_rerun(conn, job_id, action, payload, services):
     return None
 
 
+def _catalog_result(run, result):
+    run.catalog_committed = True
+    return result
+
+
+def _run_catalog_full_audit(conn) -> dict:
+    from common.job_queue import enqueue_jobs_batch
+    batch_id = uuid.uuid4().hex
+    audit_ids = enqueue_jobs_batch(getattr(conn, '_url', None), [
+        ('metadata_quality_audit', {'audit_batch_id': batch_id}),
+        ('consistency_audit', {'mode': 'file_consistency', 'audit_batch_id': batch_id, 'auto_repair': True}),
+    ])
+    return {'local_state': 'audit_queued', 'audit_batch_id': batch_id,
+            'audit_job_ids': audit_ids}
+
+
+def _run_external_action(action, conn, job_id, payload, media_dir, services, run) -> dict:
+    result, committed = _external_handlers.execute_external_operation(
+        action, conn, job_id, payload, media_dir, services
+    )
+    run.catalog_committed = committed
+    return result
+
+
+def _run_dismiss(conn, job_id, payload, now) -> dict:
+    _core._record_job_progress(conn, job_id, 'saving_catalog')
+    left, right = sorted((payload['left_id'], payload['right_id']))
+    with conn:
+        existing = conn.execute('SELECT active FROM video_duplicate_dismissals WHERE left_id=%s AND right_id=%s', (left, right)).fetchone()
+        if existing and existing[0]:
+            raise ValueError('This pair is already dismissed.')
+        conn.execute('INSERT INTO video_duplicate_dismissals (left_id,right_id,active,operation_id,created_at) VALUES (%s,%s,1,%s,%s) ON CONFLICT(left_id,right_id) DO UPDATE SET active=1, operation_id=excluded.operation_id, created_at=excluded.created_at', (left, right, job_id, now))
+    result = {'operation_id': job_id, 'local_state': 'dismissed'}
+    return result
+
+
+def _run_undismiss(conn, job_id, payload) -> dict:
+    _core._record_job_progress(conn, job_id, 'saving_catalog')
+    with conn:
+        conn.execute('UPDATE video_duplicate_dismissals SET active=0 WHERE operation_id=%s', (payload['operation_id'],))
+    result = {'operation_id': payload['operation_id'], 'local_state': 'dismissal undone'}
+    return result
+
+
 def _execute_action(conn, job_id, action, payload, media_dir, services, quarantine_root, now, run) -> dict:
     """Run the handler for one claimed job and return its result. Sets run.catalog_committed after catalog writes commit."""
-    if action == 'catalog_full_audit':
-        from common.job_queue import enqueue_jobs_batch
-        batch_id = uuid.uuid4().hex
-        audit_ids = enqueue_jobs_batch(getattr(conn, '_url', None), [
-            ('metadata_quality_audit', {'audit_batch_id': batch_id}),
-            ('consistency_audit', {'mode': 'file_consistency', 'audit_batch_id': batch_id, 'auto_repair': True}),
-        ])
-        return {'local_state': 'audit_queued', 'audit_batch_id': batch_id,
-                'audit_job_ids': audit_ids}
-    if action == 'metadata_update':
-        result = _core._metadata_update(conn, job_id, payload, media_dir, services)
-        run.catalog_committed = True
-        return result
-    if action == 'performer_refresh':
-        result = _core._performer_refresh(conn, job_id, payload, media_dir, services)
-        run.catalog_committed = True
-        return result
-    if action == 'availability_check':
-        result = _core._availability_check(conn, job_id, payload, services)
-        run.catalog_committed = True
-        return result
-    if action == 'consistency_audit':
-        result = _core._consistency_audit(conn, job_id, media_dir, services, payload)
-        run.catalog_committed = True
-        return result
-    if action == 'metadata_quality_audit':
-        result = _core._metadata_quality_audit(conn, job_id, payload)
-        run.catalog_committed = True
-        return result
-    if action == 'audit_repair_nfo':
-        result = _core._audit_repair_nfo(conn, job_id, payload, media_dir, services)
-        run.catalog_committed = True
-        return result
-    if action == 'audit_import_refresh':
-        result = _core._audit_import_refresh(conn, job_id, payload, services)
-        run.catalog_committed = True
-        return result
-    if action == 'orphan_file_operation':
-        result = _core._orphan_file_operation(conn, job_id, payload, media_dir, quarantine_root, services, run.moved)
-        run.catalog_committed = True
-        return result
-    if (
-        action == 'backup_create'
-        or action == 'backup_restore_test'
-        or action == 'metadata_backfill'
-        or action == 'duplicate_reconcile'
-        or action == 'telegram_fingerprint_scan'
-        or action == 'artwork_download'
-        or action == 'artwork_generate'
-        or action == 'collections_refresh'
-        or action == 'performer_merge'
-        or action == 'history_cleanup'
-        or action == 'performer_catalog'
-        or action == 'scene_backfill'
-        or action == 'telegram_title_cleanup'
-        or action == 'source_remove'
-        or action == 'source_readd'
-    ):
-        result, committed = _external_handlers.execute_external_operation(
-            action, conn, job_id, payload, media_dir, services
-        )
-        run.catalog_committed = committed
-        return result
-    if action == 'dismiss':
-        _core._record_job_progress(conn, job_id, 'saving_catalog')
-        left, right = sorted((payload['left_id'], payload['right_id']))
-        with conn:
-            existing = conn.execute('SELECT active FROM video_duplicate_dismissals WHERE left_id=%s AND right_id=%s', (left, right)).fetchone()
-            if existing and existing[0]:
-                raise ValueError('This pair is already dismissed.')
-            conn.execute('INSERT INTO video_duplicate_dismissals (left_id,right_id,active,operation_id,created_at) VALUES (%s,%s,1,%s,%s) ON CONFLICT(left_id,right_id) DO UPDATE SET active=1, operation_id=excluded.operation_id, created_at=excluded.created_at', (left, right, job_id, now))
-        result = {'operation_id': job_id, 'local_state': 'dismissed'}
-        return result
-    if action == 'undismiss':
-        _core._record_job_progress(conn, job_id, 'saving_catalog')
-        with conn:
-            conn.execute('UPDATE video_duplicate_dismissals SET active=0 WHERE operation_id=%s', (payload['operation_id'],))
-        result = {'operation_id': payload['operation_id'], 'local_state': 'dismissal undone'}
-        return result
-    if action == 'hide':
-        return _run_hide(conn, job_id, payload, media_dir, services, quarantine_root, now, run)
-    if action == 'quarantine':
-        return _run_quarantine(conn, job_id, payload, media_dir, services, quarantine_root, now, run)
-    if action == 'undo':
-        return _run_undo(conn, job_id, payload, media_dir, services, quarantine_root, now, run)
+    # Each entry pairs an action match with its runner. The first matching entry runs.
+    dispatch = (
+        (action == 'catalog_full_audit',
+         lambda: _run_catalog_full_audit(conn)),
+        (action == 'metadata_update',
+         lambda: _catalog_result(run, _core._metadata_update(conn, job_id, payload, media_dir, services))),
+        (action == 'performer_refresh',
+         lambda: _catalog_result(run, _core._performer_refresh(conn, job_id, payload, media_dir, services))),
+        (action == 'availability_check',
+         lambda: _catalog_result(run, _core._availability_check(conn, job_id, payload, services))),
+        (action == 'consistency_audit',
+         lambda: _catalog_result(run, _core._consistency_audit(conn, job_id, media_dir, services, payload))),
+        (action == 'metadata_quality_audit',
+         lambda: _catalog_result(run, _core._metadata_quality_audit(conn, job_id, payload))),
+        (action == 'audit_repair_nfo',
+         lambda: _catalog_result(run, _core._audit_repair_nfo(conn, job_id, payload, media_dir, services))),
+        (action == 'audit_import_refresh',
+         lambda: _catalog_result(run, _core._audit_import_refresh(conn, job_id, payload, services))),
+        (action == 'orphan_file_operation',
+         lambda: _catalog_result(run, _core._orphan_file_operation(conn, job_id, payload, media_dir, quarantine_root, services, run.moved))),
+        (action == 'backup_create'
+         or action == 'backup_restore_test'
+         or action == 'metadata_backfill'
+         or action == 'duplicate_reconcile'
+         or action == 'telegram_fingerprint_scan'
+         or action == 'artwork_download'
+         or action == 'artwork_generate'
+         or action == 'collections_refresh'
+         or action == 'performer_merge'
+         or action == 'history_cleanup'
+         or action == 'performer_catalog'
+         or action == 'scene_backfill'
+         or action == 'telegram_title_cleanup'
+         or action == 'source_remove'
+         or action == 'source_readd',
+         lambda: _run_external_action(action, conn, job_id, payload, media_dir, services, run)),
+        (action == 'dismiss',
+         lambda: _run_dismiss(conn, job_id, payload, now)),
+        (action == 'undismiss',
+         lambda: _run_undismiss(conn, job_id, payload)),
+        (action == 'hide',
+         lambda: _run_hide(conn, job_id, payload, media_dir, services, quarantine_root, now, run)),
+        (action == 'quarantine',
+         lambda: _run_quarantine(conn, job_id, payload, media_dir, services, quarantine_root, now, run)),
+        (action == 'undo',
+         lambda: _run_undo(conn, job_id, payload, media_dir, services, quarantine_root, now, run)),
+    )
+    for matched, run_action in dispatch:
+        if matched:
+            return run_action()
     raise ValueError('Unsupported job type.')
 
 
@@ -228,8 +237,8 @@ def _performer_priority(video):
             else 70 if source else int((resolution or {}).get('priority') or 10))
 
 
-def _move_hidden_files(conn, job_id, snapshots, services, run) -> None:
-    """Move each hidden item's library files into quarantine, recording moves for compensation."""
+def _move_snapshot_files(conn, job_id, snapshots, services, run, missing_strm_message: str) -> None:
+    """Move each snapshot's library files into quarantine, recording moves for compensation."""
     file_total = sum((len(snapshot['files']) for snapshot in snapshots))
     moved_count = 0
     _core._record_job_progress(conn, job_id, 'moving_files', completed=0, total=file_total)
@@ -249,207 +258,270 @@ def _move_hidden_files(conn, job_id, snapshots, services, run) -> None:
                 run.moved.append((src, dst))
             elif not dst.exists():
                 if src.suffix == '.strm':
-                    raise FileNotFoundError('Missing STRM file for loser item.')
+                    raise FileNotFoundError(missing_strm_message)
             moved_count += 1
             _core._record_job_progress(conn, job_id, 'moving_files', completed=moved_count, total=file_total)
 
 
-def _merge_keeper_metadata(conn, keeper, job_id, payload, snapshots, media_dir, services, now) -> None:
-    """Attach losers as sources of the keeper, merge their metadata into it, and record decisions."""
+def _move_hidden_files(conn, job_id, snapshots, services, run) -> None:
+    """Move each hidden item's library files into quarantine, recording moves for compensation."""
+    _move_snapshot_files(conn, job_id, snapshots, services, run, 'Missing STRM file for loser item.')
+
+
+class _KeeperMerge:
+    """Keeper row and metadata candidates gathered while losers are merged into it."""
+
+    def __init__(self, conn, keeper: str) -> None:
+        self.k_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper,)).fetchone()
+        self.k_cols = _core.db.table_columns(conn, 'videos')
+        self.k_vid = dict(zip(self.k_cols, self.k_row)) if self.k_row else {}
+        self.override_row = conn.execute(
+            'SELECT fields,updated_at FROM video_metadata_overrides WHERE video_id=%s',
+            (keeper,),
+        ).fetchone()
+        self.override_fields = (_core.json.loads(self.override_row[0])
+                                if self.override_row and isinstance(self.override_row[0], str)
+                                else dict(self.override_row[0] or {}) if self.override_row else {})
+        self.before = {
+            'video': dict(self.k_vid),
+            'overrides': self.override_fields,
+            'override_updated_at': _epoch(self.override_row[1]) if self.override_row else None,
+        }
+        self.merged_perfs = set(_parse_list_field(self.k_vid.get('performers')))
+        self.merged_cats = set(_parse_list_field(self.k_vid.get('categories')))
+        self.merged_tags = set(_parse_list_field(self.k_vid.get('tags')))
+        self.k_studio = (self.k_vid.get('studio') or '').strip()
+        self.metadata_fields = ('title', 'plot', 'studio', 'date_released')
+        self.metadata_candidates = {field: [] for field in self.metadata_fields}
+        self.list_override_candidates = {'performers': [], 'tags': []}
+        self.performer_candidates = []
+        self.merged_override_fields = None
+        keeper_performers = _parse_list_field(self.k_vid.get('performers'))
+        if keeper_performers:
+            self.performer_candidates.append((_performer_priority(self.k_vid), len(keeper_performers),
+                                              True, keeper_performers))
+        self.override_time = _epoch(self.override_row[1]) if self.override_row else 0.0
+        for field in self.list_override_candidates:
+            if field in self.override_fields:
+                self.list_override_candidates[field].append((self.override_time, True,
+                                                             self.override_fields[field]))
+        for field in self.metadata_fields:
+            value = self.k_vid.get(field)
+            if value not in (None, ''):
+                self.metadata_candidates[field].append((10, 0.0, True, str(value)))
+
+
+def _attach_keeper_source(conn, keeper: str, now) -> None:
     keeper_channel = keeper.split(':')[1] if ':' in keeper and len(keeper.split(':')) >= 2 else ''
     conn.execute('INSERT INTO video_sources\n                        (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at)\n                        VALUES (%s, %s, %s, %s, %s, %s, 1, 1, %s)\n                        ON CONFLICT (source_id) DO NOTHING', (keeper, keeper, 'telegram', keeper, f"https://t.me/c/{(keeper_channel[4:] if keeper_channel.startswith('-100') else keeper_channel.lstrip('-'))}" if keeper_channel else '', keeper_channel, now))
-    k_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper,)).fetchone()
-    k_cols = _core.db.table_columns(conn, 'videos')
-    k_vid = dict(zip(k_cols, k_row)) if k_row else {}
-    keeper_override_row = conn.execute(
-        'SELECT fields,updated_at FROM video_metadata_overrides WHERE video_id=%s',
-        (keeper,),
-    ).fetchone()
-    keeper_override_fields = (_core.json.loads(keeper_override_row[0])
-                              if keeper_override_row and isinstance(keeper_override_row[0], str)
-                              else dict(keeper_override_row[0] or {}) if keeper_override_row else {})
-    keeper_before = {
-        'video': dict(k_vid),
-        'overrides': keeper_override_fields,
-        'override_updated_at': _epoch(keeper_override_row[1]) if keeper_override_row else None,
-    }
 
-    merged_perfs = set(_parse_list_field(k_vid.get('performers')))
-    merged_cats = set(_parse_list_field(k_vid.get('categories')))
-    merged_tags = set(_parse_list_field(k_vid.get('tags')))
-    k_studio = (k_vid.get('studio') or '').strip()
-    metadata_fields = ('title', 'plot', 'studio', 'date_released')
-    metadata_candidates = {field: [] for field in metadata_fields}
-    list_override_candidates = {'performers': [], 'tags': []}
-    performer_candidates = []
-    keeper_performers = _parse_list_field(k_vid.get('performers'))
-    if keeper_performers:
-        performer_candidates.append((_performer_priority(k_vid), len(keeper_performers),
-                                     True, keeper_performers))
-    keeper_override_time = _epoch(keeper_override_row[1]) if keeper_override_row else 0.0
-    for field in list_override_candidates:
-        if field in keeper_override_fields:
-            list_override_candidates[field].append((keeper_override_time, True,
-                                                    keeper_override_fields[field]))
-    for field in metadata_fields:
-        value = k_vid.get(field)
+
+def _collect_loser_candidates(merge: _KeeperMerge, l_vid: dict, loser_overrides: dict,
+                              loser_override_time: float) -> None:
+    source_priority = _performer_priority(l_vid)
+    for field in merge.metadata_fields:
+        value = l_vid.get(field)
         if value not in (None, ''):
-            metadata_candidates[field].append((10, 0.0, True, str(value)))
+            merge.metadata_candidates[field].append((source_priority, 0.0, False, str(value)))
+    for field, value in loser_overrides.items():
+        if field in merge.metadata_candidates:
+            merge.metadata_candidates[field].append((1000, loser_override_time, False, str(value)))
+        elif field in merge.list_override_candidates:
+            merge.list_override_candidates[field].append((loser_override_time, False, value))
+    loser_performers = _parse_list_field(l_vid.get('performers'))
+    if loser_performers:
+        merge.performer_candidates.append((_performer_priority(l_vid), len(loser_performers),
+                                           False, loser_performers))
+    for field, value in merge.override_fields.items():
+        if field in merge.metadata_candidates:
+            merge.metadata_candidates[field].append((1000, merge.override_time, True, str(value)))
+
+
+def _copy_scene_match_and_thumbnail(k_vid: dict, l_vid: dict) -> None:
+    if (not k_vid.get('scene_match_external_id') and l_vid.get('scene_match_external_id')):
+        k_vid['scene_match_source'] = l_vid.get('scene_match_source')
+        k_vid['scene_match_external_id'] = l_vid.get('scene_match_external_id')
+        k_vid['scene_match_url'] = l_vid.get('scene_match_url')
+        k_vid['scene_match_confidence'] = l_vid.get('scene_match_confidence')
+    if not k_vid.get('thumbnail') and l_vid.get('thumbnail'):
+        k_vid['thumbnail'] = l_vid.get('thumbnail')
+
+
+def _attach_loser_source(conn, keeper: str, loser: str, now) -> None:
+    l_channel = loser.split(':')[1] if ':' in loser and len(loser.split(':')) >= 2 else ''
+    conn.execute('INSERT INTO video_sources\n                            (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at)\n                            VALUES (%s, %s, %s, %s, %s, %s, 2, 1, %s)\n                            ON CONFLICT (source_id) DO UPDATE SET\n                                video_id=EXCLUDED.video_id, provider=EXCLUDED.provider,\n                                provider_ref=EXCLUDED.provider_ref, source_url=EXCLUDED.source_url,\n                                channel_id=EXCLUDED.channel_id, priority=EXCLUDED.priority,\n                                is_active=EXCLUDED.is_active, created_at=EXCLUDED.created_at', (keeper, loser, 'telegram', loser, f"https://t.me/c/{(l_channel[4:] if l_channel.startswith('-100') else l_channel.lstrip('-'))}" if l_channel else '', l_channel, now))
+
+
+def _merge_loser_sets(merge: _KeeperMerge, l_vid: dict) -> None:
+    merge.merged_perfs.update(_parse_list_field(l_vid.get('performers')))
+    merge.merged_cats.update(_parse_list_field(l_vid.get('categories')))
+    merge.merged_tags.update(_parse_list_field(l_vid.get('tags')))
+    l_studio = (l_vid.get('studio') or '').strip()
+    if l_studio and l_studio != merge.k_studio:
+        merge.merged_tags.add(l_studio)
+    if not merge.k_studio and l_studio:
+        merge.k_studio = l_studio
+
+
+def _pick_metadata_winners(merge: _KeeperMerge) -> None:
+    merge.merged_override_fields = dict(merge.override_fields)
+    for field, candidates in merge.metadata_candidates.items():
+        if not candidates:
+            continue
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        winner = candidates[0][3]
+        if field in {'title', 'plot', 'studio', 'date_released'}:
+            merge.k_vid[field] = winner
+        if candidates[0][0] >= 1000:
+            merge.merged_override_fields[field] = winner
+    merge.k_studio = merge.k_vid.get('studio') or ''
+
+
+def _retire_loser_rows(conn, keeper: str, loser: str, job_id, snapshot: dict, now, payload: dict) -> None:
+    conn.execute('DELETE FROM video_categories WHERE video_id=%s', (loser,))
+    conn.execute('DELETE FROM synced_files WHERE video_id=%s', (loser,))
+    conn.execute('DELETE FROM videos WHERE id=%s', (loser,))
+    conn.execute("INSERT INTO video_duplicate_decisions (loser_id,keeper_id,operation_id,state,created_at,snapshot,rules_version) VALUES (%s,%s,%s,'active',%s,%s,%s)", (loser, keeper, job_id, now, _core.json.dumps(snapshot, ensure_ascii=False), payload.get('rules_version')))
+
+
+def _merge_loser(conn, merge: _KeeperMerge, keeper: str, job_id, payload: dict, snapshot: dict, now) -> None:
+    loser = snapshot['video']['id']
+    l_vid = snapshot.get('video') or {}
+    snapshot['keeper_before'] = merge.before
+    if payload.get('automatic'):
+        snapshot['automatic'] = True
+        snapshot['duplicate_evidence'] = str(payload.get('evidence') or '')[:40]
+    loser_override_row = conn.execute(
+        'SELECT fields,updated_at,revision FROM video_metadata_overrides WHERE video_id=%s',
+        (loser,),
+    ).fetchone()
+    loser_overrides = (_core.json.loads(loser_override_row[0])
+                       if loser_override_row and isinstance(loser_override_row[0], str)
+                       else dict(loser_override_row[0] or {}) if loser_override_row else {})
+    if loser_override_row:
+        snapshot['metadata_overrides'] = {
+            'fields': loser_overrides,
+            'updated_at': _iso_timestamp(loser_override_row[1]),
+            'revision': int(loser_override_row[2]),
+        }
+    loser_override_time = _epoch(loser_override_row[1]) if loser_override_row else 0.0
+    _collect_loser_candidates(merge, l_vid, loser_overrides, loser_override_time)
+    _copy_scene_match_and_thumbnail(merge.k_vid, l_vid)
+    _attach_loser_source(conn, keeper, loser, now)
+    _merge_loser_sets(merge, l_vid)
+    _pick_metadata_winners(merge)
+    _retire_loser_rows(conn, keeper, loser, job_id, snapshot, now, payload)
+
+
+def _apply_list_override_winners(merge: _KeeperMerge) -> None:
+    for field, candidates in merge.list_override_candidates.items():
+        if candidates:
+            candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            value = candidates[0][2]
+            if field == 'performers':
+                merge.merged_perfs = set(_parse_list_field(value))
+            else:
+                merge.merged_tags = set(_parse_list_field(value))
+            merge.merged_override_fields[field] = value
+
+
+def _strongest_performers(merge: _KeeperMerge) -> None:
+    if not merge.list_override_candidates['performers'] and merge.performer_candidates:
+        strongest_priority = max(item[0] for item in merge.performer_candidates)
+        merge.merged_perfs = {
+            performer for priority, _length, _is_keeper, values in merge.performer_candidates
+            if priority == strongest_priority for performer in values
+        }
+
+
+def _refresh_keeper_nfo(conn, merge: _KeeperMerge, keeper: str, media_dir, services, now) -> None:
+    k_vid = merge.k_vid
+    try:
+        k_file = conn.execute('SELECT file_path FROM synced_files WHERE video_id=%s', (keeper,)).fetchone()
+        if k_file:
+            k_strm = services.resolve_media_path(k_file[0], media_dir)
+            k_nfo = k_strm.with_suffix('.nfo')
+            if k_nfo.exists():
+                k_dict = {'id': keeper, 'provider': k_vid.get('provider', 'telegram'), 'provider_video_id': keeper.split(':', 1)[-1] if ':' in keeper else keeper, 'title': k_vid.get('title', ''), 'slug': k_vid.get('slug', ''), 'duration': k_vid.get('duration', 0), 'thumbnail': k_vid.get('thumbnail', ''), 'performers': sorted(merge.merged_perfs), 'performer_thumbs': services.load_performer_thumbs(conn, sorted(merge.merged_perfs)), 'studio': k_vid.get('studio') or '', 'plot': k_vid.get('plot', ''), 'date_released': k_vid.get('date_released', ''), 'dateadded': services.format_dateadded(k_vid.get('first_seen') or now)}
+                services.create_nfo_file(k_dict, set(merge.merged_cats), merge.merged_tags, k_nfo)
+    except Exception as nfo_exc:
+        services.logger.warning('Could not update keeper NFO metadata: %s', nfo_exc)
+
+
+def _finalize_keeper_row(conn, merge: _KeeperMerge, keeper: str, job_id, snapshots, media_dir, services, now) -> None:
+    k_vid = merge.k_vid
+    merge.merged_perfs.update(_parse_list_field(k_vid.get('performers')))
+    merge.merged_tags.update(_parse_list_field(k_vid.get('tags')))
+    merge.merged_cats.update(_parse_list_field(k_vid.get('categories')))
+    _apply_list_override_winners(merge)
+    _strongest_performers(merge)
+    conn.execute('UPDATE videos SET title=%s,plot=%s,studio=%s,date_released=%s,thumbnail=%s,performers=%s,categories=%s,tags=%s,scene_match_source=%s,scene_match_external_id=%s,scene_match_url=%s,scene_match_confidence=%s WHERE id=%s',
+                 (k_vid.get('title'), k_vid.get('plot'), k_vid.get('studio'),
+                  k_vid.get('date_released'), k_vid.get('thumbnail'),
+                  _core.json.dumps(sorted(merge.merged_perfs), ensure_ascii=False),
+                  _core.json.dumps(sorted(merge.merged_cats), ensure_ascii=False),
+                  _core.json.dumps(sorted(merge.merged_tags), ensure_ascii=False),
+                  k_vid.get('scene_match_source'), k_vid.get('scene_match_external_id'),
+                  k_vid.get('scene_match_url'), k_vid.get('scene_match_confidence'), keeper))
+    if merge.merged_override_fields:
+        conn.execute('INSERT INTO video_metadata_overrides (video_id,fields,revision,updated_at) VALUES (%s,%s,1,CURRENT_TIMESTAMP) ON CONFLICT (video_id) DO UPDATE SET fields=EXCLUDED.fields,revision=video_metadata_overrides.revision+1,updated_at=CURRENT_TIMESTAMP',
+                     (keeper, _core.json.dumps(merge.merged_override_fields, ensure_ascii=False)))
+    keeper_after_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper,)).fetchone()
+    keeper_after = dict(zip(merge.k_cols, keeper_after_row)) if keeper_after_row else {}
+    after_override = conn.execute(
+        'SELECT fields FROM video_metadata_overrides WHERE video_id=%s', (keeper,),
+    ).fetchone()
+    keeper_after_overrides = (after_override[0] if after_override else {})
+    if isinstance(keeper_after_overrides, str):
+        keeper_after_overrides = _core.json.loads(keeper_after_overrides)
+    conn.execute(
+        "UPDATE video_duplicate_decisions SET snapshot=(jsonb_set(snapshot::jsonb,'{keeper_after}',%s::jsonb,TRUE)::text) "
+        "WHERE operation_id=%s AND state='active'",
+        (_core.json.dumps({'video': keeper_after, 'overrides': keeper_after_overrides}, ensure_ascii=False), job_id),
+    )
     for snapshot in snapshots:
-        loser = snapshot['video']['id']
-        l_vid = snapshot.get('video') or {}
-        snapshot['keeper_before'] = keeper_before
-        if payload.get('automatic'):
-            snapshot['automatic'] = True
-            snapshot['duplicate_evidence'] = str(payload.get('evidence') or '')[:40]
-        loser_override_row = conn.execute(
-            'SELECT fields,updated_at,revision FROM video_metadata_overrides WHERE video_id=%s',
-            (loser,),
-        ).fetchone()
-        loser_overrides = (_core.json.loads(loser_override_row[0])
-                           if loser_override_row and isinstance(loser_override_row[0], str)
-                           else dict(loser_override_row[0] or {}) if loser_override_row else {})
-        if loser_override_row:
-            snapshot['metadata_overrides'] = {
-                'fields': loser_overrides,
-                'updated_at': _iso_timestamp(loser_override_row[1]),
-                'revision': int(loser_override_row[2]),
-            }
-        loser_override_time = _epoch(loser_override_row[1]) if loser_override_row else 0.0
-        resolution = l_vid.get('performer_resolution') or {}
-        if isinstance(resolution, str):
-            try:
-                resolution = _core.json.loads(resolution)
-            except (TypeError, ValueError):
-                resolution = {}
-        source_name = str(l_vid.get('scene_match_source') or '').casefold()
-        source_priority = 100 if any(token in source_name for token in ('oshash', 'phash', 'fingerprint')) else 70 if source_name else int((resolution or {}).get('priority') or 10)
-        for field in metadata_fields:
-            value = l_vid.get(field)
-            if value not in (None, ''):
-                metadata_candidates[field].append((source_priority, 0.0, False, str(value)))
-        for field, value in loser_overrides.items():
-            if field in metadata_candidates:
-                metadata_candidates[field].append((1000, loser_override_time, False, str(value)))
-            elif field in list_override_candidates:
-                list_override_candidates[field].append((loser_override_time, False, value))
-        loser_performers = _parse_list_field(l_vid.get('performers'))
-        if loser_performers:
-            performer_candidates.append((_performer_priority(l_vid), len(loser_performers),
-                                         False, loser_performers))
-        for field, value in keeper_override_fields.items():
-            if field in metadata_candidates:
-                metadata_candidates[field].append((1000, keeper_override_time, True, str(value)))
-        if (not k_vid.get('scene_match_external_id') and l_vid.get('scene_match_external_id')):
-            k_vid['scene_match_source'] = l_vid.get('scene_match_source')
-            k_vid['scene_match_external_id'] = l_vid.get('scene_match_external_id')
-            k_vid['scene_match_url'] = l_vid.get('scene_match_url')
-            k_vid['scene_match_confidence'] = l_vid.get('scene_match_confidence')
-        if not k_vid.get('thumbnail') and l_vid.get('thumbnail'):
-            k_vid['thumbnail'] = l_vid.get('thumbnail')
-        l_channel = loser.split(':')[1] if ':' in loser and len(loser.split(':')) >= 2 else ''
-        conn.execute('INSERT INTO video_sources\n                            (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at)\n                            VALUES (%s, %s, %s, %s, %s, %s, 2, 1, %s)\n                            ON CONFLICT (source_id) DO UPDATE SET\n                                video_id=EXCLUDED.video_id, provider=EXCLUDED.provider,\n                                provider_ref=EXCLUDED.provider_ref, source_url=EXCLUDED.source_url,\n                                channel_id=EXCLUDED.channel_id, priority=EXCLUDED.priority,\n                                is_active=EXCLUDED.is_active, created_at=EXCLUDED.created_at', (keeper, loser, 'telegram', loser, f"https://t.me/c/{(l_channel[4:] if l_channel.startswith('-100') else l_channel.lstrip('-'))}" if l_channel else '', l_channel, now))
-        merged_perfs.update(_parse_list_field(l_vid.get('performers')))
-        merged_cats.update(_parse_list_field(l_vid.get('categories')))
-        merged_tags.update(_parse_list_field(l_vid.get('tags')))
-        l_studio = (l_vid.get('studio') or '').strip()
-        if l_studio and l_studio != k_studio:
-            merged_tags.add(l_studio)
-        if not k_studio and l_studio:
-            k_studio = l_studio
-        merged_override_fields = dict(keeper_override_fields)
-        for field, candidates in metadata_candidates.items():
-            if not candidates:
-                continue
-            candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-            winner = candidates[0][3]
-            if field in {'title', 'plot', 'studio', 'date_released'}:
-                k_vid[field] = winner
-            if candidates[0][0] >= 1000:
-                merged_override_fields[field] = winner
-        k_studio = k_vid.get('studio') or ''
-        conn.execute('DELETE FROM video_categories WHERE video_id=%s', (loser,))
-        conn.execute('DELETE FROM synced_files WHERE video_id=%s', (loser,))
-        conn.execute('DELETE FROM videos WHERE id=%s', (loser,))
-        conn.execute("INSERT INTO video_duplicate_decisions (loser_id,keeper_id,operation_id,state,created_at,snapshot,rules_version) VALUES (%s,%s,%s,'active',%s,%s,%s)", (loser, keeper, job_id, now, _core.json.dumps(snapshot, ensure_ascii=False), payload.get('rules_version')))
-    if k_row:
-        merged_perfs.update(_parse_list_field(k_vid.get('performers')))
-        merged_tags.update(_parse_list_field(k_vid.get('tags')))
-        merged_cats.update(_parse_list_field(k_vid.get('categories')))
-        for field, candidates in list_override_candidates.items():
-            if candidates:
-                candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-                value = candidates[0][2]
-                if field == 'performers':
-                    merged_perfs = set(_parse_list_field(value))
-                else:
-                    merged_tags = set(_parse_list_field(value))
-                merged_override_fields[field] = value
-        if not list_override_candidates['performers'] and performer_candidates:
-            strongest_priority = max(item[0] for item in performer_candidates)
-            merged_perfs = {
-                performer for priority, _length, _is_keeper, values in performer_candidates
-                if priority == strongest_priority for performer in values
-            }
-        conn.execute('UPDATE videos SET title=%s,plot=%s,studio=%s,date_released=%s,thumbnail=%s,performers=%s,categories=%s,tags=%s,scene_match_source=%s,scene_match_external_id=%s,scene_match_url=%s,scene_match_confidence=%s WHERE id=%s',
-                     (k_vid.get('title'), k_vid.get('plot'), k_vid.get('studio'),
-                      k_vid.get('date_released'), k_vid.get('thumbnail'),
-                      _core.json.dumps(sorted(merged_perfs), ensure_ascii=False),
-                      _core.json.dumps(sorted(merged_cats), ensure_ascii=False),
-                      _core.json.dumps(sorted(merged_tags), ensure_ascii=False),
-                      k_vid.get('scene_match_source'), k_vid.get('scene_match_external_id'),
-                      k_vid.get('scene_match_url'), k_vid.get('scene_match_confidence'), keeper))
-        if merged_override_fields:
-            conn.execute('INSERT INTO video_metadata_overrides (video_id,fields,revision,updated_at) VALUES (%s,%s,1,CURRENT_TIMESTAMP) ON CONFLICT (video_id) DO UPDATE SET fields=EXCLUDED.fields,revision=video_metadata_overrides.revision+1,updated_at=CURRENT_TIMESTAMP',
-                         (keeper, _core.json.dumps(merged_override_fields, ensure_ascii=False)))
-        keeper_after_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper,)).fetchone()
-        keeper_after = dict(zip(k_cols, keeper_after_row)) if keeper_after_row else {}
-        after_override = conn.execute(
-            'SELECT fields FROM video_metadata_overrides WHERE video_id=%s', (keeper,),
-        ).fetchone()
-        keeper_after_overrides = (after_override[0] if after_override else {})
-        if isinstance(keeper_after_overrides, str):
-            keeper_after_overrides = _core.json.loads(keeper_after_overrides)
-        conn.execute(
-            "UPDATE video_duplicate_decisions SET snapshot=(jsonb_set(snapshot::jsonb,'{keeper_after}',%s::jsonb,TRUE)::text) "
-            "WHERE operation_id=%s AND state='active'",
-            (_core.json.dumps({'video': keeper_after, 'overrides': keeper_after_overrides}, ensure_ascii=False), job_id),
-        )
-        for snapshot in snapshots:
-            snapshot['keeper_after'] = {'video': keeper_after, 'overrides': keeper_after_overrides}
-        for cat in merged_cats:
-            conn.execute('INSERT INTO video_categories (video_id, category) VALUES (%s, %s) ON CONFLICT DO NOTHING', (keeper, cat))
+        snapshot['keeper_after'] = {'video': keeper_after, 'overrides': keeper_after_overrides}
+    for cat in merge.merged_cats:
+        conn.execute('INSERT INTO video_categories (video_id, category) VALUES (%s, %s) ON CONFLICT DO NOTHING', (keeper, cat))
+    _refresh_keeper_nfo(conn, merge, keeper, media_dir, services, now)
+
+
+def _merge_keeper_metadata(conn, keeper, job_id, payload, snapshots, media_dir, services, now) -> None:
+    """Attach losers as sources of the keeper, merge their metadata into it, and record decisions."""
+    _attach_keeper_source(conn, keeper, now)
+    merge = _KeeperMerge(conn, keeper)
+    for snapshot in snapshots:
+        _merge_loser(conn, merge, keeper, job_id, payload, snapshot, now)
+    if merge.k_row:
+        _finalize_keeper_row(conn, merge, keeper, job_id, snapshots, media_dir, services, now)
+
+
+def _check_journal_ids(recovery_snapshots: list, expected_ids: set) -> None:
+    snapshot_ids = {s.get('video', {}).get('id') for s in recovery_snapshots}
+    if snapshot_ids != expected_ids:
+        raise ValueError('Incomplete operation journal; manual repair required.')
+
+
+def _load_recovery_snapshots(conn, job_id):
+    persisted = conn.execute('SELECT result FROM video_duplicate_jobs WHERE id=%s', (job_id,)).fetchone()
+    recovery_snapshots = None
+    if persisted and persisted[0]:
         try:
-            k_file = conn.execute('SELECT file_path FROM synced_files WHERE video_id=%s', (keeper,)).fetchone()
-            if k_file:
-                k_strm = services.resolve_media_path(k_file[0], media_dir)
-                k_nfo = k_strm.with_suffix('.nfo')
-                if k_nfo.exists():
-                    k_dict = {'id': keeper, 'provider': k_vid.get('provider', 'telegram'), 'provider_video_id': keeper.split(':', 1)[-1] if ':' in keeper else keeper, 'title': k_vid.get('title', ''), 'slug': k_vid.get('slug', ''), 'duration': k_vid.get('duration', 0), 'thumbnail': k_vid.get('thumbnail', ''), 'performers': sorted(merged_perfs), 'performer_thumbs': services.load_performer_thumbs(conn, sorted(merged_perfs)), 'studio': k_vid.get('studio') or '', 'plot': k_vid.get('plot', ''), 'date_released': k_vid.get('date_released', ''), 'dateadded': services.format_dateadded(k_vid.get('first_seen') or now)}
-                    services.create_nfo_file(k_dict, set(merged_cats), merged_tags, k_nfo)
-        except Exception as nfo_exc:
-            services.logger.warning(f'Could not update keeper NFO metadata: {nfo_exc}')
+            saved = _core.json.loads(persisted[0])
+            if isinstance(saved.get('snapshots'), list):
+                recovery_snapshots = saved['snapshots']
+        except (TypeError, ValueError):
+            pass
+    return recovery_snapshots
 
 
-def _run_hide(conn, job_id, payload, media_dir, services, quarantine_root, now, run) -> dict:
-    """Validate and quarantine duplicate items under one keeper, merge their metadata, and store undo snapshots."""
-    _core._record_job_progress(conn, job_id, 'validating')
-    keeper = str(payload['keeper_id'])
-    losers = [str(x) for x in payload['loser_ids']]
-    if not losers or keeper in losers or len(set(losers)) != len(losers):
-        raise ValueError('Invalid item list.')
-    from common.duplicate_evidence import pair_evidence
-    manual_review = payload.get('operator_review') is True and bool(payload.get('expected_revisions'))
+def _require_pair_evidence(conn, pair_evidence, keeper: str, losers: list, manual_review: bool) -> None:
     for loser in losers:
         if not manual_review and not pair_evidence(conn, keeper, loser):
             raise ValueError('Duplicate identity has not been confirmed, or duration/part safeguards failed.')
-    fingerprints = payload.get('fingerprints') or {}
-    expected_revisions = payload.get('expected_revisions') or {}
-    validation_ids = list(dict.fromkeys([
-        keeper, *losers,
-        *(str(video_id) for video_id in fingerprints),
-        *(str(video_id) for video_id in expected_revisions),
-    ]))
+
+
+def _load_hide_validation(conn, validation_ids: list, expected_revisions: dict) -> tuple:
     revision_snapshots = {}
     if expected_revisions:
         from common.admin_operations import _video_snapshots
@@ -480,10 +552,10 @@ def _run_hide(conn, job_id, payload, media_dir, services, quarantine_root, now, 
         ).fetchall()
         active_decisions = {str(row[0]) for row in decision_rows}
         revision_snapshots = {}
-    if keeper not in video_rows:
-        raise ValueError('Keeper item no longer exists.')
-    if keeper in active_decisions:
-        raise ValueError('Keeper item is already hidden; choose an active item.')
+    return video_rows, active_decisions, revision_snapshots
+
+
+def _check_hide_fingerprints(video_rows: dict, fingerprints: dict) -> None:
     if fingerprints:
         for video_id, expected in fingerprints.items():
             current_row = video_rows.get(str(video_id))
@@ -493,6 +565,10 @@ def _run_hide(conn, job_id, payload, media_dir, services, quarantine_root, now, 
             actual = _core.hashlib.sha256(_core.json.dumps(current, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
             if actual != expected:
                 raise ValueError('Metadata changed since preview; refresh scan.')
+
+
+def _check_hide_losers(conn, keeper: str, losers: list, validation_ids: list, video_rows: dict,
+                       active_decisions: set, services) -> None:
     pair_keys = {tuple(sorted((keeper, loser))) for loser in losers}
     pair_left_ids = list(dict.fromkeys(pair[0] for pair in pair_keys))
     pair_right_ids = list(dict.fromkeys(pair[1] for pair in pair_keys))
@@ -522,68 +598,101 @@ def _run_hide(conn, job_id, payload, media_dir, services, quarantine_root, now, 
             raise ValueError('Item already has an active deduplication decision.')
         if (keeper, loser) in active_edges:
             raise ValueError('Decision would create a cycle.')
+
+
+def _check_expected_revisions(keeper: str, expected_revisions: dict, revision_snapshots: dict) -> None:
     if expected_revisions:
         for video_id, expected in expected_revisions.items():
             current_revision, current = revision_snapshots.get(str(video_id), (None, None))
             if current_revision != expected or current is None or current.get('active_decision') or current.get('source_disabled') or (str(video_id) != keeper and current.get('shared_paths')):
                 raise ValueError('Library data changed after the preview; create a new operation plan.')
+
+
+def _append_sidecar_moves(services, relative: str, media_dir, op_dir, file_snapshots: list) -> None:
+    stream = services.resolve_media_path(relative, media_dir)
+    if stream.is_symlink() or not stream.resolve().is_relative_to(media_dir.resolve()):
+        raise ValueError('Unsafe library path detected.')
+    rel = stream.relative_to(media_dir.resolve())
+    for suffix in ('.strm', '.nfo', '.jpg', '.thumb_fail'):
+        src = stream.with_suffix(suffix)
+        dst = op_dir / 'files' / rel.parent / (rel.stem + suffix)
+        if src.is_symlink():
+            raise ValueError('Symlink detected in library files.')
+        if src.exists():
+            file_snapshots.append({'source': str(src), 'quarantine': str(dst)})
+
+
+def _hide_file_snapshots(files: list, shared_paths: set, op_dir, media_dir, services) -> list:
+    file_snapshots = []
+    for sf in files:
+        relative = sf.get('file_path') or ''
+        if relative in shared_paths:
+            raise ValueError('File is shared by another entry; aborting hide.')
+        _append_sidecar_moves(services, relative, media_dir, op_dir, file_snapshots)
+    return file_snapshots
+
+
+def _build_hide_snapshots(conn, losers: list, revision_snapshots: dict, op_dir, media_dir, services, snapshots: list) -> None:
+    from common.admin_operations import _video_snapshots
+    hide_snapshots = dict(revision_snapshots)
+    missing_snapshot_ids = [loser for loser in losers if loser not in hide_snapshots]
+    if missing_snapshot_ids:
+        hide_snapshots.update(_video_snapshots(conn, missing_snapshot_ids))
+    for loser in losers:
+        _revision, source_snapshot = hide_snapshots.get(loser, (None, None))
+        if source_snapshot is None:
+            raise ValueError(f'Item to hide no longer exists: {loser}')
+        video = source_snapshot['video']
+        files = source_snapshot['files']
+        cats = source_snapshot['categories']
+        shared_paths = {
+            str(shared.get('file_path') or '')
+            for shared in source_snapshot.get('shared_paths', [])
+        }
+        file_snapshots = _hide_file_snapshots(files, shared_paths, op_dir, media_dir, services)
+        snapshots.append({
+            'video': video,
+            'synced_files': files,
+            'categories': cats,
+            'files': file_snapshots,
+        })
+
+
+def _run_hide(conn, job_id, payload, media_dir, services, quarantine_root, now, run) -> dict:
+    """Validate and quarantine duplicate items under one keeper, merge their metadata, and store undo snapshots."""
+    _core._record_job_progress(conn, job_id, 'validating')
+    keeper = str(payload['keeper_id'])
+    losers = [str(x) for x in payload['loser_ids']]
+    if not losers or keeper in losers or len(set(losers)) != len(losers):
+        raise ValueError('Invalid item list.')
+    from common.duplicate_evidence import pair_evidence
+    manual_review = payload.get('operator_review') is True and bool(payload.get('expected_revisions'))
+    _require_pair_evidence(conn, pair_evidence, keeper, losers, manual_review)
+    fingerprints = payload.get('fingerprints') or {}
+    expected_revisions = payload.get('expected_revisions') or {}
+    validation_ids = list(dict.fromkeys([
+        keeper, *losers,
+        *(str(video_id) for video_id in fingerprints),
+        *(str(video_id) for video_id in expected_revisions),
+    ]))
+    video_rows, active_decisions, revision_snapshots = _load_hide_validation(conn, validation_ids, expected_revisions)
+    if keeper not in video_rows:
+        raise ValueError('Keeper item no longer exists.')
+    if keeper in active_decisions:
+        raise ValueError('Keeper item is already hidden; choose an active item.')
+    _check_hide_fingerprints(video_rows, fingerprints)
+    _check_hide_losers(conn, keeper, losers, validation_ids, video_rows, active_decisions, services)
+    _check_expected_revisions(keeper, expected_revisions, revision_snapshots)
     quarantine_root.mkdir(parents=True, exist_ok=True)
     op_dir = quarantine_root / job_id
     op_dir.mkdir(parents=True, exist_ok=True)
     services.write_catalog_backup(conn, op_dir, list(losers))
-    persisted = conn.execute('SELECT result FROM video_duplicate_jobs WHERE id=%s', (job_id,)).fetchone()
-    recovery_snapshots = None
-    if persisted and persisted[0]:
-        try:
-            saved = _core.json.loads(persisted[0])
-            if isinstance(saved.get('snapshots'), list):
-                recovery_snapshots = saved['snapshots']
-        except (TypeError, ValueError):
-            pass
+    recovery_snapshots = _load_recovery_snapshots(conn, job_id)
     if recovery_snapshots is not None:
-        snapshot_ids = {s.get('video', {}).get('id') for s in recovery_snapshots}
-        if snapshot_ids != set(losers):
-            raise ValueError('Incomplete operation journal; manual repair required.')
+        _check_journal_ids(recovery_snapshots, set(losers))
     snapshots = recovery_snapshots if recovery_snapshots is not None else []
     if recovery_snapshots is None and losers:
-        from common.admin_operations import _video_snapshots
-        hide_snapshots = dict(revision_snapshots)
-        missing_snapshot_ids = [loser for loser in losers if loser not in hide_snapshots]
-        if missing_snapshot_ids:
-            hide_snapshots.update(_video_snapshots(conn, missing_snapshot_ids))
-        for loser in losers:
-            _revision, source_snapshot = hide_snapshots.get(loser, (None, None))
-            if source_snapshot is None:
-                raise ValueError(f'Item to hide no longer exists: {loser}')
-            video = source_snapshot['video']
-            files = source_snapshot['files']
-            cats = source_snapshot['categories']
-            shared_paths = {
-                str(shared.get('file_path') or '')
-                for shared in source_snapshot.get('shared_paths', [])
-            }
-            file_snapshots = []
-            for sf in files:
-                relative = sf.get('file_path') or ''
-                if relative in shared_paths:
-                    raise ValueError('File is shared by another entry; aborting hide.')
-                stream = services.resolve_media_path(relative, media_dir)
-                if stream.is_symlink() or not stream.resolve().is_relative_to(media_dir.resolve()):
-                    raise ValueError('Unsafe library path detected.')
-                rel = stream.relative_to(media_dir.resolve())
-                for suffix in ('.strm', '.nfo', '.jpg', '.thumb_fail'):
-                    src = stream.with_suffix(suffix)
-                    dst = op_dir / 'files' / rel.parent / (rel.stem + suffix)
-                    if src.is_symlink():
-                        raise ValueError('Symlink detected in library files.')
-                    if src.exists():
-                        file_snapshots.append({'source': str(src), 'quarantine': str(dst)})
-            snapshots.append({
-                'video': video,
-                'synced_files': files,
-                'categories': cats,
-                'files': file_snapshots,
-            })
+        _build_hide_snapshots(conn, losers, revision_snapshots, op_dir, media_dir, services, snapshots)
     _core._store_job_result_field(conn, job_id, 'operation_id', job_id)
     _core._store_job_result_field(conn, job_id, 'snapshots', snapshots)
     _move_hidden_files(conn, job_id, snapshots, services, run)
@@ -598,9 +707,7 @@ def _run_hide(conn, job_id, payload, media_dir, services, quarantine_root, now, 
     return result
 
 
-def _run_quarantine(conn, job_id, payload, media_dir, services, quarantine_root, now, run) -> dict:
-    """Quarantine one library item and store its undo snapshot."""
-    video_id = str(payload.get('video_id') or '')
+def _check_quarantine_target(conn, video_id: str, services) -> None:
     if not video_id:
         raise ValueError('Missing item to quarantine.')
     if not conn.execute('SELECT 1 FROM videos WHERE id=%s', (video_id,)).fetchone():
@@ -609,80 +716,34 @@ def _run_quarantine(conn, job_id, payload, media_dir, services, quarantine_root,
         raise ValueError('Source of this item is disabled; decision was not saved.')
     if conn.execute("SELECT 1 FROM video_duplicate_decisions WHERE loser_id=%s AND state='active'", (video_id,)).fetchone():
         raise ValueError('Item is already quarantined.')
-    quarantine_root.mkdir(parents=True, exist_ok=True)
-    op_dir = quarantine_root / job_id
-    op_dir.mkdir(parents=True, exist_ok=True)
-    services.write_catalog_backup(conn, op_dir, [video_id])
-    persisted = conn.execute('SELECT result FROM video_duplicate_jobs WHERE id=%s', (job_id,)).fetchone()
-    recovery_snapshots = None
-    if persisted and persisted[0]:
-        try:
-            saved = _core.json.loads(persisted[0])
-            if isinstance(saved.get('snapshots'), list):
-                recovery_snapshots = saved['snapshots']
-        except (TypeError, ValueError):
-            pass
-    if recovery_snapshots is not None:
-        snapshot_ids = {s.get('video', {}).get('id') for s in recovery_snapshots}
-        if snapshot_ids != {video_id}:
-            raise ValueError('Incomplete operation journal; manual repair required.')
-    snapshots = recovery_snapshots if recovery_snapshots is not None else []
-    for loser in [] if recovery_snapshots is not None else [video_id]:
-        video_row = conn.execute('SELECT * FROM videos WHERE id=%s', (loser,)).fetchone()
-        video_cols = _core.db.table_columns(conn, 'videos')
-        files = conn.execute('SELECT * FROM synced_files WHERE video_id=%s', (loser,)).fetchall()
-        sf_cols = _core.db.table_columns(conn, 'synced_files')
-        cats = conn.execute('SELECT * FROM video_categories WHERE video_id=%s', (loser,)).fetchall()
-        vc_cols = _core.db.table_columns(conn, 'video_categories')
-        file_snapshots = []
-        for file_row in files:
-            sf = dict(zip(sf_cols, file_row))
-            relative = sf.get('file_path') or ''
-            other = conn.execute('SELECT 1 FROM synced_files WHERE file_path=%s AND video_id<>%s', (relative, loser)).fetchone()
-            if other:
-                raise ValueError('File is shared by another entry; aborting quarantine.')
-            stream = services.resolve_media_path(relative, media_dir)
-            if stream.is_symlink() or not stream.resolve().is_relative_to(media_dir.resolve()):
-                raise ValueError('Unsafe library path detected.')
-            rel = stream.relative_to(media_dir.resolve())
-            for suffix in ('.strm', '.nfo', '.jpg', '.thumb_fail'):
-                src = stream.with_suffix(suffix)
-                dst = op_dir / 'files' / rel.parent / (rel.stem + suffix)
-                if src.is_symlink():
-                    raise ValueError('Symlink detected in library files.')
-                if src.exists():
-                    file_snapshots.append({'source': str(src), 'quarantine': str(dst)})
-        snapshots.append({'video': dict(zip(video_cols, video_row)), 'synced_files': [dict(zip(sf_cols, r)) for r in files], 'categories': [dict(zip(vc_cols, r)) for r in cats], 'files': file_snapshots})
-        expected_revision = payload.get('expected_revision')
-        if expected_revision:
-            from common.admin_operations import _video_snapshot
-            current_revision, current = _video_snapshot(conn, loser)
-            if current_revision != expected_revision or current is None or current.get('active_decision') or current.get('source_disabled') or current.get('shared_paths'):
-                raise ValueError('Library data changed after the preview; create a new operation plan.')
-    _core._store_job_result_field(conn, job_id, 'operation_id', job_id)
-    _core._store_job_result_field(conn, job_id, 'snapshots', snapshots)
-    file_total = sum((len(snapshot['files']) for snapshot in snapshots))
-    moved_count = 0
-    _core._record_job_progress(conn, job_id, 'moving_files', completed=0, total=file_total)
-    for snapshot in snapshots:
-        for move in snapshot['files']:
-            src, dst = (_core.Path(move['source']), _core.Path(move['quarantine']))
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if src.exists():
-                if dst.exists():
-                    if not services.duplicate_file_matches(src, dst):
-                        raise FileExistsError('Quarantine file has different contents.')
-                    src.unlink()
-                else:
-                    services.duplicate_move_file(src, dst)
-                run.moved.append((src, dst))
-            elif dst.exists():
-                run.moved.append((src, dst))
-            elif not dst.exists():
-                if src.suffix == '.strm':
-                    raise FileNotFoundError('Missing STRM file for quarantined item.')
-            moved_count += 1
-            _core._record_job_progress(conn, job_id, 'moving_files', completed=moved_count, total=file_total)
+
+
+def _build_quarantine_snapshot(conn, loser: str, media_dir, services, op_dir, payload: dict) -> dict:
+    video_row = conn.execute('SELECT * FROM videos WHERE id=%s', (loser,)).fetchone()
+    video_cols = _core.db.table_columns(conn, 'videos')
+    files = conn.execute('SELECT * FROM synced_files WHERE video_id=%s', (loser,)).fetchall()
+    sf_cols = _core.db.table_columns(conn, 'synced_files')
+    cats = conn.execute('SELECT * FROM video_categories WHERE video_id=%s', (loser,)).fetchall()
+    vc_cols = _core.db.table_columns(conn, 'video_categories')
+    file_snapshots = []
+    for file_row in files:
+        sf = dict(zip(sf_cols, file_row))
+        relative = sf.get('file_path') or ''
+        other = conn.execute('SELECT 1 FROM synced_files WHERE file_path=%s AND video_id<>%s', (relative, loser)).fetchone()
+        if other:
+            raise ValueError('File is shared by another entry; aborting quarantine.')
+        _append_sidecar_moves(services, relative, media_dir, op_dir, file_snapshots)
+    snapshot = {'video': dict(zip(video_cols, video_row)), 'synced_files': [dict(zip(sf_cols, r)) for r in files], 'categories': [dict(zip(vc_cols, r)) for r in cats], 'files': file_snapshots}
+    expected_revision = payload.get('expected_revision')
+    if expected_revision:
+        from common.admin_operations import _video_snapshot
+        current_revision, current = _video_snapshot(conn, loser)
+        if current_revision != expected_revision or current is None or current.get('active_decision') or current.get('source_disabled') or current.get('shared_paths'):
+            raise ValueError('Library data changed after the preview; create a new operation plan.')
+    return snapshot
+
+
+def _retire_quarantined_items(conn, job_id, snapshots: list, now) -> None:
     _core._record_job_progress(conn, job_id, 'saving_catalog')
     with conn:
         for snapshot in snapshots:
@@ -691,6 +752,26 @@ def _run_quarantine(conn, job_id, payload, media_dir, services, quarantine_root,
             conn.execute('DELETE FROM synced_files WHERE video_id=%s', (loser,))
             conn.execute('DELETE FROM videos WHERE id=%s', (loser,))
             conn.execute("INSERT INTO video_duplicate_decisions (loser_id,keeper_id,operation_id,state,created_at,snapshot) VALUES (%s,%s,%s,'active',%s,%s)", (loser, loser, job_id, now, _core.json.dumps(snapshot, ensure_ascii=False)))
+
+
+def _run_quarantine(conn, job_id, payload, media_dir, services, quarantine_root, now, run) -> dict:
+    """Quarantine one library item and store its undo snapshot."""
+    video_id = str(payload.get('video_id') or '')
+    _check_quarantine_target(conn, video_id, services)
+    quarantine_root.mkdir(parents=True, exist_ok=True)
+    op_dir = quarantine_root / job_id
+    op_dir.mkdir(parents=True, exist_ok=True)
+    services.write_catalog_backup(conn, op_dir, [video_id])
+    recovery_snapshots = _load_recovery_snapshots(conn, job_id)
+    if recovery_snapshots is not None:
+        _check_journal_ids(recovery_snapshots, {video_id})
+    snapshots = recovery_snapshots if recovery_snapshots is not None else []
+    if recovery_snapshots is None:
+        snapshots.append(_build_quarantine_snapshot(conn, video_id, media_dir, services, op_dir, payload))
+    _core._store_job_result_field(conn, job_id, 'operation_id', job_id)
+    _core._store_job_result_field(conn, job_id, 'snapshots', snapshots)
+    _move_snapshot_files(conn, job_id, snapshots, services, run, 'Missing STRM file for quarantined item.')
+    _retire_quarantined_items(conn, job_id, snapshots, now)
     run.catalog_committed = True
     refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'quarantined', services)
     result = {'operation_id': job_id, 'quarantined': [video_id], 'local_state': 'quarantined', 'jellyfin_refresh': 'updated' if refreshed else 'failed'}
@@ -699,42 +780,50 @@ def _run_quarantine(conn, job_id, payload, media_dir, services, quarantine_root,
     return result
 
 
-def _run_undo(conn, job_id, payload, media_dir, services, quarantine_root, now, run) -> dict:
-    """Restore the items of a previous duplicate operation from their undo snapshots."""
-    operation = str(payload['operation_id'])
-    rows = conn.execute("SELECT loser_id,snapshot FROM video_duplicate_decisions WHERE operation_id=%s AND state='active'", (operation,)).fetchall()
-    if not rows:
-        raise ValueError('No active decision found to undo.')
-    snapshots = [_core.json.loads(r[1]) for r in rows]
-    job_stage_row = conn.execute('SELECT result FROM video_duplicate_jobs WHERE id=%s', (job_id,)).fetchone()
+def _restore_list(value):
+    if isinstance(value, list):
+        return value
     try:
-        resuming_undo = bool(job_stage_row and job_stage_row[0] and ('undo_snapshots' in _core.json.loads(job_stage_row[0])))
+        parsed = _core.json.loads(value or '[]')
+        return parsed if isinstance(parsed, list) else []
     except (TypeError, ValueError):
-        resuming_undo = False
+        return []
+
+
+def _check_undo_move_paths(snapshot: dict, media_root, quarantine_base) -> None:
+    for move in snapshot.get('files', []):
+        try:
+            source = _core.Path(move['source'])
+            quarantined = _core.Path(move['quarantine'])
+            if not source.is_absolute() or not quarantined.is_absolute():
+                raise ValueError
+            source.resolve(strict=False).relative_to(media_root)
+            quarantined.resolve(strict=False).relative_to(quarantine_base)
+        except (KeyError, OSError, ValueError, TypeError):
+            raise ValueError('Unsafe restore path detected; manual review is required.') from None
+
+
+def _check_undo_collisions(conn, snapshot: dict) -> None:
+    for saved_file in snapshot['synced_files']:
+        collision = conn.execute('SELECT video_id FROM synced_files WHERE file_path=%s', (saved_file['file_path'],)).fetchone()
+        if collision:
+            raise ValueError('File path is currently used by another entry.')
+
+
+def _check_undo_snapshots(conn, snapshots: list, media_dir, quarantine_root, resuming_undo: bool) -> None:
     for snapshot in snapshots:
         video_id = snapshot['video']['id']
         if conn.execute('SELECT 1 FROM videos WHERE id=%s', (video_id,)).fetchone():
             raise ValueError('Item was added again; undo requires manual review.')
         media_root = media_dir.resolve()
         quarantine_base = quarantine_root.resolve()
-        for move in snapshot.get('files', []):
-            try:
-                source = _core.Path(move['source'])
-                quarantined = _core.Path(move['quarantine'])
-                if not source.is_absolute() or not quarantined.is_absolute():
-                    raise ValueError
-                source.resolve(strict=False).relative_to(media_root)
-                quarantined.resolve(strict=False).relative_to(quarantine_base)
-            except (KeyError, OSError, ValueError, TypeError):
-                raise ValueError('Unsafe restore path detected; manual review is required.') from None
-        for saved_file in snapshot['synced_files']:
-            collision = conn.execute('SELECT video_id FROM synced_files WHERE file_path=%s', (saved_file['file_path'],)).fetchone()
-            if collision:
-                raise ValueError('File path is currently used by another entry.')
+        _check_undo_move_paths(snapshot, media_root, quarantine_base)
+        _check_undo_collisions(conn, snapshot)
         if not resuming_undo and any((_core.Path(move['source']).exists() for move in snapshot.get('files', []))):
             raise ValueError('Target path exists; not overwritten.')
-    _core._store_job_result_field(conn, job_id, 'operation_id', operation)
-    _core._store_job_result_field(conn, job_id, 'undo_snapshots', snapshots)
+
+
+def _restore_undo_files(conn, job_id, snapshots: list, services, run, resuming_undo: bool) -> None:
     file_total = sum((len(snapshot.get('files', [])) for snapshot in snapshots))
     restored_count = 0
     _core._record_job_progress(conn, job_id, 'restoring_files', completed=0, total=file_total)
@@ -757,104 +846,134 @@ def _run_undo(conn, job_id, payload, media_dir, services, quarantine_root, now, 
                 run.moved.append((src, dst))
             restored_count += 1
             _core._record_job_progress(conn, job_id, 'restoring_files', completed=restored_count, total=file_total)
+
+
+def _restore_snapshot_rows(conn, snapshot: dict) -> None:
+    video = snapshot['video']
+    names = list(video)
+    updates = [name for name in names if name != 'id']
+    assignments = ', '.join((f'{name}=EXCLUDED.{name}' for name in updates))
+    conn.execute(f"INSERT INTO videos ({','.join(names)}) VALUES ({','.join(('%s' for _ in names))}) ON CONFLICT (id) DO UPDATE SET {assignments}", [video[n] for n in names])
+    for table, records in (('synced_files', snapshot['synced_files']), ('video_categories', snapshot['categories'])):
+        for record in records:
+            names = list(record)
+            if table == 'synced_files':
+                conflict_sql = 'ON CONFLICT (file_path) DO UPDATE SET ' + ', '.join((f'{name}=EXCLUDED.{name}' for name in names if name != 'file_path'))
+            else:
+                conflict_sql = 'ON CONFLICT (video_id, category) DO NOTHING'
+            conn.execute(f"INSERT INTO {table} ({','.join(names)}) VALUES ({','.join(('%s' for _ in names))}) {conflict_sql}", [record[n] for n in names])
+    override_snapshot = snapshot.get('metadata_overrides')
+    if isinstance(override_snapshot, dict):
+        conn.execute(
+            'INSERT INTO video_metadata_overrides (video_id,fields,revision,updated_at) '
+            'VALUES (%s,%s,%s,coalesce(%s::timestamptz,CURRENT_TIMESTAMP)) '
+            'ON CONFLICT (video_id) DO UPDATE SET fields=EXCLUDED.fields,'
+            'revision=EXCLUDED.revision,updated_at=EXCLUDED.updated_at',
+            (video['id'], _core.json.dumps(override_snapshot.get('fields') or {}, ensure_ascii=False),
+             override_snapshot.get('revision', 1), override_snapshot.get('updated_at')),
+        )
+    conn.execute("UPDATE video_duplicate_decisions SET state='undone' WHERE loser_id=%s", (video['id'],))
+    conn.execute('DELETE FROM video_sources WHERE source_id=%s', (video['id'],))
+
+
+def _restore_keeper_video_fields(conn, keeper_id: str, current: dict, old_video: dict, new_video: dict) -> None:
+    for field in ('title', 'plot', 'studio', 'date_released', 'thumbnail', 'performers', 'categories', 'tags',
+                  'scene_match_source', 'scene_match_external_id', 'scene_match_url',
+                  'scene_match_confidence'):
+        if current.get(field) == new_video.get(field):
+            conn.execute(f'UPDATE videos SET {field}=%s WHERE id=%s', (old_video.get(field), keeper_id))
+    current_categories = set(_core.json.loads(current.get('categories') or '[]')
+                             if isinstance(current.get('categories'), str) else current.get('categories') or [])
+    after_categories = set(_core.json.loads(new_video.get('categories') or '[]')
+                           if isinstance(new_video.get('categories'), str) else new_video.get('categories') or [])
+    before_categories = _core.json.loads(old_video.get('categories') or '[]') if isinstance(old_video.get('categories'), str) else old_video.get('categories') or []
+    if current_categories == after_categories:
+        conn.execute('DELETE FROM video_categories WHERE video_id=%s', (keeper_id,))
+        for category in before_categories:
+            conn.execute('INSERT INTO video_categories (video_id,category) VALUES (%s,%s) ON CONFLICT DO NOTHING', (keeper_id, category))
+
+
+def _restore_keeper_overrides(conn, keeper_id: str, before: dict, after: dict) -> None:
+    current_override = conn.execute('SELECT fields FROM video_metadata_overrides WHERE video_id=%s', (keeper_id,)).fetchone()
+    current_fields = current_override[0] if current_override else {}
+    if isinstance(current_fields, str):
+        current_fields = _core.json.loads(current_fields)
+    if current_fields == after.get('overrides', {}):
+        old_fields = before.get('overrides', {})
+        if old_fields:
+            conn.execute('INSERT INTO video_metadata_overrides (video_id,fields,revision,updated_at) VALUES (%s,%s,1,CURRENT_TIMESTAMP) ON CONFLICT (video_id) DO UPDATE SET fields=EXCLUDED.fields,revision=video_metadata_overrides.revision+1,updated_at=CURRENT_TIMESTAMP', (keeper_id, _core.json.dumps(old_fields, ensure_ascii=False)))
+        else:
+            conn.execute('DELETE FROM video_metadata_overrides WHERE video_id=%s', (keeper_id,))
+
+
+def _restore_keeper_nfo(conn, keeper_id: str, columns, keeper_file, media_dir, services, now) -> None:
+    stream = services.resolve_media_path(keeper_file[0], media_dir)
+    if stream.is_symlink() or not stream.resolve().is_relative_to(media_dir.resolve()):
+        raise ValueError('Unsafe keeper path detected while restoring metadata.')
+    restored_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper_id,)).fetchone()
+    restored_video = dict(zip(columns, restored_row)) if restored_row else {}
+    restored_categories = _restore_list(restored_video.get('categories'))
+    restored_tags = _restore_list(restored_video.get('tags'))
+    restored_performers = _restore_list(restored_video.get('performers'))
+    services.create_nfo_file(
+        {'id': keeper_id, 'provider': restored_video.get('provider', 'telegram'),
+         'provider_video_id': keeper_id.split(':', 1)[-1],
+         'title': restored_video.get('title') or '',
+         'slug': restored_video.get('slug') or '',
+         'duration': restored_video.get('duration') or 0,
+         'thumbnail': restored_video.get('thumbnail') or '',
+         'performers': restored_performers,
+         'performer_thumbs': services.load_performer_thumbs(conn, restored_performers),
+         'studio': restored_video.get('studio') or '',
+         'plot': restored_video.get('plot') or '',
+         'date_released': restored_video.get('date_released') or '',
+         'dateadded': services.format_dateadded(restored_video.get('first_seen') or now)},
+        set(restored_categories), set(restored_tags), stream.with_suffix('.nfo'), conn=conn,
+    )
+
+
+def _restore_keeper_metadata(conn, snapshots: list, media_dir, services, now) -> None:
+    keeper_states = [snapshot for snapshot in snapshots if snapshot.get('keeper_before') and snapshot.get('keeper_after')]
+    if keeper_states:
+        before = keeper_states[0]['keeper_before']
+        after = keeper_states[0]['keeper_after']
+        keeper_id = str(before.get('video', {}).get('id') or '')
+        current_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper_id,)).fetchone()
+        if current_row:
+            columns = _core.db.table_columns(conn, 'videos')
+            current = dict(zip(columns, current_row))
+            old_video, new_video = before.get('video', {}), after.get('video', {})
+            _restore_keeper_video_fields(conn, keeper_id, current, old_video, new_video)
+            _restore_keeper_overrides(conn, keeper_id, before, after)
+            keeper_file = conn.execute(
+                'SELECT file_path FROM synced_files WHERE video_id=%s ORDER BY file_path LIMIT 1',
+                (keeper_id,),
+            ).fetchone()
+            if keeper_file:
+                _restore_keeper_nfo(conn, keeper_id, columns, keeper_file, media_dir, services, now)
+
+
+def _run_undo(conn, job_id, payload, media_dir, services, quarantine_root, now, run) -> dict:
+    """Restore the items of a previous duplicate operation from their undo snapshots."""
+    operation = str(payload['operation_id'])
+    rows = conn.execute("SELECT loser_id,snapshot FROM video_duplicate_decisions WHERE operation_id=%s AND state='active'", (operation,)).fetchall()
+    if not rows:
+        raise ValueError('No active decision found to undo.')
+    snapshots = [_core.json.loads(r[1]) for r in rows]
+    job_stage_row = conn.execute('SELECT result FROM video_duplicate_jobs WHERE id=%s', (job_id,)).fetchone()
+    try:
+        resuming_undo = bool(job_stage_row and job_stage_row[0] and ('undo_snapshots' in _core.json.loads(job_stage_row[0])))
+    except (TypeError, ValueError):
+        resuming_undo = False
+    _check_undo_snapshots(conn, snapshots, media_dir, quarantine_root, resuming_undo)
+    _core._store_job_result_field(conn, job_id, 'operation_id', operation)
+    _core._store_job_result_field(conn, job_id, 'undo_snapshots', snapshots)
+    _restore_undo_files(conn, job_id, snapshots, services, run, resuming_undo)
     _core._record_job_progress(conn, job_id, 'saving_catalog')
     with conn:
         for snapshot in snapshots:
-            video = snapshot['video']
-            names = list(video)
-            updates = [name for name in names if name != 'id']
-            assignments = ', '.join((f'{name}=EXCLUDED.{name}' for name in updates))
-            conn.execute(f"INSERT INTO videos ({','.join(names)}) VALUES ({','.join(('%s' for _ in names))}) ON CONFLICT (id) DO UPDATE SET {assignments}", [video[n] for n in names])
-            for table, records in (('synced_files', snapshot['synced_files']), ('video_categories', snapshot['categories'])):
-                for record in records:
-                    names = list(record)
-                    if table == 'synced_files':
-                        conflict_sql = 'ON CONFLICT (file_path) DO UPDATE SET ' + ', '.join((f'{name}=EXCLUDED.{name}' for name in names if name != 'file_path'))
-                    else:
-                        conflict_sql = 'ON CONFLICT (video_id, category) DO NOTHING'
-                    conn.execute(f"INSERT INTO {table} ({','.join(names)}) VALUES ({','.join(('%s' for _ in names))}) {conflict_sql}", [record[n] for n in names])
-            override_snapshot = snapshot.get('metadata_overrides')
-            if isinstance(override_snapshot, dict):
-                conn.execute(
-                    'INSERT INTO video_metadata_overrides (video_id,fields,revision,updated_at) '
-                    'VALUES (%s,%s,%s,coalesce(%s::timestamptz,CURRENT_TIMESTAMP)) '
-                    'ON CONFLICT (video_id) DO UPDATE SET fields=EXCLUDED.fields,'
-                    'revision=EXCLUDED.revision,updated_at=EXCLUDED.updated_at',
-                    (video['id'], _core.json.dumps(override_snapshot.get('fields') or {}, ensure_ascii=False),
-                     override_snapshot.get('revision', 1), override_snapshot.get('updated_at')),
-                )
-            conn.execute("UPDATE video_duplicate_decisions SET state='undone' WHERE loser_id=%s", (video['id'],))
-            conn.execute('DELETE FROM video_sources WHERE source_id=%s', (video['id'],))
-        keeper_states = [snapshot for snapshot in snapshots if snapshot.get('keeper_before') and snapshot.get('keeper_after')]
-        if keeper_states:
-            before = keeper_states[0]['keeper_before']
-            after = keeper_states[0]['keeper_after']
-            keeper_id = str(before.get('video', {}).get('id') or '')
-            current_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper_id,)).fetchone()
-            if current_row:
-                columns = _core.db.table_columns(conn, 'videos')
-                current = dict(zip(columns, current_row))
-                old_video, new_video = before.get('video', {}), after.get('video', {})
-                for field in ('title', 'plot', 'studio', 'date_released', 'thumbnail', 'performers', 'categories', 'tags',
-                              'scene_match_source', 'scene_match_external_id', 'scene_match_url',
-                              'scene_match_confidence'):
-                    if current.get(field) == new_video.get(field):
-                        conn.execute(f'UPDATE videos SET {field}=%s WHERE id=%s', (old_video.get(field), keeper_id))
-                current_categories = set(_core.json.loads(current.get('categories') or '[]')
-                                         if isinstance(current.get('categories'), str) else current.get('categories') or [])
-                after_categories = set(_core.json.loads(new_video.get('categories') or '[]')
-                                       if isinstance(new_video.get('categories'), str) else new_video.get('categories') or [])
-                before_categories = _core.json.loads(old_video.get('categories') or '[]') if isinstance(old_video.get('categories'), str) else old_video.get('categories') or []
-                if current_categories == after_categories:
-                    conn.execute('DELETE FROM video_categories WHERE video_id=%s', (keeper_id,))
-                    for category in before_categories:
-                        conn.execute('INSERT INTO video_categories (video_id,category) VALUES (%s,%s) ON CONFLICT DO NOTHING', (keeper_id, category))
-                current_override = conn.execute('SELECT fields FROM video_metadata_overrides WHERE video_id=%s', (keeper_id,)).fetchone()
-                current_fields = current_override[0] if current_override else {}
-                if isinstance(current_fields, str):
-                    current_fields = _core.json.loads(current_fields)
-                if current_fields == after.get('overrides', {}):
-                    old_fields = before.get('overrides', {})
-                    if old_fields:
-                        conn.execute('INSERT INTO video_metadata_overrides (video_id,fields,revision,updated_at) VALUES (%s,%s,1,CURRENT_TIMESTAMP) ON CONFLICT (video_id) DO UPDATE SET fields=EXCLUDED.fields,revision=video_metadata_overrides.revision+1,updated_at=CURRENT_TIMESTAMP', (keeper_id, _core.json.dumps(old_fields, ensure_ascii=False)))
-                    else:
-                        conn.execute('DELETE FROM video_metadata_overrides WHERE video_id=%s', (keeper_id,))
-                keeper_file = conn.execute(
-                    'SELECT file_path FROM synced_files WHERE video_id=%s ORDER BY file_path LIMIT 1',
-                    (keeper_id,),
-                ).fetchone()
-                if keeper_file:
-                    stream = services.resolve_media_path(keeper_file[0], media_dir)
-                    if stream.is_symlink() or not stream.resolve().is_relative_to(media_dir.resolve()):
-                        raise ValueError('Unsafe keeper path detected while restoring metadata.')
-                    restored_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper_id,)).fetchone()
-                    restored_video = dict(zip(columns, restored_row)) if restored_row else {}
-                    def _restore_list(value):
-                        if isinstance(value, list):
-                            return value
-                        try:
-                            parsed = _core.json.loads(value or '[]')
-                            return parsed if isinstance(parsed, list) else []
-                        except (TypeError, ValueError):
-                            return []
-                    restored_categories = _restore_list(restored_video.get('categories'))
-                    restored_tags = _restore_list(restored_video.get('tags'))
-                    restored_performers = _restore_list(restored_video.get('performers'))
-                    services.create_nfo_file(
-                        {'id': keeper_id, 'provider': restored_video.get('provider', 'telegram'),
-                         'provider_video_id': keeper_id.split(':', 1)[-1],
-                         'title': restored_video.get('title') or '',
-                         'slug': restored_video.get('slug') or '',
-                         'duration': restored_video.get('duration') or 0,
-                         'thumbnail': restored_video.get('thumbnail') or '',
-                         'performers': restored_performers,
-                         'performer_thumbs': services.load_performer_thumbs(conn, restored_performers),
-                         'studio': restored_video.get('studio') or '',
-                         'plot': restored_video.get('plot') or '',
-                         'date_released': restored_video.get('date_released') or '',
-                         'dateadded': services.format_dateadded(restored_video.get('first_seen') or now)},
-                        set(restored_categories), set(restored_tags), stream.with_suffix('.nfo'), conn=conn,
-                    )
+            _restore_snapshot_rows(conn, snapshot)
+        _restore_keeper_metadata(conn, snapshots, media_dir, services, now)
     run.catalog_committed = True
     refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'restored', services)
     result = {'operation_id': operation, 'restored': [s['video']['id'] for s in snapshots], 'local_state': 'restored', 'jellyfin_refresh': 'updated' if refreshed else 'failed'}

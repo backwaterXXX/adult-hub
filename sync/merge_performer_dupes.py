@@ -128,6 +128,228 @@ def trigger_jellyfin_refresh(url: str, api_key: str):
         logger.warning("Nie udalo sie wywolac Jellyfin Library/Refresh: %s", e)
 
 
+def _protected_override_names(conn: db.Connection, mapping: Dict[str, Tuple[str, str]]) -> list:
+    from common.performer_profiles import merge_override_names
+    return sorted({
+        name
+        for raw_name, (base_name, _) in mapping.items()
+        for name in merge_override_names(conn, raw_name, base_name)
+    }, key=str.casefold)
+
+
+def _plan_photo_updates(conn: db.Connection, tables, mapping: Dict[str, Tuple[str, str]]) -> tuple:
+    photos_to_migrate = []
+    photos_to_delete = []
+    if "performer_photos" in tables:
+        photo_rows = dict(
+            conn.execute("SELECT name, thumb FROM performer_photos").fetchall()
+        )
+        for raw_name, (base_name, _) in mapping.items():
+            if raw_name in photo_rows:
+                raw_thumb = photo_rows[raw_name]
+                base_thumb = photo_rows.get(base_name, "")
+                if raw_thumb and not base_thumb:
+                    photos_to_migrate.append((base_name, raw_thumb))
+                photos_to_delete.append(raw_name)
+    return photos_to_migrate, photos_to_delete
+
+
+def _plan_bio_updates(conn: db.Connection, tables, mapping: Dict[str, Tuple[str, str]]) -> tuple:
+    bios_to_migrate = []
+    bios_to_delete = []
+    if "performer_bios" in tables:
+        bio_rows = {
+            r[0]: r[1:]
+            for r in conn.execute(
+                "SELECT name, bio, birth, aliases, updated_at FROM performer_bios"
+            ).fetchall()
+        }
+        for raw_name, (base_name, _) in mapping.items():
+            if raw_name in bio_rows:
+                raw_bio, raw_birth, raw_aliases, raw_updated_at = bio_rows[raw_name]
+                if base_name not in bio_rows:
+                    bios_to_migrate.append(
+                        (base_name, raw_bio, raw_birth, raw_aliases, raw_updated_at)
+                    )
+                else:
+                    base_bio, base_birth, _, _ = bio_rows[base_name]
+                    if (not base_bio and raw_bio) or (not base_birth and raw_birth):
+                        bios_to_migrate.append(
+                            (
+                                base_name,
+                                base_bio or raw_bio,
+                                base_birth or raw_birth,
+                                raw_aliases,
+                                raw_updated_at,
+                            )
+                        )
+                bios_to_delete.append(raw_name)
+    return bios_to_migrate, bios_to_delete
+
+
+def _print_sample_mappings(mapping: Dict[str, Tuple[str, str]]) -> None:
+    print("\n--- Sample merges (first 20): ---")
+    for raw_name in sorted(mapping.keys())[:20]:
+        base, nick = mapping[raw_name]
+        print(f"  '{raw_name}' -> '{base}' (alias nick: '{nick}')")
+    print("------------------------------------------\n")
+
+
+def _apply_video_updates(conn: db.Connection, video_updates) -> None:
+    logger.info("Updating %d videos in database...", len(video_updates))
+    with conn:
+        for vid_id, _, new_list in video_updates:
+            conn.execute(
+                "UPDATE videos SET performers = %s WHERE id = %s",
+                (json.dumps(new_list), vid_id),
+            )
+
+
+def _apply_photo_updates(conn: db.Connection, photos_to_migrate, photos_to_delete) -> None:
+    if photos_to_migrate or photos_to_delete:
+        now_ts = int(time.time())
+        with conn:
+            for base_name, thumb in photos_to_migrate:
+                conn.execute(
+                    "INSERT INTO performer_photos (name, thumb, updated_at) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (name) DO UPDATE SET thumb=EXCLUDED.thumb, updated_at=EXCLUDED.updated_at",
+                    (base_name, thumb, now_ts),
+                )
+            for raw_name in photos_to_delete:
+                conn.execute(
+                    "DELETE FROM performer_photos WHERE name = %s", (raw_name,)
+                )
+        logger.info("Updated performer_photos.")
+
+
+def _apply_bio_updates(conn: db.Connection, bios_to_migrate, bios_to_delete) -> None:
+    if bios_to_migrate or bios_to_delete:
+        with conn:
+            for base_name, bio, birth, aliases, upd_at in bios_to_migrate:
+                conn.execute(
+                    """
+                    INSERT INTO performer_bios (name, bio, birth, aliases, updated_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (name) DO UPDATE SET bio=EXCLUDED.bio, birth=EXCLUDED.birth,
+                        aliases=EXCLUDED.aliases, updated_at=EXCLUDED.updated_at
+                    """,
+                    (base_name, bio, birth, aliases, upd_at),
+                )
+            for raw_name in bios_to_delete:
+                conn.execute(
+                    "DELETE FROM performer_bios WHERE name = %s", (raw_name,)
+                )
+        logger.info("Updated performer_bios.")
+
+
+def _apply_alias_rows(conn: db.Connection, tables, mapping: Dict[str, Tuple[str, str]]) -> None:
+    if "performer_aliases" in tables:
+        added_aliases = 0
+        with conn:
+            for raw_name, (base_name, nick) in mapping.items():
+                conn.execute(
+                    "INSERT INTO performer_aliases (alias, canonical) VALUES (%s, %s) ON CONFLICT (alias) DO NOTHING",
+                    (raw_name.lower(), base_name),
+                )
+                added_aliases += 1
+                if nick and nick.lower() != base_name.lower():
+                    conn.execute(
+                        "INSERT INTO performer_aliases (alias, canonical) VALUES (%s, %s) ON CONFLICT (alias) DO NOTHING",
+                        (nick.lower(), base_name),
+                    )
+                    added_aliases += 1
+        logger.info("Saved aliases in performer_aliases table (added: %d).", added_aliases)
+
+
+def _clean_jellyfin_person_sync(conn: db.Connection, tables, mapping: Dict[str, Tuple[str, str]]) -> None:
+    if "jellyfin_person_sync" in tables:
+        with conn:
+            for raw_name in mapping.keys():
+                conn.execute(
+                    "DELETE FROM jellyfin_person_sync WHERE lower(name) = lower(%s)",
+                    (raw_name,),
+                )
+        logger.info("Cleaned old entries in jellyfin_person_sync.")
+
+
+def _rewrite_video_nfo(conn: db.Connection, S, vid_id: str, new_perfs, media_dir: Path) -> bool:
+    """Rewrite one video's NFO; return True when the file was written."""
+    row = conn.execute(
+        "SELECT provider, title, slug, duration, thumbnail, performers,"
+        " categories, tags, studio, first_seen FROM videos WHERE id = %s",
+        (vid_id,),
+    ).fetchone()
+    if not row:
+        return False
+    (
+        prov,
+        title,
+        slug,
+        dur,
+        thumb,
+        perfs_raw,
+        cats_raw,
+        tags_raw,
+        studio,
+        first_seen,
+    ) = row
+
+    # The schema keeps both columns NOT NULL jsonb arrays of strings
+    # (videos_tags_array_ck, videos_categories_array_ck), so no guard needed.
+    tag_set = set(json.loads(tags_raw))
+    genres = set(json.loads(cats_raw))
+
+    video_dict = {
+        "id": vid_id,
+        "provider": prov,
+        "provider_video_id": vid_id.split(":", 1)[-1],
+        "title": title or vid_id,
+        "slug": slug or "",
+        "duration": dur or 0,
+        "thumbnail": thumb or "",
+        "performers": new_perfs,
+        "performer_thumbs": S.load_performer_thumbs(conn, new_perfs),
+        "studio": studio or "",
+        "dateadded": S.format_dateadded(
+            first_seen or time.time()
+        ),
+    }
+    nfo_path = media_dir / f"{S.stable_media_basename(vid_id)}.nfo"
+    try:
+        S.create_nfo_file(video_dict, genres, tag_set, nfo_path)
+        return True
+    except Exception as e:
+        logger.warning("Could not update NFO %s: %s", nfo_path, e)
+        return False
+
+
+def _rewrite_nfo_files(conn: db.Connection, video_updates, media_dir: Path) -> None:
+    logger.info("Updating .nfo files for modified videos...")
+    try:
+        import sync as S
+        nfo_updated = 0
+        for vid_id, _, new_perfs in video_updates:
+            if _rewrite_video_nfo(conn, S, vid_id, new_perfs, media_dir):
+                nfo_updated += 1
+        logger.info("Updated %d .nfo files.", nfo_updated)
+    except Exception as e:
+        logger.error("Error updating NFO files: %s", e)
+
+
+def _resolve_jellyfin_credentials() -> tuple:
+    jf_url = os.getenv("JELLYFIN_URL", "")
+    jf_key = os.getenv("JELLYFIN_API_KEY", "")
+    if not jf_url or not jf_key:
+        env_file = Path(__file__).parent / ".env"
+        if env_file.exists():
+            for line in env_file.read_text().splitlines():
+                if line.startswith("JELLYFIN_URL="):
+                    jf_url = line.split("=", 1)[1].strip().strip('"').strip("'")
+                elif line.startswith("JELLYFIN_API_KEY="):
+                    jf_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+    return jf_url, jf_key
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Merge duplicate performers (remove bracketed nicknames)"
@@ -157,12 +379,7 @@ def main() -> int:
         # Check auxiliary tables
         tables = db.table_names(conn)
         if args.apply and "performer_profile_overrides" in tables:
-            from common.performer_profiles import merge_override_names
-            protected = sorted({
-                name
-                for raw_name, (base_name, _) in mapping.items()
-                for name in merge_override_names(conn, raw_name, base_name)
-            }, key=str.casefold)
+            protected = _protected_override_names(conn, mapping)
             if protected:
                 logger.error(
                     "Refusing to merge performers with manual profile overrides; reset these profiles first: %s",
@@ -170,49 +387,8 @@ def main() -> int:
                 )
                 return 1
 
-        photos_to_migrate = []
-        photos_to_delete = []
-        if "performer_photos" in tables:
-            photo_rows = dict(
-                conn.execute("SELECT name, thumb FROM performer_photos").fetchall()
-            )
-            for raw_name, (base_name, _) in mapping.items():
-                if raw_name in photo_rows:
-                    raw_thumb = photo_rows[raw_name]
-                    base_thumb = photo_rows.get(base_name, "")
-                    if raw_thumb and not base_thumb:
-                        photos_to_migrate.append((base_name, raw_thumb))
-                    photos_to_delete.append(raw_name)
-
-        bios_to_migrate = []
-        bios_to_delete = []
-        if "performer_bios" in tables:
-            bio_rows = {
-                r[0]: r[1:]
-                for r in conn.execute(
-                    "SELECT name, bio, birth, aliases, updated_at FROM performer_bios"
-                ).fetchall()
-            }
-            for raw_name, (base_name, _) in mapping.items():
-                if raw_name in bio_rows:
-                    raw_bio, raw_birth, raw_aliases, raw_updated_at = bio_rows[raw_name]
-                    if base_name not in bio_rows:
-                        bios_to_migrate.append(
-                            (base_name, raw_bio, raw_birth, raw_aliases, raw_updated_at)
-                        )
-                    else:
-                        base_bio, base_birth, _, _ = bio_rows[base_name]
-                        if (not base_bio and raw_bio) or (not base_birth and raw_birth):
-                            bios_to_migrate.append(
-                                (
-                                    base_name,
-                                    base_bio or raw_bio,
-                                    base_birth or raw_birth,
-                                    raw_aliases,
-                                    raw_updated_at,
-                                )
-                            )
-                    bios_to_delete.append(raw_name)
+        photos_to_migrate, photos_to_delete = _plan_photo_updates(conn, tables, mapping)
+        bios_to_migrate, bios_to_delete = _plan_bio_updates(conn, tables, mapping)
 
         logger.info(
             "Photos: %d to migrate, %d to remove from old keys.",
@@ -226,11 +402,7 @@ def main() -> int:
         )
 
         # Print sample mappings
-        print("\n--- Sample merges (first 20): ---")
-        for raw_name in sorted(mapping.keys())[:20]:
-            base, nick = mapping[raw_name]
-            print(f"  '{raw_name}' -> '{base}' (alias nick: '{nick}')")
-        print("------------------------------------------\n")
+        _print_sample_mappings(mapping)
 
         if not args.apply:
             logger.info("DRY-RUN mode finished. No changes saved.")
@@ -248,144 +420,20 @@ def main() -> int:
                 return 1
 
         # 1. Update videos
-        logger.info("Updating %d videos in database...", len(video_updates))
-        with conn:
-            for vid_id, _, new_list in video_updates:
-                conn.execute(
-                    "UPDATE videos SET performers = %s WHERE id = %s",
-                    (json.dumps(new_list), vid_id),
-                )
-
+        _apply_video_updates(conn, video_updates)
         # 2. Update performer_photos
-        if photos_to_migrate or photos_to_delete:
-            now_ts = int(time.time())
-            with conn:
-                for base_name, thumb in photos_to_migrate:
-                    conn.execute(
-                        "INSERT INTO performer_photos (name, thumb, updated_at) VALUES (%s, %s, %s) "
-                        "ON CONFLICT (name) DO UPDATE SET thumb=EXCLUDED.thumb, updated_at=EXCLUDED.updated_at",
-                        (base_name, thumb, now_ts),
-                    )
-                for raw_name in photos_to_delete:
-                    conn.execute(
-                        "DELETE FROM performer_photos WHERE name = %s", (raw_name,)
-                    )
-            logger.info("Updated performer_photos.")
-
+        _apply_photo_updates(conn, photos_to_migrate, photos_to_delete)
         # 3. Update performer_bios
-        if bios_to_migrate or bios_to_delete:
-            with conn:
-                for base_name, bio, birth, aliases, upd_at in bios_to_migrate:
-                    conn.execute(
-                        """
-                        INSERT INTO performer_bios (name, bio, birth, aliases, updated_at)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (name) DO UPDATE SET bio=EXCLUDED.bio, birth=EXCLUDED.birth,
-                            aliases=EXCLUDED.aliases, updated_at=EXCLUDED.updated_at
-                        """,
-                        (base_name, bio, birth, aliases, upd_at),
-                    )
-                for raw_name in bios_to_delete:
-                    conn.execute(
-                        "DELETE FROM performer_bios WHERE name = %s", (raw_name,)
-                    )
-            logger.info("Updated performer_bios.")
-
+        _apply_bio_updates(conn, bios_to_migrate, bios_to_delete)
         # 4. Save aliases in performer_aliases
-        if "performer_aliases" in tables:
-            added_aliases = 0
-            with conn:
-                for raw_name, (base_name, nick) in mapping.items():
-                    conn.execute(
-                        "INSERT INTO performer_aliases (alias, canonical) VALUES (%s, %s) ON CONFLICT (alias) DO NOTHING",
-                        (raw_name.lower(), base_name),
-                    )
-                    added_aliases += 1
-                    if nick and nick.lower() != base_name.lower():
-                        conn.execute(
-                            "INSERT INTO performer_aliases (alias, canonical) VALUES (%s, %s) ON CONFLICT (alias) DO NOTHING",
-                            (nick.lower(), base_name),
-                        )
-                        added_aliases += 1
-            logger.info("Saved aliases in performer_aliases table (added: %d).", added_aliases)
-
+        _apply_alias_rows(conn, tables, mapping)
         # 5. Clean jellyfin_person_sync
-        if "jellyfin_person_sync" in tables:
-            with conn:
-                for raw_name in mapping.keys():
-                    conn.execute(
-                        "DELETE FROM jellyfin_person_sync WHERE lower(name) = lower(%s)",
-                        (raw_name,),
-                    )
-            logger.info("Cleaned old entries in jellyfin_person_sync.")
-
+        _clean_jellyfin_person_sync(conn, tables, mapping)
         # 6. Update .nfo files on disk
-        logger.info("Updating .nfo files for modified videos...")
-        try:
-            import sync as S
-            nfo_updated = 0
-            for vid_id, _, new_perfs in video_updates:
-                row = conn.execute(
-                    "SELECT provider, title, slug, duration, thumbnail, performers,"
-                    " categories, tags, studio, first_seen FROM videos WHERE id = %s",
-                    (vid_id,),
-                ).fetchone()
-                if not row:
-                    continue
-                (
-                    prov,
-                    title,
-                    slug,
-                    dur,
-                    thumb,
-                    perfs_raw,
-                    cats_raw,
-                    tags_raw,
-                    studio,
-                    first_seen,
-                ) = row
-
-                # The schema keeps both columns NOT NULL jsonb arrays of strings
-                # (videos_tags_array_ck, videos_categories_array_ck), so no guard needed.
-                tag_set = set(json.loads(tags_raw))
-                genres = set(json.loads(cats_raw))
-
-                video_dict = {
-                    "id": vid_id,
-                    "provider": prov,
-                    "provider_video_id": vid_id.split(":", 1)[-1],
-                    "title": title or vid_id,
-                    "slug": slug or "",
-                    "duration": dur or 0,
-                    "thumbnail": thumb or "",
-                    "performers": new_perfs,
-                    "performer_thumbs": S.load_performer_thumbs(conn, new_perfs),
-                    "studio": studio or "",
-                    "dateadded": S.format_dateadded(
-                        first_seen or time.time()
-                    ),
-                }
-                nfo_path = media_dir / f"{S.stable_media_basename(vid_id)}.nfo"
-                try:
-                    S.create_nfo_file(video_dict, genres, tag_set, nfo_path)
-                    nfo_updated += 1
-                except Exception as e:
-                    logger.warning("Could not update NFO %s: %s", nfo_path, e)
-            logger.info("Updated %d .nfo files.", nfo_updated)
-        except Exception as e:
-            logger.error("Error updating NFO files: %s", e)
+        _rewrite_nfo_files(conn, video_updates, media_dir)
 
         # 7. Refresh Jellyfin library
-        jf_url = os.getenv("JELLYFIN_URL", "")
-        jf_key = os.getenv("JELLYFIN_API_KEY", "")
-        if not jf_url or not jf_key:
-            env_file = Path(__file__).parent / ".env"
-            if env_file.exists():
-                for line in env_file.read_text().splitlines():
-                    if line.startswith("JELLYFIN_URL="):
-                        jf_url = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    elif line.startswith("JELLYFIN_API_KEY="):
-                        jf_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+        jf_url, jf_key = _resolve_jellyfin_credentials()
         if jf_url and jf_key:
             trigger_jellyfin_refresh(jf_url, jf_key)
 

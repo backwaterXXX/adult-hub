@@ -121,35 +121,24 @@ def load_performer_links(conn: db.Connection, names) -> Dict[str, Dict[str, str]
     return out
 
 
-def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], dest_path: Path, *, get_provider_info_fn, clean_display_title_fn, normalize_performers_fn, map_categories_fn):
-    root = ET.Element("movie")
-
-    provider_key = video.get("provider", "telegram")
-    if provider_key == "telegram":
-        # Local NFO is authoritative. Remote movie matching sees only the
-        # generic provider filename and can otherwise import an unrelated film.
-        ET.SubElement(root, "lockdata").text = "true"
-    pinfo = get_provider_info_fn(provider_key)
-    site_name = pinfo["name"]
+def _nfo_channel_name(video: Dict[str, Any], site_name: str) -> str:
     channel_name = (video.get("channel") or video.get("studio") or "").strip()
     if channel_name.lower() in (site_name.lower(), "telegram", "t.me"):
         channel_name = ""
+    return channel_name
 
-    raw_title = video.get("title", "")
-    title = raw_title
-    perfs = video.get("performers", [])
-    provider = video.get("provider", provider_key)
-    slug = video.get("slug", "")
-    display_title = clean_display_title_fn(raw_title, performers=perfs, provider=provider, slug=slug) or raw_title
 
+def _add_title_elements(root, display_title: str, raw_title: str, original_title) -> None:
     title_elem = ET.SubElement(root, "title")
     title_elem.text = display_title
 
     # Gdy tytul zostal przejety przez dopasowanie katalogowe, <title> nosi
     # nazwe ze StashDB/ThePornDB, a podpis dostawcy zostaje w <originaltitle>.
     orig_title_elem = ET.SubElement(root, "originaltitle")
-    orig_title_elem.text = str(video.get("original_title") or raw_title)
+    orig_title_elem.text = str(original_title or raw_title)
 
+
+def _add_tagline(root, channel_name: str, site_name: str) -> None:
     tagline_elem = ET.SubElement(root, "tagline")
     if channel_name:
         tagline_elem.text = f"Kanał: {channel_name}"
@@ -158,6 +147,8 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
     else:
         tagline_elem.text = ""
 
+
+def _production_studio_names(video: Dict[str, Any], tags: Set[str], raw_title: str) -> Set[str]:
     # Wytwórnia produkcyjna (MenAtPlay, RS, Dragon Media...) trafia do <studio>
     prod_studios = set(video.get("production_studios") or [])
     for t in tags:
@@ -177,7 +168,11 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
         prod_studios.update(detected_prod)
     except Exception as exc:
         logger.debug("Production-studio detection skipped (%s).", type(exc).__name__)
+    return prod_studios
 
+
+def _add_studio_elements(root, video: Dict[str, Any], prod_studios: Set[str], provider_key: str,
+                         channel_name: str) -> None:
     if prod_studios:
         for ps in sorted(prod_studios):
             if ps:
@@ -193,6 +188,8 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
         studio_elem = ET.SubElement(root, "studio")
         studio_elem.text = channel_name
 
+
+def _add_date_elements(root, video: Dict[str, Any]) -> None:
     # Library addition date (Kodi/Jellyfin <dateadded>).
     dateadded = (video.get("dateadded") or "").strip()
     if dateadded:
@@ -209,6 +206,9 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
             year_elem = ET.SubElement(root, "year")
             year_elem.text = year_str
 
+
+def _add_website_element(root, video: Dict[str, Any], provider_key: str, pinfo) -> str:
+    """Add <website> when one applies and return the resolved video page URL."""
     video_url = video.get("url", "")
     scene_match_url = (video.get("scene_match_url") or "").strip()
     if not video_url and video.get("slug"):
@@ -222,7 +222,11 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
     if effective_website:
         website_elem = ET.SubElement(root, "website")
         website_elem.text = effective_website
+    return video_url
 
+
+def _add_plot_element(root, video: Dict[str, Any], channel_name: str, site_name: str,
+                      video_url: str, title: str) -> None:
     plot_elem = ET.SubElement(root, "plot")
     custom_plot = (video.get("plot") or "").strip()
     if custom_plot:
@@ -244,34 +248,42 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
         plot_lines.append(title)
         plot_elem.text = "\n".join(plot_lines)
 
+
+def _add_runtime_element(root, video: Dict[str, Any]) -> None:
     duration_sec = video.get("duration", 0)
     if duration_sec > 0:
         runtime_elem = ET.SubElement(root, "runtime")
         runtime_elem.text = str(max(1, duration_sec // 60))
 
+
+def _add_genre_elements(root, genres: Set[str], title: str, map_categories_fn) -> None:
     mapped_genres = map_categories_fn(genres, title=title)
     for g in sorted(mapped_genres):
         if g and not g.startswith("Browse"):
             genre_elem = ET.SubElement(root, "genre")
             genre_elem.text = g
 
+
+def _is_unwanted_tag(val: str, channel_name: str) -> bool:
+    low = val.lower().strip()
+    return not low or low in ("telegram", "t.me") or low.startswith("-100") or low == channel_name.lower().strip()
+
+
+def _add_tag_elements(root, video: Dict[str, Any], tags: Set[str], channel_name: str,
+                      normalize_performers_fn) -> None:
     # Tagi: dodanie kanalu zrodlowego, wykonawcow, oraz scisla filtracja telegram/t.me
     tags_to_add = set()
     if channel_name:
         tags_to_add.add(f"Kanał: {channel_name}")
 
-    def _is_unwanted_tag(val: str) -> bool:
-        low = val.lower().strip()
-        return not low or low in ("telegram", "t.me") or low.startswith("-100") or low == channel_name.lower().strip()
-
     for t in tags:
         st = str(t).strip()
-        if not _is_unwanted_tag(st):
+        if not _is_unwanted_tag(st, channel_name):
             tags_to_add.add(st)
 
     for perf in normalize_performers_fn(video.get("performers", [])):
         st = str(perf).strip()
-        if not _is_unwanted_tag(st):
+        if not _is_unwanted_tag(st, channel_name):
             tags_to_add.add(st)
 
     for t in sorted(tags_to_add):
@@ -279,52 +291,67 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
             tag_elem = ET.SubElement(root, "tag")
             tag_elem.text = t
 
-    _thumbs = video.get("performer_thumbs") or {}
-    _thumb_map = {str(k).strip().lower(): str(v).strip()
-                  for k, v in _thumbs.items() if str(v).strip()} \
-        if isinstance(_thumbs, dict) else {}
-    _links = video.get("performer_links") or {}
-    _link_map: Dict[str, list] = {}
-    if isinstance(_links, dict):
-        for k, v in _links.items():
-            k_low = str(k).strip().lower()
-            if isinstance(v, dict):
-                cur_links = []
-                if v.get("stashdb"):
-                    cur_links.append(str(v["stashdb"]).strip())
-                if v.get("pbc"):
-                    cur_links.append(str(v["pbc"]).strip())
-                for ok, ov in sorted(v.items()):
-                    if ok not in ("stashdb", "pbc") and ov and str(ov).strip():
-                        cur_links.append(str(ov).strip())
-                _link_map[k_low] = cur_links
-            elif isinstance(v, (list, tuple)):
-                _link_map[k_low] = [str(x).strip() for x in v if str(x).strip()]
-            elif isinstance(v, str) and v.strip():
-                _link_map[k_low] = [v.strip()]
+
+def _performer_thumb_map(thumbs) -> Dict[str, str]:
+    return {str(k).strip().lower(): str(v).strip()
+            for k, v in thumbs.items() if str(v).strip()} \
+        if isinstance(thumbs, dict) else {}
+
+
+def _performer_link_urls(value):
+    """Profile URLs for one performer link entry, or None when the entry is not recognised."""
+    if isinstance(value, dict):
+        cur_links = []
+        if value.get("stashdb"):
+            cur_links.append(str(value["stashdb"]).strip())
+        if value.get("pbc"):
+            cur_links.append(str(value["pbc"]).strip())
+        for ok, ov in sorted(value.items()):
+            if ok not in ("stashdb", "pbc") and ov and str(ov).strip():
+                cur_links.append(str(ov).strip())
+        return cur_links
+    if isinstance(value, (list, tuple)):
+        return [str(x).strip() for x in value if str(x).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return None
+
+
+def _performer_link_map(links) -> Dict[str, list]:
+    link_map: Dict[str, list] = {}
+    if isinstance(links, dict):
+        for k, v in links.items():
+            urls = _performer_link_urls(v)
+            if urls is not None:
+                link_map[str(k).strip().lower()] = urls
+    return link_map
+
+
+def _add_performer_elements(root, perfs, thumb_map: Dict[str, str], link_map: Dict[str, list]) -> None:
     # Collections per performer: Jellyfin groups movies under Collections
     # by NFO <set><name> (Kodi format; raw text inside <set> is ignored).
-    _nfo_perfs = normalize_performers_fn(video.get("performers", []))
-    for perf in _nfo_perfs:
+    for perf in perfs:
         set_elem = ET.SubElement(root, "set")
         set_name_elem = ET.SubElement(set_elem, "name")
         set_name_elem.text = perf
 
-    for perf in _nfo_perfs:
+    for perf in perfs:
         actor_elem = ET.SubElement(root, "actor")
         name_elem = ET.SubElement(actor_elem, "name")
         name_elem.text = perf
         role_elem = ET.SubElement(actor_elem, "role")
         role_elem.text = "Performer"
-        _thumb_url = _thumb_map.get(perf.strip().lower(), "")
+        _thumb_url = thumb_map.get(perf.strip().lower(), "")
         if _thumb_url:
             thumb_actor_elem = ET.SubElement(actor_elem, "thumb")
             thumb_actor_elem.text = _thumb_url
-        for profile_url in _link_map.get(perf.strip().lower(), []):
+        for profile_url in link_map.get(perf.strip().lower(), []):
             if profile_url:
                 profile_elem = ET.SubElement(actor_elem, "profile")
                 profile_elem.text = profile_url
 
+
+def _add_thumb_element(root, video: Dict[str, Any], provider_key: str) -> None:
     thumb_url = video.get("thumbnail")
     # Telegram previews are downloaded to the matching local .jpg sidecar.
     # Do not make NFO ingestion wait for an on-demand Telegram HTTP download:
@@ -333,6 +360,8 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
         thumb_elem = ET.SubElement(root, "thumb")
         thumb_elem.text = thumb_url
 
+
+def _add_uniqueid_elements(root, video: Dict[str, Any], provider_key: str) -> None:
     uid_elem = ET.SubElement(root, "uniqueid", type=provider_key, default="true")
     uid_elem.text = str(video.get("provider_video_id", ""))
 
@@ -349,26 +378,26 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
             catalog_uid_elem = ET.SubElement(root, "uniqueid", type=catalog_uid_type, default="false")
             catalog_uid_elem.text = scene_ext_id
 
-    xml_str = ET.tostring(root, encoding="utf-8")
-    parsed = minidom.parseString(xml_str)
-    pretty_xml = parsed.toprettyxml(indent="  ", encoding="utf-8")
 
-    # #10: Skip writing if existing NFO is identical (saves I/O and prevents unnecessary Jellyfin rescans)
+def _existing_nfo_is_current(dest_path: Path, root, pretty_xml: bytes) -> bool:
+    """True when the NFO on disk already says the same thing, so no write is needed."""
     if dest_path.exists():
         try:
             with open(dest_path, "rb") as f:
                 existing_xml = f.read()
                 if existing_xml == pretty_xml:
-                    return
+                    return True
                 # Migration preserves metadata but may move lockdata and
                 # serialize indentation differently. Preserve bytes/mtime so
                 # the reconciliation hash does not trigger a needless import.
-                if _metadata_key(ET.fromstring(existing_xml), movie_root=True) == \
-                        _metadata_key(root, movie_root=True):
-                    return
+                return _metadata_key(ET.fromstring(existing_xml), movie_root=True) == \
+                    _metadata_key(root, movie_root=True)
         except (OSError, ET.ParseError):
             pass
+    return False
 
+
+def _write_nfo_atomically(dest_path: Path, pretty_xml: bytes) -> None:
     # #29: Atomic write using .nfo.tmp and os.replace to prevent partial reads by Jellyfin
     tmp_path = dest_path.with_suffix(".nfo.tmp")
     try:
@@ -382,3 +411,49 @@ def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], des
             except OSError:
                 pass
         raise
+
+
+def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], dest_path: Path, *, get_provider_info_fn, clean_display_title_fn, normalize_performers_fn, map_categories_fn):
+    root = ET.Element("movie")
+
+    provider_key = video.get("provider", "telegram")
+    if provider_key == "telegram":
+        # Local NFO is authoritative. Remote movie matching sees only the
+        # generic provider filename and can otherwise import an unrelated film.
+        ET.SubElement(root, "lockdata").text = "true"
+    pinfo = get_provider_info_fn(provider_key)
+    site_name = pinfo["name"]
+    channel_name = _nfo_channel_name(video, site_name)
+
+    raw_title = video.get("title", "")
+    title = raw_title
+    perfs = video.get("performers", [])
+    provider = video.get("provider", provider_key)
+    slug = video.get("slug", "")
+    display_title = clean_display_title_fn(raw_title, performers=perfs, provider=provider, slug=slug) or raw_title
+
+    _add_title_elements(root, display_title, raw_title, video.get("original_title"))
+    _add_tagline(root, channel_name, site_name)
+    prod_studios = _production_studio_names(video, tags, raw_title)
+    _add_studio_elements(root, video, prod_studios, provider_key, channel_name)
+    _add_date_elements(root, video)
+    video_url = _add_website_element(root, video, provider_key, pinfo)
+    _add_plot_element(root, video, channel_name, site_name, video_url, title)
+    _add_runtime_element(root, video)
+    _add_genre_elements(root, genres, title, map_categories_fn)
+    _add_tag_elements(root, video, tags, channel_name, normalize_performers_fn)
+
+    thumb_map = _performer_thumb_map(video.get("performer_thumbs") or {})
+    link_map = _performer_link_map(video.get("performer_links") or {})
+    _add_performer_elements(root, normalize_performers_fn(video.get("performers", [])), thumb_map, link_map)
+    _add_thumb_element(root, video, provider_key)
+    _add_uniqueid_elements(root, video, provider_key)
+
+    xml_str = ET.tostring(root, encoding="utf-8")
+    parsed = minidom.parseString(xml_str)
+    pretty_xml = parsed.toprettyxml(indent="  ", encoding="utf-8")
+
+    # #10: Skip writing if existing NFO is identical (saves I/O and prevents unnecessary Jellyfin rescans)
+    if _existing_nfo_is_current(dest_path, root, pretty_xml):
+        return
+    _write_nfo_atomically(dest_path, pretty_xml)

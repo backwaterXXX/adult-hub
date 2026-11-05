@@ -108,17 +108,7 @@ def clean_nfo_thumbnail(nfo_path: Path) -> bool:
         return False
 
 
-def detect_and_report_bumpers(
-    valid_files: list[Path],
-    threshold: int = 5,
-    max_distance: int = 4,
-    purge: bool = False,
-    execute: bool = False,
-    cache_file: Path | None = None,
-    save_cache: bool = False,
-):
-    """Compute dHash on valid files and cluster repeated bumpers/logos."""
-    print(f"\nDetecting repeated bumpers / studio logos (threshold >= {threshold}, max_distance <= {max_distance})...")
+def _hash_valid_files(valid_files: list[Path]) -> dict[Path, str]:
     file_hashes: dict[Path, str] = {}
     start_time = time.time()
 
@@ -133,18 +123,13 @@ def detect_and_report_bumpers(
 
     elapsed = time.time() - start_time
     print(f"\nHashing completed in {elapsed:.2f}s.")
+    return file_hashes
 
-    clusters = find_bumper_clusters(
-        file_hashes,
-        max_distance=max_distance,
-        min_count=threshold,
-    )
 
-    print(f"Found {len(clusters)} repeated bumper/logo clusters (>= {threshold} instances):")
+def _report_top_clusters(clusters: list, purge: bool) -> tuple[int, set[str], list[Path]]:
     total_bumper_files = 0
     all_bumper_hashes: set[str] = set()
     to_purge: list[Path] = []
-
     for rank, cluster in enumerate(clusters[:20], 1):
         count = int(cluster["count"])
         rep_h = str(cluster["representative_hash"])
@@ -161,8 +146,14 @@ def detect_and_report_bumpers(
             print(f"  Cluster #{rank}: dHash={rep_h} ({variants} variant{'s' if variants > 1 else ''}) | Count={count} videos | Samples: [{sample_names}]")
             if purge:
                 to_purge.extend(paths)
+    return total_bumper_files, all_bumper_hashes, to_purge
 
-    for cluster in clusters[20:]:
+
+def _collect_cluster_stats(clusters: list, purge: bool) -> tuple[int, set[str], list[Path]]:
+    total_bumper_files = 0
+    all_bumper_hashes: set[str] = set()
+    to_purge: list[Path] = []
+    for cluster in clusters:
         count = int(cluster["count"])
         total_bumper_files += count
         cluster_hashes = cluster["hashes"]
@@ -171,37 +162,41 @@ def detect_and_report_bumpers(
         paths = cluster["files"]
         if purge and isinstance(paths, list):
             to_purge.extend(paths)
+    return total_bumper_files, all_bumper_hashes, to_purge
 
-    print(f"Total files in bumper clusters: {total_bumper_files} (across {len(all_bumper_hashes)} distinct hashes)")
 
-    if purge:
-        print(f"\nAction: {'PURGING' if execute else 'DRY RUN - WOULD PURGE'} {len(to_purge)} bumper artwork files:")
-        p_count = 0
-        nfo_count = 0
-        marker_count = 0
-        for p in to_purge:
-            if execute:
-                try:
-                    p.unlink(missing_ok=True)
-                    p_count += 1
-                    fail_marker = p.with_suffix(".thumb_fail")
-                    if fail_marker.exists():
-                        fail_marker.unlink(missing_ok=True)
-                        marker_count += 1
-                    nfo_path = p.with_suffix(".nfo")
-                    if clean_nfo_thumbnail(nfo_path):
-                        nfo_count += 1
-                except Exception as e:
-                    print(f"  Error deleting {p.name}: {e}", file=sys.stderr)
-            else:
-                if p_count < 10:
-                    print(f"  [DRY RUN] Would purge bumper: {p.name}")
-                p_count += 1
+def _purge_bumpers(to_purge: list[Path], execute: bool) -> None:
+    print(f"\nAction: {'PURGING' if execute else 'DRY RUN - WOULD PURGE'} {len(to_purge)} bumper artwork files:")
+    p_count = 0
+    nfo_count = 0
+    marker_count = 0
+    for p in to_purge:
         if execute:
-            print(f"Successfully purged {p_count} bumper files, cleaned {marker_count} .thumb_fail markers, updated {nfo_count} NFO files.")
+            try:
+                p.unlink(missing_ok=True)
+                p_count += 1
+                fail_marker = p.with_suffix(".thumb_fail")
+                if fail_marker.exists():
+                    fail_marker.unlink(missing_ok=True)
+                    marker_count += 1
+                nfo_path = p.with_suffix(".nfo")
+                if clean_nfo_thumbnail(nfo_path):
+                    nfo_count += 1
+            except Exception as e:
+                print(f"  Error deleting {p.name}: {e}", file=sys.stderr)
         else:
-            print("[DRY RUN] Run with --execute --purge-bumpers to perform actual deletion.")
+            if p_count < 10:
+                print(f"  [DRY RUN] Would purge bumper: {p.name}")
+            p_count += 1
+    if execute:
+        print(f"Successfully purged {p_count} bumper files, cleaned {marker_count} .thumb_fail markers, updated {nfo_count} NFO files.")
+    else:
+        print("[DRY RUN] Run with --execute --purge-bumpers to perform actual deletion.")
 
+
+def _save_bumper_cache_if_needed(cache_file, save_cache: bool, purge: bool, execute: bool,
+                                 all_bumper_hashes: set[str], threshold: int, max_distance: int,
+                                 clusters_count: int, total_bumper_files: int) -> None:
     should_save = cache_file and (save_cache or (purge and execute))
     if should_save:
         save_bumper_hashes(
@@ -210,13 +205,50 @@ def detect_and_report_bumpers(
             metadata={
                 "threshold": threshold,
                 "max_distance": max_distance,
-                "clusters_count": len(clusters),
+                "clusters_count": clusters_count,
                 "total_bumper_files": total_bumper_files,
             },
         )
         print(f"Saved {len(all_bumper_hashes)} bumper hashes to {cache_file}")
     elif cache_file and (save_cache or purge):
         print(f"[DRY RUN] Would save {len(all_bumper_hashes)} bumper hashes to {cache_file}")
+
+
+def detect_and_report_bumpers(
+    valid_files: list[Path],
+    threshold: int = 5,
+    max_distance: int = 4,
+    purge: bool = False,
+    execute: bool = False,
+    cache_file: Path | None = None,
+    save_cache: bool = False,
+):
+    """Compute dHash on valid files and cluster repeated bumpers/logos."""
+    print(f"\nDetecting repeated bumpers / studio logos (threshold >= {threshold}, max_distance <= {max_distance})...")
+    file_hashes = _hash_valid_files(valid_files)
+
+    clusters = find_bumper_clusters(
+        file_hashes,
+        max_distance=max_distance,
+        min_count=threshold,
+    )
+
+    print(f"Found {len(clusters)} repeated bumper/logo clusters (>= {threshold} instances):")
+    top_total, top_hashes, top_purge = _report_top_clusters(clusters, purge)
+    rest_total, rest_hashes, rest_purge = _collect_cluster_stats(clusters[20:], purge)
+    total_bumper_files = top_total + rest_total
+    all_bumper_hashes = top_hashes | rest_hashes
+    to_purge = top_purge + rest_purge
+
+    print(f"Total files in bumper clusters: {total_bumper_files} (across {len(all_bumper_hashes)} distinct hashes)")
+
+    if purge:
+        _purge_bumpers(to_purge, execute)
+
+    _save_bumper_cache_if_needed(
+        cache_file, save_cache, purge, execute, all_bumper_hashes,
+        threshold, max_distance, len(clusters), total_bumper_files,
+    )
 
 
 def backfill_stashdb_oshash(db_url: str, media_dir: Path, limit: int = 200):

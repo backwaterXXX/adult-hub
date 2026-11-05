@@ -51,7 +51,7 @@ def _unescape_sheet(value: str) -> str:
     return text
 
 
-def prepare(sheet: Path, catalog_path: Path) -> tuple[list[dict], dict]:
+def _load_catalog(catalog_path: Path) -> tuple[list, set[str]]:
     raw_catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     catalog = raw_catalog.get("performers") if isinstance(raw_catalog, dict) else raw_catalog
     if not isinstance(catalog, list) or not catalog:
@@ -59,79 +59,102 @@ def prepare(sheet: Path, catalog_path: Path) -> tuple[list[dict], dict]:
     if any(not isinstance(item, dict) or not str(item.get("id") or "").startswith("stashdb:")
            for item in catalog):
         raise ValueError("catalog snapshot may contain only external stashdb identities")
-    valid_ids = {str(item["id"]) for item in catalog}
+    return catalog, {str(item["id"]) for item in catalog}
 
+
+def _check_header(fieldnames) -> None:
+    missing = REQUIRED_FIELDS - set(fieldnames or ())
+    if missing:
+        raise ValueError("review worksheet is missing required fields: " + ", ".join(sorted(missing)))
+    if "performers" in (fieldnames or ()):
+        raise ValueError("refusing a worksheet that contains the current performer cast")
+
+
+def _read_video_id(row: dict, line_number: int, seen: set[str]) -> str:
+    video_id = str(row.get("video_id") or "").strip()
+    if not video_id or video_id in seen:
+        raise ValueError(f"line {line_number} has a missing or duplicate video_id")
+    seen.add(video_id)
+    return video_id
+
+
+def _aligned_names_and_ids(row: dict, line_number: int) -> tuple[list[str], list[str]]:
+    names = _parts(row.get("true_performer_names") or "")
+    try:
+        ids = _aligned_ids(row.get("true_performer_ids") or "", len(names))
+    except ValueError as exc:
+        raise ValueError(f"line {line_number}: {exc}") from exc
+    return names, ids
+
+
+def _truth_for_label(row: dict, line_number: int, names: list[str], ids: list[str],
+                     coverage: str, confidence: str, valid_ids: set[str]) -> tuple[str, list[str]]:
+    if confidence == "low":
+        return "unknown", []
+    if coverage == "unknown":
+        if any(ids):
+            raise ValueError(f"line {line_number}: unknown cast cannot have performer IDs")
+        return "unknown", []
+    if not names:
+        raise ValueError(f"line {line_number}: complete/partial labels need performer names")
+    unknown = [performer_id for performer_id in ids if performer_id and performer_id not in valid_ids]
+    if unknown:
+        raise ValueError(f"line {line_number}: a performer ID is missing from the supplied catalogue")
+    # An actor missing from the StashDB snapshot remains part of
+    # ground truth. The row-local ID exposes that catalogue gap in
+    # recall/full-cast metrics instead of silently dropping them.
+    truth_ids = [performer_id or f"unmapped:{row['review_id']}:{index}"
+                 for index, performer_id in enumerate(ids, 1)]
+    return coverage, truth_ids
+
+
+def _benchmark_row(row: dict, video_id: str, truth_status: str, truth_ids: list[str]) -> dict:
+    source_text = _unescape_sheet(row.get("source_text") or "")
+    filename = _unescape_sheet(row.get("source_filename") or "")
+    filename_title = _filename_to_title(filename)
+    fallback = filename_title or f"Telegram {video_id}"
+    title = parse_caption_title(_filter_caption_for_title(source_text), fallback)
+    return {
+        "video_id": video_id,
+        "split": str(row.get("split") or "dev").strip(),
+        "source_text": source_text,
+        "filename_title": filename_title,
+        "title": title,
+        "truth_ids": truth_ids,
+        "truth_status": truth_status,
+    }
+
+
+def _read_labelled_rows(reader, valid_ids: set[str]) -> tuple[list[dict], int, int]:
     rows: list[dict] = []
-    seen = set()
+    seen: set[str] = set()
     skipped_unlabeled = 0
     low_confidence = 0
-    with sheet.open(encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle)
-        missing = REQUIRED_FIELDS - set(reader.fieldnames or ())
-        if missing:
-            raise ValueError("review worksheet is missing required fields: " + ", ".join(sorted(missing)))
-        if "performers" in (reader.fieldnames or ()):
-            raise ValueError("refusing a worksheet that contains the current performer cast")
-        for line_number, row in enumerate(reader, 2):
-            video_id = str(row.get("video_id") or "").strip()
-            if not video_id or video_id in seen:
-                raise ValueError(f"line {line_number} has a missing or duplicate video_id")
-            seen.add(video_id)
-            coverage = str(row.get("cast_coverage") or "").strip().casefold()
-            confidence = str(row.get("label_confidence") or "").strip().casefold()
-            if not coverage and not confidence:
-                skipped_unlabeled += 1
-                continue
-            if coverage not in VALID_COVERAGE or confidence not in VALID_CONFIDENCE:
-                raise ValueError(f"line {line_number} has invalid cast_coverage or label_confidence")
-            names = _parts(row.get("true_performer_names") or "")
-            try:
-                ids = _aligned_ids(row.get("true_performer_ids") or "", len(names))
-            except ValueError as exc:
-                raise ValueError(f"line {line_number}: {exc}") from exc
-            if confidence == "low":
-                truth_status = "unknown"
-                truth_ids = []
-                low_confidence += 1
-            elif coverage == "unknown":
-                if any(ids):
-                    raise ValueError(f"line {line_number}: unknown cast cannot have performer IDs")
-                truth_status = "unknown"
-                truth_ids = []
-            elif not names:
-                raise ValueError(f"line {line_number}: complete/partial labels need performer names")
-            else:
-                unknown = [performer_id for performer_id in ids if performer_id and performer_id not in valid_ids]
-                if unknown:
-                    raise ValueError(f"line {line_number}: a performer ID is missing from the supplied catalogue")
-                truth_status = coverage
-                # An actor missing from the StashDB snapshot remains part of
-                # ground truth. The row-local ID exposes that catalogue gap in
-                # recall/full-cast metrics instead of silently dropping them.
-                truth_ids = [performer_id or f"unmapped:{row['review_id']}:{index}"
-                             for index, performer_id in enumerate(ids, 1)]
+    for line_number, row in enumerate(reader, 2):
+        video_id = _read_video_id(row, line_number, seen)
+        coverage = str(row.get("cast_coverage") or "").strip().casefold()
+        confidence = str(row.get("label_confidence") or "").strip().casefold()
+        if not coverage and not confidence:
+            skipped_unlabeled += 1
+            continue
+        if coverage not in VALID_COVERAGE or confidence not in VALID_CONFIDENCE:
+            raise ValueError(f"line {line_number} has invalid cast_coverage or label_confidence")
+        names, ids = _aligned_names_and_ids(row, line_number)
+        if confidence == "low":
+            low_confidence += 1
+        truth_status, truth_ids = _truth_for_label(
+            row, line_number, names, ids, coverage, confidence, valid_ids)
+        rows.append(_benchmark_row(row, video_id, truth_status, truth_ids))
+    return rows, skipped_unlabeled, low_confidence
 
-            source_text = _unescape_sheet(row.get("source_text") or "")
-            filename = _unescape_sheet(row.get("source_filename") or "")
-            filename_title = _filename_to_title(filename)
-            fallback = filename_title or f"Telegram {video_id}"
-            title = parse_caption_title(_filter_caption_for_title(source_text), fallback)
-            rows.append({
-                "video_id": video_id,
-                "split": str(row.get("split") or "dev").strip(),
-                "source_text": source_text,
-                "filename_title": filename_title,
-                "title": title,
-                "truth_ids": truth_ids,
-                "truth_status": truth_status,
-            })
 
+def _build_summary(rows: list[dict], skipped_unlabeled: int, low_confidence: int, catalog: list) -> dict:
     splits = {row["split"] for row in rows}
     if not rows:
         raise ValueError("no reviewed rows with usable labels were found")
     if not splits <= {"dev", "holdout"}:
         raise ValueError("split values must be dev or holdout")
-    summary = {
+    return {
         "usable_rows": len(rows),
         "skipped_unlabeled_rows": skipped_unlabeled,
         "low_confidence_rows_not_scored": low_confidence,
@@ -142,6 +165,15 @@ def prepare(sheet: Path, catalog_path: Path) -> tuple[list[dict], dict]:
             for status in sorted(VALID_COVERAGE)
         },
     }
+
+
+def prepare(sheet: Path, catalog_path: Path) -> tuple[list[dict], dict]:
+    catalog, valid_ids = _load_catalog(catalog_path)
+    with sheet.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        _check_header(reader.fieldnames)
+        rows, skipped_unlabeled, low_confidence = _read_labelled_rows(reader, valid_ids)
+    summary = _build_summary(rows, skipped_unlabeled, low_confidence, catalog)
     return rows, summary
 
 

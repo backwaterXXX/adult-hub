@@ -15,6 +15,26 @@ ALLOWED_ACTIONS = {"availability_check", "consistency_audit", "metadata_quality_
 _TIME = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
 
 
+def _cron_entry_values(entry: str, lower: int, upper: int) -> set[int]:
+    match = re.fullmatch(r'(\*|\d+|\d+-\d+)(?:/(\d+))?', entry)
+    if not match:
+        raise ValueError("Invalid cron field; use numbers, *, ranges, lists and steps.")
+    base, step_text = match.groups()
+    step = int(step_text or 1)
+    if step < 1 or step > upper - lower + 1:
+        raise ValueError("Invalid cron step.")
+    if base == '*':
+        start, end = lower, upper
+    elif '-' in base:
+        start, end = map(int, base.split('-'))
+    else:
+        start = int(base)
+        end = upper if step_text else start
+    if start < lower or end > upper or start > end:
+        raise ValueError("Cron value is outside the allowed range.")
+    return set(range(start, end + 1, step))
+
+
 def _cron_fields(expression: str):
     """Parse numeric five-field cron expressions, including lists, ranges and steps."""
     if not isinstance(expression, str) or len(expression) > 100:
@@ -26,23 +46,7 @@ def _cron_fields(expression: str):
     for part, (lower, upper) in zip(parts, ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))):
         values = set()
         for entry in part.split(','):
-            match = re.fullmatch(r'(\*|\d+|\d+-\d+)(?:/(\d+))?', entry)
-            if not match:
-                raise ValueError("Invalid cron field; use numbers, *, ranges, lists and steps.")
-            base, step_text = match.groups()
-            step = int(step_text or 1)
-            if step < 1 or step > upper - lower + 1:
-                raise ValueError("Invalid cron step.")
-            if base == '*':
-                start, end = lower, upper
-            elif '-' in base:
-                start, end = map(int, base.split('-'))
-            else:
-                start = int(base)
-                end = upper if step_text else start
-            if start < lower or end > upper or start > end:
-                raise ValueError("Cron value is outside the allowed range.")
-            values.update(range(start, end + 1, step))
+            values.update(_cron_entry_values(entry, lower, upper))
         if upper == 7 and 7 in values:
             values.add(0)
         fields.append(values)
@@ -112,11 +116,7 @@ def next_run(schedule_type: str, interval_minutes: int | None, daily_at: str | N
     raise ValueError("Could not calculate the next local schedule time.")
 
 
-def _validate(name, action, schedule_type, interval_minutes, daily_at, payload, cron_expression=None):
-    if not isinstance(name, str) or not 3 <= len(name.strip()) <= 100:
-        raise ValueError("Schedule name must be between 3 and 100 characters.")
-    if not isinstance(action, str) or action not in ALLOWED_ACTIONS:
-        raise ValueError("Unsupported scheduled action.")
+def _validate_timing(schedule_type, interval_minutes, daily_at, cron_expression):
     if schedule_type == "cron":
         if interval_minutes is not None or daily_at is not None:
             raise ValueError("Cron schedules cannot include interval or daily fields.")
@@ -138,13 +138,26 @@ def _validate(name, action, schedule_type, interval_minutes, daily_at, payload, 
             raise ValueError("Interval must be empty for a daily schedule.")
     else:
         raise ValueError("Unsupported schedule type.")
+    return cron_expression
+
+
+def _validate_availability_payload(payload):
+    ids = payload.get("video_ids") if isinstance(payload, dict) else None
+    if (not isinstance(ids, list) or not 1 <= len(ids) <= 20
+            or any(not isinstance(item, str) or not item or len(item) > 1000 for item in ids)
+            or len(set(ids)) != len(ids)):
+        raise ValueError("Availability schedules need 1 to 20 distinct video IDs.")
+    return {"video_ids": ids}
+
+
+def _validate(name, action, schedule_type, interval_minutes, daily_at, payload, cron_expression=None):
+    if not isinstance(name, str) or not 3 <= len(name.strip()) <= 100:
+        raise ValueError("Schedule name must be between 3 and 100 characters.")
+    if not isinstance(action, str) or action not in ALLOWED_ACTIONS:
+        raise ValueError("Unsupported scheduled action.")
+    cron_expression = _validate_timing(schedule_type, interval_minutes, daily_at, cron_expression)
     if action == "availability_check":
-        ids = payload.get("video_ids") if isinstance(payload, dict) else None
-        if (not isinstance(ids, list) or not 1 <= len(ids) <= 20
-                or any(not isinstance(item, str) or not item or len(item) > 1000 for item in ids)
-                or len(set(ids)) != len(ids)):
-            raise ValueError("Availability schedules need 1 to 20 distinct video IDs.")
-        return {"video_ids": ids}, cron_expression if schedule_type == "cron" else None
+        return _validate_availability_payload(payload), cron_expression if schedule_type == "cron" else None
     if payload not in ({}, None):
         raise ValueError("This scheduled action does not accept a payload.")
     return {}, cron_expression if schedule_type == "cron" else None

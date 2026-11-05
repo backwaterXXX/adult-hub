@@ -53,14 +53,8 @@ def record_metadata_change(conn, *, job_id: str, video_id: str,
     return cursor.rowcount == 1
 
 
-def list_change_events(conn, *, limit: int = 50, offset: int = 0,
-                       event_type: str | None = None, object_type: str | None = None,
-                       query: str | None = None) -> dict:
-    """Return bounded newest-first change history with allowlisted fields only."""
-    if type(limit) is not int or not 1 <= limit <= 100:
-        raise ValueError("limit must be between 1 and 100")
-    if type(offset) is not int or not 0 <= offset <= 2_147_483_647:
-        raise ValueError("offset must be a non-negative integer")
+def _change_filters(event_type, object_type, query):
+    """Normalise list filters; return the WHERE clause and its parameters."""
     event_type = str(event_type or "")
     object_type = str(object_type or "")
     query = str(query or "").strip()
@@ -81,40 +75,70 @@ def list_change_events(conn, *, limit: int = 50, offset: int = 0,
         clauses.append("(object_id ILIKE %s OR COALESCE(job_id,'') ILIKE %s)")
         params.extend((f"%{query}%", f"%{query}%"))
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, params
+
+
+def _kept_change_keys(event_type, field):
+    """Return the value keys allowed for a change field, or None when the field is dropped."""
+    if field in VIDEO_FIELDS:
+        return ("before", "after", "before_overridden", "after_overridden")
+    if event_type == "source_settings_update" and _valid_source_audit_path(field.split(".")):
+        return ("before", "after")
+    if event_type == "admin_operation_queued" and field in OPERATION_FIELDS:
+        return ("before", "after")
+    if event_type in {"schedule_created", "schedule_enabled"} and field in SCHEDULE_FIELDS:
+        return ("before", "after")
+    if event_type == "performer_profile_update" and field in {"bio", "photo", "aliases"}:
+        return ("before", "after")
+    return None
+
+
+def _filter_changes(event_type, raw) -> dict:
+    changes = {}
+    for field, values in raw.items():
+        if not isinstance(values, dict):
+            continue
+        keys = _kept_change_keys(event_type, field)
+        if keys is not None:
+            changes[field] = {key: values.get(key) for key in keys}
+    return changes
+
+
+def _decode_changes(value) -> dict:
+    raw = value if isinstance(value, dict) else {}
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+            raw = decoded if isinstance(decoded, dict) else {}
+        except (TypeError, ValueError):
+            raw = {}
+    return raw
+
+
+def _change_item(row) -> dict:
+    changes = _filter_changes(row[2], _decode_changes(row[6]))
+    created_at = row[1].isoformat() if hasattr(row[1], "isoformat") else row[1]
+    return {"id": int(row[0]), "created_at": created_at, "event_type": row[2],
+            "object_type": row[3], "object_id": row[4], "job_id": row[5],
+            "changes": changes, "truncated": bool(row[7]), "actor_type": "shared_admin"}
+
+
+def list_change_events(conn, *, limit: int = 50, offset: int = 0,
+                       event_type: str | None = None, object_type: str | None = None,
+                       query: str | None = None) -> dict:
+    """Return bounded newest-first change history with allowlisted fields only."""
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
+    if type(offset) is not int or not 0 <= offset <= 2_147_483_647:
+        raise ValueError("offset must be a non-negative integer")
+    where, params = _change_filters(event_type, object_type, query)
     rows = conn.execute(
         "SELECT id,created_at,event_type,object_type,object_id,job_id,changes,truncated "
         f"FROM admin_audit_events{where} ORDER BY created_at DESC,id DESC LIMIT %s OFFSET %s",
         (*params, limit, offset),
     ).fetchall()
     total = int(conn.execute(f"SELECT count(*) FROM admin_audit_events{where}", params).fetchone()[0])
-    items = []
-    for row in rows:
-        raw = row[6] if isinstance(row[6], dict) else {}
-        if isinstance(row[6], str):
-            try:
-                decoded = json.loads(row[6])
-                raw = decoded if isinstance(decoded, dict) else {}
-            except (TypeError, ValueError):
-                raw = {}
-        changes = {}
-        for field, values in raw.items():
-            if not isinstance(values, dict):
-                continue
-            if field in VIDEO_FIELDS:
-                changes[field] = {key: values.get(key) for key in (
-                    "before", "after", "before_overridden", "after_overridden")}
-            elif row[2] == "source_settings_update" and _valid_source_audit_path(field.split(".")):
-                changes[field] = {key: values.get(key) for key in ("before", "after")}
-            elif row[2] == "admin_operation_queued" and field in OPERATION_FIELDS:
-                changes[field] = {key: values.get(key) for key in ("before", "after")}
-            elif row[2] in {"schedule_created", "schedule_enabled"} and field in SCHEDULE_FIELDS:
-                changes[field] = {key: values.get(key) for key in ("before", "after")}
-            elif row[2] == "performer_profile_update" and field in {"bio", "photo", "aliases"}:
-                changes[field] = {key: values.get(key) for key in ("before", "after")}
-        created_at = row[1].isoformat() if hasattr(row[1], "isoformat") else row[1]
-        items.append({"id": int(row[0]), "created_at": created_at, "event_type": row[2],
-                      "object_type": row[3], "object_id": row[4], "job_id": row[5],
-                      "changes": changes, "truncated": bool(row[7]), "actor_type": "shared_admin"})
+    items = [_change_item(row) for row in rows]
     return {"items": items, "total": total, "offset": offset, "limit": limit}
 
 
@@ -273,28 +297,21 @@ def _valid_source_audit_path(path: list[str]) -> bool:
     return False
 
 
-def record_source_settings_change(db_url: str | None, *, revision: int, changes,
-                                  truncated: bool = False) -> bool:
-    """Store a safe effective source-config diff; identical replays count as success."""
-    if type(revision) is not int or revision < 1 or not isinstance(changes, list):
-        return False
-    safe = {}
-    channel_aliases = {}
-    truncated = bool(truncated or len(changes) > 1000)
-    def safe_value(value):
-        nonlocal truncated
-        if value is None or isinstance(value, (bool, int)):
-            return value
-        if isinstance(value, str):
-            if len(value) > 300:
-                truncated = True
-            return value[:300]
-        if isinstance(value, list) and all(isinstance(v, str) for v in value):
-            if len(value) > 40 or any(len(v) > 100 for v in value):
-                truncated = True
-            return [v[:100] for v in value[:40]]
-        return None
+def _safe_source_value(value) -> tuple:
+    """Return a bounded copy of one source value and whether it was shortened."""
+    if value is None or isinstance(value, (bool, int)):
+        return value, False
+    if isinstance(value, str):
+        return value[:300], len(value) > 300
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        cut = len(value) > 40 or any(len(v) > 100 for v in value)
+        return [v[:100] for v in value[:40]], cut
+    return None, False
 
+
+def _safe_source_changes(changes, channel_aliases) -> tuple[dict, bool]:
+    safe = {}
+    truncated = False
     for item in changes[:1000]:
         if not isinstance(item, dict) or set(item) != {"path", "before", "after"}:
             continue
@@ -308,13 +325,24 @@ def record_source_settings_change(db_url: str | None, *, revision: int, changes,
         if safe_path is None:
             continue
         key = ".".join(safe_path)
-        safe[key] = {"before": safe_value(item["before"]), "after": safe_value(item["after"])}
-    if not safe:
-        return False
+        before, before_cut = _safe_source_value(item["before"])
+        after, after_cut = _safe_source_value(item["after"])
+        truncated = truncated or before_cut or after_cut
+        safe[key] = {"before": before, "after": after}
+    return safe, truncated
+
+
+def _trim_source_changes(safe: dict) -> bool:
+    """Drop the newest-inserted keys until the diff fits the size limit; return True when trimmed."""
+    trimmed = False
     if len(json.dumps(safe, ensure_ascii=False).encode("utf-8")) > 32 * 1024:
         while safe and len(json.dumps(safe, ensure_ascii=False).encode("utf-8")) > 32 * 1024:
             safe.pop(next(reversed(safe)))
-            truncated = True
+            trimmed = True
+    return trimmed
+
+
+def _store_source_settings_event(db_url, revision: int, safe: dict, truncated: bool) -> bool:
     conn = db.connect(db_url)
     try:
         with conn:
@@ -342,3 +370,18 @@ def record_source_settings_change(db_url: str | None, *, revision: int, changes,
                         and existing_changes == safe and bool(existing[4]) == truncated)
     finally:
         conn.close()
+
+
+def record_source_settings_change(db_url: str | None, *, revision: int, changes,
+                                  truncated: bool = False) -> bool:
+    """Store a safe effective source-config diff; identical replays count as success."""
+    if type(revision) is not int or revision < 1 or not isinstance(changes, list):
+        return False
+    channel_aliases = {}
+    truncated = bool(truncated or len(changes) > 1000)
+    safe, collected_truncated = _safe_source_changes(changes, channel_aliases)
+    truncated = truncated or collected_truncated
+    if not safe:
+        return False
+    truncated = truncated or _trim_source_changes(safe)
+    return _store_source_settings_event(db_url, revision, safe, truncated)

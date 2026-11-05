@@ -155,6 +155,47 @@ def _stop(signum, _frame) -> None:
     STOP.set()
 
 
+def _run_claimed_backup(db_url: str | None) -> int:
+    code = 1
+    try:
+        code = _run_backup(db_url)
+    except Exception:
+        LOGGER.exception("The scheduled database backup crashed")
+    try:
+        finish_system_schedule(db_url, "database-backup", success=code == 0,
+                               skipped_overlap=code == BACKUP_OVERLAP)
+    except Exception:
+        LOGGER.exception("Could not record the database backup result")
+    return code
+
+
+def _run_once(db_url: str) -> int:
+    try:
+        due = claim_due_system_schedule(db_url, "database-backup")
+    except Exception:
+        LOGGER.exception("Could not check the database backup schedule")
+        return 1
+    if not due:
+        LOGGER.info("Saved database backup schedule is not due; skipping")
+        return 0
+    code = _run_claimed_backup(db_url)
+    return 0 if code == BACKUP_OVERLAP else code
+
+
+def _poll_backup_schedule(db_url: str) -> None:
+    while not STOP.is_set():
+        code = 0
+        try:
+            due = claim_due_system_schedule(db_url, "database-backup")
+        except Exception:
+            LOGGER.exception("Could not check the database backup schedule")
+            due = False
+            code = 1
+        if due:
+            code = _run_claimed_backup(db_url)
+        STOP.wait(BACKUP_RETRY_SECONDS if code else 30.0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -178,25 +219,7 @@ def main() -> int:
         LOGGER.exception("Could not initialize system schedules")
         return 1
     if args.once:
-        try:
-            due = claim_due_system_schedule(db_url, "database-backup")
-        except Exception:
-            LOGGER.exception("Could not check the database backup schedule")
-            return 1
-        if not due:
-            LOGGER.info("Saved database backup schedule is not due; skipping")
-            return 0
-        code = 1
-        try:
-            code = _run_backup(db_url)
-        except Exception:
-            LOGGER.exception("The scheduled database backup crashed")
-        try:
-            finish_system_schedule(db_url, "database-backup", success=code == 0,
-                                   skipped_overlap=code == BACKUP_OVERLAP)
-        except Exception:
-            LOGGER.exception("Could not record the database backup result")
-        return 0 if code == BACKUP_OVERLAP else code
+        return _run_once(db_url)
 
     LOGGER.info("Database backup and artwork schedulers are polling the saved cron schedules")
     signal.signal(signal.SIGTERM, _stop)
@@ -204,26 +227,7 @@ def main() -> int:
     artwork_thread = _start_artwork_scheduler(db_url)
 
     try:
-        while not STOP.is_set():
-            code = 0
-            try:
-                due = claim_due_system_schedule(db_url, "database-backup")
-            except Exception:
-                LOGGER.exception("Could not check the database backup schedule")
-                due = False
-                code = 1
-            if due:
-                code = 1
-                try:
-                    code = _run_backup(db_url)
-                except Exception:
-                    LOGGER.exception("The scheduled database backup crashed")
-                try:
-                    finish_system_schedule(db_url, "database-backup", success=code == 0,
-                                           skipped_overlap=code == BACKUP_OVERLAP)
-                except Exception:
-                    LOGGER.exception("Could not record the database backup result")
-            STOP.wait(BACKUP_RETRY_SECONDS if code else 30.0)
+        _poll_backup_schedule(db_url)
     finally:
         STOP.set()
         artwork_thread.join(timeout=5.0)

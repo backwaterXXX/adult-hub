@@ -29,8 +29,21 @@ def _name_is_word_subset(short_name: str, long_name: str) -> bool:
     )
 
 
-def run():
-    conn = db.connect(DB_URL)
+def _json_list(raw) -> list:
+    try:
+        return json.loads(raw or "[]")
+    except Exception:
+        return []
+
+
+def _json_set(raw) -> set:
+    try:
+        return set(json.loads(raw)) if raw else set()
+    except Exception:
+        return set()
+
+
+def _load_known_map(conn) -> dict:
     known_names = [
         r[0]
         for r in conn.execute("SELECT name FROM performer_bios").fetchall()
@@ -44,6 +57,109 @@ def run():
         ).fetchall()
         if str(alias).strip() and str(canonical).strip()
     })
+    return known_map
+
+
+def _renames_existing_name(old_perfs: list, new_perfs: list) -> bool:
+    return any(
+        old_name.lower() not in {name.lower() for name in new_perfs}
+        and (
+            any(_name_is_word_subset(old_name, new_name) for new_name in new_perfs)
+            or any(_name_is_word_subset(new_name, old_name) for new_name in new_perfs)
+        )
+        for old_name in old_perfs
+    )
+
+
+def _has_nationality_prefix(old_perfs: list) -> bool:
+    return any(
+        any(old_name.lower().startswith(p + " ") for p in NATIONALITY_PREFIXES)
+        for old_name in old_perfs
+    )
+
+
+def _should_update(old_perfs: list, new_perfs: list) -> bool:
+    old_multi = sum(1 for p in old_perfs if len(p.split()) >= 2)
+    new_multi = sum(1 for p in new_perfs if len(p.split()) >= 2)
+
+    if new_perfs == old_perfs:
+        return False
+    if not old_perfs:
+        return True
+    if new_multi > old_multi:
+        return True
+    if new_multi == old_multi and len(new_perfs) > len(old_perfs):
+        return True
+    if all(len(p.split()) == 1 for p in old_perfs) and new_multi > 0:
+        return True
+    if _renames_existing_name(old_perfs, new_perfs):
+        return True
+    return _has_nationality_prefix(old_perfs)
+
+
+def _regenerate_nfo(conn, row, new_perfs: list, nfo_path: Path) -> bool:
+    (
+        vid_id,
+        prov,
+        title,
+        slug,
+        dur,
+        thumb,
+        _perfs_raw,
+        cats_raw,
+        tags_raw,
+        studio,
+        first_seen,
+    ) = row
+    tag_set = _json_set(tags_raw)
+    genres = _json_set(cats_raw)
+
+    video_dict = {
+        "id": vid_id,
+        "provider": prov,
+        "provider_video_id": vid_id.split(":", 1)[-1],
+        "title": title or vid_id,
+        "slug": slug or "",
+        "duration": dur or 0,
+        "thumbnail": thumb or "",
+        "performers": new_perfs,
+        "performer_thumbs": S.load_performer_thumbs(conn, new_perfs),
+        "studio": studio or "",
+        "dateadded": S.format_dateadded(first_seen or time.time()),
+    }
+    try:
+        S.create_nfo_file(video_dict, genres, tag_set, nfo_path)
+        return True
+    except Exception:
+        return False
+
+
+def _process_row(conn, row, known_map: dict) -> tuple[bool, bool]:
+    """Reparse one Telegram video; return (video_updated, nfo_updated)."""
+    vid_id, title, perfs_raw = row[0], row[2], row[6]
+    old_perfs = _json_list(perfs_raw)
+
+    raw_title = title or ""
+    new_perfs = parse_title_performers_with_known_map(raw_title, known_map)
+
+    if not new_perfs or not _should_update(old_perfs, new_perfs):
+        return False, False
+
+    conn.execute(
+        "UPDATE videos SET performers = %s WHERE id = %s",
+        (json.dumps(new_perfs, ensure_ascii=False), vid_id),
+    )
+
+    nfo_path = MEDIA_DIR / f"{S.stable_media_basename(vid_id)}.nfo"
+    nfo_updated = False
+    if nfo_path.exists():
+        nfo_updated = _regenerate_nfo(conn, row, new_perfs, nfo_path)
+    return True, nfo_updated
+
+
+def run():
+    conn = db.connect(DB_URL)
+    known_map = _load_known_map(conn)
 
     rows = conn.execute(
         "SELECT id, provider, title, slug, duration, thumbnail, performers, categories, tags, studio, first_seen "
@@ -56,95 +172,9 @@ def run():
     print(f"Scanning {len(rows)} Telegram videos...")
     with conn:
         for row in rows:
-            (
-                vid_id,
-                prov,
-                title,
-                slug,
-                dur,
-                thumb,
-                perfs_raw,
-                cats_raw,
-                tags_raw,
-                studio,
-                first_seen,
-            ) = row
-
-            try:
-                old_perfs = json.loads(perfs_raw or "[]")
-            except Exception:
-                old_perfs = []
-
-            raw_title = title or ""
-            new_perfs = parse_title_performers_with_known_map(raw_title, known_map)
-
-            if not new_perfs:
-                continue
-
-            old_multi = sum(1 for p in old_perfs if len(p.split()) >= 2)
-            new_multi = sum(1 for p in new_perfs if len(p.split()) >= 2)
-
-            should_update = False
-            if new_perfs != old_perfs:
-                if not old_perfs:
-                    should_update = True
-                elif new_multi > old_multi:
-                    should_update = True
-                elif new_multi == old_multi and len(new_perfs) > len(old_perfs):
-                    should_update = True
-                elif all(len(p.split()) == 1 for p in old_perfs) and new_multi > 0:
-                    should_update = True
-                elif any(
-                    old_name.lower() not in {name.lower() for name in new_perfs}
-                    and (
-                        any(_name_is_word_subset(old_name, new_name) for new_name in new_perfs)
-                        or any(_name_is_word_subset(new_name, old_name) for new_name in new_perfs)
-                    )
-                    for old_name in old_perfs
-                ):
-                    should_update = True
-                elif any(
-                    any(old_name.lower().startswith(p + " ") for p in NATIONALITY_PREFIXES)
-                    for old_name in old_perfs
-                ):
-                    should_update = True
-
-            if should_update:
-                videos_updated += 1
-                conn.execute(
-                    "UPDATE videos SET performers = %s WHERE id = %s",
-                    (json.dumps(new_perfs, ensure_ascii=False), vid_id),
-                )
-
-                nfo_path = MEDIA_DIR / f"{S.stable_media_basename(vid_id)}.nfo"
-                if nfo_path.exists():
-                    try:
-                        tag_set = set(json.loads(tags_raw)) if tags_raw else set()
-                    except Exception:
-                        tag_set = set()
-                    try:
-                        genres = set(json.loads(cats_raw)) if cats_raw else set()
-                    except Exception:
-                        genres = set()
-
-                    video_dict = {
-                        "id": vid_id,
-                        "provider": prov,
-                        "provider_video_id": vid_id.split(":", 1)[-1],
-                        "title": title or vid_id,
-                        "slug": slug or "",
-                        "duration": dur or 0,
-                        "thumbnail": thumb or "",
-                        "performers": new_perfs,
-                        "performer_thumbs": S.load_performer_thumbs(conn, new_perfs),
-                        "studio": studio or "",
-                        "dateadded": S.format_dateadded(first_seen or time.time()),
-                    }
-                    try:
-                        S.create_nfo_file(video_dict, genres, tag_set, nfo_path)
-                        nfos_updated += 1
-                    except Exception:
-                        pass
+            video_updated, nfo_updated = _process_row(conn, row, known_map)
+            videos_updated += int(video_updated)
+            nfos_updated += int(nfo_updated)
 
     conn.close()
     print(

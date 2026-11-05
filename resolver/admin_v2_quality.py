@@ -8,9 +8,7 @@ from admin_v2_errors import V2ErrorRoute
 logger = logging.getLogger(__name__)
 
 
-def build_router(admin):
-    router = APIRouter(route_class=V2ErrorRoute)
-
+def _route_proposals(router, admin):
     @router.get("/api/v2/quality/proposals")
     async def proposals(request: Request, limit: int = Query(30, ge=1, le=100),
                         offset: int = Query(0, ge=0, le=1_000_000)):
@@ -24,6 +22,8 @@ def build_router(admin):
             logger.warning("Request failed in proposals", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Metadata proposals are unavailable."}, status_code=503)
 
+
+def _route_refresh_proposal(router, admin):
     @router.post("/api/v2/quality/proposals/{proposal_id}/refresh")
     async def refresh_proposal(request: Request, proposal_id: int):
         denied = admin._write_denied(request)
@@ -42,6 +42,8 @@ def build_router(admin):
             return admin.JSONResponse({"ok": False, "error": "This metadata proposal is no longer pending."}, status_code=409)
         return {"ok": True, "id": result["id"], "revision": result["revision"]}
 
+
+def _route_reject_proposal(router, admin):
     @router.post("/api/v2/quality/proposals/{proposal_id}/reject")
     async def reject_proposal(request: Request, proposal_id: int):
         denied = admin._write_denied(request)
@@ -60,4 +62,10 @@ def build_router(admin):
             return admin.JSONResponse({"ok": False, "error": "This metadata proposal is no longer pending."}, status_code=409)
         return {"ok": True, "id": result["id"], "status": "rejected"}
 
+
+def build_router(admin):
+    router = APIRouter(route_class=V2ErrorRoute)
+    _route_proposals(router, admin)
+    _route_refresh_proposal(router, admin)
+    _route_reject_proposal(router, admin)
     return router

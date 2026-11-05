@@ -208,91 +208,166 @@ def _purge_expired_range_caches(now: float | None = None) -> int:
     return removed
 
 
-def _process(job: dict, leader) -> None:
-    heartbeat_stop = threading.Event()
-    lease_lost = threading.Event()
-
-    def maintain_lease() -> None:
-        while not heartbeat_stop.wait(HEARTBEAT_SECONDS):
-            try:
-                leader.execute("SELECT 1")
-                if not phash_jobs.heartbeat(DB_URL, job["id"], job["lease_token"]):
-                    lease_lost.set()
-                    _handle_stop(signal.SIGTERM, None)
-                    return
-                _publish(True)
-            except Exception:
+def _maintain_lease(job: dict, leader, heartbeat_stop: threading.Event,
+                    lease_lost: threading.Event) -> None:
+    """Heartbeat loop run on a helper thread while a job is processed."""
+    while not heartbeat_stop.wait(HEARTBEAT_SECONDS):
+        try:
+            leader.execute("SELECT 1")
+            if not phash_jobs.heartbeat(DB_URL, job["id"], job["lease_token"]):
                 lease_lost.set()
                 _handle_stop(signal.SIGTERM, None)
                 return
+            _publish(True)
+        except Exception:
+            lease_lost.set()
+            _handle_stop(signal.SIGTERM, None)
+            return
 
-    heartbeat_thread = threading.Thread(target=maintain_lease, daemon=True)
+
+def _record_failed_result(job: dict, result: dict) -> None:
+    error_code = result.get("error_code", "generation_failed")
+    if error_code == "daily_transfer_budget_exhausted":
+        phash_jobs.defer_until_daily_reset(DB_URL, job)
+    else:
+        phash_jobs.finish_failure(
+            DB_URL, job, error_code,
+            retryable=bool(result.get("retryable")),
+            error_detail=result.get("error_detail", ""),
+        )
+
+
+def _store_success(job: dict, result: dict) -> bool:
+    """Persist a successful generation. Returns False when the job was not completed."""
+    conn = db.connect(DB_URL)
+    try:
+        conn.row_factory = db.Record
+        locked = conn.execute(
+            """SELECT 1 FROM video_phash_jobs WHERE id=%s AND state='processing'
+               AND lease_token=%s AND lease_until >= CURRENT_TIMESTAMP FOR UPDATE""",
+            (job["id"], job["lease_token"]),
+        ).fetchone()
+        if not locked:
+            conn.rollback()
+            return False
+        if job.get("job_kind", "combined") == "thumbnail":
+            conn.execute(
+                """INSERT INTO video_phash_thumbnails(video_id,image_bytes) VALUES (%s,%s)
+                   ON CONFLICT(video_id) DO UPDATE SET image_bytes=EXCLUDED.image_bytes,
+                   updated_at=CURRENT_TIMESTAMP""", (job["video_id"], result["thumbnail"]),
+            )
+            outcome = "stored"
+        else:
+            outcome = _store(
+                SimpleNamespace(HUB_DB_URL=DB_URL), job["video_id"], result["fingerprint"],
+                job["decoder_profile"], job["submitted_by_user_id"], result.get("thumbnail"),
+                connection=conn,
+            )
+        if outcome == "conflict":
+            conn.rollback()
+            phash_jobs.finish_failure(DB_URL, job, "fingerprint_conflict", retryable=False)
+            return False
+        if not phash_jobs.finish_success(conn, job, result["fingerprint"], int(result["bytes_read"])):
+            conn.rollback()
+            return False
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return True
+
+
+def _record_process_exception(job: dict, exc: Exception, lease_lost: threading.Event) -> None:
+    error_detail = _safe_error_detail(f"{type(exc).__name__}: {exc}")
+    LOGGER.error("pHash job %s failed (%s): %s", job["id"], type(exc).__name__, error_detail)
+    if not lease_lost.is_set() and not _stop.is_set():
+        try:
+            phash_jobs.finish_failure(DB_URL, job, "generation_failed", retryable=True,
+                                      error_detail=error_detail)
+        except Exception:
+            LOGGER.exception("Could not record pHash job failure %s", job["id"])
+
+
+def _process(job: dict, leader) -> None:
+    heartbeat_stop = threading.Event()
+    lease_lost = threading.Event()
+    heartbeat_thread = threading.Thread(
+        target=_maintain_lease, args=(job, leader, heartbeat_stop, lease_lost), daemon=True,
+    )
     heartbeat_thread.start()
     try:
         result = _compute(job)
         if lease_lost.is_set() or _stop.is_set():
             return
         if not result.get("ok"):
-            error_code = result.get("error_code", "generation_failed")
-            if error_code == "daily_transfer_budget_exhausted":
-                phash_jobs.defer_until_daily_reset(DB_URL, job)
-            else:
-                phash_jobs.finish_failure(
-                    DB_URL, job, error_code,
-                    retryable=bool(result.get("retryable")),
-                    error_detail=result.get("error_detail", ""),
-                )
+            _record_failed_result(job, result)
             return
-        conn = db.connect(DB_URL)
-        try:
-            conn.row_factory = db.Record
-            locked = conn.execute(
-                """SELECT 1 FROM video_phash_jobs WHERE id=%s AND state='processing'
-                   AND lease_token=%s AND lease_until >= CURRENT_TIMESTAMP FOR UPDATE""",
-                (job["id"], job["lease_token"]),
-            ).fetchone()
-            if not locked:
-                conn.rollback()
-                return
-            if job.get("job_kind", "combined") == "thumbnail":
-                conn.execute(
-                    """INSERT INTO video_phash_thumbnails(video_id,image_bytes) VALUES (%s,%s)
-                       ON CONFLICT(video_id) DO UPDATE SET image_bytes=EXCLUDED.image_bytes,
-                       updated_at=CURRENT_TIMESTAMP""", (job["video_id"], result["thumbnail"]),
-                )
-                outcome = "stored"
-            else:
-                outcome = _store(
-                    SimpleNamespace(HUB_DB_URL=DB_URL), job["video_id"], result["fingerprint"],
-                    job["decoder_profile"], job["submitted_by_user_id"], result.get("thumbnail"),
-                    connection=conn,
-                )
-            if outcome == "conflict":
-                conn.rollback()
-                phash_jobs.finish_failure(DB_URL, job, "fingerprint_conflict", retryable=False)
-                return
-            if not phash_jobs.finish_success(conn, job, result["fingerprint"], int(result["bytes_read"])):
-                conn.rollback()
-                return
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        if not _store_success(job, result):
+            return
         LOGGER.info("Video %s job %s completed", job.get("job_kind", "combined"), job["id"])
     except Exception as exc:
-        error_detail = _safe_error_detail(f"{type(exc).__name__}: {exc}")
-        LOGGER.error("pHash job %s failed (%s): %s", job["id"], type(exc).__name__, error_detail)
-        if not lease_lost.is_set() and not _stop.is_set():
-            try:
-                phash_jobs.finish_failure(DB_URL, job, "generation_failed", retryable=True,
-                                          error_detail=error_detail)
-            except Exception:
-                LOGGER.exception("Could not record pHash job failure %s", job["id"])
+        _record_process_exception(job, exc, lease_lost)
     finally:
         heartbeat_stop.set()
         heartbeat_thread.join(timeout=3)
+
+
+def _purge_range_caches_logged() -> None:
+    try:
+        removed = _purge_expired_range_caches()
+        if removed:
+            LOGGER.info("Removed %d expired pHash range caches", removed)
+    except Exception as exc:
+        LOGGER.warning("Could not purge expired pHash range caches (%s)", type(exc).__name__)
+
+
+def _requeue_expired_leases() -> None:
+    recovered = phash_jobs.recover_expired(DB_URL)
+    if recovered:
+        LOGGER.warning("Re-queued %d pHash jobs after expired leases", recovered)
+
+
+def _close_quietly(leader) -> None:
+    try:
+        leader.close()
+    except Exception:
+        pass
+
+
+def _acquire_leader(last_recovery: float) -> tuple:
+    """Try to become the queue leader. Returns (leader_or_None, last_recovery)."""
+    leader = None
+    try:
+        leader = phash_jobs.worker_lock(DB_URL)
+        if leader is not None:
+            _requeue_expired_leases()
+            last_recovery = time.monotonic()
+    except Exception as exc:
+        LOGGER.warning("pHash queue is unavailable (%s)", type(exc).__name__)
+        if leader is not None:
+            _close_quietly(leader)
+        leader = None
+    return leader, last_recovery
+
+
+def _run_cycle(leader, last_recovery: float) -> float:
+    """Run one claim cycle as leader. Returns the updated recovery timestamp."""
+    leader.execute("SELECT 1")
+    if time.monotonic() - last_recovery >= POLL_SECONDS:
+        _requeue_expired_leases()
+        last_recovery = time.monotonic()
+    if not _resolver_ready():
+        _stop.wait(POLL_SECONDS)
+        return last_recovery
+    job = phash_jobs.claim_next(DB_URL)
+    if job is None:
+        _stop.wait(POLL_SECONDS)
+        return last_recovery
+    LOGGER.info("Claimed pHash job %s (attempt %s)", job["id"], job["attempts"])
+    _process(job, leader)
+    return last_recovery
 
 
 def main() -> int:
@@ -310,54 +385,18 @@ def main() -> int:
             _stop.wait(POLL_SECONDS)
             continue
         if time.monotonic() - last_cache_purge >= 3600:
-            try:
-                removed = _purge_expired_range_caches()
-                if removed:
-                    LOGGER.info("Removed %d expired pHash range caches", removed)
-            except Exception as exc:
-                LOGGER.warning("Could not purge expired pHash range caches (%s)", type(exc).__name__)
+            _purge_range_caches_logged()
             last_cache_purge = time.monotonic()
         if leader is None:
-            try:
-                leader = phash_jobs.worker_lock(DB_URL)
-                if leader is not None:
-                    recovered = phash_jobs.recover_expired(DB_URL)
-                    if recovered:
-                        LOGGER.warning("Re-queued %d pHash jobs after expired leases", recovered)
-                    last_recovery = time.monotonic()
-            except Exception as exc:
-                LOGGER.warning("pHash queue is unavailable (%s)", type(exc).__name__)
-                if leader is not None:
-                    try:
-                        leader.close()
-                    except Exception:
-                        pass
-                leader = None
+            leader, last_recovery = _acquire_leader(last_recovery)
             if leader is None:
                 _stop.wait(POLL_SECONDS)
                 continue
         try:
-            leader.execute("SELECT 1")
-            if time.monotonic() - last_recovery >= POLL_SECONDS:
-                recovered = phash_jobs.recover_expired(DB_URL)
-                if recovered:
-                    LOGGER.warning("Re-queued %d pHash jobs after expired leases", recovered)
-                last_recovery = time.monotonic()
-            if not _resolver_ready():
-                _stop.wait(POLL_SECONDS)
-                continue
-            job = phash_jobs.claim_next(DB_URL)
-            if job is None:
-                _stop.wait(POLL_SECONDS)
-                continue
-            LOGGER.info("Claimed pHash job %s (attempt %s)", job["id"], job["attempts"])
-            _process(job, leader)
+            last_recovery = _run_cycle(leader, last_recovery)
         except Exception as exc:
             LOGGER.error("pHash worker cycle failed (%s)", type(exc).__name__)
-            try:
-                leader.close()
-            except Exception:
-                pass
+            _close_quietly(leader)
             leader = None
             _stop.wait(POLL_SECONDS)
     if leader is not None:

@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 from io import BytesIO
-from typing import Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 from urllib.parse import quote
 import logging
 
@@ -183,7 +183,7 @@ class FingerprintBudget:
             self.total_size = int(raw)
         return self.total_size
 
-    def fetch(self, start: int, requested_end: int) -> tuple[int, bytes]:
+    def _validated_range(self, start: int, requested_end: int) -> int:
         if self.total_size is None:
             self.load_size()
         assert self.total_size is not None
@@ -192,70 +192,99 @@ class FingerprintBudget:
         requested_end = min(requested_end, self.total_size - 1)
         if requested_end < start:
             raise ValueError("Invalid Telegram byte range")
+        return requested_end
+
+    def _memory_step(self, cursor: int, data: bytearray, target_length: int) -> tuple[int, int, int]:
+        """Serve from in-memory segments. Returns (bytes served, fetch_start, fetch_length)."""
+        with self.lock:
+            cached = next((
+                (cached_start, cached_data) for cached_start, cached_data in self.cache_segments
+                if cached_start <= cursor < cached_start + len(cached_data)
+            ), None)
+            if cached:
+                cached_start, cached_data = cached
+                take = min(target_length - len(data), cached_start + len(cached_data) - cursor)
+                data.extend(cached_data[cursor - cached_start:cursor - cached_start + take])
+                return take, 0, 0
+            # Fetch a bounded block and serve FFmpeg's smaller reads from cache.
+            fetch_start = cursor // PREFETCH_BYTES * PREFETCH_BYTES
+            fetch_end = min(
+                fetch_start + PREFETCH_BYTES - 1,
+                self.total_size - 1,
+            )
+            return 0, fetch_start, fetch_end - fetch_start + 1
+
+    def _disk_step(self, fetch_start: int, cursor: int, data: bytearray,
+                   target_length: int, length: int) -> int:
+        """Serve from a persisted aligned block. Returns the number of bytes served (0 when unused)."""
+        cached_block = self._cached_block(fetch_start)
+        if cached_block is None:
+            return 0
+        if len(cached_block) > length:
+            raise ValueError("Cached pHash range has an unexpected size")
+        if not (fetch_start <= cursor < fetch_start + len(cached_block)):
+            return 0
+        take = min(target_length - len(data), fetch_start + len(cached_block) - cursor)
+        data.extend(cached_block[cursor - fetch_start:cursor - fetch_start + take])
+        return take
+
+    def _budgeted_length(self, length: int) -> Optional[int]:
+        """Clamp a fetch to the remaining budget and reserve it. Returns None when the fetch loop must stop."""
+        remaining = self.budget - self.bytes_read
+        if remaining <= 0:
+            if self.cache_dir is None:
+                return None
+            raise FingerprintBudgetExceeded("Video fingerprint byte budget exhausted")
+        # Persistent cache entries have fixed, aligned ranges. Do not create
+        # a short final entry that a later attempt could mistake for a full block.
+        if self.cache_dir is not None and remaining < length:
+            raise FingerprintBudgetExceeded("Video fingerprint byte budget exhausted")
+        length = min(length, remaining)
+        if not self._reserve(length):
+            return None
+        return length
+
+    def _download_block(self, fetch_start: int, length: int) -> bytes:
+        end = fetch_start + length - 1
+        with self.http_client.stream(
+            "GET", self.stream_url,
+            headers={"Range": f"bytes={fetch_start}-{end}",
+                     "X-Adult-Hub-Transfer": "phash"}, timeout=20.0,
+        ) as response:
+            if response.status_code != 206:
+                raise ValueError("Resolver did not honor a bounded byte range")
+            content_range = str(response.headers.get("content-range") or "")
+            match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
+            if not match or tuple(map(int, match.groups())) != (fetch_start, end, self.total_size):
+                raise ValueError("Resolver returned an unexpected byte range")
+            chunk_data = bytearray()
+            for chunk in response.iter_bytes():
+                if len(chunk_data) + len(chunk) > length:
+                    raise ValueError("Resolver exceeded the requested range")
+                chunk_data.extend(chunk)
+            if len(chunk_data) != length:
+                raise ValueError("Resolver returned an incomplete byte range")
+        return bytes(chunk_data)
+
+    def fetch(self, start: int, requested_end: int) -> tuple[int, bytes]:
+        requested_end = self._validated_range(start, requested_end)
 
         target_length = requested_end - start + 1
         data = bytearray()
         cursor = start
         while len(data) < target_length:
-            with self.lock:
-                cached = next((
-                    (cached_start, cached_data) for cached_start, cached_data in self.cache_segments
-                    if cached_start <= cursor < cached_start + len(cached_data)
-                ), None)
-                if cached:
-                    cached_start, cached_data = cached
-                    take = min(target_length - len(data), cached_start + len(cached_data) - cursor)
-                    data.extend(cached_data[cursor - cached_start:cursor - cached_start + take])
-                    cursor += take
-                    continue
-                # Fetch a bounded block and serve FFmpeg's smaller reads from cache.
-                fetch_start = cursor // PREFETCH_BYTES * PREFETCH_BYTES
-                fetch_end = min(
-                    fetch_start + PREFETCH_BYTES - 1,
-                    self.total_size - 1,
-                )
-                length = fetch_end - fetch_start + 1
-            cached_block = self._cached_block(fetch_start)
-            if cached_block is not None:
-                if len(cached_block) > length:
-                    raise ValueError("Cached pHash range has an unexpected size")
-                if fetch_start <= cursor < fetch_start + len(cached_block):
-                    take = min(target_length - len(data), fetch_start + len(cached_block) - cursor)
-                    data.extend(cached_block[cursor - fetch_start:cursor - fetch_start + take])
-                    cursor += take
-                    continue
-            remaining = self.budget - self.bytes_read
-            if remaining <= 0:
-                if self.cache_dir is None:
-                    break
-                raise FingerprintBudgetExceeded("Video fingerprint byte budget exhausted")
-            # Persistent cache entries have fixed, aligned ranges. Do not create
-            # a short final entry that a later attempt could mistake for a full block.
-            if self.cache_dir is not None and remaining < length:
-                raise FingerprintBudgetExceeded("Video fingerprint byte budget exhausted")
-            length = min(length, remaining)
-            if not self._reserve(length):
+            served, fetch_start, length = self._memory_step(cursor, data, target_length)
+            if served:
+                cursor += served
+                continue
+            served = self._disk_step(fetch_start, cursor, data, target_length, length)
+            if served:
+                cursor += served
+                continue
+            length = self._budgeted_length(length)
+            if length is None:
                 break
-            end = fetch_start + length - 1
-            with self.http_client.stream(
-                "GET", self.stream_url,
-                headers={"Range": f"bytes={fetch_start}-{end}",
-                         "X-Adult-Hub-Transfer": "phash"}, timeout=20.0,
-            ) as response:
-                if response.status_code != 206:
-                    raise ValueError("Resolver did not honor a bounded byte range")
-                content_range = str(response.headers.get("content-range") or "")
-                match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
-                if not match or tuple(map(int, match.groups())) != (fetch_start, end, self.total_size):
-                    raise ValueError("Resolver returned an unexpected byte range")
-                chunk_data = bytearray()
-                for chunk in response.iter_bytes():
-                    if len(chunk_data) + len(chunk) > length:
-                        raise ValueError("Resolver exceeded the requested range")
-                    chunk_data.extend(chunk)
-                if len(chunk_data) != length:
-                    raise ValueError("Resolver returned an incomplete byte range")
-            self._store_block(fetch_start, bytes(chunk_data))
+            self._store_block(fetch_start, self._download_block(fetch_start, length))
         if not data:
             raise FingerprintBudgetExceeded("Video fingerprint byte budget exhausted")
         return start + len(data) - 1, bytes(data)
@@ -266,6 +295,223 @@ def _stash_phash(image) -> str:
     from stash_phash.phash import perception_hash
 
     return f"{perception_hash(image):016x}"
+
+
+class _PhashDeps(NamedTuple):
+    shutil: Any
+    Image: Any
+    combine_images: Callable
+    compute_dhash: Callable
+    is_black_image: Callable
+    is_bumper_hash: Callable
+    get_bumper_hashes: Callable
+    valid_thumbnail_bytes: Callable
+
+
+def _load_phash_dependencies() -> _PhashDeps:
+    import shutil
+    from PIL import Image
+    from stash_phash.video import combine_images
+    from common.image_utils import compute_dhash, is_black_image, is_bumper_hash
+    try:
+        from .thumbnails import _get_cached_bumper_hashes, _valid_thumbnail_bytes
+    except ImportError:
+        from thumbnails import _get_cached_bumper_hashes, _valid_thumbnail_bytes
+    return _PhashDeps(shutil, Image, combine_images, compute_dhash, is_black_image,
+                      is_bumper_hash, _get_cached_bumper_hashes, _valid_thumbnail_bytes)
+
+
+def _phash_api_base(resolver_url: Optional[str]) -> str:
+    resolved_base = (resolver_url or os.environ.get("RESOLVER_API_URL") or "http://resolver:8090").rstrip("/")
+    return resolved_base if resolved_base.endswith("/admin") else resolved_base + "/admin"
+
+
+def _choose_phash_variant(video_id: str, variant: Optional[str], api_base: str) -> tuple[Optional[str], Optional[int]]:
+    chosen_variant = None
+    original_size = None
+    if variant == "auto":
+        try:
+            from common.video_variants import fetch_and_select_best_variant_with_meta
+            chosen_variant, original_size = fetch_and_select_best_variant_with_meta(
+                api_base, video_id, purpose="phash",
+            )
+        except Exception:
+            chosen_variant = None
+    elif variant and str(variant).strip().lower() != "original":
+        chosen_variant = str(variant).strip()
+    return chosen_variant, original_size
+
+
+def _emit_phash_size(size_sink: Optional[Callable[[int], None]], chosen_variant: Optional[str],
+                     original_size: Optional[int], total_size: Optional[int]) -> None:
+    if size_sink is None:
+        return
+    if chosen_variant is not None:
+        if original_size is not None and original_size > 0:
+            try:
+                size_sink(int(original_size))
+            except Exception:
+                logger.debug("Ignored exception in telegram_phash", exc_info=True)
+    elif total_size is not None:
+        try:
+            size_sink(int(total_size))
+        except Exception:
+            logger.debug("Ignored exception in telegram_phash", exc_info=True)
+
+
+def _start_range_server(budget: FingerprintBudget):
+    virtual_mp4 = _FaststartMP4(budget)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RangeHandler)
+    server.fingerprint_budget = budget
+    server.virtual_mp4 = virtual_mp4
+    server.request_ranges = []
+    server.transfer_error = None
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def _raise_frame_failure(server, budget: FingerprintBudget, result) -> None:
+    """Raise the most specific error for a failed ffmpeg frame extraction."""
+    transfer_error = str(getattr(server, "transfer_error", "")).lower()
+    if "fingerprint transfer ledger" in transfer_error:
+        raise DailyTelegramTransferBudgetUnavailable(transfer_error)
+    if "telegram fingerprint daily transfer" in transfer_error:
+        raise DailyTelegramTransferBudgetExceeded(transfer_error)
+    if "budget exhausted" in transfer_error:
+        raise FingerprintBudgetExceeded(
+            f"pHash job exhausted its {budget.budget}-byte transfer budget "
+            f"after reserving {budget.bytes_read} bytes"
+        )
+    raise RuntimeError(
+        f"ffmpeg could not extract pHash frame ({result.returncode}): "
+        f"{result.stderr.decode('utf-8', errors='replace')[:400]} "
+        f"(range bytes={budget.bytes_read}, requests={server.request_ranges[-8:]})"
+    )
+
+
+def _extract_sample_frame(ffmpeg: str, video_url: str, timestamp: float, deadline: float,
+                          budget: FingerprintBudget, server, image_module):
+    timeout = max(1.0, min(120.0, deadline - time.monotonic()))
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-ss",
+             str(timestamp), "-seekable", "1", "-i", video_url, "-frames:v", "1", "-vf", "scale=160:-2",
+             "-f", "image2pipe", "-vcodec", "bmp", "pipe:1"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(
+            f"ffmpeg timed out extracting pHash frame at {timestamp:.1f}s "
+            f"after reading {budget.bytes_read} bytes"
+        ) from exc
+    if result.returncode != 0 or not result.stdout:
+        _raise_frame_failure(server, budget, result)
+    image = image_module.open(BytesIO(result.stdout)).convert("RGBA")
+    if image.width != 160:
+        raise RuntimeError("ffmpeg returned an unexpected pHash frame size")
+    return image
+
+
+def _visual_sample(image, timestamp: float, compute_dhash: Callable) -> dict:
+    gray = image.convert("L")
+    histogram = gray.histogram()
+    total = max(1, sum(histogram))
+    entropy = -sum((count / total) * __import__("math").log2(count / total)
+                   for count in histogram if count)
+    return {
+        "t": round(float(timestamp), 3),
+        "phash": _stash_phash(image),
+        "dhash": compute_dhash(image),
+        "valid": __import__("statistics").pstdev(gray.getdata()) >= 12
+                 and entropy >= 4,
+    }
+
+
+def _note_thumbnail_candidate(image, index: int, candidates: list, deps: _PhashDeps) -> None:
+    try:
+        if deps.is_black_image(image):
+            return
+        bumper_hashes = deps.get_bumper_hashes()
+        if bumper_hashes and deps.is_bumper_hash(deps.compute_dhash(image), bumper_hashes, max_distance=4):
+            return
+        candidates.append(index)
+    except Exception:
+        # A failed optional quality check must not fail fingerprint generation.
+        candidates.append(index)
+
+
+def _collect_sample_frames(ffmpeg: str, video_url: str, server, budget: FingerprintBudget,
+                           sample_times: list, deadline: float, deps: _PhashDeps,
+                           include_visual_signature: bool, include_thumbnail: bool,
+                           frames: list, visual_samples: list, thumbnail_candidates: list) -> None:
+    # Stash samples the central 90% at 25 evenly spaced positions.
+    for index in range(25):
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Video pHash exceeded its time limit")
+        timestamp = sample_times[index]
+        image = _extract_sample_frame(ffmpeg, video_url, timestamp, deadline, budget, server, deps.Image)
+        frames.append(image)
+        if include_visual_signature:
+            visual_samples.append(_visual_sample(image, timestamp, deps.compute_dhash))
+        if include_thumbnail:
+            _note_thumbnail_candidate(image, index, thumbnail_candidates, deps)
+
+
+def _render_thumbnail_candidate(ffmpeg: str, video_url: str, timestamp: float,
+                                deadline: float, image_module) -> Optional[bytes]:
+    """Render one JPEG poster candidate. Returns None when the frame is unusable."""
+    thumbnail_timeout = max(1.0, min(120.0, deadline - time.monotonic()))
+    thumb = subprocess.run(
+        [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-ss",
+         str(timestamp), "-seekable", "1", "-i", video_url, "-frames:v", "1",
+         "-vf", "scale='min(640,iw)':-2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=thumbnail_timeout, check=False,
+    )
+    if thumb.returncode != 0 or not thumb.stdout or len(thumb.stdout) > 2_000_000:
+        return None
+    with image_module.open(BytesIO(thumb.stdout)) as thumbnail:
+        thumbnail = thumbnail.convert("RGB")
+        if not (320 <= thumbnail.width <= 1280) or not (1 <= thumbnail.height <= 2048):
+            return None
+        output = BytesIO()
+        thumbnail.save(output, format="JPEG", quality=84, optimize=True)
+        candidate_bytes = output.getvalue()
+    if len(candidate_bytes) > 1_500_000:
+        return None
+    return candidate_bytes
+
+
+def _select_thumbnail(ffmpeg: str, video_url: str, sample_times: list, candidates: list,
+                      deadline: float, deps: _PhashDeps) -> Optional[bytes]:
+    # Prefer the central frame, then nearby samples; avoid black frames and
+    # known studio bumpers before persisting a fallback poster.
+    candidates.sort(key=lambda index: (abs(index - 12), index))
+    bumper_hashes = deps.get_bumper_hashes()
+    for index in candidates:
+        candidate_bytes = _render_thumbnail_candidate(
+            ffmpeg, video_url, sample_times[index], deadline, deps.Image)
+        if candidate_bytes is None:
+            continue
+        if deps.valid_thumbnail_bytes(candidate_bytes, "phash://frame", bumper_hashes,
+                                      minimum_size=(180, 320)):
+            return candidate_bytes
+    return None
+
+
+def _phash_result(sprite, budget: FingerprintBudget, duration: int, visual_samples: list,
+                  thumbnail_bytes: Optional[bytes], include_thumbnail: bool,
+                  include_visual_signature: bool) -> tuple:
+    result = (_stash_phash(sprite), budget.bytes_read)
+    if include_visual_signature:
+        signature = {"algorithm": "visual-sequence-v1", "duration": float(duration), "samples": visual_samples}
+        visual_sheet = BytesIO()
+        sprite.convert("RGB").save(visual_sheet, format="JPEG", quality=62, optimize=True)
+        sheet_bytes = visual_sheet.getvalue()
+        if len(sheet_bytes) > 1_000_000:
+            raise RuntimeError("visual contact sheet exceeded its storage limit")
+        return (*result, thumbnail_bytes, signature, sheet_bytes) if include_thumbnail else (*result, signature, sheet_bytes)
+    return (*result, thumbnail_bytes) if include_thumbnail else result
 
 
 def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_BYTE_BUDGET,
@@ -291,35 +537,15 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
     if duration <= 0:
         raise ValueError("A known video duration is required for pHash")
     try:
-        import shutil
-        from PIL import Image
-        from stash_phash.video import combine_images
-        from common.image_utils import compute_dhash, is_black_image, is_bumper_hash
-        try:
-            from .thumbnails import _get_cached_bumper_hashes, _valid_thumbnail_bytes
-        except ImportError:
-            from thumbnails import _get_cached_bumper_hashes, _valid_thumbnail_bytes
+        deps = _load_phash_dependencies()
     except ImportError as exc:
         raise RuntimeError(f"Pillow is required for pHash generation: {exc}") from exc
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = deps.shutil.which("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("ffmpeg is required for pHash generation")
 
-    chosen_variant = None
-    original_size = None
-    resolved_base = (resolver_url or os.environ.get("RESOLVER_API_URL") or "http://resolver:8090").rstrip("/")
-    api_base = resolved_base if resolved_base.endswith("/admin") else resolved_base + "/admin"
-
-    if variant == "auto":
-        try:
-            from common.video_variants import fetch_and_select_best_variant_with_meta
-            chosen_variant, original_size = fetch_and_select_best_variant_with_meta(
-                api_base, video_id, purpose="phash",
-            )
-        except Exception:
-            chosen_variant = None
-    elif variant and str(variant).strip().lower() != "original":
-        chosen_variant = str(variant).strip()
+    api_base = _phash_api_base(resolver_url)
+    chosen_variant, original_size = _choose_phash_variant(video_id, variant, api_base)
 
     budget = FingerprintBudget(
         video_id,
@@ -332,139 +558,28 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
         variant=chosen_variant,
     )
     budget.load_size()
-    if size_sink is not None:
-        if chosen_variant is not None:
-            if original_size is not None and original_size > 0:
-                try:
-                    size_sink(int(original_size))
-                except Exception:
-                    logger.debug("Ignored exception in telegram_phash", exc_info=True)
-        elif budget.total_size is not None:
-            try:
-                size_sink(int(budget.total_size))
-            except Exception:
-                logger.debug("Ignored exception in telegram_phash", exc_info=True)
-    virtual_mp4 = _FaststartMP4(budget)
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RangeHandler)
-    server.fingerprint_budget = budget
-    server.virtual_mp4 = virtual_mp4
-    server.request_ranges = []
-    server.transfer_error = None
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    _emit_phash_size(size_sink, chosen_variant, original_size, budget.total_size)
+    server, thread = _start_range_server(budget)
     deadline = time.monotonic() + max(1, int(timeout_seconds))
     frames = []
     visual_samples = []
-    thumbnail_bytes = None
     thumbnail_candidates = []
     sample_times = _stash_sample_times(duration)
     try:
         video_url = f"http://127.0.0.1:{server.server_address[1]}/video.mp4"
-        # Stash samples the central 90% at 25 evenly spaced positions.
-        for index in range(25):
-            if time.monotonic() >= deadline:
-                raise TimeoutError("Video pHash exceeded its time limit")
-            timestamp = sample_times[index]
-            timeout = max(1.0, min(120.0, deadline - time.monotonic()))
-            try:
-                result = subprocess.run(
-                    [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-ss",
-                     str(timestamp), "-seekable", "1", "-i", video_url, "-frames:v", "1", "-vf", "scale=160:-2",
-                     "-f", "image2pipe", "-vcodec", "bmp", "pipe:1"],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise TimeoutError(
-                    f"ffmpeg timed out extracting pHash frame at {timestamp:.1f}s "
-                    f"after reading {budget.bytes_read} bytes"
-                ) from exc
-            if result.returncode != 0 or not result.stdout:
-                transfer_error = str(getattr(server, "transfer_error", "")).lower()
-                if "fingerprint transfer ledger" in transfer_error:
-                    raise DailyTelegramTransferBudgetUnavailable(transfer_error)
-                if "telegram fingerprint daily transfer" in transfer_error:
-                    raise DailyTelegramTransferBudgetExceeded(transfer_error)
-                if "budget exhausted" in transfer_error:
-                    raise FingerprintBudgetExceeded(
-                        f"pHash job exhausted its {budget.budget}-byte transfer budget "
-                        f"after reserving {budget.bytes_read} bytes"
-                    )
-                raise RuntimeError(
-                    f"ffmpeg could not extract pHash frame ({result.returncode}): "
-                    f"{result.stderr.decode('utf-8', errors='replace')[:400]} "
-                    f"(range bytes={budget.bytes_read}, requests={server.request_ranges[-8:]})"
-                )
-            image = Image.open(BytesIO(result.stdout)).convert("RGBA")
-            if image.width != 160:
-                raise RuntimeError("ffmpeg returned an unexpected pHash frame size")
-            frames.append(image)
-            if include_visual_signature:
-                gray = image.convert("L")
-                histogram = gray.histogram()
-                total = max(1, sum(histogram))
-                entropy = -sum((count / total) * __import__("math").log2(count / total)
-                               for count in histogram if count)
-                visual_samples.append({
-                    "t": round(float(timestamp), 3),
-                    "phash": _stash_phash(image),
-                    "dhash": compute_dhash(image),
-                    "valid": __import__("statistics").pstdev(gray.getdata()) >= 12
-                             and entropy >= 4,
-                })
-            if include_thumbnail:
-                try:
-                    if is_black_image(image):
-                        continue
-                    bumper_hashes = _get_cached_bumper_hashes()
-                    if bumper_hashes and is_bumper_hash(compute_dhash(image), bumper_hashes, max_distance=4):
-                        continue
-                    thumbnail_candidates.append(index)
-                except Exception:
-                    # A failed optional quality check must not fail fingerprint generation.
-                    thumbnail_candidates.append(index)
-
+        _collect_sample_frames(ffmpeg, video_url, server, budget, sample_times, deadline, deps,
+                               include_visual_signature, include_thumbnail,
+                               frames, visual_samples, thumbnail_candidates)
+        thumbnail_bytes = None
         if include_thumbnail:
-            # Prefer the central frame, then nearby samples; avoid black frames and
-            # known studio bumpers before persisting a fallback poster.
-            thumbnail_candidates.sort(key=lambda index: (abs(index - 12), index))
-            bumper_hashes = _get_cached_bumper_hashes()
-            for index in thumbnail_candidates:
-                thumbnail_timeout = max(1.0, min(120.0, deadline - time.monotonic()))
-                thumb = subprocess.run(
-                    [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-ss",
-                     str(sample_times[index]), "-seekable", "1", "-i", video_url, "-frames:v", "1",
-                     "-vf", "scale='min(640,iw)':-2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=thumbnail_timeout, check=False,
-                )
-                if thumb.returncode != 0 or not thumb.stdout or len(thumb.stdout) > 2_000_000:
-                    continue
-                with Image.open(BytesIO(thumb.stdout)) as thumbnail:
-                    thumbnail = thumbnail.convert("RGB")
-                    if not (320 <= thumbnail.width <= 1280) or not (1 <= thumbnail.height <= 2048):
-                        continue
-                    output = BytesIO()
-                    thumbnail.save(output, format="JPEG", quality=84, optimize=True)
-                    candidate_bytes = output.getvalue()
-                if len(candidate_bytes) > 1_500_000:
-                    continue
-                if _valid_thumbnail_bytes(candidate_bytes, "phash://frame", bumper_hashes,
-                                          minimum_size=(180, 320)):
-                    thumbnail_bytes = candidate_bytes
-                    break
+            thumbnail_bytes = _select_thumbnail(ffmpeg, video_url, sample_times,
+                                                thumbnail_candidates, deadline, deps)
 
         if thumbnail_only:
             return None, budget.bytes_read, thumbnail_bytes
-        sprite = combine_images(frames)
-        result = (_stash_phash(sprite), budget.bytes_read)
-        if include_visual_signature:
-            signature = {"algorithm": "visual-sequence-v1", "duration": float(duration), "samples": visual_samples}
-            visual_sheet = BytesIO()
-            sprite.convert("RGB").save(visual_sheet, format="JPEG", quality=62, optimize=True)
-            sheet_bytes = visual_sheet.getvalue()
-            if len(sheet_bytes) > 1_000_000:
-                raise RuntimeError("visual contact sheet exceeded its storage limit")
-            return (*result, thumbnail_bytes, signature, sheet_bytes) if include_thumbnail else (*result, signature, sheet_bytes)
-        return (*result, thumbnail_bytes) if include_thumbnail else result
+        sprite = deps.combine_images(frames)
+        return _phash_result(sprite, budget, duration, visual_samples, thumbnail_bytes,
+                             include_thumbnail, include_visual_signature)
     finally:
         server.shutdown()
         server.server_close()

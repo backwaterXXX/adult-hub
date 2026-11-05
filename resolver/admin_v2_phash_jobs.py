@@ -12,9 +12,7 @@ from admin_v2_errors import V2ErrorRoute
 logger = logging.getLogger(__name__)
 
 
-def build_router(admin):
-    router = APIRouter(route_class=V2ErrorRoute)
-
+def _route_list_phash_jobs(router, admin):
     @router.get("/api/v2/phash-jobs")
     async def list_phash_jobs(
         request: Request,
@@ -38,6 +36,8 @@ def build_router(admin):
             logger.warning("Request failed in list_phash_jobs", exc_info=True)
             return admin.JSONResponse({"error": "Could not load pHash task history."}, status_code=503)
 
+
+def _route_retry_phash_job(router, admin):
     @router.post("/api/v2/phash-jobs/{job_id}/retry")
     async def retry_phash_job(request: Request, job_id: str):
         denied = admin._write_denied(request)
@@ -53,6 +53,8 @@ def build_router(admin):
             logger.warning("Request failed in retry_phash_job", exc_info=True)
             return admin.JSONResponse({"error": "Could not retry pHash task."}, status_code=503)
 
+
+def _route_cancel_phash_job(router, admin):
     @router.post("/api/v2/phash-jobs/{job_id}/cancel")
     async def cancel_phash_job(request: Request, job_id: str):
         denied = admin._write_denied(request)
@@ -70,4 +72,10 @@ def build_router(admin):
             logger.warning("Request failed in cancel_phash_job", exc_info=True)
             return admin.JSONResponse({"error": "Could not cancel pHash task."}, status_code=503)
 
+
+def build_router(admin):
+    router = APIRouter(route_class=V2ErrorRoute)
+    _route_list_phash_jobs(router, admin)
+    _route_retry_phash_job(router, admin)
+    _route_cancel_phash_job(router, admin)
     return router

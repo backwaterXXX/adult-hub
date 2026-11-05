@@ -141,20 +141,25 @@ def prune_redundant_performers(names: Iterable[str]) -> List[str]:
     # (e.g. ['Colombiano Flaquito Vergon', 'Flaquito Vergon'] -> keep 'Flaquito Vergon')
     to_drop_nat = set()
     for n1 in normalized:
-        bare = strip_nationality_prefix(n1)
-        if bare != n1 and bare:
-            if any(bare.lower() == n2.lower() for n2 in normalized):
-                to_drop_nat.add(n1)
-                continue
-        n1_low = n1.lower()
-        for prefix in NATIONALITY_PREFIXES:
-            if n1_low.startswith(prefix + " ") or n1_low.startswith(prefix + "-"):
-                b = n1[len(prefix):].lstrip(" -").strip()
-                if any(b.lower() == n2.lower() for n2 in normalized):
-                    to_drop_nat.add(n1)
-                    break
+        if _is_nationality_duplicate(n1, normalized):
+            to_drop_nat.add(n1)
 
     return [n for n in normalized if n not in to_drop_nat]
+
+
+def _is_nationality_duplicate(n1: str, normalized: List[str]) -> bool:
+    """Return True when n1 has a nationality prefix whose bare form is also in normalized."""
+    bare = strip_nationality_prefix(n1)
+    if bare != n1 and bare:
+        if any(bare.lower() == n2.lower() for n2 in normalized):
+            return True
+    n1_low = n1.lower()
+    for prefix in NATIONALITY_PREFIXES:
+        if n1_low.startswith(prefix + " ") or n1_low.startswith(prefix + "-"):
+            b = n1[len(prefix):].lstrip(" -").strip()
+            if any(b.lower() == n2.lower() for n2 in normalized):
+                return True
+    return False
 
 SCENE_SUFFIX_RE = re.compile(
     r'[\s._-]+(?:s|sc|scene|ep|episode|pt|part)[.\s_-]*\d+$',
@@ -198,77 +203,102 @@ def normalize_performers(names, alias_map: Optional[dict] = None, *, preserve_li
     Accepts None or any iterable; always returns a new list.
     """
     if preserve_literal:
-        seen = set()
-        literal = []
-        for raw in names or []:
-            if raw is None:
-                continue
-            name = html.unescape(str(raw)).strip()
-            name = _strip_name_descriptors(name)
-            if not name or is_non_performer_name(name):
-                continue
-            key = name.casefold()
-            if name and key not in seen:
-                seen.add(key)
-                literal.append(name)
-        return literal
+        return _normalize_literal_performers(names)
 
     seen_lower: Dict[str, int] = {}
     out: List[str] = []
     for raw in names or []:
         if raw is None:
             continue
-        name = html.unescape(str(raw)).strip()
-        m = re.match(r"^(.*?)\s*[\(\[][^()\[\]]*[\)\]]\s*$", name)
-        if m and m.group(1).strip():
-            name = m.group(1).strip()
-        name = strip_scene_suffix(name)
-        name = _strip_name_descriptors(name)
-        if not name or STANDALONE_SCENE_RE.match(name):
+        name = _prepare_performer_name(raw)
+        if name is None:
             continue
-        if is_non_performer_name(name):
+        name = _resolve_performer_alias(name, alias_map)
+        if name is None:
             continue
-        if alias_map:
-            canonical = alias_map.get(name.lower()) or alias_map.get(name)
-            if canonical and str(canonical).strip():
-                c_str = str(canonical).strip()
-                if c_str.lower() == name.lower() and not any(c.isupper() for c in c_str) and any(c.isupper() for c in name):
-                    pass
-                else:
-                    name = c_str
-        bare = strip_nationality_prefix(name)
-        if bare != name:
-            if not bare:
-                continue
-            bare = strip_scene_suffix(bare)
-            if is_valid_performer_name(bare) or (alias_map and bare.lower() in alias_map):
-                name = bare
-                if alias_map:
-                    canonical = alias_map.get(name.lower()) or alias_map.get(name)
-                    if canonical and str(canonical).strip():
-                        c_str = str(canonical).strip()
-                        if not (c_str.lower() == name.lower() and not any(c.isupper() for c in c_str) and any(c.isupper() for c in name)):
-                            name = c_str
-            else:
-                # Discard nationality prefix combined with non-performer descriptor (e.g. 'Korean Twunk', 'Mexican Republic')
-                continue
         name = strip_scene_suffix(name)
         if name and not STANDALONE_SCENE_RE.match(name):
-            name_low = name.lower()
-            if (
-                name_low in {"fucked", "fuck", "fucking", "fucker", "fuckers"}
-                or name_low in SINGLE_WORD_STOPWORDS
-                or MEDIA_EXT_RE.search(name)
-            ):
-                continue
-            if name_low in seen_lower:
-                idx = seen_lower[name_low]
-                if not any(c.isupper() for c in out[idx]) and any(c.isupper() for c in name):
-                    out[idx] = name
-                continue
-            seen_lower[name_low] = len(out)
-            out.append(name)
+            _add_performer_candidate(name, out, seen_lower)
     return prune_redundant_performers(out)
+
+
+def _normalize_literal_performers(names) -> List[str]:
+    """Deduplicate performer names case-insensitively without stripping suffixes or aliases."""
+    seen = set()
+    literal = []
+    for raw in names or []:
+        if raw is None:
+            continue
+        name = html.unescape(str(raw)).strip()
+        name = _strip_name_descriptors(name)
+        if not name or is_non_performer_name(name):
+            continue
+        key = name.casefold()
+        if name and key not in seen:
+            seen.add(key)
+            literal.append(name)
+    return literal
+
+
+def _prepare_performer_name(raw) -> Optional[str]:
+    """Unescape and clean a raw performer value; return None when it must be skipped."""
+    name = html.unescape(str(raw)).strip()
+    m = re.match(r"^(.*?)\s*[\(\[][^()\[\]]*[\)\]]\s*$", name)
+    if m and m.group(1).strip():
+        name = m.group(1).strip()
+    name = strip_scene_suffix(name)
+    name = _strip_name_descriptors(name)
+    if not name or STANDALONE_SCENE_RE.match(name):
+        return None
+    if is_non_performer_name(name):
+        return None
+    return name
+
+
+def _resolve_performer_alias(name: str, alias_map: Optional[dict]) -> Optional[str]:
+    """Map a name through alias_map and nationality-prefix stripping; None means skip the entry."""
+    name = _apply_alias_map(name, alias_map)
+    bare = strip_nationality_prefix(name)
+    if bare == name:
+        return name
+    if not bare:
+        return None
+    bare = strip_scene_suffix(bare)
+    if is_valid_performer_name(bare) or (alias_map and bare.lower() in alias_map):
+        return _apply_alias_map(bare, alias_map)
+    # Discard nationality prefix combined with non-performer descriptor (e.g. 'Korean Twunk', 'Mexican Republic')
+    return None
+
+
+def _apply_alias_map(name: str, alias_map: Optional[dict]) -> str:
+    """Return the canonical alias for name, or name itself when no usable mapping applies."""
+    if not alias_map:
+        return name
+    canonical = alias_map.get(name.lower()) or alias_map.get(name)
+    if canonical and str(canonical).strip():
+        c_str = str(canonical).strip()
+        if c_str.lower() == name.lower() and not any(c.isupper() for c in c_str) and any(c.isupper() for c in name):
+            return name
+        return c_str
+    return name
+
+
+def _add_performer_candidate(name: str, out: List[str], seen_lower: Dict[str, int]) -> None:
+    """Append name to out unless it is a stopword or media token, merging case-only duplicates."""
+    name_low = name.lower()
+    if (
+        name_low in {"fucked", "fuck", "fucking", "fucker", "fuckers"}
+        or name_low in SINGLE_WORD_STOPWORDS
+        or MEDIA_EXT_RE.search(name)
+    ):
+        return
+    if name_low in seen_lower:
+        idx = seen_lower[name_low]
+        if not any(c.isupper() for c in out[idx]) and any(c.isupper() for c in name):
+            out[idx] = name
+        return
+    seen_lower[name_low] = len(out)
+    out.append(name)
 
 TITLE_STOPWORDS = {
     "part", "episode", "scene", "vol", "volume", "chapter",
@@ -402,55 +432,71 @@ def is_valid_performer_name(name: str) -> bool:
         return False
     if is_non_performer_name(name):
         return False
-    if any(c in name for c in "()[]{}<>"):
-        return False
-    if MEDIA_EXT_RE.search(name):
+    if _has_disallowed_name_chars(name):
         return False
     clean_name = re.sub(r'^[^\w]+|[^\w]+$', '', name)
     if clean_name != name:
         return False
     clean_low = clean_name.lower()
-    if clean_low in STUDIO_NAMES or clean_low in SINGLE_WORD_STOPWORDS:
-        return False
-    if any(clean_low.endswith(sfx) for sfx in STUDIO_SUFFIXES):
-        return False
-    if SCENE_CODE_RE.match(clean_name):
-        return False
-    if SCENE_SUFFIX_RE.search(clean_name) or STANDALONE_SCENE_RE.match(clean_name):
+    if _is_rejected_clean_name(clean_name, clean_low):
         return False
     words = clean_name.split()
     if not (1 <= len(words) <= 4):
         return False
-    if len(words) == 1:
-        if len(clean_name) <= 2:
+    if len(words) == 1 and len(clean_name) <= 2:
+        return False
+    for w in words:
+        if not _is_valid_name_word(w, words):
             return False
-        if clean_low in SINGLE_WORD_STOPWORDS:
-            return False
-    for i, w in enumerate(words):
-        clean_w = re.sub(r'^[^\w]+|[^\w]+$', '', w)
-        if not clean_w:
-            return False
-        w_low = clean_w.lower()
-        if len(words) >= 2 and w_low in PARTICLES:
-            continue
-        w_base = re.sub(r"['’‘]s$", "", w_low)
-        w_alnum = re.sub(r"[^a-z0-9]", "", w_low)
-        w_base_alnum = re.sub(r"[^a-z0-9]", "", w_base)
-        if (
-            w_low in TITLE_STOPWORDS
-            or w_base in TITLE_STOPWORDS
-            or w_alnum in TITLE_STOPWORDS
-            or w_base_alnum in TITLE_STOPWORDS
-            or w_low in MEDIA_EXT_WORDS
-            or w_alnum in MEDIA_EXT_WORDS
-            or STANDALONE_SCENE_RE.match(clean_w)
-        ):
-            return False
-        if clean_w.isdigit():
-            return False
-        # Must start with uppercase or be an alphanumeric code like 23CM / XXX or word with letters in multi-word name
-        if not (clean_w[0].isupper() or (len(clean_w) > 1 and clean_w.isupper()) or (len(words) >= 2 and words[0][0].isupper() and any(c.isalpha() for c in clean_w))):
-            return False
+    return True
+
+
+def _has_disallowed_name_chars(name: str) -> bool:
+    """Return True when a candidate contains bracket characters or a media file extension."""
+    if any(c in name for c in "()[]{}<>"):
+        return True
+    return bool(MEDIA_EXT_RE.search(name))
+
+
+def _is_rejected_clean_name(clean_name: str, clean_low: str) -> bool:
+    """Return True when the whole cleaned candidate matches a studio, stopword, or scene pattern."""
+    if clean_low in STUDIO_NAMES or clean_low in SINGLE_WORD_STOPWORDS:
+        return True
+    if any(clean_low.endswith(sfx) for sfx in STUDIO_SUFFIXES):
+        return True
+    if SCENE_CODE_RE.match(clean_name):
+        return True
+    if SCENE_SUFFIX_RE.search(clean_name) or STANDALONE_SCENE_RE.match(clean_name):
+        return True
+    return False
+
+
+def _is_valid_name_word(w: str, words: List[str]) -> bool:
+    """Return True when one word of a candidate name is acceptable."""
+    clean_w = re.sub(r'^[^\w]+|[^\w]+$', '', w)
+    if not clean_w:
+        return False
+    w_low = clean_w.lower()
+    if len(words) >= 2 and w_low in PARTICLES:
+        return True
+    w_base = re.sub(r"['’‘]s$", "", w_low)
+    w_alnum = re.sub(r"[^a-z0-9]", "", w_low)
+    w_base_alnum = re.sub(r"[^a-z0-9]", "", w_base)
+    if (
+        w_low in TITLE_STOPWORDS
+        or w_base in TITLE_STOPWORDS
+        or w_alnum in TITLE_STOPWORDS
+        or w_base_alnum in TITLE_STOPWORDS
+        or w_low in MEDIA_EXT_WORDS
+        or w_alnum in MEDIA_EXT_WORDS
+        or STANDALONE_SCENE_RE.match(clean_w)
+    ):
+        return False
+    if clean_w.isdigit():
+        return False
+    # Must start with uppercase or be an alphanumeric code like 23CM / XXX or word with letters in multi-word name
+    if not (clean_w[0].isupper() or (len(clean_w) > 1 and clean_w.isupper()) or (len(words) >= 2 and words[0][0].isupper() and any(c.isalpha() for c in clean_w))):
+        return False
     return True
 
 def is_performer_segment(text: str, performers: Iterable[str]) -> bool:
@@ -464,27 +510,28 @@ def is_performer_segment(text: str, performers: Iterable[str]) -> bool:
     if not members:
         return False
     perfs_lower = [p.lower() for p in performers]
+    return all(_performer_member_matches(m, perfs_lower) for m in members)
 
-    def member_matches(m: str) -> bool:
-        m_clean = strip_scene_suffix(m)
-        m_low = m_clean.lower()
-        if m_low in perfs_lower:
-            return True
-        bare_m = strip_nationality_prefix(m_clean)
-        bare_m_low = bare_m.lower()
-        if bare_m_low in perfs_lower:
-            return True
-        for p in perfs_lower:
-            if strip_nationality_prefix(p).lower() in (m_low, bare_m_low):
-                return True
-        for nat in NATIONALITY_PREFIXES:
-            if m_low.startswith(nat + " ") and m_low[len(nat):].strip() in perfs_lower:
-                return True
-            if any(p.startswith(nat + " ") and p[len(nat):].strip() == m_low for p in perfs_lower):
-                return True
-        return False
 
-    return all(member_matches(m) for m in members)
+def _performer_member_matches(m: str, perfs_lower: List[str]) -> bool:
+    """Return True when one segment member corresponds to a known performer name."""
+    m_clean = strip_scene_suffix(m)
+    m_low = m_clean.lower()
+    if m_low in perfs_lower:
+        return True
+    bare_m = strip_nationality_prefix(m_clean)
+    bare_m_low = bare_m.lower()
+    if bare_m_low in perfs_lower:
+        return True
+    for p in perfs_lower:
+        if strip_nationality_prefix(p).lower() in (m_low, bare_m_low):
+            return True
+    for nat in NATIONALITY_PREFIXES:
+        if m_low.startswith(nat + " ") and m_low[len(nat):].strip() in perfs_lower:
+            return True
+        if any(p.startswith(nat + " ") and p[len(nat):].strip() == m_low for p in perfs_lower):
+            return True
+    return False
 
 
 def is_safe_alias(alias: str, canonical: str) -> bool:

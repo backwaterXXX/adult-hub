@@ -262,80 +262,115 @@ def log_next_sync_schedule():
         LOGGER.warning(f"[sync-daemon] Could not read next sync schedule: {exc}")
 
 
+class _WaitTimers:
+    """Next-due times for the periodic checks inside wait_with_trigger."""
+
+    def __init__(self):
+        self.next_worker_attempt = 0.0
+        self.next_queue_error_log = 0.0
+        self.next_schedule_dispatch = 0.0
+        self.next_schedule_error_log = 0.0
+        self.next_system_schedule_check = 0.0
+        self.next_system_schedule_error_log = 0.0
+
+
+def _poll_system_schedule(timers: _WaitTimers, allow_schedule: bool) -> bool:
+    """True when the Library sync cron slot was claimed, so the wait should end."""
+    global system_sync_due
+    if allow_schedule and claim_due_system_schedule and time.monotonic() >= timers.next_system_schedule_check:
+        try:
+            if claim_due_system_schedule(DB_URL, "library-sync"):
+                system_sync_due = True
+                return True
+        except Exception as e:
+            if time.monotonic() >= timers.next_system_schedule_error_log:
+                LOGGER.warning("[sync-daemon] Could not check the Library sync cron schedule: %s", e)
+                timers.next_system_schedule_error_log = time.monotonic() + 60.0
+        timers.next_system_schedule_check = time.monotonic() + 10.0
+    return False
+
+
+def _dispatch_admin_schedules_due(timers: _WaitTimers) -> bool:
+    """Queue due Admin schedules. True when any were queued (a worker wake-up)."""
+    worker_wake = False
+    if dispatch_due_schedules and time.monotonic() >= timers.next_schedule_dispatch:
+        try:
+            worker_wake = dispatch_due_schedules(DB_URL) > 0
+        except Exception as e:
+            if time.monotonic() >= timers.next_schedule_error_log:
+                LOGGER.warning("[sync-daemon] Could not dispatch Admin schedules: %s", e)
+                timers.next_schedule_error_log = time.monotonic() + 60.0
+        timers.next_schedule_dispatch = time.monotonic() + 30.0
+    return worker_wake
+
+
+def _read_pending_actions(timers: _WaitTimers):
+    actions = set()
+    if pending_actions:
+        try:
+            actions = pending_actions(DB_URL)
+        except Exception as e:
+            if time.monotonic() >= timers.next_queue_error_log:
+                LOGGER.warning("[sync-daemon] Could not inspect durable queue: %s", e)
+                timers.next_queue_error_log = time.monotonic() + 30.0
+    return actions
+
+
+def _consume_trigger_file(trig):
+    """Handle the wake file once. Returns (worker_wake, on_demand_sync_requested)."""
+    global requested_source, requested_sync_mode
+    if not trig.exists():
+        return False, False
+    try:
+        import json
+        payload = json.loads(trig.read_text()) if trig.stat().st_size else {}
+    except Exception:
+        payload = {}
+
+    if isinstance(payload, dict) and payload.get("action") == "jobs":
+        trig.unlink(missing_ok=True)
+        return True, False
+    if isinstance(payload, dict) and payload.get("action") == "sync":
+        # Durable signals carry no request themselves. The next poll
+        # finds the persisted job, even if this signal was stale.
+        trig.unlink(missing_ok=True)
+        return False, False
+    # Retain compatibility with manually written legacy triggers.
+    requested_source = payload.get("source") if isinstance(payload, dict) else None
+    requested_mode = payload.get("sync_mode", "scheduled") if isinstance(payload, dict) else "scheduled"
+    trig.unlink(missing_ok=True)
+    label = f" for {requested_source}" if requested_source else ""
+    LOGGER.info("[sync-daemon] On-demand sync trigger detected%s, executing sync immediately!", label)
+    requested_sync_mode = requested_mode if requested_mode in {"scheduled", "new", "backfill"} else "scheduled"
+    return False, True
+
+
 def wait_with_trigger(duration: float, *, allow_schedule: bool = True):
-    global requested_source, requested_sync_mode, system_sync_due
     from pathlib import Path
     trig = Path(TRIGGER_FILE)
     step = 1.0
     deadline = time.monotonic() + duration
-    next_worker_attempt = 0.0
-    next_queue_error_log = 0.0
-    next_schedule_dispatch = 0.0
-    next_schedule_error_log = 0.0
-    next_system_schedule_check = 0.0
-    next_system_schedule_error_log = 0.0
+    timers = _WaitTimers()
     while not stop_event.is_set():
-        actions = set()
-        worker_wake = False
-        if allow_schedule and claim_due_system_schedule and time.monotonic() >= next_system_schedule_check:
-            try:
-                if claim_due_system_schedule(DB_URL, "library-sync"):
-                    system_sync_due = True
-                    return False
-            except Exception as e:
-                if time.monotonic() >= next_system_schedule_error_log:
-                    LOGGER.warning(f"[sync-daemon] Could not check the Library sync cron schedule: {e}")
-                    next_system_schedule_error_log = time.monotonic() + 60.0
-            next_system_schedule_check = time.monotonic() + 10.0
-        if dispatch_due_schedules and time.monotonic() >= next_schedule_dispatch:
-            try:
-                worker_wake = dispatch_due_schedules(DB_URL) > 0
-            except Exception as e:
-                if time.monotonic() >= next_schedule_error_log:
-                    LOGGER.warning(f"[sync-daemon] Could not dispatch Admin schedules: {e}")
-                    next_schedule_error_log = time.monotonic() + 60.0
-            next_schedule_dispatch = time.monotonic() + 30.0
-        if pending_actions:
-            try:
-                actions = pending_actions(DB_URL)
-            except Exception as e:
-                if time.monotonic() >= next_queue_error_log:
-                    LOGGER.warning(f"[sync-daemon] Could not inspect durable queue: {e}")
-                    next_queue_error_log = time.monotonic() + 30.0
+        if _poll_system_schedule(timers, allow_schedule):
+            return False
+        worker_wake = _dispatch_admin_schedules_due(timers)
+        actions = _read_pending_actions(timers)
         if "sync" in actions:
             # A wake file may be missing or overwritten by another action.
             # Claim through the runner; a failed claim must not fall through
             # to an unrelated scheduled full sync.
             if run_pending_sync_jobs():
                 continue
-        if trig.exists():
-            try:
-                import json
-                payload = json.loads(trig.read_text()) if trig.stat().st_size else {}
-            except Exception:
-                payload = {}
-
-            if isinstance(payload, dict) and payload.get("action") == "jobs":
-                trig.unlink(missing_ok=True)
-                worker_wake = True
-            elif isinstance(payload, dict) and payload.get("action") == "sync":
-                # Durable signals carry no request themselves. The next poll
-                # finds the persisted job, even if this signal was stale.
-                trig.unlink(missing_ok=True)
-            else:
-                # Retain compatibility with manually written legacy triggers.
-                requested_source = payload.get("source") if isinstance(payload, dict) else None
-                requested_mode = payload.get("sync_mode", "scheduled") if isinstance(payload, dict) else "scheduled"
-                trig.unlink(missing_ok=True)
-                label = f" for {requested_source}" if requested_source else ""
-                LOGGER.info(f"[sync-daemon] On-demand sync trigger detected{label}, executing sync immediately!")
-                requested_sync_mode = requested_mode if requested_mode in {"scheduled", "new", "backfill"} else "scheduled"
-                return True
-        if (worker_wake or actions.intersection(WORKER_ACTIONS)) and time.monotonic() >= next_worker_attempt:
+        trigger_wake, sync_requested = _consume_trigger_file(trig)
+        if sync_requested:
+            return True
+        worker_wake = worker_wake or trigger_wake
+        if (worker_wake or actions.intersection(WORKER_ACTIONS)) and time.monotonic() >= timers.next_worker_attempt:
             run_jobs_worker()
             # Avoid respawning rapidly when an external full sync owns the
             # lock or the child fails. It alone owns recovery of processing.
-            next_worker_attempt = time.monotonic() + 5.0
+            timers.next_worker_attempt = time.monotonic() + 5.0
             continue
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -368,52 +403,71 @@ def _stop_child(process, grace_seconds: float | None = None):
         return process.wait()
 
 
-def run_full_sync(source_filter=None, sync_mode="scheduled"):
-    """Execute one full sync child and publish its status. Returns (success, exit_code)."""
-    global current_process
+def _sync_child_args(source_filter, sync_mode):
     source_arg = ["--source", source_filter] if source_filter else []
     # Preserve the legacy child invocation for the default mode; only explicit
     # administrative modes need an additional CLI argument.
     mode_arg = ["--sync-mode", sync_mode] if sync_mode != "scheduled" else []
-    LOGGER.info(f"[sync-daemon] Executing sync{f' for {source_filter}' if source_filter else ''}...")
+    return source_arg, mode_arg
+
+
+def _wait_for_sync_child(process) -> bool:
+    """Poll the sync child. True when a shutdown stopped it."""
+    while process.poll() is None:
+        if stop_event.is_set():
+            _stop_child(process)
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _report_sync_exit(exit_code: int, interrupted: bool) -> bool:
+    """Log how the sync child ended. Returns True when it succeeded."""
+    if exit_code == 0:
+        return True
+    if interrupted:
+        if exit_code < 0:
+            LOGGER.warning(
+                "[sync-daemon] Sync child was killed by signal %s instead of "
+                "reaching its shutdown checkpoint within %ss.", -exit_code, SHUTDOWN_GRACE_SECONDS,
+            )
+        else:
+            LOGGER.info("[sync-daemon] Sync child stopped during shutdown (exit %s).", exit_code)
+    elif consecutive_errors < 3:
+        LOGGER.warning("[sync-daemon] Sync exited with code %s", exit_code)
+    return False
+
+
+def _reap_sync_child() -> None:
+    global current_process
+    if current_process is not None:
+        try:
+            if current_process.poll() is None:
+                _stop_child(current_process)
+            current_process.wait()
+        except Exception as e:
+            LOGGER.warning("[sync-daemon] Could not reap sync process: %s", e)
+    current_process = None
+
+
+def run_full_sync(source_filter=None, sync_mode="scheduled"):
+    """Execute one full sync child and publish its status. Returns (success, exit_code)."""
+    global current_process
+    source_arg, mode_arg = _sync_child_args(source_filter, sync_mode)
+    LOGGER.info("[sync-daemon] Executing sync%s...", f" for {source_filter}" if source_filter else "")
     update_sync_status(running=True, source=source_filter)
     success = False
     exit_code = -1
-    interrupted = False
     try:
         current_process = subprocess.Popen([sys.executable, "sync.py", *source_arg, *mode_arg])
-        while current_process.poll() is None:
-            if stop_event.is_set():
-                _stop_child(current_process)
-                interrupted = True
-                break
-            time.sleep(0.5)
-
+        interrupted = _wait_for_sync_child(current_process)
         exit_code = current_process.returncode if current_process.returncode is not None else -1
-        if exit_code == 0:
-            success = True
-        elif interrupted:
-            if exit_code < 0:
-                LOGGER.warning(
-                    f"[sync-daemon] Sync child was killed by signal {-exit_code} instead of "
-                    f"reaching its shutdown checkpoint within {SHUTDOWN_GRACE_SECONDS}s."
-                )
-            else:
-                LOGGER.info(f"[sync-daemon] Sync child stopped during shutdown (exit {exit_code}).")
-        elif consecutive_errors < 3:
-            LOGGER.warning(f"[sync-daemon] Sync exited with code {exit_code}")
+        success = _report_sync_exit(exit_code, interrupted)
     except Exception as e:
         if consecutive_errors < 3:
-            LOGGER.warning(f"[sync-daemon] Sync execution error: {e}")
+            LOGGER.warning("[sync-daemon] Sync execution error: %s", e)
     finally:
-        if current_process is not None:
-            try:
-                if current_process.poll() is None:
-                    _stop_child(current_process)
-                current_process.wait()
-            except Exception as e:
-                LOGGER.warning(f"[sync-daemon] Could not reap sync process: {e}")
-        current_process = None
+        _reap_sync_child()
         update_sync_status(running=False, exit_code=exit_code, success=success)
     return success, exit_code
 
@@ -463,21 +517,16 @@ def _scheduled_sync_was_missed(seconds_to_next_slot: float) -> bool:
     return last_success < int(time.time()) + int(seconds_to_next_slot) - 86400
 
 
-def run_pending_sync_jobs() -> bool:
-    """Claim and run one durable on-demand sync job. Returns True if one ran.
-
-    Requests survive a worker restart because they are persisted in the shared
-    jobs table; the signal file only wakes the runner.
-    """
-    if not (claim_job and finish_job):
-        return False
+def _claim_pending_sync_job():
     try:
-        job = claim_job(DB_URL, "sync")
+        return claim_job(DB_URL, "sync")
     except Exception as e:
-        LOGGER.warning(f"[sync-daemon] Could not claim sync job: {e}")
-        return False
-    if not job:
-        return False
+        LOGGER.warning("[sync-daemon] Could not claim sync job: %s", e)
+        return None
+
+
+def _sync_job_request(job):
+    """Return (source, sync_mode) from a claimed job payload."""
     try:
         payload = json.loads(job.get("payload") or "{}")
     except (TypeError, ValueError):
@@ -486,53 +535,77 @@ def run_pending_sync_jobs() -> bool:
     sync_mode = payload.get("sync_mode", "scheduled") if isinstance(payload, dict) else "scheduled"
     if sync_mode not in {"scheduled", "new", "backfill"}:
         sync_mode = "scheduled"
+    return source, sync_mode
+
+
+def _sync_job_heartbeat_loop(job, heartbeat_stop: threading.Event) -> None:
+    while not heartbeat_stop.wait(SYNC_JOB_HEARTBEAT_INTERVAL_SECONDS):
+        try:
+            if heartbeat_job:
+                heartbeat_job(DB_URL, job["id"], lease_token=job["lease_token"])
+        except Exception as exc:
+            LOGGER.warning("[sync-daemon] Could not update sync-job heartbeat (%s).", type(exc).__name__)
+
+
+def _finish_sync_job(job, success: bool, result: dict) -> None:
+    try:
+        finalized = finish_job(DB_URL, job["id"], "done" if success else "failed", result,
+                               lease_token=job["lease_token"])
+        if not finalized:
+            LOGGER.warning("[sync-daemon] Sync job %s was no longer pending when its result arrived.", job["id"])
+    except Exception as e:
+        LOGGER.warning("[sync-daemon] Could not record sync job result: %s", e)
+
+
+def _execute_sync_job(job, source, sync_mode) -> None:
+    sync_started_at = int(time.time())
+    success, exit_code = run_full_sync(source, sync_mode)
+    sync_ended_at = int(time.time())
+    result = {
+        "source": source,
+        "sync_mode": sync_mode,
+        "local_state": "sync completed" if success else "sync failed",
+        "exit_code": exit_code,
+        "message": f"On-demand sync{' for ' + source if source else ''} {'completed' if success else 'failed'}.",
+    }
+    if not success:
+        source_failures = _failed_sync_sources(sync_started_at, sync_ended_at, source)
+        if source_failures:
+            result["source_failures"] = source_failures
+    if stop_event.is_set():
+        # A pass cut short by this shutdown is not the requester's failure:
+        # leaving the job in `processing` hands it to requeue_processing() on
+        # the next start, which is the designed recovery for a lost worker.
+        LOGGER.info("[sync-daemon] Leaving sync job %s for the next start to requeue: "
+                    "this pass was stopped by a shutdown.", job["id"])
+    else:
+        _finish_sync_job(job, success, result)
+
+
+def run_pending_sync_jobs() -> bool:
+    """Claim and run one durable on-demand sync job. Returns True if one ran.
+
+    Requests survive a worker restart because they are persisted in the shared
+    jobs table; the signal file only wakes the runner.
+    """
+    if not (claim_job and finish_job):
+        return False
+    job = _claim_pending_sync_job()
+    if not job:
+        return False
+    source, sync_mode = _sync_job_request(job)
     label = f" for {source}" if source else ""
-    LOGGER.info(f"[sync-daemon] Running durable sync job {job['id']}{label}...")
+    LOGGER.info("[sync-daemon] Running durable sync job %s%s...", job["id"], label)
     heartbeat_stop = threading.Event()
-
-    def heartbeat_loop():
-        while not heartbeat_stop.wait(SYNC_JOB_HEARTBEAT_INTERVAL_SECONDS):
-            try:
-                if heartbeat_job:
-                    heartbeat_job(DB_URL, job["id"], lease_token=job["lease_token"])
-            except Exception as exc:
-                LOGGER.warning(f"[sync-daemon] Could not update sync-job heartbeat ({type(exc).__name__}).")
-
     heartbeat_thread = threading.Thread(
-        target=heartbeat_loop,
+        target=_sync_job_heartbeat_loop,
+        args=(job, heartbeat_stop),
         name=f"sync-job-heartbeat-{str(job['id'])[:8]}",
         daemon=True,
     )
     heartbeat_thread.start()
     try:
-        sync_started_at = int(time.time())
-        success, exit_code = run_full_sync(source, sync_mode)
-        sync_ended_at = int(time.time())
-        result = {
-            "source": source,
-            "sync_mode": sync_mode,
-            "local_state": "sync completed" if success else "sync failed",
-            "exit_code": exit_code,
-            "message": f"On-demand sync{' for ' + source if source else ''} {'completed' if success else 'failed'}.",
-        }
-        if not success:
-            source_failures = _failed_sync_sources(sync_started_at, sync_ended_at, source)
-            if source_failures:
-                result["source_failures"] = source_failures
-        if stop_event.is_set():
-            # A pass cut short by this shutdown is not the requester's failure:
-            # leaving the job in `processing` hands it to requeue_processing() on
-            # the next start, which is the designed recovery for a lost worker.
-            LOGGER.info(f"[sync-daemon] Leaving sync job {job['id']} for the next start to requeue: "
-                        "this pass was stopped by a shutdown.")
-        else:
-            try:
-                finalized = finish_job(DB_URL, job["id"], "done" if success else "failed", result,
-                                       lease_token=job["lease_token"])
-                if not finalized:
-                    LOGGER.warning(f"[sync-daemon] Sync job {job['id']} was no longer pending when its result arrived.")
-            except Exception as e:
-                LOGGER.warning(f"[sync-daemon] Could not record sync job result: {e}")
+        _execute_sync_job(job, source, sync_mode)
     finally:
         heartbeat_stop.set()
         heartbeat_thread.join(timeout=2)
@@ -540,8 +613,7 @@ def run_pending_sync_jobs() -> bool:
     return True
 
 
-def run_loop():
-    global current_process, consecutive_errors, requested_source, requested_sync_mode, system_sync_due
+def _initialize_runner_schedules() -> None:
     if not ensure_system_schedules or not claim_due_system_schedule or not finish_system_schedule:
         raise RuntimeError("System schedule support is unavailable; refusing to start sync runner.")
     try:
@@ -549,98 +621,153 @@ def run_loop():
                                 backup_daily_at=os.getenv("BACKUP_DAILY_AT", "04:30"),
                                 include_artwork=False)
     except Exception as e:
-        LOGGER.error(f"[sync-daemon] Could not initialize system cron settings: {e}")
+        LOGGER.error("[sync-daemon] Could not initialize system cron settings: %s", e)
         raise RuntimeError("Could not initialize system cron settings.") from e
+
+
+def _recover_sync_jobs() -> None:
     if requeue_processing:
         try:
             recovered = requeue_processing(DB_URL, "sync")
             if recovered:
-                LOGGER.info(f"[sync-daemon] Recovered {recovered} interrupted sync job(s).")
+                LOGGER.info("[sync-daemon] Recovered %s interrupted sync job(s).", recovered)
         except Exception as e:
-            LOGGER.warning(f"[sync-daemon] Could not recover sync jobs: {e}")
+            LOGGER.warning("[sync-daemon] Could not recover sync jobs: %s", e)
+
+
+def _drain_pending_jobs() -> bool:
+    """Run queued on-demand jobs before any startup wait. True if one ran."""
+    ran_jobs = False
+    while run_pending_sync_jobs():
+        ran_jobs = True
+        if stop_event.is_set():
+            break
+    return ran_jobs
+
+
+def _dispatch_admin_schedules_at_startup() -> None:
+    # Dispatch schedules before a potentially long initial full sync. The
+    # periodic wait loop is not reached until that sync exits; persisting
+    # due work here lets the full-sync worker process it at safe checkpoints.
+    if dispatch_due_schedules:
+        try:
+            scheduled = dispatch_due_schedules(DB_URL)
+            if scheduled:
+                LOGGER.info("[sync-daemon] Queued %s due Admin schedule(s) before sync.", scheduled)
+        except Exception as e:
+            LOGGER.warning("[sync-daemon] Could not dispatch Admin schedules at startup: %s", e)
+
+
+def _wait_for_configured_schedule():
+    """Startup without an initial run: wait for the cron slot.
+
+    Returns "break" when the runner should stop, "continue" when a request
+    arrived and the loop should restart, and None to carry on with the pass.
+    """
+    LOGGER.info("[sync-daemon] Skipping initial run on startup (run_on_startup=false); waiting for the configured cron schedule.")
+    log_next_sync_schedule()
+    triggered = wait_with_trigger(float("inf"))
+    if not triggered and stop_event.is_set():
+        return "break"
+    if triggered:
+        # Re-check durable requests before falling back to the schedule.
+        return "continue"
+    return None
+
+
+def _run_due_or_queued_sync(ran_jobs: bool, first_run: bool) -> bool:
+    """Run the next sync pass: a due schedule or the queued request. Returns success."""
+    global requested_source, requested_sync_mode, system_sync_due
+    if ran_jobs and not system_sync_due:
+        requested_source = None
+        return True
+    if first_run and not system_sync_due:
+        try:
+            if claim_due_system_schedule(DB_URL, "library-sync"):
+                system_sync_due = True
+        except Exception as e:
+            LOGGER.warning("[sync-daemon] Could not claim a due Library sync slot: %s", e)
+    source = None if system_sync_due else requested_source
+    mode = "scheduled" if system_sync_due else requested_sync_mode
+    success, _exit_code = run_full_sync(source, mode)
+    requested_source = None
+    requested_sync_mode = "scheduled"
+    return success
+
+
+def _record_library_sync_result(success: bool) -> None:
+    global system_sync_due
+    try:
+        finish_system_schedule(DB_URL, "library-sync", success=success and not stop_event.is_set(),
+                               interrupted=stop_event.is_set())
+    except Exception as e:
+        LOGGER.warning("[sync-daemon] Could not record Library sync result: %s", e)
+    system_sync_due = False
+
+
+def _wait_after_success() -> None:
+    global consecutive_errors
+    if consecutive_errors > 0:
+        LOGGER.info("[sync-daemon] Sync succeeded after %s failed attempts.", consecutive_errors)
+    consecutive_errors = 0
+    LOGGER.info("[sync-daemon] Waiting for the next cron run or an on-demand request...")
+    log_next_sync_schedule()
+    wait_with_trigger(float("inf"))
+
+
+def _wait_after_failure(was_schedule_run: bool) -> None:
+    global consecutive_errors
+    consecutive_errors += 1
+    backoff = min(BASE_BACKOFF_SECONDS * (2 ** (consecutive_errors - 1)), MAX_BACKOFF_SECONDS)
+    if consecutive_errors <= 3:
+        LOGGER.warning("[sync-daemon] Sync failed (attempt %s). Retrying with backoff in %ss...",
+                       consecutive_errors, backoff)
+    else:
+        # Suppress noisy repetitive logs on persistent errors
+        LOGGER.warning("[sync-daemon] Consecutive sync failures (%s). Suppressed repetitive logs. "
+                       "Retrying with backoff in %ss...", consecutive_errors, backoff)
+    triggered = wait_with_trigger(backoff, allow_schedule=False)
+    if was_schedule_run and not triggered and not stop_event.is_set():
+        wait_with_trigger(float("inf"))
+
+
+def run_loop():
+    _initialize_runner_schedules()
+    _recover_sync_jobs()
     first_run = True
     while not stop_event.is_set():
         # Durable on-demand requests take precedence over a scheduled run and are
         # restart-safe because they live in the shared jobs table. Drain them
         # before any startup wait so a restart cannot strand a request.
-        ran_jobs = False
-        while run_pending_sync_jobs():
-            ran_jobs = True
-            if stop_event.is_set():
-                break
+        ran_jobs = _drain_pending_jobs()
         if stop_event.is_set():
             break
 
-        # Dispatch schedules before a potentially long initial full sync. The
-        # periodic wait loop is not reached until that sync exits; persisting
-        # due work here lets the full-sync worker process it at safe checkpoints.
-        if dispatch_due_schedules:
-            try:
-                scheduled = dispatch_due_schedules(DB_URL)
-                if scheduled:
-                    LOGGER.info(f"[sync-daemon] Queued {scheduled} due Admin schedule(s) before sync.")
-            except Exception as e:
-                LOGGER.warning(f"[sync-daemon] Could not dispatch Admin schedules at startup: {e}")
+        _dispatch_admin_schedules_at_startup()
 
         if ran_jobs:
             first_run = False
         if first_run and not run_on_startup:
             first_run = False
-            LOGGER.info("[sync-daemon] Skipping initial run on startup (run_on_startup=false); waiting for the configured cron schedule.")
-            log_next_sync_schedule()
-            triggered = wait_with_trigger(float("inf"))
-            if not triggered and stop_event.is_set():
+            action = _wait_for_configured_schedule()
+            if action == "break":
                 break
-            if triggered:
-                # Re-check durable requests before falling back to the schedule.
+            if action == "continue":
                 continue
 
-        if ran_jobs and not system_sync_due:
-            success, exit_code = True, 0
-            requested_source = None
-        else:
-            if first_run and not system_sync_due:
-                try:
-                    if claim_due_system_schedule(DB_URL, "library-sync"):
-                        system_sync_due = True
-                except Exception as e:
-                    LOGGER.warning(f"[sync-daemon] Could not claim a due Library sync slot: {e}")
-            source = None if system_sync_due else requested_source
-            mode = "scheduled" if system_sync_due else requested_sync_mode
-            success, exit_code = run_full_sync(source, mode)
-            requested_source = None
-            requested_sync_mode = "scheduled"
+        success = _run_due_or_queued_sync(ran_jobs, first_run)
         was_schedule_run = system_sync_due
         if system_sync_due and finish_system_schedule:
-            try:
-                finish_system_schedule(DB_URL, "library-sync", success=success and not stop_event.is_set(),
-                                       interrupted=stop_event.is_set())
-            except Exception as e:
-                LOGGER.warning(f"[sync-daemon] Could not record Library sync result: {e}")
-            system_sync_due = False
+            _record_library_sync_result(success)
 
         first_run = False
         if stop_event.is_set():
             break
 
         if success:
-            if consecutive_errors > 0:
-                LOGGER.info(f"[sync-daemon] Sync succeeded after {consecutive_errors} failed attempts.")
-            consecutive_errors = 0
-            LOGGER.info("[sync-daemon] Waiting for the next cron run or an on-demand request...")
-            log_next_sync_schedule()
-            wait_with_trigger(float("inf"))
+            _wait_after_success()
         else:
-            consecutive_errors += 1
-            backoff = min(BASE_BACKOFF_SECONDS * (2 ** (consecutive_errors - 1)), MAX_BACKOFF_SECONDS)
-            if consecutive_errors <= 3:
-                LOGGER.warning(f"[sync-daemon] Sync failed (attempt {consecutive_errors}). Retrying with backoff in {backoff}s...")
-            else:
-                # Suppress noisy repetitive logs on persistent errors
-                LOGGER.warning(f"[sync-daemon] Consecutive sync failures ({consecutive_errors}). Suppressed repetitive logs. Retrying with backoff in {backoff}s...")
-            triggered = wait_with_trigger(backoff, allow_schedule=False)
-            if was_schedule_run and not triggered and not stop_event.is_set():
-                wait_with_trigger(float("inf"))
+            _wait_after_failure(was_schedule_run)
 
     LOGGER.info("[sync-daemon] Sync runner exited.")
 

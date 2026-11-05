@@ -53,63 +53,83 @@ def get_range(video_id, start, end):
     return data, total
 
 
+def _oshash_from_blocks(head, tail, total):
+    # The two exact ranges are precisely the data used by the OSHASH algorithm.
+    checksum = total
+    for data in (head, tail):
+        for offset in range(0, BLOCK, 8):
+            checksum += int.from_bytes(data[offset:offset + 8], "little")
+    return f"{checksum & 0xffffffffffffffff:016x}"
+
+
+def _write_initial_ranges(tmp, head, tail, tail_start, total):
+    tmp.truncate(total)
+    tmp.seek(0)
+    tmp.write(head)
+    tmp.seek(tail_start)
+    tmp.write(tail)
+    tmp.flush()
+
+
+def _grow_sparse_view(tmp, video_id, total, side_size, target_side):
+    begin, end = side_size, target_side - 1
+    data, _ = get_range(video_id, begin, end)
+    tmp.seek(begin)
+    tmp.write(data)
+    start = max(BLOCK, total - target_side)
+    stop = max(BLOCK, total - side_size)
+    if start < stop:
+        data, _ = get_range(video_id, start, stop - 1)
+        tmp.seek(start)
+        tmp.write(data)
+
+
+def _ffprobe_media(path, max_budget):
+    p = subprocess.run(
+        ["/usr/bin/ffprobe", "-v", "error", "-probesize", str(max_budget),
+         "-analyzeduration", str(max_budget), "-show_streams", "-show_format",
+         "-of", "json", path], capture_output=True, text=True, timeout=30,
+    )
+    try:
+        return json.loads(p.stdout) if p.returncode == 0 else {}
+    except ValueError:
+        return {}
+
+
+def _make_checkpoint(used, media):
+    streams = media.get("streams", [])
+    duration = (media.get("format") or {}).get("duration")
+    checkpoint = {"budget_mib": used // MIB, "bytes_total": used,
+                  "complete": bool(duration and any(s.get("codec_type") == "video" for s in streams))}
+    if checkpoint["complete"]:
+        checkpoint["duration"] = duration
+        checkpoint["streams"] = [(s.get("codec_type"), s.get("codec_name")) for s in streams]
+    return checkpoint
+
+
 def probe_sample(video_id, source_duration, max_budget):
     head, total = get_range(video_id, 0, BLOCK - 1)
     tail_start = max(BLOCK, total - BLOCK)
     tail, tail_total = get_range(video_id, tail_start, total - 1)
     if tail_total != total:
         raise RuntimeError("file size changed during range reads")
-    # The two exact ranges are precisely the data used by the OSHASH algorithm.
-    checksum = total
-    for data in (head, tail):
-        for offset in range(0, BLOCK, 8):
-            checksum += int.from_bytes(data[offset:offset + 8], "little")
-    oshash = f"{checksum & 0xffffffffffffffff:016x}"
+    oshash = _oshash_from_blocks(head, tail, total)
 
     with tempfile.NamedTemporaryFile(prefix="adult-hub-probe-", suffix=".mp4") as tmp:
-        tmp.truncate(total)
-        tmp.seek(0)
-        tmp.write(head)
-        tmp.seek(tail_start)
-        tmp.write(tail)
-        tmp.flush()
+        _write_initial_ranges(tmp, head, tail, tail_start, total)
         used = 2 * BLOCK
         result = None
         checkpoints = []
         side_size = BLOCK
         for target_side in range(MIB // 2, max_budget // 2 + 1, MIB // 2):
             if target_side > side_size:
-                begin, end = side_size, target_side - 1
-                data, _ = get_range(video_id, begin, end)
-                tmp.seek(begin)
-                tmp.write(data)
-                start = max(BLOCK, total - target_side)
-                stop = max(BLOCK, total - side_size)
-                if start < stop:
-                    data, _ = get_range(video_id, start, stop - 1)
-                    tmp.seek(start)
-                    tmp.write(data)
+                _grow_sparse_view(tmp, video_id, total, side_size, target_side)
                 used += (target_side - side_size) * 2
                 side_size = target_side
                 tmp.flush()
             if used > max_budget:
                 break
-            p = subprocess.run(
-                ["/usr/bin/ffprobe", "-v", "error", "-probesize", str(max_budget),
-                 "-analyzeduration", str(max_budget), "-show_streams", "-show_format",
-                 "-of", "json", tmp.name], capture_output=True, text=True, timeout=30,
-            )
-            try:
-                media = json.loads(p.stdout) if p.returncode == 0 else {}
-            except ValueError:
-                media = {}
-            streams = media.get("streams", [])
-            duration = (media.get("format") or {}).get("duration")
-            checkpoint = {"budget_mib": used // MIB, "bytes_total": used,
-                          "complete": bool(duration and any(s.get("codec_type") == "video" for s in streams))}
-            if checkpoint["complete"]:
-                checkpoint["duration"] = duration
-                checkpoint["streams"] = [(s.get("codec_type"), s.get("codec_name")) for s in streams]
+            checkpoint = _make_checkpoint(used, _ffprobe_media(tmp.name, max_budget))
             checkpoints.append(checkpoint)
             if checkpoint["complete"]:
                 result = {**checkpoint, "oshash": oshash, "checkpoints": checkpoints}

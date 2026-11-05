@@ -65,9 +65,7 @@ def _source_error(admin, source: str, sync_mode: str) -> str | None:
     return None
 
 
-def build_router(admin):
-    router = APIRouter(route_class=V2ErrorRoute)
-
+def _route_trigger_sync(router, admin):
     @router.post("/api/v2/maintenance/sync")
     async def trigger_sync(request: Request):
         denied = admin._write_denied(request)
@@ -99,6 +97,10 @@ def build_router(admin):
             logger.warning("Request failed in trigger_sync", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not queue the sync."}, status_code=503)
 
+    return trigger_sync
+
+
+def _route_clear_resolver_cache(router, admin):
     @router.post("/api/v2/maintenance/cache/clear")
     async def clear_resolver_cache(request: Request):
         denied = admin._write_denied(request)
@@ -118,6 +120,10 @@ def build_router(admin):
                 {"ok": False, "error": "Could not clear the resolver cache."}, status_code=503
             )
 
+    return clear_resolver_cache
+
+
+def _route_refresh_jellyfin_library(router, admin):
     @router.post("/api/v2/maintenance/jellyfin/refresh")
     async def refresh_jellyfin_library(request: Request):
         denied = admin._write_denied(request)
@@ -148,6 +154,10 @@ def build_router(admin):
                 status_code=502,
             )
 
+    return refresh_jellyfin_library
+
+
+def _route_refresh_collections(router, admin):
     @router.post("/api/v2/maintenance/collections/refresh")
     async def refresh_collections(request: Request):
         denied = admin._write_denied(request)
@@ -177,6 +187,15 @@ def build_router(admin):
                 {"ok": False, "error": "Could not queue a collections refresh."}, status_code=503
             )
 
+    return refresh_collections
+
+
+def build_router(admin):
+    router = APIRouter(route_class=V2ErrorRoute)
+    _route_trigger_sync(router, admin)
+    _route_clear_resolver_cache(router, admin)
+    _route_refresh_jellyfin_library(router, admin)
+    _route_refresh_collections(router, admin)
     return router
 
 

@@ -82,6 +82,31 @@ class _Job:
             fut.exception()
 
 
+def _validate_stream_request(
+    key: str, offset: int, length: Optional[int], total: int,
+) -> None:
+    if not key or not isinstance(key, str):
+        raise ValueError(f"Invalid stream key: {key!r}")
+    if offset < 0:
+        raise ValueError(f"offset must be non-negative, got {offset}")
+    if length is not None and length < 0:
+        raise ValueError(f"length must be non-negative, got {length}")
+    if total < 0:
+        raise ValueError(f"total must be non-negative, got {total}")
+
+
+def _validate_fetched_block(job: _Job, data: object) -> bytes:
+    if not isinstance(data, (bytes, bytearray)):
+        raise TypeError(f"fetch must return bytes, got {type(data).__name__}")
+    data = bytes(data)
+    if len(data) != job.length:
+        raise RuntimeError(
+            f"Exact fetch length mismatch for {job.key} block {job.block_index} "
+            f"(offset {job.offset}): expected {job.length} bytes, got {len(data)} bytes"
+        )
+    return data
+
+
 class ParallelTelegramStreamManager:
     """Bounded parallel streaming manager with LRU cache, prefetch, and fairness."""
 
@@ -241,14 +266,7 @@ class ParallelTelegramStreamManager:
         start_time = time.monotonic()
         try:
             data = await fetch_task
-            if not isinstance(data, (bytes, bytearray)):
-                raise TypeError(f"fetch must return bytes, got {type(data).__name__}")
-            data = bytes(data)
-            if len(data) != job.length:
-                raise RuntimeError(
-                    f"Exact fetch length mismatch for {job.key} block {job.block_index} "
-                    f"(offset {job.offset}): expected {job.length} bytes, got {len(data)} bytes"
-                )
+            data = _validate_fetched_block(job, data)
         except asyncio.CancelledError:
             exc = asyncio.CancelledError()
         except BaseException as e:
@@ -256,45 +274,52 @@ class ParallelTelegramStreamManager:
         finally:
             job.fetch_task = None
             async with self._lock:
-                self._running_jobs_by_key[job.key] -= 1
-                if self._running_jobs_by_key[job.key] <= 0:
-                    self._running_jobs_by_key.pop(job.key, None)
-
-                if job.reserved_bytes > 0:
-                    self._reserved_inflight_bytes -= job.reserved_bytes
-                    job.reserved_bytes = 0
-
-                self._jobs.pop((job.key, job.block_index), None)
-
+                self._release_job_locked(job)
                 if exc is None and data is not None:
-                    actual_size = len(data)
-                    expires_at = time.monotonic() + self.cache_ttl_seconds
-                    entry = _CacheEntry(data=data, expires_at=expires_at)
-                    # Pinned for all awaiting demand readers so other workers cannot evict
-                    entry.pinned_count = len(job.demand_consumers)
-                    self._cache[(job.key, job.block_index)] = entry
-                    self._current_cache_bytes += actual_size
-                    self.on_block_fetched(
-                        job.key,
-                        job.block_index,
-                        actual_size,
-                        time.monotonic() - start_time,
-                    )
-                    if not job.future.done():
-                        # Signal only; the bytes live exclusively in the cache
-                        # entry (pinned for demand readers above).
-                        job.future.set_result(None)
+                    self._store_fetched_block_locked(job, data, start_time)
                 else:
-                    if not job.future.done():
-                        if isinstance(exc, asyncio.CancelledError):
-                            job.future.cancel()
-                        else:
-                            job.future.set_exception(
-                                exc or RuntimeError("Block fetch failed")
-                            )
-
+                    self._fail_job_locked(job, exc)
                 self._mem_cond.notify_all()
                 self._maybe_start_workers()
+
+    def _release_job_locked(self, job: _Job) -> None:
+        self._running_jobs_by_key[job.key] -= 1
+        if self._running_jobs_by_key[job.key] <= 0:
+            self._running_jobs_by_key.pop(job.key, None)
+
+        if job.reserved_bytes > 0:
+            self._reserved_inflight_bytes -= job.reserved_bytes
+            job.reserved_bytes = 0
+
+        self._jobs.pop((job.key, job.block_index), None)
+
+    def _store_fetched_block_locked(self, job: _Job, data: bytes, start_time: float) -> None:
+        actual_size = len(data)
+        expires_at = time.monotonic() + self.cache_ttl_seconds
+        entry = _CacheEntry(data=data, expires_at=expires_at)
+        # Pinned for all awaiting demand readers so other workers cannot evict
+        entry.pinned_count = len(job.demand_consumers)
+        self._cache[(job.key, job.block_index)] = entry
+        self._current_cache_bytes += actual_size
+        self.on_block_fetched(
+            job.key,
+            job.block_index,
+            actual_size,
+            time.monotonic() - start_time,
+        )
+        if not job.future.done():
+            # Signal only; the bytes live exclusively in the cache
+            # entry (pinned for demand readers above).
+            job.future.set_result(None)
+
+    def _fail_job_locked(self, job: _Job, exc: Optional[BaseException]) -> None:
+        if not job.future.done():
+            if isinstance(exc, asyncio.CancelledError):
+                job.future.cancel()
+            else:
+                job.future.set_exception(
+                    exc or RuntimeError("Block fetch failed")
+                )
 
     async def stream(
         self,
@@ -307,14 +332,7 @@ class ParallelTelegramStreamManager:
         """Stream byte range with bounded parallel fetching and prefetching."""
         if self._closed:
             raise RuntimeError("ParallelTelegramStreamManager is closed")
-        if not key or not isinstance(key, str):
-            raise ValueError(f"Invalid stream key: {key!r}")
-        if offset < 0:
-            raise ValueError(f"offset must be non-negative, got {offset}")
-        if length is not None and length < 0:
-            raise ValueError(f"length must be non-negative, got {length}")
-        if total < 0:
-            raise ValueError(f"total must be non-negative, got {total}")
+        _validate_stream_request(key, offset, length, total)
         if offset >= total or length == 0:
             return
 
@@ -338,83 +356,10 @@ class ParallelTelegramStreamManager:
                     raise RuntimeError("ParallelTelegramStreamManager is closed")
 
                 cache_key = (key, cur_blk)
-                entry: Optional[_CacheEntry] = None
-                job: Optional[_Job] = None
-
-                # Retry if a prefetch entry was evicted before we pinned it:
-                # re-acquiring attaches demand (or creates a fresh demand job
-                # pinned at completion), so the second pass is guaranteed.
-                while entry is None:
-                    async with self._lock:
-                        now = time.monotonic()
-                        # 1. Early demand block scheduling MUST precede prefetch start
-                        e = self._cache.get(cache_key)
-                        if e is not None and e.expires_at > now:
-                            self._cache.move_to_end(cache_key)
-                            e.pinned_count += 1
-                            entry = e
-                            self.on_cache_hit(key, cur_blk)
-                        else:
-                            self.on_cache_miss(key, cur_blk)
-                            blk_off = cur_blk * B
-                            blk_len = min(B, total - blk_off)
-                            job = self._jobs.get(cache_key)
-                            if job is not None:
-                                job.consumers.add(consumer_token)
-                                job.demand_consumers.add(consumer_token)
-                                registered_jobs[cache_key] = job
-                                if job.priority > 0:
-                                    job.priority = 0  # Promote to demand
-                            else:
-                                job = _Job(key, cur_blk, blk_off, blk_len, fetch, priority=0)
-                                job.consumers.add(consumer_token)
-                                job.demand_consumers.add(consumer_token)
-                                self._jobs[cache_key] = job
-                                registered_jobs[cache_key] = job
-
-                        # 2. Prefetch blocks ahead within window
-                        prefetch_end = min(last_block + 1, cur_blk + 1 + read_ahead_blocks)
-                        for ahead_blk in range(cur_blk + 1, prefetch_end):
-                            ahead_key = (key, ahead_blk)
-                            cached_entry = self._cache.get(ahead_key)
-                            if cached_entry is not None and cached_entry.expires_at > now:
-                                continue
-
-                            blk_off = ahead_blk * B
-                            blk_len = min(B, total - blk_off)
-                            if blk_len <= 0:
-                                continue
-
-                            existing_job = self._jobs.get(ahead_key)
-                            if existing_job is not None:
-                                existing_job.consumers.add(consumer_token)
-                                registered_jobs[ahead_key] = existing_job
-                            else:
-                                new_job = _Job(
-                                    key, ahead_blk, blk_off, blk_len, fetch, priority=1
-                                )
-                                new_job.consumers.add(consumer_token)
-                                self._jobs[ahead_key] = new_job
-                                registered_jobs[ahead_key] = new_job
-                                self.on_prefetch_scheduled(key, ahead_blk)
-
-                        self._maybe_start_workers()
-
-                    # Await job completion if not cached. The future is a
-                    # readiness signal only; bytes are read from the pinned
-                    # cache entry (demand completions pin for their readers,
-                    # so the entry cannot be evicted under us).
-                    if entry is None:
-                        if job is None:
-                            raise RuntimeError(f"Failed to acquire block {cur_blk} for key {key}")
-                        await asyncio.shield(job.future)
-
-                        async with self._lock:
-                            entry = self._cache.get(cache_key)
-                            if entry is not None:
-                                self._cache.move_to_end(cache_key)
-                            # else: evicted before pinning; loop re-acquires.
-
+                entry, job = await self._acquire_block(
+                    key, cur_blk, total, fetch, consumer_token, registered_jobs,
+                    last_block, read_ahead_blocks,
+                )
                 current_pinned = entry
 
                 # Remove completed registered jobs and consumer tokens to avoid retaining entire movie
@@ -436,39 +381,195 @@ class ParallelTelegramStreamManager:
                 finally:
                     # On resume from yield release previous pin BEFORE acquiring next block
                     if current_pinned is not None:
-                        async with self._lock:
-                            current_pinned.pinned_count -= 1
-                            self._mem_cond.notify_all()
+                        await self._unpin(current_pinned)
                         current_pinned = None
-                        entry = None
 
         finally:
             if current_pinned is not None:
-                async with self._lock:
-                    current_pinned.pinned_count -= 1
-                    self._mem_cond.notify_all()
+                await self._unpin(current_pinned)
                 current_pinned = None
 
-            async with self._lock:
-                for j_key, j in list(registered_jobs.items()):
-                    was_demand = consumer_token in j.demand_consumers
-                    j.consumers.discard(consumer_token)
-                    j.demand_consumers.discard(consumer_token)
-                    if was_demand and j.future.done() and not j.future.cancelled() and j.future.exception() is None:
-                        cached = self._cache.get((j.key, j.block_index))
-                        if cached is not None and cached.pinned_count > 0:
-                            cached.pinned_count -= 1
+            await self._release_registered_jobs(registered_jobs, consumer_token)
 
-                    if len(j.consumers) == 0:
-                        if not j.started:
-                            self._jobs.pop((j.key, j.block_index), None)
-                            if not j.future.done():
-                                j.future.cancel()
-                        elif not j.future.done() and j.fetch_task and not j.fetch_task.done():
-                            j.fetch_task.cancel()
-                registered_jobs.clear()
-                self._mem_cond.notify_all()
+    async def _unpin(self, entry: _CacheEntry) -> None:
+        async with self._lock:
+            entry.pinned_count -= 1
+            self._mem_cond.notify_all()
+
+    async def _acquire_block(
+        self,
+        key: str,
+        cur_blk: int,
+        total: int,
+        fetch: Callable[[int, int], Awaitable[bytes]],
+        consumer_token: object,
+        registered_jobs: Dict[Tuple[str, int], _Job],
+        last_block: int,
+        read_ahead_blocks: int,
+    ) -> Tuple[_CacheEntry, Optional[_Job]]:
+        """Pin the cache entry for one block, waiting for its fetch if needed."""
+        cache_key = (key, cur_blk)
+        entry: Optional[_CacheEntry] = None
+        job: Optional[_Job] = None
+
+        # Retry if a prefetch entry was evicted before we pinned it:
+        # re-acquiring attaches demand (or creates a fresh demand job
+        # pinned at completion), so the second pass is guaranteed.
+        while entry is None:
+            async with self._lock:
+                now = time.monotonic()
+                # 1. Early demand block scheduling MUST precede prefetch start
+                entry = self._attach_cached_locked(key, cache_key, cur_blk, now)
+                if entry is None:
+                    job = self._attach_demand_locked(
+                        key, cur_blk, total, fetch, consumer_token, registered_jobs,
+                    )
+
+                # 2. Prefetch blocks ahead within window
+                self._schedule_prefetch_locked(
+                    key, cur_blk, last_block, read_ahead_blocks, total, fetch,
+                    consumer_token, registered_jobs, now,
+                )
+
                 self._maybe_start_workers()
+
+            # Await job completion if not cached. The future is a
+            # readiness signal only; bytes are read from the pinned
+            # cache entry (demand completions pin for their readers,
+            # so the entry cannot be evicted under us).
+            if entry is None:
+                if job is None:
+                    raise RuntimeError(f"Failed to acquire block {cur_blk} for key {key}")
+                await asyncio.shield(job.future)
+
+                async with self._lock:
+                    entry = self._cache.get(cache_key)
+                    if entry is not None:
+                        self._cache.move_to_end(cache_key)
+                    # else: evicted before pinning; loop re-acquires.
+
+        return entry, job
+
+    def _attach_cached_locked(
+        self, key: str, cache_key: Tuple[str, int], cur_blk: int, now: float,
+    ) -> Optional[_CacheEntry]:
+        """Pin a live cache entry for the reader. Returns None on a miss."""
+        e = self._cache.get(cache_key)
+        if e is not None and e.expires_at > now:
+            self._cache.move_to_end(cache_key)
+            e.pinned_count += 1
+            self.on_cache_hit(key, cur_blk)
+            return e
+        return None
+
+    def _attach_demand_locked(
+        self,
+        key: str,
+        cur_blk: int,
+        total: int,
+        fetch: Callable[[int, int], Awaitable[bytes]],
+        consumer_token: object,
+        registered_jobs: Dict[Tuple[str, int], _Job],
+    ) -> _Job:
+        """Attach the reader to an existing job or create a demand job for the block."""
+        cache_key = (key, cur_blk)
+        self.on_cache_miss(key, cur_blk)
+        blk_off = cur_blk * self.block_size
+        blk_len = min(self.block_size, total - blk_off)
+        job = self._jobs.get(cache_key)
+        if job is not None:
+            job.consumers.add(consumer_token)
+            job.demand_consumers.add(consumer_token)
+            registered_jobs[cache_key] = job
+            if job.priority > 0:
+                job.priority = 0  # Promote to demand
+        else:
+            job = _Job(key, cur_blk, blk_off, blk_len, fetch, priority=0)
+            job.consumers.add(consumer_token)
+            job.demand_consumers.add(consumer_token)
+            self._jobs[cache_key] = job
+            registered_jobs[cache_key] = job
+        return job
+
+    def _schedule_prefetch_locked(
+        self,
+        key: str,
+        cur_blk: int,
+        last_block: int,
+        read_ahead_blocks: int,
+        total: int,
+        fetch: Callable[[int, int], Awaitable[bytes]],
+        consumer_token: object,
+        registered_jobs: Dict[Tuple[str, int], _Job],
+        now: float,
+    ) -> None:
+        prefetch_end = min(last_block + 1, cur_blk + 1 + read_ahead_blocks)
+        for ahead_blk in range(cur_blk + 1, prefetch_end):
+            self._schedule_prefetch_block_locked(
+                key, ahead_blk, total, fetch, consumer_token, registered_jobs, now,
+            )
+
+    def _schedule_prefetch_block_locked(
+        self,
+        key: str,
+        ahead_blk: int,
+        total: int,
+        fetch: Callable[[int, int], Awaitable[bytes]],
+        consumer_token: object,
+        registered_jobs: Dict[Tuple[str, int], _Job],
+        now: float,
+    ) -> None:
+        ahead_key = (key, ahead_blk)
+        cached_entry = self._cache.get(ahead_key)
+        if cached_entry is not None and cached_entry.expires_at > now:
+            return
+
+        blk_off = ahead_blk * self.block_size
+        blk_len = min(self.block_size, total - blk_off)
+        if blk_len <= 0:
+            return
+
+        existing_job = self._jobs.get(ahead_key)
+        if existing_job is not None:
+            existing_job.consumers.add(consumer_token)
+            registered_jobs[ahead_key] = existing_job
+        else:
+            new_job = _Job(
+                key, ahead_blk, blk_off, blk_len, fetch, priority=1
+            )
+            new_job.consumers.add(consumer_token)
+            self._jobs[ahead_key] = new_job
+            registered_jobs[ahead_key] = new_job
+            self.on_prefetch_scheduled(key, ahead_blk)
+
+    async def _release_registered_jobs(
+        self,
+        registered_jobs: Dict[Tuple[str, int], _Job],
+        consumer_token: object,
+    ) -> None:
+        async with self._lock:
+            for j in list(registered_jobs.values()):
+                self._release_consumer_locked(j, consumer_token)
+            registered_jobs.clear()
+            self._mem_cond.notify_all()
+            self._maybe_start_workers()
+
+    def _release_consumer_locked(self, j: _Job, consumer_token: object) -> None:
+        was_demand = consumer_token in j.demand_consumers
+        j.consumers.discard(consumer_token)
+        j.demand_consumers.discard(consumer_token)
+        if was_demand and j.future.done() and not j.future.cancelled() and j.future.exception() is None:
+            cached = self._cache.get((j.key, j.block_index))
+            if cached is not None and cached.pinned_count > 0:
+                cached.pinned_count -= 1
+
+        if len(j.consumers) == 0:
+            if not j.started:
+                self._jobs.pop((j.key, j.block_index), None)
+                if not j.future.done():
+                    j.future.cancel()
+            elif not j.future.done() and j.fetch_task and not j.fetch_task.done():
+                j.fetch_task.cancel()
 
     async def close(self) -> None:
         """Close manager, cancelling in-flight work and clearing cache."""

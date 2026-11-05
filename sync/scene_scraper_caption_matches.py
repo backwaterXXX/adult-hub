@@ -45,18 +45,10 @@ def _load_official_stashdb_performers(conn: Any) -> list[dict]:
     return list(catalog.values())
 
 
-def _backfill_caption_title_matches(
-    conn: Any,
-    media_dir: Path,
-    *,
-    limit: int,
-    sleep_sec: float,
-    http_client: Optional[Any],
-) -> Tuple[int, int]:
-    """Use deterministic caption title extraction plus exact title/runtime lookup."""
-    attempt_source = "telegram_caption_title_exact_v1"
+def _fetch_caption_title_rows(conn: Any, attempt_source: str, limit: int):
+    """Candidate videos for caption title lookup. None when the query is unavailable."""
     try:
-        rows = conn.execute(
+        return conn.execute(
             """SELECT v.id,v.source_text,v.duration
                FROM videos v LEFT JOIN external_metadata_attempts a
                  ON a.entity_type='video' AND a.entity_key=v.id AND a.source=%s
@@ -72,10 +64,11 @@ def _backfill_caption_title_matches(
         ).fetchall()
     except Exception as exc:
         _core.logger.debug("Caption title query unavailable: %s", type(exc).__name__)
-        return 0, 0
-    if not rows:
-        return 0, 0
+        return None
 
+
+def _import_caption_title_helpers():
+    """(extract_telegram_metadata, search_scene_by_exact_title), or None when unavailable."""
     try:
         from common.telegram_metadata import extract_telegram_metadata
         if __package__:
@@ -84,7 +77,61 @@ def _backfill_caption_title_matches(
             from scene_scraper_text_sources import search_scene_by_exact_title
     except ImportError as exc:
         _core.logger.warning("Caption title lookup unavailable (%s)", type(exc).__name__)
+        return None
+    return extract_telegram_metadata, search_scene_by_exact_title
+
+
+def _process_caption_title_row(conn: Any, media_dir: Path, video_id, source_text, duration, *,
+                               now: int, http_client: Optional[Any], extract, search,
+                               attempt_source: str) -> int:
+    """Look up one caption title, apply a match and record the attempt. Returns 1 when a scene was applied."""
+    updated = 0
+    metadata = extract(str(source_text or ""))
+    title = str(metadata.get("title") or "").strip()
+    try:
+        scene = search(
+            title, duration=int(duration or 0), http_client=http_client,
+            duration_tolerance=2,
+        ) if title else None
+        if scene:
+            with conn:
+                updated += int(_core._apply_matched_scene(
+                    conn, media_dir, str(video_id), scene,
+                    http_client=http_client, now=now,
+                ))
+            outcome = "found"
+        else:
+            outcome = "no_match"
+        if _core.record_attempt:
+            _core.record_attempt(conn, "video", video_id, attempt_source, outcome)
+    except Exception as exc:
+        if _core.record_attempt:
+            try:
+                _core.record_attempt(conn, "video", video_id, attempt_source, "error", error=exc)
+            except Exception:
+                _core.logger.debug("Could not save title retry state for %s", video_id)
+        _core.logger.warning("Caption title lookup failed for %s (%s)", video_id, type(exc).__name__)
+    return updated
+
+
+def _backfill_caption_title_matches(
+    conn: Any,
+    media_dir: Path,
+    *,
+    limit: int,
+    sleep_sec: float,
+    http_client: Optional[Any],
+) -> Tuple[int, int]:
+    """Use deterministic caption title extraction plus exact title/runtime lookup."""
+    attempt_source = "telegram_caption_title_exact_v1"
+    rows = _fetch_caption_title_rows(conn, attempt_source, limit)
+    if not rows:
         return 0, 0
+
+    helpers = _import_caption_title_helpers()
+    if helpers is None:
+        return 0, 0
+    extract, search = helpers
 
     checked = 0
     updated = 0
@@ -93,31 +140,10 @@ def _backfill_caption_title_matches(
         if index and sleep_sec > 0:
             _core.time.sleep(sleep_sec)
         checked += 1
-        metadata = extract_telegram_metadata(str(source_text or ""))
-        title = str(metadata.get("title") or "").strip()
-        try:
-            scene = search_scene_by_exact_title(
-                title, duration=int(duration or 0), http_client=http_client,
-                duration_tolerance=2,
-            ) if title else None
-            if scene:
-                with conn:
-                    updated += int(_core._apply_matched_scene(
-                        conn, media_dir, str(video_id), scene,
-                        http_client=http_client, now=now,
-                    ))
-                outcome = "found"
-            else:
-                outcome = "no_match"
-            if _core.record_attempt:
-                _core.record_attempt(conn, "video", video_id, attempt_source, outcome)
-        except Exception as exc:
-            if _core.record_attempt:
-                try:
-                    _core.record_attempt(conn, "video", video_id, attempt_source, "error", error=exc)
-                except Exception:
-                    _core.logger.debug("Could not save title retry state for %s", video_id)
-            _core.logger.warning("Caption title lookup failed for %s (%s)", video_id, type(exc).__name__)
+        updated += _process_caption_title_row(
+            conn, media_dir, video_id, source_text, duration, now=now, http_client=http_client,
+            extract=extract, search=search, attempt_source=attempt_source,
+        )
     return checked, updated
 
 

@@ -275,23 +275,10 @@ def _accepted_scenes(candidates, query_title: str, runtime: int, tolerance: int,
         accepted[dedupe_key] = _to_scraped_scene(item, source)
     return accepted
 
-def _backfill_split_part_matches(
-    conn: Any,
-    media_dir: Path,
-    *,
-    limit: int,
-    sleep_sec: float,
-    http_client: Optional[Any],
-) -> Tuple[int, int]:
-    """Search complete part sequences once using their combined runtime.
-
-    Incomplete, duplicated, already matched, or higher-priority-resolved groups
-    are left untouched. Attempts are tracked per member so normal retry policy
-    also applies when the sync process is interrupted part way through a group.
-    """
-    attempt_source = "telegram_split_title_duration_v1"
+def _fetch_split_candidate_rows(conn: Any, attempt_source: str):
+    """Telegram rows whose title or caption carries a part marker. None when the query is unavailable."""
     try:
-        rows = conn.execute(
+        return conn.execute(
             """SELECT v.id,v.title,v.source_filename,v.source_text,v.duration,
                       v.performer_resolution,v.scene_match_external_id,
                       (a.next_attempt_at IS NULL OR a.next_attempt_at<=CURRENT_TIMESTAMP)
@@ -307,10 +294,11 @@ def _backfill_split_part_matches(
         ).fetchall()
     except Exception as exc:
         _core.logger.debug("Split-sequence query unavailable (%s)", type(exc).__name__)
-        return 0, 0
-    if not rows:
-        return 0, 0
+        return None
 
+
+def _import_split_helpers():
+    """(extract_telegram_metadata, parse_split_part_title, search_split_scene), or None when unavailable."""
     try:
         from common.telegram_metadata import extract_telegram_metadata
         if __package__:
@@ -319,112 +307,179 @@ def _backfill_split_part_matches(
             from scene_scraper_split_parts import parse_split_part_title, search_split_scene
     except ImportError as exc:
         _core.logger.warning("Split-sequence lookup unavailable (%s)", type(exc).__name__)
-        return 0, 0
+        return None
+    return extract_telegram_metadata, parse_split_part_title, search_split_scene
 
+
+def _split_part_entry(row, extract, parse):
+    """(channel, base key, part number, part record) for one candidate row, or None when it is not a part."""
+    video_id, title, filename, source_text, duration, resolution, matched_id, attempt_due = row
+    caption = str(source_text or "")
+    extracted = extract(caption)
+    candidates = (extracted.get("title"), filename, title, caption)
+    parsed = next((result for value in candidates
+                   if value and (result := parse(str(value))) is not None), None)
+    if not parsed:
+        return None
+    part_number, base_title, base_key = parsed
+    identifier_parts = str(video_id or "").split(":", 2)
+    if len(identifier_parts) < 3 or identifier_parts[0] != "telegram":
+        return None
+    channel = identifier_parts[1]
+    try:
+        part_duration = int(duration or 0)
+    except (TypeError, ValueError):
+        part_duration = 0
+    if isinstance(resolution, str):
+        try:
+            resolution = _core.json.loads(resolution)
+        except (TypeError, ValueError):
+            resolution = {}
+    resolution = resolution if isinstance(resolution, dict) else {}
+    part = {
+        "video_id": str(video_id), "title": base_title, "source_text": caption,
+        "source_filename": str(filename or ""), "duration": part_duration,
+        "resolution": resolution, "matched_id": str(matched_id or ""),
+        "attempt_due": bool(attempt_due), "explicit_cast": (
+            extracted.get("performer_names", [])
+            if extracted.get("performer_source") == "labeled_cast" else []
+        ),
+    }
+    return channel, base_key, part_number, part
+
+
+def _group_split_parts(rows, extract, parse) -> dict:
     groups: dict[tuple[str, str], dict[int, list[dict[str, Any]]]] = {}
     for row in rows:
-        video_id, title, filename, source_text, duration, resolution, matched_id, attempt_due = row
-        caption = str(source_text or "")
-        extracted = extract_telegram_metadata(caption)
-        candidates = (extracted.get("title"), filename, title, caption)
-        parsed = next((result for value in candidates
-                       if value and (result := parse_split_part_title(str(value))) is not None), None)
-        if not parsed:
+        entry = _split_part_entry(row, extract, parse)
+        if entry is None:
             continue
-        part_number, base_title, base_key = parsed
-        identifier_parts = str(video_id or "").split(":", 2)
-        if len(identifier_parts) < 3 or identifier_parts[0] != "telegram":
-            continue
-        channel = identifier_parts[1]
-        group = groups.setdefault((channel, base_key), {})
-        try:
-            part_duration = int(duration or 0)
-        except (TypeError, ValueError):
-            part_duration = 0
-        if isinstance(resolution, str):
-            try:
-                resolution = _core.json.loads(resolution)
-            except (TypeError, ValueError):
-                resolution = {}
-        resolution = resolution if isinstance(resolution, dict) else {}
-        group.setdefault(part_number, []).append({
-            "video_id": str(video_id), "title": base_title, "source_text": caption,
-            "source_filename": str(filename or ""), "duration": part_duration,
-            "resolution": resolution, "matched_id": str(matched_id or ""),
-            "attempt_due": bool(attempt_due), "explicit_cast": (
-                extracted.get("performer_names", [])
-                if extracted.get("performer_source") == "labeled_cast" else []
-            ),
-        })
+        channel, base_key, part_number, part = entry
+        groups.setdefault((channel, base_key), {}).setdefault(part_number, []).append(part)
+    return groups
+
+
+def _split_group_is_complete(parts_by_number: dict, part_count: int) -> bool:
+    if part_count < 2 or part_count > 12:
+        return False
+    # Do not put an incomplete group on cooldown; a later sync may add
+    # the missing part and make the sequence searchable.
+    if set(parts_by_number) != set(range(1, part_count + 1)):
+        return False
+    return not any(len(part_rows) != 1 for part_rows in parts_by_number.values())
+
+
+def _split_parts_eligible(parts: list) -> Optional[int]:
+    """Total runtime when the parts may be searched, or None when the group must be skipped."""
+    if (not all(part["attempt_due"] for part in parts)
+            or any(part["matched_id"] for part in parts)
+            or any(int(part["resolution"].get("priority") or 0) >= 70 for part in parts)):
+        return None
+    durations = [part["duration"] for part in parts]
+    if any(duration <= 0 or duration > 8 * 60 * 60 for duration in durations):
+        return None
+    total_duration = sum(durations)
+    if total_duration > 12 * 60 * 60:
+        return None
+    return total_duration
+
+
+def _eligible_split_group(parts_by_number: dict):
+    """(parts in order, total runtime) for a searchable group, or None."""
+    part_count = max(parts_by_number)
+    if not _split_group_is_complete(parts_by_number, part_count):
+        return None
+    parts = [parts_by_number[number][0] for number in range(1, part_count + 1)]
+    total_duration = _split_parts_eligible(parts)
+    if total_duration is None:
+        return None
+    return parts, total_duration
+
+
+def _search_split_group(conn: Any, media_dir: Path, parts: list, total_duration: int, now: int,
+                        http_client: Optional[Any], attempt_source: str, search) -> int:
+    """Search one complete part sequence and apply the match. Returns the number of parts updated."""
+    updated = 0
+    query_title = parts[0]["title"]
+    source_texts = [text for part in parts
+                    for text in (part["source_text"], part["source_filename"])]
+    explicit_cast = list(dict.fromkeys(
+        name for part in parts for name in part["explicit_cast"] if str(name).strip()
+    ))
+    try:
+        from .scene_scraper_split_parts import SPLIT_DURATION_TOLERANCE_SECONDS
+    except ImportError:
+        from scene_scraper_split_parts import SPLIT_DURATION_TOLERANCE_SECONDS
+    try:
+        scene = search(
+            query_title, duration=total_duration, source_texts=source_texts,
+            caption_performers=explicit_cast, http_client=http_client,
+            duration_tolerance=SPLIT_DURATION_TOLERANCE_SECONDS,
+        )
+        outcome = "found" if scene else "no_match"
+        if scene:
+            with conn:
+                for part in parts:
+                    updated += int(_core._apply_matched_scene(
+                        conn, media_dir, part["video_id"], scene,
+                        http_client=http_client, now=now,
+                    ))
+        if _core.record_attempt:
+            for part in parts:
+                _core.record_attempt(conn, "video", part["video_id"], attempt_source, outcome)
+    except Exception as exc:
+        if _core.record_attempt:
+            for part in parts:
+                try:
+                    _core.record_attempt(
+                        conn, "video", part["video_id"], attempt_source, "error", error=exc,
+                    )
+                except Exception:
+                    _core.logger.debug("Could not save split-title retry state for %s", part["video_id"])
+        _core.logger.warning("Split-sequence lookup failed for %s (%s)",
+                             parts[0]["video_id"], type(exc).__name__)
+    return updated
+
+
+def _backfill_split_part_matches(
+    conn: Any,
+    media_dir: Path,
+    *,
+    limit: int,
+    sleep_sec: float,
+    http_client: Optional[Any],
+) -> Tuple[int, int]:
+    """Search complete part sequences once using their combined runtime.
+
+    Incomplete, duplicated, already matched, or higher-priority-resolved groups
+    are left untouched. Attempts are tracked per member so normal retry policy
+    also applies when the sync process is interrupted part way through a group.
+    """
+    attempt_source = "telegram_split_title_duration_v1"
+    rows = _fetch_split_candidate_rows(conn, attempt_source)
+    if not rows:
+        return 0, 0
+
+    helpers = _import_split_helpers()
+    if helpers is None:
+        return 0, 0
+    extract, parse, search = helpers
+
+    groups = _group_split_parts(rows, extract, parse)
 
     checked = updated = searched_groups = 0
     now = int(_core.time.time())
     for (_channel, _base_key), parts_by_number in groups.items():
-        part_count = max(parts_by_number)
-        if part_count < 2 or part_count > 12:
+        eligible = _eligible_split_group(parts_by_number)
+        if eligible is None:
             continue
-        if set(parts_by_number) != set(range(1, part_count + 1)):
-            # Do not put an incomplete group on cooldown; a later sync may add
-            # the missing part and make the sequence searchable.
-            continue
-        if any(len(part_rows) != 1 for part_rows in parts_by_number.values()):
-            continue
-        parts = [parts_by_number[number][0] for number in range(1, part_count + 1)]
-        if (not all(part["attempt_due"] for part in parts)
-                or any(part["matched_id"] for part in parts)
-                or any(int(part["resolution"].get("priority") or 0) >= 70 for part in parts)):
-            continue
-        durations = [part["duration"] for part in parts]
-        if any(duration <= 0 or duration > 8 * 60 * 60 for duration in durations):
-            continue
-        total_duration = sum(durations)
-        if total_duration > 12 * 60 * 60:
-            continue
+        parts, total_duration = eligible
         if searched_groups >= max(1, int(limit)):
             break
         if searched_groups and sleep_sec > 0:
             _core.time.sleep(sleep_sec)
         searched_groups += 1
         checked += len(parts)
-        query_title = parts[0]["title"]
-        source_texts = [text for part in parts
-                        for text in (part["source_text"], part["source_filename"])]
-        explicit_cast = list(dict.fromkeys(
-            name for part in parts for name in part["explicit_cast"] if str(name).strip()
-        ))
-        try:
-            from .scene_scraper_split_parts import SPLIT_DURATION_TOLERANCE_SECONDS
-        except ImportError:
-            from scene_scraper_split_parts import SPLIT_DURATION_TOLERANCE_SECONDS
-        try:
-            scene = search_split_scene(
-                query_title, duration=total_duration, source_texts=source_texts,
-                caption_performers=explicit_cast, http_client=http_client,
-                duration_tolerance=SPLIT_DURATION_TOLERANCE_SECONDS,
-            )
-            outcome = "found" if scene else "no_match"
-            if scene:
-                with conn:
-                    for part in parts:
-                        updated += int(_core._apply_matched_scene(
-                            conn, media_dir, part["video_id"], scene,
-                            http_client=http_client, now=now,
-                        ))
-            if _core.record_attempt:
-                for part in parts:
-                    _core.record_attempt(conn, "video", part["video_id"], attempt_source, outcome)
-        except Exception as exc:
-            if _core.record_attempt:
-                for part in parts:
-                    try:
-                        _core.record_attempt(
-                            conn, "video", part["video_id"], attempt_source, "error", error=exc,
-                        )
-                    except Exception:
-                        _core.logger.debug("Could not save split-title retry state for %s", part["video_id"])
-            _core.logger.warning("Split-sequence lookup failed for %s (%s)",
-                                 parts[0]["video_id"], type(exc).__name__)
+        updated += _search_split_group(conn, media_dir, parts, total_duration, now, http_client,
+                                       attempt_source, search)
     return checked, updated
-
-
-

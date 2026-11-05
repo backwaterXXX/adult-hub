@@ -173,46 +173,67 @@ def _measure(rows: list[dict], methods: dict[str, Callable[[dict], set[str]]], s
     return results
 
 
-def benchmark(path: Path, *, catalog_path: Path | None = None, split: str = "dev") -> dict:
-    global_catalog = None
-    if catalog_path:
-        raw_catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-        global_catalog = raw_catalog.get("performers") if isinstance(raw_catalog, dict) else raw_catalog
-        if not isinstance(global_catalog, list) or not global_catalog:
-            raise ValueError("catalog snapshot must contain a nonempty performers array")
-        if any(not isinstance(item, dict) or not str(item.get("id") or "").startswith("stashdb:")
-               for item in global_catalog):
-            raise ValueError("catalog snapshot may contain only external stashdb identities")
+def _load_global_catalog(catalog_path: Path | None) -> list | None:
+    if not catalog_path:
+        return None
+    raw_catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    global_catalog = raw_catalog.get("performers") if isinstance(raw_catalog, dict) else raw_catalog
+    if not isinstance(global_catalog, list) or not global_catalog:
+        raise ValueError("catalog snapshot must contain a nonempty performers array")
+    if any(not isinstance(item, dict) or not str(item.get("id") or "").startswith("stashdb:")
+           for item in global_catalog):
+        raise ValueError("catalog snapshot may contain only external stashdb identities")
+    return global_catalog
+
+
+def _parse_corpus_line(line: str, line_number: int, global_catalog: list | None) -> dict:
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON on line {line_number}") from exc
+    if not isinstance(row, dict):
+        raise ValueError(f"Line {line_number} must contain a JSON object")
+    if not row.get("video_id"):
+        raise ValueError(f"Line {line_number} needs video_id")
+    if "catalog" not in row and global_catalog is not None:
+        row["catalog"] = global_catalog
+    if not isinstance(row.get("catalog"), list):
+        raise ValueError(f"Line {line_number} needs a catalog or --catalog snapshot")
+    return row
+
+
+def _load_corpus_rows(path: Path, global_catalog: list | None) -> list[dict]:
     rows = []
     with path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             if not line.strip():
                 continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid JSON on line {line_number}") from exc
-            if not isinstance(row, dict):
-                raise ValueError(f"Line {line_number} must contain a JSON object")
-            if not row.get("video_id"):
-                raise ValueError(f"Line {line_number} needs video_id")
-            if "catalog" not in row and global_catalog is not None:
-                row["catalog"] = global_catalog
-            if not isinstance(row.get("catalog"), list):
-                raise ValueError(f"Line {line_number} needs a catalog or --catalog snapshot")
-            rows.append(row)
+            rows.append(_parse_corpus_line(line, line_number, global_catalog))
+    return rows
 
-    methods: dict[str, Callable[[dict], set[str]]] = {
+
+def _build_methods() -> dict[str, Callable[[dict], set[str]]]:
+    return {
         "exact_catalog_text": _exact_catalog,
         "title_regex_parser": _title_parser,
         "scene_catalog_candidates": lambda row: _cached_candidates(row, "scene_candidates"),
         "oshash_catalog_candidates": lambda row: _cached_candidates(row, "oshash_candidates"),
         "phash_catalog_candidates": lambda row: _cached_candidates(row, "phash_candidates"),
     }
+
+
+def _select_splits(rows: list[dict], split: str) -> list[str]:
     available_splits = sorted({str(row.get("split") or "dev") for row in rows})
     if split != "all" and split not in available_splits:
         raise ValueError(f"requested split {split!r} is missing from the corpus")
-    splits = available_splits if split == "all" else [split]
+    return available_splits if split == "all" else [split]
+
+
+def benchmark(path: Path, *, catalog_path: Path | None = None, split: str = "dev") -> dict:
+    global_catalog = _load_global_catalog(catalog_path)
+    rows = _load_corpus_rows(path, global_catalog)
+    methods = _build_methods()
+    splits = _select_splits(rows, split)
     report = {
         "input": str(path),
         "rows": len(rows),

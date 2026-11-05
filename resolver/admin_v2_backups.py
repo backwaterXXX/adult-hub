@@ -85,22 +85,29 @@ def _verify(path: Path) -> dict:
     return {"checksum": actual, "checksum_status": checksum_status, "archive_status": archive_status}
 
 
-def build_router(admin):
-    router = APIRouter(route_class=V2ErrorRoute)
+def _restore_test_target_ready(admin) -> bool:
+    return db.restore_test_target_available(
+        getattr(admin, "BACKUP_RESTORE_DATABASE_URL", ""),
+        getattr(admin, "HUB_DB_URL", ""),
+    )
 
+
+def _backup_entry(item: dict) -> dict:
+    return {"name": item["name"], "backup_type": item.get("backup_type", "unknown"),
+            "size_bytes": int(item["size_bytes"]), "modified_at": item["modified_at"],
+            "checksum_status": item.get("checksum_status", "not_recorded"),
+            "scope": "PostgreSQL database only" if item.get("backup_type") == "postgres_custom_dump"
+            else "Legacy database snapshot; media and settings are not included"}
+
+
+def _route_backups(router, admin):
     @router.get("/api/v2/backups")
     async def backups(request: Request):
         if admin._admin_blocked(request):
             return admin.JSONResponse({"ok": False, "error": "Admin is only available locally."}, status_code=403)
         try:
             status = await admin.asyncio.to_thread(admin._backup_status)
-            files = []
-            for item in status.get("files", []):
-                files.append({"name": item["name"], "backup_type": item.get("backup_type", "unknown"),
-                              "size_bytes": int(item["size_bytes"]), "modified_at": item["modified_at"],
-                              "checksum_status": item.get("checksum_status", "not_recorded"),
-                              "scope": "PostgreSQL database only" if item.get("backup_type") == "postgres_custom_dump"
-                              else "Legacy database snapshot; media and settings are not included"})
+            files = [_backup_entry(item) for item in status.get("files", [])]
             reported_count = status.get("count")
             count = reported_count if type(reported_count) is int and reported_count >= 0 else len(files)
             total_bytes = status.get("total_bytes")
@@ -108,14 +115,15 @@ def build_router(admin):
             return {"ok": True, "items": files, "count": count, "total_bytes": total_bytes,
                     "latest": files[0] if files else None, "available": bool(status.get("available")),
                     "inventory_available": status.get("inventory_available") is True,
-                    "restore_test_available": db.restore_test_target_available(
-                        getattr(admin, "BACKUP_RESTORE_DATABASE_URL", ""),
-                        getattr(admin, "HUB_DB_URL", ""),
-                    )}
+                    "restore_test_available": _restore_test_target_ready(admin)}
         except Exception:
             logger.warning("Request failed in backups", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Backup inventory is unavailable."}, status_code=503)
 
+    return backups
+
+
+def _route_verify(router, admin):
     @router.get("/api/v2/backups/verify")
     async def verify(request: Request, filename: str):
         if admin._admin_blocked(request):
@@ -130,6 +138,10 @@ def build_router(admin):
             logger.warning("Request failed in verify", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Backup verification failed."}, status_code=503)
 
+    return verify
+
+
+def _route_create_backup(router, admin):
     @router.post("/api/v2/backups/create")
     async def create_backup(request: Request):
         denied = admin._write_denied(request)
@@ -146,6 +158,17 @@ def build_router(admin):
             logger.warning("Request failed in create_backup", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not queue the database backup."}, status_code=503)
 
+    return create_backup
+
+
+def _restore_test_filename(body):
+    """Return the requested filename, or None when the body is not exactly {"filename": str}."""
+    if not isinstance(body, dict) or set(body) != {"filename"} or not isinstance(body["filename"], str):
+        return None
+    return body["filename"]
+
+
+def _route_restore_test(router, admin):
     @router.post("/api/v2/backups/restore-test")
     async def restore_test(request: Request):
         denied = admin._write_denied(request)
@@ -153,14 +176,13 @@ def build_router(admin):
             return denied
         try:
             body = await request.json()
-            if not isinstance(body, dict) or set(body) != {"filename"} or not isinstance(body["filename"], str):
+            filename = _restore_test_filename(body)
+            if filename is None:
                 return admin.JSONResponse({"ok": False, "error": "Provide one backup filename."}, status_code=400)
-            path = _allowed_backup(Path(admin.BACKUP_DIR), body["filename"])
+            path = _allowed_backup(Path(admin.BACKUP_DIR), filename)
             if path is None or not path.name.endswith(".dump.gz"):
                 return admin.JSONResponse({"ok": False, "error": "PostgreSQL backup was not found."}, status_code=404)
-            if not db.restore_test_target_available(
-                    getattr(admin, "BACKUP_RESTORE_DATABASE_URL", ""),
-                    getattr(admin, "HUB_DB_URL", "")):
+            if not _restore_test_target_ready(admin):
                 return admin.JSONResponse(
                     {"ok": False, "error": "A valid dedicated restore-test database connection is not configured."},
                     status_code=503,
@@ -175,4 +197,13 @@ def build_router(admin):
             logger.warning("Request failed in restore_test", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not queue the backup restore test."}, status_code=503)
 
+    return restore_test
+
+
+def build_router(admin):
+    router = APIRouter(route_class=V2ErrorRoute)
+    _route_backups(router, admin)
+    _route_verify(router, admin)
+    _route_create_backup(router, admin)
+    _route_restore_test(router, admin)
     return router

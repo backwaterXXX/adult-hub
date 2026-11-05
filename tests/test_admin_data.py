@@ -78,48 +78,53 @@ class TestConfiguredSources(unittest.TestCase):
         self.assertEqual(data["sources"], [])
 
 
+class _FakeResult:
+    def __init__(self, value):
+        self.value = value
+
+    def fetchone(self):
+        return (self.value,)
+
+    def fetchall(self):
+        return []
+
+
+class _FakeConnection:
+    closed = False
+
+    def execute(self, query, _params=()):
+        normalized = " ".join(query.split())
+        if "performer_photos" in normalized:
+            self.photo_query = normalized
+            return _FakeResult(3)
+        if "performer_bios" in normalized:
+            self.bio_query = normalized
+            return _FakeResult(2)
+        if "performer_aliases" in normalized:
+            self.alias_query = normalized
+            return _FakeResult(4)
+        return self._stat_result(normalized)
+
+    def _stat_result(self, normalized):
+        if "pg_database_size" in normalized:
+            return _FakeResult(1.0)
+        if "count(*) FROM videos" in normalized or "count(*) FROM synced_files" in normalized:
+            return _FakeResult(0)
+        if "MAX(last_seen)" in normalized:
+            return _FakeResult(None)
+        if "FROM videos WHERE last_seen" in normalized:
+            return _FakeResult(0)
+        if "WHERE playable = 0" in normalized:
+            return _FakeResult(0)
+        raise AssertionError(f"Unexpected SQL: {normalized}")
+
+    def close(self):
+        self.closed = True
+
+
 class TestPerformerQualityMetrics(unittest.TestCase):
     def test_counts_only_nonempty_profile_fields_and_recorded_aliases(self):
-        class Result:
-            def __init__(self, value):
-                self.value = value
-
-            def fetchone(self):
-                return (self.value,)
-
-            def fetchall(self):
-                return []
-
-        class Connection:
-            closed = False
-
-            def execute(self, query, _params=()):
-                normalized = " ".join(query.split())
-                if "performer_photos" in normalized:
-                    self.photo_query = normalized
-                    return Result(3)
-                if "performer_bios" in normalized:
-                    self.bio_query = normalized
-                    return Result(2)
-                if "performer_aliases" in normalized:
-                    self.alias_query = normalized
-                    return Result(4)
-                if "pg_database_size" in normalized:
-                    return Result(1.0)
-                if "count(*) FROM videos" in normalized or "count(*) FROM synced_files" in normalized:
-                    return Result(0)
-                if "MAX(last_seen)" in normalized:
-                    return Result(None)
-                if "FROM videos WHERE last_seen" in normalized:
-                    return Result(0)
-                if "WHERE playable = 0" in normalized:
-                    return Result(0)
-                raise AssertionError(f"Unexpected SQL: {normalized}")
-
-            def close(self):
-                self.closed = True
-
-        connection = Connection()
+        connection = _FakeConnection()
         tables = {"videos", "synced_files", "performer_photos", "performer_bios", "performer_aliases"}
         with (
             patch.object(admin_data.db, "connect", return_value=connection),

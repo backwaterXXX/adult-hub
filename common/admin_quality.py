@@ -29,11 +29,7 @@ def _audit_batch_id(value):
     ) else None
 
 
-def _complete_audit(conn):
-    rows = conn.execute(
-        "SELECT id,state,created_at,result,action,payload FROM video_duplicate_jobs "
-        "WHERE action IN ('consistency_audit','metadata_quality_audit') ORDER BY created_at DESC,id DESC"
-    ).fetchall()
+def _parse_audit_rows(rows):
     parsed = []
     for row in rows:
         result = _object(row[3])
@@ -48,6 +44,85 @@ def _complete_audit(conn):
             if mode in {"full", "file_consistency"}:
                 result["audit_mode"] = mode
         parsed.append((row, result))
+    return parsed
+
+
+def _combined_state(states):
+    if "failed" in states:
+        return "failed"
+    if "processing" in states:
+        return "processing"
+    if "queued" in states:
+        return "queued"
+    return "done"
+
+
+def _current_audit(rows, parsed, metadata_by_batch):
+    current = rows[0] if rows else None
+    if parsed:
+        newest_row, newest_result = parsed[0]
+        batch_id = newest_result.get("audit_batch_id")
+        if _audit_batch_id(batch_id) and batch_id in metadata_by_batch:
+            metadata_row = metadata_by_batch[batch_id]
+            batch_rows = [row for row, result in parsed if result.get("audit_batch_id") == batch_id]
+            states = [str(row[1]) for row in batch_rows]
+            current = (metadata_row[0], _combined_state(states),
+                       max((row[2] for row in batch_rows if row[2] is not None), default=metadata_row[2]),
+                       _object(metadata_row[3]), metadata_row[4])
+    return current
+
+
+def _paired_full_entry(row, result, batch_id, consistency_by_batch):
+    sibling = consistency_by_batch.get(batch_id)
+    if sibling is None:
+        return None
+    file_row, file_result = sibling
+    file_complete = (file_row[1] == "done"
+                     and type(file_result.get("checked")) is int
+                     and type(file_result.get("total")) is int
+                     and file_result["checked"] == file_result["total"]
+                     and file_result.get("library_inventory_status") in {"complete", "partial"})
+    if not file_complete:
+        return None
+    combined = {**file_result, **result, "audit_mode": "full",
+                "file_checked": file_result["checked"],
+                "file_total": file_result["total"],
+                "library_inventory_status": file_result["library_inventory_status"],
+                "library_inventory_entries": file_result.get("library_inventory_entries"),
+                "jellyfin_import_state": file_result.get("jellyfin_import_state"),
+                "audit_batch_id": batch_id}
+    return (str(row[0]), row[2], combined, [str(row[0]), str(file_row[0])])
+
+
+def _complete_entry(row, result, consistency_by_batch):
+    mode = result.get("audit_mode")
+    checked = result.get("checked")
+    total = result.get("total")
+    catalog_complete = (type(checked) is int and type(total) is int
+                        and checked >= 0 and total >= 0 and checked == total)
+    if row[4] == "metadata_quality_audit":
+        if not catalog_complete:
+            return None
+        batch_id = result.get("audit_batch_id")
+        if isinstance(batch_id, str):
+            return _paired_full_entry(row, result, batch_id, consistency_by_batch)
+        return (str(row[0]), row[2], {**result, "audit_mode": "metadata_quality"}, [str(row[0])])
+    if mode == "file_consistency":
+        # A file-only scan is not a complete metadata quality snapshot. Paired
+        # full audits are combined when visiting their metadata job above.
+        return None
+    if catalog_complete and result.get("library_inventory_status") in {"complete", "partial"}:
+        # Historical jobs without a mode performed the original combined audit.
+        return (str(row[0]), row[2], {**result, "audit_mode": "full"}, [str(row[0])])
+    return None
+
+
+def _complete_audit(conn):
+    rows = conn.execute(
+        "SELECT id,state,created_at,result,action,payload FROM video_duplicate_jobs "
+        "WHERE action IN ('consistency_audit','metadata_quality_audit') ORDER BY created_at DESC,id DESC"
+    ).fetchall()
+    parsed = _parse_audit_rows(rows)
     consistency_by_batch = {
         result.get("audit_batch_id"): (row, result)
         for row, result in parsed
@@ -58,70 +133,14 @@ def _complete_audit(conn):
         for row, result in parsed
         if row[4] == "metadata_quality_audit" and _audit_batch_id(result.get("audit_batch_id"))
     }
-    current = rows[0] if rows else None
-    if parsed:
-        newest_row, newest_result = parsed[0]
-        batch_id = newest_result.get("audit_batch_id")
-        if _audit_batch_id(batch_id) and batch_id in metadata_by_batch:
-            metadata_row = metadata_by_batch[batch_id]
-            batch_rows = [row for row, result in parsed if result.get("audit_batch_id") == batch_id]
-            states = [str(row[1]) for row in batch_rows]
-            if "failed" in states:
-                combined_state = "failed"
-            elif "processing" in states:
-                combined_state = "processing"
-            elif "queued" in states:
-                combined_state = "queued"
-            else:
-                combined_state = "done"
-            current = (metadata_row[0], combined_state,
-                       max((row[2] for row in batch_rows if row[2] is not None), default=metadata_row[2]),
-                       _object(metadata_row[3]), metadata_row[4])
+    current = _current_audit(rows, parsed, metadata_by_batch)
     complete = []
     for row, result in parsed:
         if row[1] != "done":
             continue
-        mode = result.get("audit_mode")
-        checked = result.get("checked")
-        total = result.get("total")
-        catalog_complete = (type(checked) is int and type(total) is int
-                            and checked >= 0 and total >= 0 and checked == total)
-        if row[4] == "metadata_quality_audit":
-            if not catalog_complete:
-                continue
-            batch_id = result.get("audit_batch_id")
-            if isinstance(batch_id, str):
-                sibling = consistency_by_batch.get(batch_id)
-                if sibling is None:
-                    continue
-                file_row, file_result = sibling
-                file_complete = (file_row[1] == "done"
-                                 and type(file_result.get("checked")) is int
-                                 and type(file_result.get("total")) is int
-                                 and file_result["checked"] == file_result["total"]
-                                 and file_result.get("library_inventory_status") in {"complete", "partial"})
-                if not file_complete:
-                    continue
-                combined = {**file_result, **result, "audit_mode": "full",
-                            "file_checked": file_result["checked"],
-                            "file_total": file_result["total"],
-                            "library_inventory_status": file_result["library_inventory_status"],
-                            "library_inventory_entries": file_result.get("library_inventory_entries"),
-                            "jellyfin_import_state": file_result.get("jellyfin_import_state"),
-                            "audit_batch_id": batch_id}
-                complete.append((str(row[0]), row[2], combined,
-                                 [str(row[0]), str(file_row[0])]))
-            else:
-                complete.append((str(row[0]), row[2], {**result, "audit_mode": "metadata_quality"},
-                                 [str(row[0])]))
-        elif mode == "file_consistency":
-            # A file-only scan is not a complete metadata quality snapshot. Paired
-            # full audits are combined when visiting their metadata job above.
-            continue
-        elif (catalog_complete
-              and result.get("library_inventory_status") in {"complete", "partial"}):
-            # Historical jobs without a mode performed the original combined audit.
-            complete.append((str(row[0]), row[2], {**result, "audit_mode": "full"}, [str(row[0])]))
+        entry = _complete_entry(row, result, consistency_by_batch)
+        if entry is not None:
+            complete.append(entry)
     complete.sort(key=lambda item: (item[1] or 0, item[0]), reverse=True)
     if complete:
         selected_mode = complete[0][2]["audit_mode"]
@@ -154,6 +173,24 @@ def _safe_value(value):
     return text[:300]
 
 
+def _no_complete_reason(current, current_state):
+    if current is None:
+        return "no_audit"
+    current_result = _object(current[3])
+    if current_state in {"queued", "processing"}:
+        return "audit_in_progress"
+    if current[4] == "consistency_audit" and current_result.get("audit_mode") == "file_consistency":
+        return "file_consistency_only"
+    if (current_state == "done"
+            and current_result.get("library_inventory_status") == "complete"
+            and type(current_result.get("checked")) is int
+            and type(current_result.get("total")) is not int):
+        # Older completed audits did not persist the catalog total, so
+        # their coverage cannot be verified safely from today's catalog.
+        return "legacy_missing_catalog_total"
+    return "audit_not_complete"
+
+
 def read_quality_summary(db_url: str | None) -> dict:
     conn = db.connect(db_url)
     try:
@@ -161,25 +198,7 @@ def read_quality_summary(db_url: str | None) -> dict:
         latest, current, complete = _complete_audit(conn)
         if latest is None:
             current_state = str(current[1]) if current else None
-            status_reason = None
-            if current is None:
-                status_reason = "no_audit"
-            else:
-                current_result = _object(current[3])
-                if current_state in {"queued", "processing"}:
-                    status_reason = "audit_in_progress"
-                elif (current[4] == "consistency_audit"
-                        and current_result.get("audit_mode") == "file_consistency"):
-                    status_reason = "file_consistency_only"
-                elif (current_state == "done"
-                        and current_result.get("library_inventory_status") == "complete"
-                        and type(current_result.get("checked")) is int
-                        and type(current_result.get("total")) is not int):
-                    # Older completed audits did not persist the catalog total, so
-                    # their coverage cannot be verified safely from today's catalog.
-                    status_reason = "legacy_missing_catalog_total"
-                else:
-                    status_reason = "audit_not_complete"
+            status_reason = _no_complete_reason(current, current_state)
             return {"available": True, "status": "no_complete_audit", "latest_audit": None,
                     "current_audit_id": str(current[0]) if current else None,
                     "current_audit_state": current_state, "status_reason": status_reason,

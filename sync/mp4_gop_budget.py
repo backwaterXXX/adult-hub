@@ -94,25 +94,32 @@ def _parse_runs(data: bytes, box: _Box, *, signed_value: bool = False) -> list[t
     return result
 
 
-def _parse_sample_sizes(data: bytes, stbl: list[_Box]) -> list[int]:
-    stsz = _one(stbl, b"stsz", required=False)
-    stz2 = _one(stbl, b"stz2", required=False)
-    if bool(stsz) == bool(stz2):
-        raise MP4IndexError("expected exactly one of stsz or stz2")
-    if stsz:
-        _version, pos = _fullbox(data, stsz)
-        fixed = _u32(data, pos, stsz.end)
-        count = _u32(data, pos + 4, stsz.end)
-        pos += 8
-        if fixed:
-            if pos != stsz.end:
-                raise MP4IndexError("invalid fixed-size stsz")
-            return [fixed] * count
-        if pos + count * 4 != stsz.end:
-            raise MP4IndexError("invalid stsz length")
-        return [_u32(data, pos + 4 * i, stsz.end) for i in range(count)]
+def _parse_stsz_sizes(data: bytes, stsz: _Box) -> list[int]:
+    _version, pos = _fullbox(data, stsz)
+    fixed = _u32(data, pos, stsz.end)
+    count = _u32(data, pos + 4, stsz.end)
+    pos += 8
+    if fixed:
+        if pos != stsz.end:
+            raise MP4IndexError("invalid fixed-size stsz")
+        return [fixed] * count
+    if pos + count * 4 != stsz.end:
+        raise MP4IndexError("invalid stsz length")
+    return [_u32(data, pos + 4 * i, stsz.end) for i in range(count)]
 
-    assert stz2 is not None
+
+def _parse_nibble_sizes(data: bytes, pos: int, stz2: _Box, count: int) -> list[int]:
+    need = (count + 1) // 2
+    if pos + need != stz2.end:
+        raise MP4IndexError("invalid 4-bit stz2 length")
+    values = []
+    for i in range(count):
+        byte = data[pos + i // 2]
+        values.append((byte >> 4) if i % 2 == 0 else (byte & 0x0F))
+    return values
+
+
+def _parse_stz2_sizes(data: bytes, stz2: _Box) -> list[int]:
     _version, pos = _fullbox(data, stz2)
     if pos + 4 > stz2.end:
         raise MP4IndexError("truncated stz2 header")
@@ -120,14 +127,7 @@ def _parse_sample_sizes(data: bytes, stbl: list[_Box]) -> list[int]:
     count = _u32(data, pos + 4, stz2.end)
     pos += 8
     if field_size == 4:
-        need = (count + 1) // 2
-        if pos + need != stz2.end:
-            raise MP4IndexError("invalid 4-bit stz2 length")
-        values = []
-        for i in range(count):
-            byte = data[pos + i // 2]
-            values.append((byte >> 4) if i % 2 == 0 else (byte & 0x0F))
-        return values
+        return _parse_nibble_sizes(data, pos, stz2, count)
     if field_size not in (8, 16):
         raise MP4IndexError("unsupported stz2 field size")
     width = field_size // 8
@@ -135,6 +135,18 @@ def _parse_sample_sizes(data: bytes, stbl: list[_Box]) -> list[int]:
         raise MP4IndexError("invalid stz2 length")
     return [int.from_bytes(data[pos + i * width:pos + (i + 1) * width], "big")
             for i in range(count)]
+
+
+def _parse_sample_sizes(data: bytes, stbl: list[_Box]) -> list[int]:
+    stsz = _one(stbl, b"stsz", required=False)
+    stz2 = _one(stbl, b"stz2", required=False)
+    if bool(stsz) == bool(stz2):
+        raise MP4IndexError("expected exactly one of stsz or stz2")
+    if stsz:
+        return _parse_stsz_sizes(data, stsz)
+
+    assert stz2 is not None
+    return _parse_stz2_sizes(data, stz2)
 
 
 def _parse_offsets(data: bytes, stbl: list[_Box]) -> list[int]:
@@ -235,6 +247,130 @@ def _edit_map(data: bytes, edts: _Box | None, movie_timescale: int,
     return result
 
 
+def _sample_decode_times(moov: bytes, stbl_children: list[_Box], sizes: list[int]) -> list[int]:
+    stts = _one(stbl_children, b"stts")
+    assert stts is not None
+    durations = _parse_runs(moov, stts)
+    dts = []
+    current = 0
+    for count, delta in durations:
+        if delta <= 0:
+            raise MP4IndexError("non-positive sample duration")
+        if len(dts) + count > len(sizes):
+            raise MP4IndexError("stts maps more samples than stsz")
+        dts.extend(range(current, current + count * delta, delta))
+        current += count * delta
+    if len(dts) != len(sizes):
+        raise MP4IndexError("stts maps fewer samples than stsz")
+    return dts
+
+
+def _composition_offsets(moov: bytes, stbl_children: list[_Box], sizes: list[int]) -> list[int]:
+    composition = [0] * len(sizes)
+    ctts = _one(stbl_children, b"ctts", required=False)
+    if ctts:
+        ctts_version = moov[ctts.payload]
+        runs = _parse_runs(moov, ctts, signed_value=(ctts_version == 1))
+        sample = 0
+        for count, offset in runs:
+            if sample + count > len(sizes):
+                raise MP4IndexError("ctts maps more samples than stsz")
+            composition[sample:sample + count] = [offset] * count
+            sample += count
+        if sample != len(sizes):
+            raise MP4IndexError("ctts maps fewer samples than stsz")
+    return composition
+
+
+def _sync_sample_indexes(moov: bytes, stbl_children: list[_Box], sizes: list[int]) -> list[int]:
+    stss = _one(stbl_children, b"stss", required=False)
+    if not stss:
+        return list(range(len(sizes)))
+    _version, pos = _fullbox(moov, stss)
+    count, pos = _table_count(moov, pos, stss.end)
+    if pos + count * 4 != stss.end:
+        raise MP4IndexError("invalid stss length")
+    sync = [int.from_bytes(moov[pos + 4 * i:pos + 4 * i + 4], "big") - 1
+            for i in range(count)]
+    if any(i < 0 or i >= len(sizes) for i in sync):
+        raise MP4IndexError("stss sample index out of range")
+    return sync
+
+
+def _video_track_tables(moov: bytes, trak: _Box, movie_timescale: int) -> tuple | None:
+    """Return sample tables for a video trak, or None when the trak is not video."""
+    trak_children = _children(moov, trak)
+    mdia = _one(trak_children, b"mdia")
+    assert mdia is not None
+    mdia_children = _children(moov, mdia)
+    hdlr = _one(mdia_children, b"hdlr")
+    assert hdlr is not None
+    _version, hpos = _fullbox(moov, hdlr)
+    if hpos + 8 > hdlr.end or moov[hpos + 4:hpos + 8] != b"vide":
+        return None
+    mdhd = _one(mdia_children, b"mdhd")
+    minf = _one(mdia_children, b"minf")
+    assert mdhd is not None and minf is not None
+    media_timescale, _ = _track_timebase(moov, mdhd)
+    stbl = _one(_children(moov, minf), b"stbl")
+    assert stbl is not None
+    stbl_children = _children(moov, stbl)
+    sizes = _parse_sample_sizes(moov, stbl_children)
+    positions = _sample_positions(moov, stbl_children, sizes)
+    dts = _sample_decode_times(moov, stbl_children, sizes)
+    composition = _composition_offsets(moov, stbl_children, sizes)
+    pts = [decode + offset for decode, offset in zip(dts, composition)]
+    sync = _sync_sample_indexes(moov, stbl_children, sizes)
+    if not sync:
+        raise MP4IndexError("video track has no sync samples")
+    edits = _edit_map(moov, _one(trak_children, b"edts", required=False),
+                      movie_timescale, media_timescale)
+    return (sizes, positions, pts, sync, edits, media_timescale)
+
+
+def _media_seconds_for(target_seconds: float, edits) -> float:
+    """Map a presentation time through the edit list. Without edits, the time is unchanged."""
+    media_seconds = target_seconds
+    if edits:
+        mapped = None
+        for start, end, media_start in edits:
+            if start <= target_seconds < end:
+                if media_start is None:
+                    break
+                media_seconds = media_start + target_seconds - start
+                mapped = media_seconds
+                break
+        if mapped is None:
+            raise MP4IndexError("sample timestamp lies in an empty edit or outside edit list")
+    return media_seconds
+
+
+def _target_sample_index(pts: list[int], target_tick: float) -> int:
+    candidates = [i for i, value in enumerate(pts) if value >= target_tick]
+    if not candidates:
+        return max(range(len(pts)), key=pts.__getitem__)
+    return min(candidates, key=pts.__getitem__)
+
+
+def _gop_estimate_for(timestamp: float, sizes, positions, pts, sync, edits, timescale: int) -> GOPEstimate:
+    target_seconds = float(timestamp)
+    media_seconds = _media_seconds_for(target_seconds, edits)
+    target_tick = media_seconds * timescale
+    target_index = _target_sample_index(pts, target_tick)
+    preceding = [i for i in sync if i <= target_index]
+    if not preceding:
+        raise MP4IndexError("no preceding sync sample")
+    sync_index = max(preceding)
+    spans = tuple(positions[sync_index:target_index + 1])
+    return GOPEstimate(
+        timestamp=target_seconds,
+        sync_sample=sync_index,
+        target_sample=target_index,
+        packet_bytes=sum(end - start for start, end in spans),
+        packet_ranges=spans,
+    )
+
+
 def estimate_video_gops(moov: bytes, timestamps: list[float]) -> list[GOPEstimate]:
     """Estimate packet byte ranges from previous sync sample through target PTS.
 
@@ -252,107 +388,16 @@ def estimate_video_gops(moov: bytes, timestamps: list[float]) -> list[GOPEstimat
 
     video = []
     for trak in (box for box in moov_children if box.kind == b"trak"):
-        trak_children = _children(moov, trak)
-        mdia = _one(trak_children, b"mdia")
-        assert mdia is not None
-        mdia_children = _children(moov, mdia)
-        hdlr = _one(mdia_children, b"hdlr")
-        assert hdlr is not None
-        _version, hpos = _fullbox(moov, hdlr)
-        if hpos + 8 > hdlr.end or moov[hpos + 4:hpos + 8] != b"vide":
-            continue
-        mdhd = _one(mdia_children, b"mdhd")
-        minf = _one(mdia_children, b"minf")
-        assert mdhd is not None and minf is not None
-        media_timescale, _ = _track_timebase(moov, mdhd)
-        stbl = _one(_children(moov, minf), b"stbl")
-        assert stbl is not None
-        stbl_children = _children(moov, stbl)
-        sizes = _parse_sample_sizes(moov, stbl_children)
-        positions = _sample_positions(moov, stbl_children, sizes)
-        stts = _one(stbl_children, b"stts")
-        assert stts is not None
-        durations = _parse_runs(moov, stts)
-        dts = []
-        current = 0
-        for count, delta in durations:
-            if delta <= 0:
-                raise MP4IndexError("non-positive sample duration")
-            if len(dts) + count > len(sizes):
-                raise MP4IndexError("stts maps more samples than stsz")
-            dts.extend(range(current, current + count * delta, delta))
-            current += count * delta
-        if len(dts) != len(sizes):
-            raise MP4IndexError("stts maps fewer samples than stsz")
-        ctts = _one(stbl_children, b"ctts", required=False)
-        composition = [0] * len(sizes)
-        if ctts:
-            ctts_version = moov[ctts.payload]
-            runs = _parse_runs(moov, ctts, signed_value=(ctts_version == 1))
-            sample = 0
-            for count, offset in runs:
-                if sample + count > len(sizes):
-                    raise MP4IndexError("ctts maps more samples than stsz")
-                composition[sample:sample + count] = [offset] * count
-                sample += count
-            if sample != len(sizes):
-                raise MP4IndexError("ctts maps fewer samples than stsz")
-        pts = [decode + offset for decode, offset in zip(dts, composition)]
-        stss = _one(stbl_children, b"stss", required=False)
-        if stss:
-            _version, pos = _fullbox(moov, stss)
-            count, pos = _table_count(moov, pos, stss.end)
-            if pos + count * 4 != stss.end:
-                raise MP4IndexError("invalid stss length")
-            sync = [int.from_bytes(moov[pos + 4 * i:pos + 4 * i + 4], "big") - 1
-                    for i in range(count)]
-            if any(i < 0 or i >= len(sizes) for i in sync):
-                raise MP4IndexError("stss sample index out of range")
-        else:
-            sync = list(range(len(sizes)))
-        if not sync:
-            raise MP4IndexError("video track has no sync samples")
-        edits = _edit_map(moov, _one(trak_children, b"edts", required=False),
-                          movie_timescale, media_timescale)
-        video.append((sizes, positions, pts, sync, edits, media_timescale))
+        tables = _video_track_tables(moov, trak, movie_timescale)
+        if tables is not None:
+            video.append(tables)
 
     if len(video) != 1:
         raise MP4IndexError(f"expected one video track, found {len(video)}")
     sizes, positions, pts, sync, edits, timescale = video[0]
-    result = []
-    for timestamp in timestamps:
-        target_seconds = float(timestamp)
-        media_seconds = target_seconds
-        if edits:
-            mapped = None
-            for start, end, media_start in edits:
-                if start <= target_seconds < end:
-                    if media_start is None:
-                        break
-                    media_seconds = media_start + target_seconds - start
-                    mapped = media_seconds
-                    break
-            if mapped is None:
-                raise MP4IndexError("sample timestamp lies in an empty edit or outside edit list")
-        target_tick = media_seconds * timescale
-        candidates = [i for i, value in enumerate(pts) if value >= target_tick]
-        if not candidates:
-            target_index = max(range(len(pts)), key=pts.__getitem__)
-        else:
-            target_index = min(candidates, key=pts.__getitem__)
-        preceding = [i for i in sync if i <= target_index]
-        if not preceding:
-            raise MP4IndexError("no preceding sync sample")
-        sync_index = max(preceding)
-        spans = tuple(positions[sync_index:target_index + 1])
-        result.append(GOPEstimate(
-            timestamp=target_seconds,
-            sync_sample=sync_index,
-            target_sample=target_index,
-            packet_bytes=sum(end - start for start, end in spans),
-            packet_ranges=spans,
-        ))
-    return result
+    return [_gop_estimate_for(timestamp, sizes, positions, pts, sync, edits, timescale)
+            for timestamp in timestamps]
+
 
 
 def union_bytes(estimates: list[GOPEstimate]) -> int:

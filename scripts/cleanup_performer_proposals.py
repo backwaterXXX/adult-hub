@@ -53,10 +53,7 @@ def evaluate_proposal(cand: str) -> tuple[str, str]:
     return cleaned, "ok"
 
 
-def run_cleanup(db_url: str | None = None, apply: bool = False) -> None:
-    conn = db.connect(db_url)
-    cursor = conn.cursor()
-
+def _fetch_rows_and_index(cursor):
     cursor.execute("""
         SELECT id, video_id, candidate, normalized, matched_text
         FROM telegram_performer_proposals
@@ -69,31 +66,47 @@ def run_cleanup(db_url: str | None = None, apply: bool = False) -> None:
     all_by_video: dict[str, set[str]] = collections.defaultdict(set)
     for vid, norm in cursor.fetchall():
         all_by_video[vid].add(norm)
+    return rows, all_by_video
 
+
+def _classify_row(pid, vid, cand, norm, all_by_video):
+    """Return (bucket, item); bucket is reject, update, conflict, or unchanged."""
+    cleaned, status = evaluate_proposal(cand)
+    if status != "ok":
+        return "reject", (pid, cand, status)
+    new_norm = normalize_name(cleaned)
+    if not new_norm:
+        return "reject", (pid, cand, "empty_norm")
+    if cleaned == cand and new_norm == norm:
+        return "unchanged", None
+    if new_norm == norm:
+        return "update", (pid, cleaned, new_norm, cand)
+    if new_norm in all_by_video[vid]:
+        return "conflict", (pid, cand, cleaned, vid, new_norm)
+    all_by_video[vid].add(new_norm)
+    return "update", (pid, cleaned, new_norm, cand)
+
+
+def _classify_rows(rows, all_by_video):
     to_reject: list[tuple[int, str, str]] = []
     to_update: list[tuple[int, str, str, str]] = []
     to_delete_conflict: list[tuple[int, str, str, str, str]] = []
     unchanged = 0
 
-    for pid, vid, cand, norm, matched in rows:
-        cleaned, status = evaluate_proposal(cand)
-        if status != "ok":
-            to_reject.append((pid, cand, status))
+    for pid, vid, cand, norm, _matched in rows:
+        bucket, item = _classify_row(pid, vid, cand, norm, all_by_video)
+        if bucket == "unchanged":
+            unchanged += 1
+        elif bucket == "reject":
+            to_reject.append(item)
+        elif bucket == "update":
+            to_update.append(item)
         else:
-            new_norm = normalize_name(cleaned)
-            if not new_norm:
-                to_reject.append((pid, cand, "empty_norm"))
-            elif cleaned == cand and new_norm == norm:
-                unchanged += 1
-            elif new_norm == norm:
-                to_update.append((pid, cleaned, new_norm, cand))
-            else:
-                if new_norm in all_by_video[vid]:
-                    to_delete_conflict.append((pid, cand, cleaned, vid, new_norm))
-                else:
-                    to_update.append((pid, cleaned, new_norm, cand))
-                    all_by_video[vid].add(new_norm)
+            to_delete_conflict.append(item)
+    return to_reject, to_update, to_delete_conflict, unchanged
 
+
+def _print_summary(apply, rows, unchanged, to_update, to_reject, to_delete_conflict) -> None:
     print("=" * 60)
     print("TELEGRAM PERFORMER PROPOSALS CLEANUP")
     print(f"Mode: {'APPLY' if apply else 'DRY-RUN'}")
@@ -119,10 +132,8 @@ def run_cleanup(db_url: str | None = None, apply: bool = False) -> None:
         for pid, old_cand, cleaned, vid, new_norm in to_delete_conflict[:10]:
             print(f"  [{pid}] {old_cand!r} -> clean {cleaned!r} already exists on video {vid}")
 
-    if not apply:
-        print("\nDry run completed. Run with --apply to commit changes.")
-        return
 
+def _apply_changes(conn, to_update, to_reject, to_delete_conflict) -> None:
     print("\nApplying changes to database...")
     with conn:
         for pid, cleaned, new_norm, _ in to_update:
@@ -147,6 +158,22 @@ def run_cleanup(db_url: str | None = None, apply: bool = False) -> None:
             """, (pid,))
 
     print("Successfully updated database!")
+
+
+def run_cleanup(db_url: str | None = None, apply: bool = False) -> None:
+    conn = db.connect(db_url)
+    cursor = conn.cursor()
+
+    rows, all_by_video = _fetch_rows_and_index(cursor)
+    to_reject, to_update, to_delete_conflict, unchanged = _classify_rows(rows, all_by_video)
+
+    _print_summary(apply, rows, unchanged, to_update, to_reject, to_delete_conflict)
+
+    if not apply:
+        print("\nDry run completed. Run with --apply to commit changes.")
+        return
+
+    _apply_changes(conn, to_update, to_reject, to_delete_conflict)
 
 
 def main() -> None:

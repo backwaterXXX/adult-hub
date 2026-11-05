@@ -54,58 +54,157 @@ def title_overlap(a: str, b: str) -> float:
     return len(ta & tb) / max(len(ta), len(tb))
 
 
+def _read_report_rows(csv_path: Path) -> list:
+    with open(csv_path, encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _find_root(parent: dict, x):
+    while parent[x] != x:
+        parent[x] = parent[parent[x]]
+        x = parent[x]
+    return x
+
+
+def _union_sets(parent: dict, a, b) -> None:
+    parent.setdefault(a, a)
+    parent.setdefault(b, b)
+    parent[_find_root(parent, a)] = _find_root(parent, b)
+
+
+def _pair_should_merge(members: list, title_overlap_min: float) -> bool:
+    level = members[0]["level"]
+    durs = [int(m.get("duration_s", m.get("czas_s", 0)) or 0) for m in members]
+    unk = any(d == 0 for d in durs)
+    t0 = members[0].get("title", members[0].get("tytul", ""))
+    t1 = members[1].get("title", members[1].get("tytul", ""))
+    t_overlap = title_overlap(t0, t1)
+
+    # Guard: even STRONG matches must share some title tokens (min title_overlap_min or >= 0.35)
+    # to prevent false positives from cards with leaked actor tags.
+    if level == "STRONG":
+        ok = t_overlap >= min(title_overlap_min, 0.35)
+    else:
+        ok = t_overlap >= title_overlap_min and (unk or abs(durs[0] - durs[1]) <= 180)
+
+    if ok:
+        try:
+            from resolver.video_duplicate_scoring import _has_different_season_markers
+        except ImportError:
+            from video_duplicate_scoring import _has_different_season_markers
+        if _has_different_season_markers(t0, t1):
+            ok = False
+    return ok
+
+
 def load_groups(csv_path: Path, title_overlap_min: float):
     """Returns list of clusters to merge (union-find over pairs)."""
-    with open(csv_path, encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
+    rows = _read_report_rows(csv_path)
     by_group = defaultdict(list)
     for r in rows:
         gid = r.get("group", r.get("grupa"))
         by_group[gid].append(r)
     parent = {}
 
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a, b):
-        parent.setdefault(a, a)
-        parent.setdefault(b, b)
-        parent[find(a)] = find(b)
-
     for gid, members in by_group.items():
         if len(members) != 2:
             continue
-        level = members[0]["level"]
-        durs = [int(m.get("duration_s", m.get("czas_s", 0)) or 0) for m in members]
-        unk = any(d == 0 for d in durs)
-        t0 = members[0].get("title", members[0].get("tytul", ""))
-        t1 = members[1].get("title", members[1].get("tytul", ""))
-        t_overlap = title_overlap(t0, t1)
-
-        # Guard: even STRONG matches must share some title tokens (min title_overlap_min or >= 0.35)
-        # to prevent false positives from cards with leaked actor tags.
-        if level == "STRONG":
-            ok = t_overlap >= min(title_overlap_min, 0.35)
-        else:
-            ok = t_overlap >= title_overlap_min and (unk or abs(durs[0] - durs[1]) <= 180)
-
-        if ok:
-            try:
-                from resolver.video_duplicate_scoring import _has_different_season_markers
-            except ImportError:
-                from video_duplicate_scoring import _has_different_season_markers
-            if _has_different_season_markers(t0, t1):
-                ok = False
-
-        if ok:
-            union(members[0]["video_id"], members[1]["video_id"])
+        if _pair_should_merge(members, title_overlap_min):
+            _union_sets(parent, members[0]["video_id"], members[1]["video_id"])
     clusters = defaultdict(list)
     for vid in parent:
-        clusters[find(vid)].append(vid)
+        clusters[_find_root(parent, vid)].append(vid)
     return [sorted(set(c)) for c in clusters.values() if len(set(c)) > 1]
+
+
+def _build_merge_plan(clusters, db_ids) -> list:
+    plan = []
+    for cluster in clusters:
+        present = [v for v in cluster if v in db_ids]
+        if len(present) < 2:
+            continue
+        present.sort(key=lambda v: (PROVIDER_RANK.get(v.split(":")[0], 9), v))
+        keeper, dropped = present[0], present[1:]
+        plan.append((keeper, dropped))
+    return plan
+
+
+def _print_plan(plan) -> None:
+    print(f"Clusters to merge: {len(plan)} "
+          f"({sum(len(d) for _, d in plan)} videos to remove)")
+    for keeper, dropped in plan:
+        print(f"  KEEP [{keeper.split(':')[0]}] {keeper}")
+        for d in dropped:
+            print(f"    DROP [{d.split(':')[0]}] {d}")
+
+
+def _keeper_tag_set(tags, dropped) -> set:
+    try:
+        tag_set = set(json.loads(tags)) if tags else set()
+    except Exception:
+        tag_set = set()
+    for d in dropped:
+        tag_set.add(f"Duplicate: {PROVIDER_DISPLAY.get(d.split(':')[0], d.split(':')[0])}")
+    return tag_set
+
+
+def _keeper_genres(cats) -> set:
+    try:
+        return set(json.loads(cats)) if cats else set()
+    except Exception:
+        return set()
+
+
+def _keeper_performers(perfs) -> list:
+    try:
+        return json.loads(perfs) if perfs else []
+    except Exception:
+        return []
+
+
+def _write_keeper_tags(conn, S, idx, keeper, video, genres, tag_set, media_dir) -> None:
+    try:
+        nfo_path = media_dir / f"{S.stable_media_basename(keeper)}.nfo"
+        S.create_nfo_file(video, genres, tag_set, nfo_path)
+        conn.execute("UPDATE videos SET tags = %s WHERE id = %s",
+                     (json.dumps(sorted(tag_set)), keeper))
+        if (idx + 1) % 50 == 0:
+            conn.commit()
+    except Exception as e:
+        print(f"TAG-FAIL {keeper}: {e}")
+
+
+def _merge_one_cluster(conn, S, idx, keeper, dropped, media_dir) -> int:
+    """Tag the keeper, purge the dropped items, and return how many were removed."""
+    # 1. Tagi dubletu na keeperze (DB + NFO).
+    try:
+        row = conn.execute(
+            "SELECT provider, title, slug, duration, thumbnail, performers,"
+            " categories, tags, studio, first_seen FROM videos WHERE id = %s",
+            (keeper,)).fetchone()
+    except Exception as e:
+        print(f"SKIP {keeper}: {e}")
+        return 0
+    if not row:
+        print(f"SKIP {keeper}: disappeared from DB in the meantime")
+        return 0
+    (prov, title, slug, dur, thumb, perfs, cats, tags, studio,
+     first_seen) = row
+    tag_set = _keeper_tag_set(tags, dropped)
+    genres = _keeper_genres(cats)
+    perf_list = _keeper_performers(perfs)
+    video = {"id": keeper, "provider": prov, "provider_video_id": keeper.split(":", 1)[-1],
+             "title": title or keeper, "slug": slug or "", "duration": dur or 0,
+             "thumbnail": thumb or "", "performers": perf_list,
+             "performer_thumbs": S.load_performer_thumbs(conn, perf_list),
+             "studio": studio or "",
+             "dateadded": S.format_dateadded(first_seen or __import__("time").time())}
+    _write_keeper_tags(conn, S, idx, keeper, video, genres, tag_set, media_dir)
+    # 2. Purge dropped + denylist (no reappear in sync).
+    # Explicit user-invoked dedup: force bypasses the run-success signal
+    # (there is no sync run here) but still preserves disabled sources.
+    S.denylist_ids(conn, dropped, f"merged into {keeper}")
+    return S.purge_videos(conn, media_dir, dropped, f"merged into {keeper}", force=True)
 
 
 def main() -> int:
@@ -128,21 +227,8 @@ def main() -> int:
     finally:
         conn.close()
 
-    plan = []
-    for cluster in clusters:
-        present = [v for v in cluster if v in db_ids]
-        if len(present) < 2:
-            continue
-        present.sort(key=lambda v: (PROVIDER_RANK.get(v.split(":")[0], 9), v))
-        keeper, dropped = present[0], present[1:]
-        plan.append((keeper, dropped))
-
-    print(f"Clusters to merge: {len(plan)} "
-          f"({sum(len(d) for _, d in plan)} videos to remove)")
-    for keeper, dropped in plan:
-        print(f"  KEEP [{keeper.split(':')[0]}] {keeper}")
-        for d in dropped:
-            print(f"    DROP [{d.split(':')[0]}] {d}")
+    plan = _build_merge_plan(clusters, db_ids)
+    _print_plan(plan)
 
     if not args.apply:
         print("\nDry-run. Run with --apply INSIDE sync container.")
@@ -153,54 +239,7 @@ def main() -> int:
     conn = S.init_db(args.db_url or None)
     total_dropped = 0
     for idx, (keeper, dropped) in enumerate(plan):
-        # 1. Tagi dubletu na keeperze (DB + NFO).
-        try:
-            row = conn.execute(
-                "SELECT provider, title, slug, duration, thumbnail, performers,"
-                " categories, tags, studio, first_seen FROM videos WHERE id = %s",
-                (keeper,)).fetchone()
-        except Exception as e:
-            print(f"SKIP {keeper}: {e}")
-            continue
-        if not row:
-            print(f"SKIP {keeper}: disappeared from DB in the meantime")
-            continue
-        (prov, title, slug, dur, thumb, perfs, cats, tags, studio,
-         first_seen) = row
-        try:
-            tag_set = set(json.loads(tags)) if tags else set()
-        except Exception:
-            tag_set = set()
-        for d in dropped:
-            tag_set.add(f"Duplicate: {PROVIDER_DISPLAY.get(d.split(':')[0], d.split(':')[0])}")
-        try:
-            genres = set(json.loads(cats)) if cats else set()
-        except Exception:
-            genres = set()
-        try:
-            perf_list = json.loads(perfs) if perfs else []
-        except Exception:
-            perf_list = []
-        video = {"id": keeper, "provider": prov, "provider_video_id": keeper.split(":", 1)[-1],
-                 "title": title or keeper, "slug": slug or "", "duration": dur or 0,
-                 "thumbnail": thumb or "", "performers": perf_list,
-                 "performer_thumbs": S.load_performer_thumbs(conn, perf_list),
-                 "studio": studio or "",
-                 "dateadded": S.format_dateadded(first_seen or __import__("time").time())}
-        try:
-            nfo_path = media_dir / f"{S.stable_media_basename(keeper)}.nfo"
-            S.create_nfo_file(video, genres, tag_set, nfo_path)
-            conn.execute("UPDATE videos SET tags = %s WHERE id = %s",
-                         (json.dumps(sorted(tag_set)), keeper))
-            if (idx + 1) % 50 == 0:
-                conn.commit()
-        except Exception as e:
-            print(f"TAG-FAIL {keeper}: {e}")
-        # 2. Purge dropped + denylist (no reappear in sync).
-        # Explicit user-invoked dedup: force bypasses the run-success signal
-        # (there is no sync run here) but still preserves disabled sources.
-        S.denylist_ids(conn, dropped, f"merged into {keeper}")
-        total_dropped += S.purge_videos(conn, media_dir, dropped, f"merged into {keeper}", force=True)
+        total_dropped += _merge_one_cluster(conn, S, idx, keeper, dropped, media_dir)
     print(f"Removed: {total_dropped}")
     conn.commit()
     conn.close()

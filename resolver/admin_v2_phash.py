@@ -45,78 +45,83 @@ def _valid_frame_request(body: object, profiles: set[str]) -> bool:
     )
 
 
-def build_router(admin):
-    router = APIRouter(route_class=V2ErrorRoute)
+def _phash_upload_enabled() -> bool:
+    return os.getenv("PHASH_UPLOAD_ENABLED", "false").lower() == "true"
 
-    def accepted_profiles() -> set[str]:
-        return {part.strip() for part in os.getenv("PHASH_ACCEPTED_DECODER_PROFILES", "").split(",")
-                if part.strip()}
 
-    async def authorized_user(token: str) -> dict | None:
-        jellyfin_url = os.getenv("JELLYFIN_URL", "").strip().rstrip("/")
-        if not token or not jellyfin_url:
+def _accepted_profiles() -> set[str]:
+    return {part.strip() for part in os.getenv("PHASH_ACCEPTED_DECODER_PROFILES", "").split(",")
+            if part.strip()}
+
+
+async def _authorized_user(token: str) -> dict | None:
+    jellyfin_url = os.getenv("JELLYFIN_URL", "").strip().rstrip("/")
+    if not token or not jellyfin_url:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            authorization = (
+                'MediaBrowser Client="Adult Hub Resolver", '
+                'Device="Resolver", DeviceId="adult-hub-resolver", '
+                'Version="1", '
+                f'Token="{token}"'
+            )
+            response = await client.get(
+                jellyfin_url + "/Users/Me", headers={"Authorization": authorization},
+            )
+        if response.status_code != 200:
             return None
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                authorization = (
-                    'MediaBrowser Client="Adult Hub Resolver", '
-                    'Device="Resolver", DeviceId="adult-hub-resolver", '
-                    'Version="1", '
-                    f'Token="{token}"'
-                )
-                response = await client.get(
-                    jellyfin_url + "/Users/Me", headers={"Authorization": authorization},
-                )
-            if response.status_code != 200:
-                return None
-            user = response.json()
-            user_id = user.get("Id") if isinstance(user, dict) else None
-            if not isinstance(user_id, str) or not user_id:
-                return None
-            allowed = {part.strip().lower() for part in os.getenv("PHASH_ALLOWED_USER_IDS", "").split(",")
-                       if part.strip()}
-            is_admin = bool(((user.get("Policy") or {}).get("IsAdministrator")))
-            return user if is_admin or user_id.lower() in allowed else None
-        except Exception:
-            logger.debug("Ignored exception in authorized_user", exc_info=True)
+        user = response.json()
+        user_id = user.get("Id") if isinstance(user, dict) else None
+        if not isinstance(user_id, str) or not user_id:
             return None
+        allowed = {part.strip().lower() for part in os.getenv("PHASH_ALLOWED_USER_IDS", "").split(",")
+                   if part.strip()}
+        is_admin = bool(((user.get("Policy") or {}).get("IsAdministrator")))
+        return user if is_admin or user_id.lower() in allowed else None
+    except Exception:
+        logger.debug("Ignored exception in authorized_user", exc_info=True)
+        return None
 
-    def phash_status(video_id: str, decoder_profile: str) -> tuple[bool, bool]:
-        if not _VIDEO_ID.fullmatch(video_id):
-            return False, False
-        conn = db.connect(admin.HUB_DB_URL)
-        try:
-            exists = conn.execute(
-                "SELECT 1 FROM videos WHERE id=%s AND provider='telegram'", (video_id,),
-            ).fetchone() is not None
-            current = conn.execute(
-                "SELECT fingerprint,generator_version FROM video_phash_provenance WHERE video_id=%s",
-                (video_id,),
-            ).fetchone()
-            thumbnail = conn.execute(
-                "SELECT 1 FROM video_phash_thumbnails WHERE video_id=%s", (video_id,),
-            ).fetchone()
-            already = bool(current and thumbnail
-                           and current[1] == PHASH_ALGORITHM_VERSION + ":" + decoder_profile
-                           and _HASH.fullmatch(str(current[0] or "")))
-            return exists, already
-        finally:
-            conn.close()
 
+def _phash_status(admin, video_id: str, decoder_profile: str) -> tuple[bool, bool]:
+    if not _VIDEO_ID.fullmatch(video_id):
+        return False, False
+    conn = db.connect(admin.HUB_DB_URL)
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM videos WHERE id=%s AND provider='telegram'", (video_id,),
+        ).fetchone() is not None
+        current = conn.execute(
+            "SELECT fingerprint,generator_version FROM video_phash_provenance WHERE video_id=%s",
+            (video_id,),
+        ).fetchone()
+        thumbnail = conn.execute(
+            "SELECT 1 FROM video_phash_thumbnails WHERE video_id=%s", (video_id,),
+        ).fetchone()
+        already = bool(current and thumbnail
+                       and current[1] == PHASH_ALGORITHM_VERSION + ":" + decoder_profile
+                       and _HASH.fullmatch(str(current[0] or "")))
+        return exists, already
+    finally:
+        conn.close()
+
+
+def _route_get_status(router, admin):
     @router.get("/api/v2/video-phash/status")
     async def get_status(request: Request, video_id: str, decoder_profile: str = ""):
-        if not os.getenv("PHASH_UPLOAD_ENABLED", "false").lower() == "true":
+        if not _phash_upload_enabled():
             return {"enabled": False}
         token = request.headers.get("X-Emby-Token", "")
-        if await authorized_user(token) is None:
+        if await _authorized_user(token) is None:
             return admin.JSONResponse({"error": "Unauthorized."}, status_code=401)
-        profiles = accepted_profiles()
+        profiles = _accepted_profiles()
         if not profiles:
             return {"enabled": False}
         if decoder_profile not in profiles:
             return admin.JSONResponse({"error": "Unsupported decoder profile."}, status_code=400)
         try:
-            exists, already = await asyncio.to_thread(phash_status, video_id, decoder_profile)
+            exists, already = await asyncio.to_thread(_phash_status, admin, video_id, decoder_profile)
         except Exception:
             logger.warning("Request failed in get_status", exc_info=True)
             return admin.JSONResponse({"error": "Fingerprint service unavailable."}, status_code=503)
@@ -124,17 +129,19 @@ def build_router(admin):
             return admin.JSONResponse({"error": "Video not found."}, status_code=404)
         return {"enabled": True, "already_computed": already, "accepted_profile": decoder_profile}
 
+
+def _route_submit_frames(router, admin):
     @router.post("/api/v2/video-phash/frames")
     async def submit_frames(request: Request):
-        if not os.getenv("PHASH_UPLOAD_ENABLED", "false").lower() == "true":
+        if not _phash_upload_enabled():
             return admin.JSONResponse({"error": "Fingerprint uploads are disabled."}, status_code=404)
-        user = await authorized_user(request.headers.get("X-Emby-Token", ""))
+        user = await _authorized_user(request.headers.get("X-Emby-Token", ""))
         if user is None:
             return admin.JSONResponse({"error": "Unauthorized."}, status_code=401)
         body, rejection = await _read_frame_body(admin, request)
         if rejection is not None:
             return rejection
-        profiles = accepted_profiles()
+        profiles = _accepted_profiles()
         if not _valid_frame_request(body, profiles):
             return admin.JSONResponse({"error": "Invalid frame request."}, status_code=400)
         try:
@@ -154,12 +161,14 @@ def build_router(admin):
             logger.debug("Ignored exception in submit_frames", exc_info=True)
         return {"ok": True, "fingerprint": fingerprint, "match_found": match_found}
 
+
+def _route_generate_phash(router, admin):
     @router.post("/api/v2/video-phash/generate")
     async def generate_phash(request: Request):
         """Durably enqueue Stash-compatible pHash and thumbnail generation."""
-        if os.getenv("PHASH_UPLOAD_ENABLED", "false").lower() != "true":
+        if not _phash_upload_enabled():
             return admin.JSONResponse({"error": "Fingerprint generation is disabled."}, status_code=404)
-        user = await authorized_user(request.headers.get("X-Emby-Token", ""))
+        user = await _authorized_user(request.headers.get("X-Emby-Token", ""))
         if user is None:
             return admin.JSONResponse({"error": "Unauthorized."}, status_code=401)
         try:
@@ -169,12 +178,12 @@ def build_router(admin):
             return admin.JSONResponse({"error": "Invalid generation request."}, status_code=400)
         if not _valid_generate_request(body):
             return admin.JSONResponse({"error": "Invalid generation request."}, status_code=400)
-        if _SERVER_PROFILE not in accepted_profiles():
+        if _SERVER_PROFILE not in _accepted_profiles():
             return admin.JSONResponse({"error": "Server pHash generation is not enabled."}, status_code=404)
         video_id = body["video_id"]
         try:
             from common import phash_jobs
-            exists, _already = await asyncio.to_thread(phash_status, video_id, _SERVER_PROFILE)
+            exists, _already = await asyncio.to_thread(_phash_status, admin, video_id, _SERVER_PROFILE)
             if not exists:
                 return admin.JSONResponse({"error": "Video not found."}, status_code=404)
             result = await asyncio.to_thread(
@@ -188,11 +197,13 @@ def build_router(admin):
             logger.exception("Could not enqueue server pHash generation")
             return admin.JSONResponse({"error": "Could not queue video fingerprint generation."}, status_code=503)
 
+
+def _route_get_phash_job(router, admin):
     @router.get("/api/v2/video-phash/jobs/{job_id}")
     async def get_phash_job(request: Request, job_id: str):
-        if not os.getenv("PHASH_UPLOAD_ENABLED", "false").lower() == "true":
+        if not _phash_upload_enabled():
             return admin.JSONResponse({"error": "Fingerprint generation is disabled."}, status_code=404)
-        user = await authorized_user(request.headers.get("X-Emby-Token", ""))
+        user = await _authorized_user(request.headers.get("X-Emby-Token", ""))
         if user is None:
             return admin.JSONResponse({"error": "Unauthorized."}, status_code=401)
         try:
@@ -205,9 +216,11 @@ def build_router(admin):
             return admin.JSONResponse({"error": "Task not found."}, status_code=404)
         return {"ok": True, "job": job}
 
+
+def _route_get_phash_thumbnail(router, admin):
     @router.get("/api/v2/video-phash/thumbnail")
     async def get_phash_thumbnail(request: Request, video_id: str):
-        user = await authorized_user(request.headers.get("X-Emby-Token", ""))
+        user = await _authorized_user(request.headers.get("X-Emby-Token", ""))
         if user is None:
             return admin.JSONResponse({"error": "Unauthorized."}, status_code=401)
         if not _VIDEO_ID.fullmatch(video_id):
@@ -221,6 +234,14 @@ def build_router(admin):
             return admin.JSONResponse({"error": "Thumbnail not found."}, status_code=404)
         return Response(content=image, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
+
+def build_router(admin):
+    router = APIRouter(route_class=V2ErrorRoute)
+    _route_get_status(router, admin)
+    _route_submit_frames(router, admin)
+    _route_generate_phash(router, admin)
+    _route_get_phash_job(router, admin)
+    _route_get_phash_thumbnail(router, admin)
     return router
 
 

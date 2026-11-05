@@ -85,6 +85,12 @@ class FakeConnection:
         sql_compact = " ".join(sql.strip().split())
         self.sql_log.append((sql_compact, tuple(params) if params else ()))
 
+        cursor = self._select(sql, sql_compact, params)
+        if cursor is None:
+            cursor = self._delete(sql_compact, params)
+        return cursor if cursor is not None else FakeCursor()
+
+    def _select(self, sql: str, sql_compact: str, params):
         if "FROM pg_catalog.pg_tables" in sql:
             tables = [
                 ("videos",),
@@ -99,25 +105,34 @@ class FakeConnection:
             return FakeCursor(tables)
 
         if "SELECT id FROM videos WHERE provider='telegram'" in sql_compact:
-            matching = []
-            for vid in sorted(self.data.get("videos", set())):
-                for pattern in params:
-                    if _sql_like_match(vid, pattern):
-                        matching.append((vid,))
-                        break
-            return FakeCursor(matching)
+            return self._select_telegram_videos(params)
 
         if "SELECT video_id, source_id FROM video_sources WHERE provider='telegram'" in sql_compact:
-            aliases = set(params[0]) if params else set()
-            prefixes = params[1:]
-            matching = []
-            for row in self.data.get("video_sources", []):
-                vid, sid, prov, cid, is_act = row
-                if prov == "telegram":
-                    if cid in aliases or any(_sql_like_match(sid, p) for p in prefixes):
-                        matching.append((vid, sid))
-            return FakeCursor(matching)
+            return self._select_telegram_sources(params)
 
+        return self._select_by_video_ids(sql_compact, params)
+
+    def _select_telegram_videos(self, params):
+        matching = []
+        for vid in sorted(self.data.get("videos", set())):
+            for pattern in params:
+                if _sql_like_match(vid, pattern):
+                    matching.append((vid,))
+                    break
+        return FakeCursor(matching)
+
+    def _select_telegram_sources(self, params):
+        aliases = set(params[0]) if params else set()
+        prefixes = params[1:]
+        matching = []
+        for row in self.data.get("video_sources", []):
+            vid, sid, prov, cid, is_act = row
+            if prov == "telegram":
+                if cid in aliases or any(_sql_like_match(sid, p) for p in prefixes):
+                    matching.append((vid, sid))
+        return FakeCursor(matching)
+
+    def _select_by_video_ids(self, sql_compact: str, params):
         if "SELECT id FROM videos WHERE id = ANY" in sql_compact:
             cands = set(params[0])
             matching = [(vid,) for vid in sorted(self.data.get("videos", set())) if vid in cands]
@@ -133,6 +148,22 @@ class FakeConnection:
             matching = [row for row in self.data.get("synced_files", []) if row[0] in vids]
             return FakeCursor(matching)
 
+        return None
+
+    def _delete(self, sql_compact: str, params):
+        cursor = self._delete_video_rows(sql_compact, params)
+        if cursor is not None:
+            return cursor
+
+        if "DELETE FROM video_sources WHERE provider='telegram'" in sql_compact:
+            return self._delete_telegram_sources(params)
+
+        if "DELETE FROM telegram_channel_state WHERE channel_id = ANY" in sql_compact:
+            return self._delete_channel_state(params)
+
+        return None
+
+    def _delete_video_rows(self, sql_compact: str, params):
         # Deletions:
         if "DELETE FROM synced_files WHERE video_id=%s" in sql_compact:
             vid = params[0]
@@ -184,23 +215,23 @@ class FakeConnection:
             self.deleted["videos"].append(vid)
             return FakeCursor(rowcount=1)
 
-        if "DELETE FROM video_sources WHERE provider='telegram'" in sql_compact:
-            aliases = set(params[0])
-            prefixes = params[1:]
-            self.data["video_sources"] = [
-                r for r in self.data.get("video_sources", [])
-                if not (r[2] == "telegram" and (r[3] in aliases or any(_sql_like_match(r[1], p) for p in prefixes)))
-            ]
-            return FakeCursor(rowcount=1)
+        return None
 
-        if "DELETE FROM telegram_channel_state WHERE channel_id = ANY" in sql_compact:
-            aliases = set(params[0])
-            self.data["telegram_channel_state"] = [
-                c for c in self.data.get("telegram_channel_state", []) if c not in aliases
-            ]
-            return FakeCursor(rowcount=1)
+    def _delete_telegram_sources(self, params):
+        aliases = set(params[0])
+        prefixes = params[1:]
+        self.data["video_sources"] = [
+            r for r in self.data.get("video_sources", [])
+            if not (r[2] == "telegram" and (r[3] in aliases or any(_sql_like_match(r[1], p) for p in prefixes)))
+        ]
+        return FakeCursor(rowcount=1)
 
-        return FakeCursor()
+    def _delete_channel_state(self, params):
+        aliases = set(params[0])
+        self.data["telegram_channel_state"] = [
+            c for c in self.data.get("telegram_channel_state", []) if c not in aliases
+        ]
+        return FakeCursor(rowcount=1)
 
 
 class FakeLogger:

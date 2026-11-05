@@ -131,8 +131,7 @@ def _split_sql_list(value: str) -> list[str]:
     return parts
 
 
-def _adapt_epoch_sql(sql: str, connection=None) -> str:
-    """Keep the existing epoch-seconds API working with timestamptz columns."""
+def _adapt_no_column_insert(sql: str, connection=None) -> str:
     no_columns = re.search(
         r'(?is)(INSERT\s+INTO\s+([\w"]+)(?:\.[\w"]+)?\s+)(VALUES\s*\([^()]*\))', sql
     )
@@ -148,7 +147,25 @@ def _adapt_epoch_sql(sql: str, connection=None) -> str:
             column_list = ", ".join('"' + row[0].replace('"', '""') + '"' for row in columns)
             replacement = no_columns.group(1) + "(" + column_list + ") " + no_columns.group(3)
             sql = sql[:no_columns.start()] + replacement + sql[no_columns.end():]
+    return sql
 
+
+def _adapt_insert_value(column: str, value: str) -> str | None:
+    """Return the adapted expression for one INSERT value, or None when it stays unchanged."""
+    if column in _EPOCH_TIME_COLUMNS:
+        epoch = "%s / 1000000000.0" if column in _NANO_TIME_COLUMNS else "%s"
+        if value == "%s":
+            return f"to_timestamp({epoch})"
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", value):
+            return (f"to_timestamp({value} / 1000000000.0)"
+                    if column in _NANO_TIME_COLUMNS else f"to_timestamp({value})")
+        return None
+    if column in _JSONB_COLUMNS and value == "%s":
+        return "%s::jsonb"
+    return None
+
+
+def _adapt_insert_values(sql: str) -> str:
     insert = re.search(
         r"(?is)(INSERT\s+INTO\s+(?:[\w\"]+\.)?[\w\"]+\s*)"
         r"\(([^()]*)\)\s*VALUES\s*\(([^()]*)\)", sql,
@@ -160,23 +177,18 @@ def _adapt_epoch_sql(sql: str, connection=None) -> str:
             changed = False
             for index, (column, value) in enumerate(zip(columns, values)):
                 column = column.rsplit(".", 1)[-1].strip().strip('"').lower()
-                if column in _EPOCH_TIME_COLUMNS:
-                    epoch = "%s / 1000000000.0" if column in _NANO_TIME_COLUMNS else "%s"
-                    if value == "%s":
-                        values[index] = f"to_timestamp({epoch})"
-                        changed = True
-                    elif re.fullmatch(r"-?\d+(?:\.\d+)?", value):
-                        values[index] = (f"to_timestamp({value} / 1000000000.0)"
-                                         if column in _NANO_TIME_COLUMNS else f"to_timestamp({value})")
-                        changed = True
-                elif column in _JSONB_COLUMNS and value == "%s":
-                    values[index] = "%s::jsonb"
+                adapted = _adapt_insert_value(column, value)
+                if adapted is not None:
+                    values[index] = adapted
                     changed = True
             if changed:
                 replacement = (insert.group(1) + "(" + insert.group(2) + ") VALUES ("
                                + ", ".join(values) + ")")
                 sql = sql[:insert.start()] + replacement + sql[insert.end():]
+    return sql
 
+
+def _adapt_epoch_comparisons(sql: str) -> str:
     names = "|".join(sorted(map(re.escape, _EPOCH_TIME_COLUMNS), key=len, reverse=True))
     nanos = "|".join(sorted(map(re.escape, _NANO_TIME_COLUMNS), key=len, reverse=True))
     sql = re.sub(
@@ -204,19 +216,18 @@ def _adapt_epoch_sql(sql: str, connection=None) -> str:
     return sql
 
 
-def _normalize_empty_json_lists(sql: str, params: Sequence[Any]) -> tuple[Any, ...]:
-    """Map legacy empty TEXT list values to valid empty JSON arrays."""
-    values = list(params)
-    insert = re.search(
-        r"(?is)INSERT\s+INTO\s+(?:[\w\"]+\.)?[\w\"]+\s*"
-        r"\(([^()]*)\)\s*VALUES\s*\(", sql,
-    )
-    if not insert:
-        return tuple(values)
-    value_open = insert.end() - 1
+def _adapt_epoch_sql(sql: str, connection=None) -> str:
+    """Keep the existing epoch-seconds API working with timestamptz columns."""
+    sql = _adapt_no_column_insert(sql, connection)
+    sql = _adapt_insert_values(sql)
+    return _adapt_epoch_comparisons(sql)
+
+
+def _values_close_index(sql: str, start: int) -> int:
+    """Return the index just past the parenthesis closing the VALUES list opened before start."""
     depth = 1
     quote: str | None = None
-    value_close = value_open + 1
+    value_close = start
     while value_close < len(sql) and depth:
         char = sql[value_close]
         if quote:
@@ -232,6 +243,20 @@ def _normalize_empty_json_lists(sql: str, params: Sequence[Any]) -> tuple[Any, .
         elif char == ")":
             depth -= 1
         value_close += 1
+    return value_close
+
+
+def _normalize_empty_json_lists(sql: str, params: Sequence[Any]) -> tuple[Any, ...]:
+    """Map legacy empty TEXT list values to valid empty JSON arrays."""
+    values = list(params)
+    insert = re.search(
+        r"(?is)INSERT\s+INTO\s+(?:[\w\"]+\.)?[\w\"]+\s*"
+        r"\(([^()]*)\)\s*VALUES\s*\(", sql,
+    )
+    if not insert:
+        return tuple(values)
+    value_open = insert.end() - 1
+    value_close = _values_close_index(sql, value_open + 1)
     expressions = _split_sql_list(sql[value_open + 1:value_close - 1])
     offset = sql[:insert.start()].count("%s")
     columns = _split_sql_list(insert.group(1))

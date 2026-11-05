@@ -202,6 +202,176 @@ def _validate_string_list(value: Any, name: str, context: str) -> List[str]:
     return [x.strip() for x in value]
 
 
+def _parse_sync_daily_at(v: Any) -> Optional[str]:
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return None
+    if isinstance(v, str):
+        val = v.strip()
+        m = re.fullmatch(r"^([01]?[0-9]|2[0-3]):([0-5][0-9])$", val)
+        if not m:
+            raise ConfigError(
+                f"Field 'daily_at' in sync must be a valid time in HH:MM format (00:00-23:59), got {v!r}"
+            )
+        return f"{int(m.group(1)):02d}:{int(m.group(2)):02d}"
+    raise ConfigError(
+        f"Field 'daily_at' in sync must be a string in HH:MM format, got {v!r}"
+    )
+
+
+def _parse_fetch_delay(k: str, v: Any) -> float:
+    try:
+        delay = float(v)
+    except (TypeError, ValueError):
+        raise ConfigError(f"Field '{k}' in sync must be a float/number, got {v!r}")
+    if not math.isfinite(delay) or delay < 0:
+        raise ConfigError(f"Field '{k}' in sync must be a finite non-negative number")
+    return delay
+
+
+def _apply_sync_setting(sync_cfg: SyncConfig, k: str, v: Any) -> None:
+    if k == "run_on_startup":
+        setattr(sync_cfg, k, _validate_bool(v, k, "sync"))
+    elif k == "daily_at":
+        setattr(sync_cfg, k, _parse_sync_daily_at(v))
+    elif k in ("category_fetch_delay_seconds",):
+        setattr(sync_cfg, k, _parse_fetch_delay(k, v))
+    elif k == "stream_mode_default":
+        setattr(sync_cfg, k, _validate_stream_mode(v, "sync"))
+    elif k in ("retention_days",):
+        setattr(sync_cfg, k, _validate_positive_int(v, k, "sync", minimum=0))
+    else:
+        setattr(sync_cfg, k, _validate_positive_int(v, k, "sync", minimum=1))
+
+
+def _parse_sync_section(sync_raw: Any) -> SyncConfig:
+    if not isinstance(sync_raw, dict):
+        raise ConfigError("'sync' section must be a dictionary.")
+    unknown_sync = set(sync_raw.keys()) - ALLOWED_SYNC_KEYS
+    if unknown_sync:
+        raise ConfigError(f"Unknown key(s) in 'sync' section: {sorted(unknown_sync)}")
+
+    sync_cfg = SyncConfig()
+    for k, v in sync_raw.items():
+        _apply_sync_setting(sync_cfg, k, v)
+    return sync_cfg
+
+
+def _parse_provider_name(idx: int, raw_src: dict) -> str:
+    provider = raw_src.get("provider")
+    if not provider or not isinstance(provider, str) or not provider.strip():
+        raise ConfigError(f"Source at index {idx} is missing required non-empty 'provider' field.")
+    provider = provider.strip().lower()
+    if not re.fullmatch(r"[a-z0-9]+", provider):
+        raise ConfigError(
+            f"Provider name at index {idx} must contain only lowercase letters and digits."
+        )
+    return provider
+
+
+def _parse_telegram_defaults(raw_src: dict) -> Dict[str, Any]:
+    defaults_raw = raw_src.get("defaults", {})
+    if not isinstance(defaults_raw, dict):
+        raise ConfigError("'defaults' in telegram source must be a dictionary.")
+    unknown_defs = set(defaults_raw.keys()) - ALLOWED_TELEGRAM_DEFAULTS
+    if unknown_defs:
+        raise ConfigError(f"Unknown field(s) in telegram defaults: {sorted(unknown_defs)}")
+
+    def_mode = _validate_stream_mode(defaults_raw.get("stream_mode", "proxy"), "telegram defaults")
+    def_max_pages = _validate_positive_int(defaults_raw.get("max_pages", 1), "max_pages", "telegram defaults")
+    def_min_duration = _validate_positive_int(defaults_raw.get("min_duration_seconds", 420), "min_duration_seconds", "telegram defaults", minimum=0)
+    def_batch_size = _validate_positive_int(defaults_raw.get("history_batch_size", 100), "history_batch_size", "telegram defaults")
+    def_tags_wl = _validate_string_list(defaults_raw.get("tags_whitelist", []), "tags_whitelist", "telegram defaults") if "tags_whitelist" in defaults_raw else []
+    def_tags_bl = _validate_string_list(defaults_raw.get("tags_blacklist", []), "tags_blacklist", "telegram defaults") if "tags_blacklist" in defaults_raw else []
+
+    return {
+        "stream_mode": def_mode,
+        "max_pages": def_max_pages,
+        "min_duration_seconds": def_min_duration,
+        "history_batch_size": def_batch_size,
+        "tags_whitelist": def_tags_wl,
+        "tags_blacklist": def_tags_bl,
+    }
+
+
+def _parse_telegram_channel(ch_idx: int, ch_raw: Any, defaults: Dict[str, Any],
+                            seen_channel_ids: Set[str]) -> TelegramChannelConfig:
+    def_mode = defaults["stream_mode"]
+    def_max_pages = defaults["max_pages"]
+    def_min_duration = defaults["min_duration_seconds"]
+    def_batch_size = defaults["history_batch_size"]
+    def_tags_wl = defaults["tags_whitelist"]
+    def_tags_bl = defaults["tags_blacklist"]
+    if not isinstance(ch_raw, dict):
+        raise ConfigError(f"Channel at index {ch_idx} in telegram source must be a dictionary.")
+    unknown_ch = set(ch_raw.keys()) - ALLOWED_TELEGRAM_CHANNEL
+    if unknown_ch:
+        raise ConfigError(f"Unknown field(s) in telegram channel at index {ch_idx}: {sorted(unknown_ch)}")
+
+    ch_id = ch_raw.get("id")
+    if ch_id is None or str(ch_id).strip() == "":
+        raise ConfigError(f"Telegram channel at index {ch_idx} requires non-empty 'id'.")
+    ch_id_str = str(ch_id).strip()
+
+    if ch_id_str in seen_channel_ids:
+        raise ConfigError(f"Duplicate telegram channel id '{ch_id_str}' in telegram source.")
+    seen_channel_ids.add(ch_id_str)
+
+    ch_enabled = _validate_bool(ch_raw.get("enabled", True), "enabled", f"telegram channel '{ch_id_str}'")
+    studio = ch_raw.get("studio")
+    if studio is not None and not isinstance(studio, str):
+        raise ConfigError(f"Field 'studio' in telegram channel '{ch_id_str}' must be a string.")
+    studio_str = studio.strip() if studio else None
+
+    mode = _validate_stream_mode(ch_raw.get("stream_mode", def_mode), f"telegram channel '{ch_id_str}'")
+    max_pages = _validate_positive_int(ch_raw.get("max_pages", def_max_pages), "max_pages", f"telegram channel '{ch_id_str}'")
+    min_dur = _validate_positive_int(ch_raw.get("min_duration_seconds", def_min_duration), "min_duration_seconds", f"telegram channel '{ch_id_str}'", minimum=0)
+    batch_size = _validate_positive_int(ch_raw.get("history_batch_size", def_batch_size), "history_batch_size", f"telegram channel '{ch_id_str}'")
+
+    tags_wl = _validate_string_list(ch_raw["tags_whitelist"], "tags_whitelist", f"telegram channel '{ch_id_str}'") if "tags_whitelist" in ch_raw else list(def_tags_wl)
+    tags_bl = _validate_string_list(ch_raw["tags_blacklist"], "tags_blacklist", f"telegram channel '{ch_id_str}'") if "tags_blacklist" in ch_raw else list(def_tags_bl)
+
+    return TelegramChannelConfig(
+        id=ch_id_str,
+        enabled=ch_enabled,
+        studio=studio_str,
+        max_pages=max_pages,
+        min_duration_seconds=min_dur,
+        stream_mode=mode,
+        history_batch_size=batch_size,
+        tags_whitelist=tags_wl,
+        tags_blacklist=tags_bl,
+    )
+
+
+def _parse_telegram_source(raw_src: dict, provider: str) -> SourceConfig:
+    unknown_tg = set(raw_src.keys()) - ALLOWED_TELEGRAM_KEYS
+    if "address" in raw_src:
+        raise ConfigError("Telegram source does not take 'address'; configure channels with 'id' instead.")
+    if unknown_tg:
+        raise ConfigError(f"Unknown field(s) in telegram source: {sorted(unknown_tg)}")
+
+    tg_enabled = _validate_bool(raw_src.get("enabled", True), "enabled", "source 'telegram'")
+    validated_defaults = _parse_telegram_defaults(raw_src)
+
+    channels_raw = raw_src.get("channels", [])
+    if not isinstance(channels_raw, list):
+        raise ConfigError("'channels' in telegram source must be a list.")
+
+    channels_list: List[TelegramChannelConfig] = []
+    seen_channel_ids: Set[str] = set()
+    for ch_idx, ch_raw in enumerate(channels_raw):
+        channels_list.append(_parse_telegram_channel(ch_idx, ch_raw, validated_defaults, seen_channel_ids))
+
+    return SourceConfig(
+        provider=provider,
+        enabled=tg_enabled,
+        address=None,
+        stream_mode=validated_defaults["stream_mode"],
+        defaults=validated_defaults,
+        channels=channels_list,
+    )
+
+
 def parse_and_validate_config(data: Any) -> AppConfig:
     if not isinstance(data, dict):
         raise ConfigError("Configuration file root must be a YAML dictionary.")
@@ -211,46 +381,7 @@ def parse_and_validate_config(data: Any) -> AppConfig:
         raise ConfigError(f"Unknown top-level configuration key(s): {sorted(unknown_top)}")
 
     # 1. Parse Sync Config
-    sync_raw = data.get("sync", {})
-    if not isinstance(sync_raw, dict):
-        raise ConfigError("'sync' section must be a dictionary.")
-    unknown_sync = set(sync_raw.keys()) - ALLOWED_SYNC_KEYS
-    if unknown_sync:
-        raise ConfigError(f"Unknown key(s) in 'sync' section: {sorted(unknown_sync)}")
-
-    sync_cfg = SyncConfig()
-    for k, v in sync_raw.items():
-        if k == "run_on_startup":
-            setattr(sync_cfg, k, _validate_bool(v, k, "sync"))
-        elif k == "daily_at":
-            if v is None or (isinstance(v, str) and not v.strip()):
-                setattr(sync_cfg, k, None)
-            elif isinstance(v, str):
-                val = v.strip()
-                m = re.fullmatch(r"^([01]?[0-9]|2[0-3]):([0-5][0-9])$", val)
-                if not m:
-                    raise ConfigError(
-                        f"Field 'daily_at' in sync must be a valid time in HH:MM format (00:00-23:59), got {v!r}"
-                    )
-                setattr(sync_cfg, k, f"{int(m.group(1)):02d}:{int(m.group(2)):02d}")
-            else:
-                raise ConfigError(
-                    f"Field 'daily_at' in sync must be a string in HH:MM format, got {v!r}"
-                )
-        elif k in ("category_fetch_delay_seconds",):
-            try:
-                delay = float(v)
-            except (TypeError, ValueError):
-                raise ConfigError(f"Field '{k}' in sync must be a float/number, got {v!r}")
-            if not math.isfinite(delay) or delay < 0:
-                raise ConfigError(f"Field '{k}' in sync must be a finite non-negative number")
-            setattr(sync_cfg, k, delay)
-        elif k == "stream_mode_default":
-            setattr(sync_cfg, k, _validate_stream_mode(v, "sync"))
-        elif k in ("retention_days",):
-            setattr(sync_cfg, k, _validate_positive_int(v, k, "sync", minimum=0))
-        else:
-            setattr(sync_cfg, k, _validate_positive_int(v, k, "sync", minimum=1))
+    sync_cfg = _parse_sync_section(data.get("sync", {}))
 
     # 2. Parse Sources
     sources_raw = data.get("sources", [])
@@ -262,107 +393,13 @@ def parse_and_validate_config(data: Any) -> AppConfig:
         if not isinstance(raw_src, dict):
             raise ConfigError(f"Source at index {idx} must be a dictionary.")
 
-        provider = raw_src.get("provider")
-        if not provider or not isinstance(provider, str) or not provider.strip():
-            raise ConfigError(f"Source at index {idx} is missing required non-empty 'provider' field.")
-        provider = provider.strip().lower()
-        if not re.fullmatch(r"[a-z0-9]+", provider):
-            raise ConfigError(
-                f"Provider name at index {idx} must contain only lowercase letters and digits."
-            )
+        provider = _parse_provider_name(idx, raw_src)
 
         if provider in sources_map:
             raise ConfigError(f"Duplicate provider '{provider}' found in sources. Each provider can only have one configuration entry.")
 
         if provider == "telegram":
-            unknown_tg = set(raw_src.keys()) - ALLOWED_TELEGRAM_KEYS
-            if "address" in raw_src:
-                raise ConfigError("Telegram source does not take 'address'; configure channels with 'id' instead.")
-            if unknown_tg:
-                raise ConfigError(f"Unknown field(s) in telegram source: {sorted(unknown_tg)}")
-
-            tg_enabled = _validate_bool(raw_src.get("enabled", True), "enabled", "source 'telegram'")
-            defaults_raw = raw_src.get("defaults", {})
-            if not isinstance(defaults_raw, dict):
-                raise ConfigError("'defaults' in telegram source must be a dictionary.")
-            unknown_defs = set(defaults_raw.keys()) - ALLOWED_TELEGRAM_DEFAULTS
-            if unknown_defs:
-                raise ConfigError(f"Unknown field(s) in telegram defaults: {sorted(unknown_defs)}")
-
-            def_mode = _validate_stream_mode(defaults_raw.get("stream_mode", "proxy"), "telegram defaults")
-            def_max_pages = _validate_positive_int(defaults_raw.get("max_pages", 1), "max_pages", "telegram defaults")
-            def_min_duration = _validate_positive_int(defaults_raw.get("min_duration_seconds", 420), "min_duration_seconds", "telegram defaults", minimum=0)
-            def_batch_size = _validate_positive_int(defaults_raw.get("history_batch_size", 100), "history_batch_size", "telegram defaults")
-            def_tags_wl = _validate_string_list(defaults_raw.get("tags_whitelist", []), "tags_whitelist", "telegram defaults") if "tags_whitelist" in defaults_raw else []
-            def_tags_bl = _validate_string_list(defaults_raw.get("tags_blacklist", []), "tags_blacklist", "telegram defaults") if "tags_blacklist" in defaults_raw else []
-
-            validated_defaults = {
-                "stream_mode": def_mode,
-                "max_pages": def_max_pages,
-                "min_duration_seconds": def_min_duration,
-                "history_batch_size": def_batch_size,
-                "tags_whitelist": def_tags_wl,
-                "tags_blacklist": def_tags_bl,
-            }
-
-            channels_raw = raw_src.get("channels", [])
-            if not isinstance(channels_raw, list):
-                raise ConfigError("'channels' in telegram source must be a list.")
-
-            channels_list: List[TelegramChannelConfig] = []
-            seen_channel_ids = set()
-
-            for ch_idx, ch_raw in enumerate(channels_raw):
-                if not isinstance(ch_raw, dict):
-                    raise ConfigError(f"Channel at index {ch_idx} in telegram source must be a dictionary.")
-                unknown_ch = set(ch_raw.keys()) - ALLOWED_TELEGRAM_CHANNEL
-                if unknown_ch:
-                    raise ConfigError(f"Unknown field(s) in telegram channel at index {ch_idx}: {sorted(unknown_ch)}")
-
-                ch_id = ch_raw.get("id")
-                if ch_id is None or str(ch_id).strip() == "":
-                    raise ConfigError(f"Telegram channel at index {ch_idx} requires non-empty 'id'.")
-                ch_id_str = str(ch_id).strip()
-
-                if ch_id_str in seen_channel_ids:
-                    raise ConfigError(f"Duplicate telegram channel id '{ch_id_str}' in telegram source.")
-                seen_channel_ids.add(ch_id_str)
-
-                ch_enabled = _validate_bool(ch_raw.get("enabled", True), "enabled", f"telegram channel '{ch_id_str}'")
-                studio = ch_raw.get("studio")
-                if studio is not None and not isinstance(studio, str):
-                    raise ConfigError(f"Field 'studio' in telegram channel '{ch_id_str}' must be a string.")
-                studio_str = studio.strip() if studio else None
-
-                mode = _validate_stream_mode(ch_raw.get("stream_mode", def_mode), f"telegram channel '{ch_id_str}'")
-                max_pages = _validate_positive_int(ch_raw.get("max_pages", def_max_pages), "max_pages", f"telegram channel '{ch_id_str}'")
-                min_dur = _validate_positive_int(ch_raw.get("min_duration_seconds", def_min_duration), "min_duration_seconds", f"telegram channel '{ch_id_str}'", minimum=0)
-                batch_size = _validate_positive_int(ch_raw.get("history_batch_size", def_batch_size), "history_batch_size", f"telegram channel '{ch_id_str}'")
-
-                tags_wl = _validate_string_list(ch_raw["tags_whitelist"], "tags_whitelist", f"telegram channel '{ch_id_str}'") if "tags_whitelist" in ch_raw else list(def_tags_wl)
-                tags_bl = _validate_string_list(ch_raw["tags_blacklist"], "tags_blacklist", f"telegram channel '{ch_id_str}'") if "tags_blacklist" in ch_raw else list(def_tags_bl)
-
-                channels_list.append(TelegramChannelConfig(
-                    id=ch_id_str,
-                    enabled=ch_enabled,
-                    studio=studio_str,
-                    max_pages=max_pages,
-                    min_duration_seconds=min_dur,
-                    stream_mode=mode,
-                    history_batch_size=batch_size,
-                    tags_whitelist=tags_wl,
-                    tags_blacklist=tags_bl,
-                ))
-
-            sources_map[provider] = SourceConfig(
-                provider=provider,
-                enabled=tg_enabled,
-                address=None,
-                stream_mode=def_mode,
-                defaults=validated_defaults,
-                channels=channels_list,
-            )
-
+            sources_map[provider] = _parse_telegram_source(raw_src, provider)
         else:
             # Adult Hub is Telegram-only: every other provider is unsupported.
             raise ConfigError(

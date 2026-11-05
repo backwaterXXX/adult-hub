@@ -127,6 +127,53 @@ def verify_dump_checksum(dump: Path) -> bool:
     return True
 
 
+def _verify_dump_listing(target_file: Path, pg_restore_bin: str) -> int:
+    import subprocess
+    import gzip
+    import tempfile
+
+    tmp_path = None
+    if target_file.name.endswith(".gz"):
+        with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp:
+            tmp_path = tmp.name
+        with gzip.open(target_file, "rb") as src, open(tmp_path, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        verify_file = tmp_path
+    else:
+        verify_file = str(target_file)
+
+    try:
+        res = subprocess.run(
+            [pg_restore_bin, "--list", verify_file],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        if res.returncode != 0:
+            print(f"Dump verification FAILED: {res.stderr.decode()[:400]}", file=sys.stderr)
+            return 1
+        print("Dump verification PASSED. Table of contents:")
+        lines = res.stdout.decode(errors="replace").splitlines()
+        for line in lines[:30]:
+            print(f"  {line}")
+        if len(lines) > 30:
+            print(f"  ... and {len(lines) - 30} more entries")
+        return 0
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
+
+
+def _confirm_restore(conninfo: str, target_file: Path, clean: bool) -> bool:
+    confirm = input(
+        f"WARNING: This will RESTORE into {conninfo.split('@')[-1] if '@' in conninfo else conninfo} "
+        f"from {target_file.name} (clean={clean}).\n"
+        "Are you sure you want to proceed? [y/N]: "
+    )
+    if confirm.strip().lower() not in ("y", "yes"):
+        print("Aborted.")
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     conninfo = _normalize_host_url((args.db_url or "").strip())
@@ -157,47 +204,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.dry_run:
-        import subprocess
-        import gzip
-        import tempfile
-
-        tmp_path = None
-        if target_file.name.endswith(".gz"):
-            with tempfile.NamedTemporaryFile(suffix=".dump", delete=False) as tmp:
-                tmp_path = tmp.name
-            with gzip.open(target_file, "rb") as src, open(tmp_path, "wb") as dst:
-                shutil.copyfileobj(src, dst)
-            verify_file = tmp_path
-        else:
-            verify_file = str(target_file)
-
-        try:
-            res = subprocess.run(
-                [pg_restore_bin, "--list", verify_file],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            )
-            if res.returncode != 0:
-                print(f"Dump verification FAILED: {res.stderr.decode()[:400]}", file=sys.stderr)
-                return 1
-            print("Dump verification PASSED. Table of contents:")
-            lines = res.stdout.decode(errors="replace").splitlines()
-            for line in lines[:30]:
-                print(f"  {line}")
-            if len(lines) > 30:
-                print(f"  ... and {len(lines) - 30} more entries")
-            return 0
-        finally:
-            if tmp_path:
-                Path(tmp_path).unlink(missing_ok=True)
+        return _verify_dump_listing(target_file, pg_restore_bin)
 
     if not args.yes:
-        confirm = input(
-            f"WARNING: This will RESTORE into {conninfo.split('@')[-1] if '@' in conninfo else conninfo} "
-            f"from {target_file.name} (clean={args.clean}).\n"
-            "Are you sure you want to proceed? [y/N]: "
-        )
-        if confirm.strip().lower() not in ("y", "yes"):
-            print("Aborted.")
+        if not _confirm_restore(conninfo, target_file, args.clean):
             return 1
 
     print("Restoring database...")

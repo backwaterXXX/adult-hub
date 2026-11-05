@@ -94,30 +94,24 @@ class VideoPersistenceServices:
         warn_if_channel_hints_missing(self.logger)
 
 
-def _merge_video_fields(existing: Dict[str, Any], new: Dict[str, Any]) -> None:
-    """Union performers/categories from a duplicate sighting (order-preserving).
+def _merge_list_field(existing: Dict[str, Any], new: Dict[str, Any], key: str) -> None:
+    old = existing.get(key) or []
+    if not isinstance(old, list):
+        old = [old]
+    seen = set(old)
+    merged = list(old)
+    new_vals = new.get(key) or []
+    if not isinstance(new_vals, list):
+        new_vals = [new_vals]
+    for v in new_vals:
+        if v and v not in seen:
+            seen.add(v)
+            merged.append(v)
+    if len(merged) != len(old):
+        existing[key] = merged
 
-    The same video can surface in several sections/categories with partial
-    metadata each time; merging avoids losing performers found elsewhere.
-    """
-    for key in ("performers", "categories"):
-        old = existing.get(key) or []
-        if not isinstance(old, list):
-            old = [old]
-        seen = set(old)
-        merged = list(old)
-        new_vals = new.get(key) or []
-        if not isinstance(new_vals, list):
-            new_vals = [new_vals]
-        for v in new_vals:
-            if v and v not in seen:
-                seen.add(v)
-                merged.append(v)
-        if len(merged) != len(old):
-            existing[key] = merged
-    for key in ("source_text", "source_filename"):
-        if not existing.get(key) and new.get(key):
-            existing[key] = new[key]
+
+def _merge_performer_proposals(existing: Dict[str, Any], new: Dict[str, Any]) -> None:
     old_proposals = existing.get("performer_proposals") or []
     proposal_keys = {(p.get("matched_text"), p.get("reason")) for p in old_proposals}
     for proposal in new.get("performer_proposals") or []:
@@ -127,11 +121,29 @@ def _merge_video_fields(existing: Dict[str, Any], new: Dict[str, Any]) -> None:
             proposal_keys.add(key)
     if old_proposals:
         existing["performer_proposals"] = old_proposals
+
+
+def _merge_performer_resolution(existing: Dict[str, Any], new: Dict[str, Any]) -> None:
     new_resolution = new.get("performer_resolution") or {}
     old_resolution = existing.get("performer_resolution") or {}
     if new_resolution and int(new_resolution.get("priority") or 0) >= int(old_resolution.get("priority") or -1):
         existing["performer_resolution"] = new_resolution
         existing["performers"] = new.get("performers") or []
+
+
+def _merge_video_fields(existing: Dict[str, Any], new: Dict[str, Any]) -> None:
+    """Union performers/categories from a duplicate sighting (order-preserving).
+
+    The same video can surface in several sections/categories with partial
+    metadata each time; merging avoids losing performers found elsewhere.
+    """
+    for key in ("performers", "categories"):
+        _merge_list_field(existing, new, key)
+    for key in ("source_text", "source_filename"):
+        if not existing.get(key) and new.get(key):
+            existing[key] = new[key]
+    _merge_performer_proposals(existing, new)
+    _merge_performer_resolution(existing, new)
 
 
 def persist_prepared_video(
@@ -239,6 +251,204 @@ def register_stream_file(conn: db.Connection, prepared: Dict[str, Any],
                                  int(time_fn())))
 
 
+def _load_existing_video_row(conn: db.Connection, comp_id: str):
+    try:
+        return conn.execute(
+            """SELECT v.first_seen, v.studio, v.performers, v.plot, v.date_released,
+                      v.performer_resolution,
+                      EXISTS(SELECT 1 FROM video_metadata_overrides o
+                             WHERE o.video_id=v.id AND o.fields ? 'performers'),
+                      v.title, v.scene_match_source, v.scene_match_external_id,
+                      v.scene_match_url,
+                      EXISTS(SELECT 1 FROM video_metadata_overrides o
+                             WHERE o.video_id=v.id AND o.fields ? 'title')
+               FROM videos v WHERE v.id = %s""", (comp_id,)).fetchone()
+    except Exception:
+        try:
+            return conn.execute(
+                "SELECT first_seen, studio, performers FROM videos WHERE id = %s", (comp_id,)).fetchone()
+        except Exception:
+            return None
+
+
+def _backfill_from_row(video: Dict[str, Any], _row, studio_val: str) -> str:
+    """Fill studio, plot and release date from the stored row when the listing lacks them."""
+    if not studio_val and _row and len(_row) > 1 and _row[1]:
+        studio_val = _row[1]
+    if _row and len(_row) > 3 and _row[3] and not video.get("plot"):
+        video["plot"] = _row[3]
+    if _row and len(_row) > 4 and _row[4] and not video.get("date_released"):
+        video["date_released"] = _row[4]
+    return studio_val
+
+
+def _apply_scene_match_provenance(video: Dict[str, Any], _row) -> None:
+    # Przenies proweniencje dopasowania do NFO, aby przebieg zapisu nie
+    # usuwal identyfikatora katalogowego z pliku.
+    if _row and len(_row) > 9 and _row[9]:
+        video["scene_match_source"] = _row[8]
+        video["scene_match_external_id"] = _row[9]
+        if len(_row) > 10 and _row[10]:
+            video["scene_match_url"] = _row[10]
+
+
+def _apply_catalog_title(video: Dict[str, Any], title: str, provider: str, _row) -> str:
+    # Tytul: potwierdzone dopasowanie sceny StashDB/ThePornDB jest kanonicznym
+    # zrodlem tytulu (jak w _apply_matched_scene). Swiezy listing z Telegrama
+    # nie moze go cofnac do podpisu kanalu — inaczej NFO (a w nim nazwa
+    # widoczna w Jellyfin) traci tytul katalogowy przy kazdym przebiegu.
+    # Jawne nadpisanie operatora ma pierwszenstwo.
+    provider_title = title
+    catalog_title = ""
+    if _row and len(_row) > 7 and _row[7]:
+        catalog_title = str(_row[7]).strip()
+    scene_source = str(_row[8] or "").casefold() if _row and len(_row) > 8 else ""
+    has_catalog_match = any(
+        provider in scene_source for provider in ("stashdb", "theporndb", "tpdb")
+    )
+    title_overridden = bool(_row and len(_row) > 11 and _row[11])
+    if has_catalog_match:
+        _apply_scene_match_provenance(video, _row)
+    if has_catalog_match and catalog_title and not title_overridden:
+        title = catalog_title
+        # Zachowaj podpis dostawcy w <originaltitle> jako proweniencje.
+        video["original_title"] = provider_title
+        video["title"] = catalog_title
+    return title
+
+
+def _listing_performers(video: Dict[str, Any], services: VideoPersistenceServices) -> list:
+    fresh_perfs = services.normalize_performers(video.get("performers", []))
+    if video.get("performer_resolution"):
+        fresh_perfs = list(dict.fromkeys(
+            str(value).strip() for value in video.get("performers", []) if str(value).strip()
+        ))
+    return fresh_perfs
+
+
+def _apply_stored_resolution(_row, fresh_perfs: list, effective_resolution):
+    """A stored resolution with higher priority than the listing's replaces it, with its performers."""
+    if _row and len(_row) > 6 and _row[5]:
+        db_resolution = _row[5]
+        if isinstance(db_resolution, str):
+            try:
+                db_resolution = json.loads(db_resolution)
+            except (TypeError, ValueError):
+                db_resolution = {}
+        incoming_priority = int((effective_resolution or {}).get("priority") or -1)
+        stored_priority = int(db_resolution.get("priority") or -1) if isinstance(db_resolution, dict) else -1
+        if stored_priority > incoming_priority:
+            effective_resolution = db_resolution
+            if _row[2]:
+                try:
+                    _db_perfs = json.loads(_row[2]) if isinstance(_row[2], str) else _row[2]
+                    fresh_perfs = list(dict.fromkeys(
+                        str(value).strip() for value in _db_perfs if str(value).strip()
+                    ))
+                except Exception:
+                    logger.debug("Ignored exception in sync_unique_video", exc_info=True)
+    return fresh_perfs, effective_resolution
+
+
+def _apply_stored_performers(video: Dict[str, Any], _row, fresh_perfs: list,
+                             services: VideoPersistenceServices) -> list:
+    if _row and len(_row) > 6 and _row[6] and _row[2]:
+        try:
+            _db_perfs = json.loads(_row[2]) if isinstance(_row[2], str) else _row[2]
+            fresh_perfs = services.normalize_performers(_db_perfs)
+        except Exception:
+            logger.debug("Ignored exception in sync_unique_video", exc_info=True)
+    elif not video.get("performer_resolution") and not fresh_perfs and _row and len(_row) > 2 and _row[2]:
+        try:
+            _db_perfs = json.loads(_row[2]) if isinstance(_row[2], str) else []
+            fresh_perfs = services.normalize_performers(_db_perfs)
+        except Exception:
+            logger.debug("Ignored exception in sync_unique_video", exc_info=True)
+    return fresh_perfs
+
+
+def _resolve_fresh_performers(video: Dict[str, Any], _row, services: VideoPersistenceServices):
+    """Listing performers win, but an empty listing must not erase performers already stored (backfill/matcher)."""
+    fresh_perfs = _listing_performers(video, services)
+    effective_resolution = video.get("performer_resolution")
+    fresh_perfs, effective_resolution = _apply_stored_resolution(_row, fresh_perfs, effective_resolution)
+    fresh_perfs = _apply_stored_performers(video, _row, fresh_perfs, services)
+    return fresh_perfs, effective_resolution
+
+
+def _detect_studio_names(video: Dict[str, Any], title: str, tags) -> Tuple[Any, list]:
+    prod_names = []
+    try:
+        from studio_tags import detect_production_studios, detect_production_studio_names
+        detected_studios = detect_production_studios(title, tags)
+        if detected_studios:
+            tags = set(tags) | set(detected_studios)
+        prod_names = detect_production_studio_names(title, tags)
+        if prod_names:
+            video["production_studios"] = prod_names
+    except Exception:
+        logger.debug("Ignored exception in sync_unique_video", exc_info=True)
+    return tags, prod_names
+
+
+def _is_telegram_channel_studio(studio_val: str) -> bool:
+    # For Telegram, distinguish actual production studios from source channel names.
+    # Deployment-specific channel titles can be supplied through the environment
+    # instead of being hardcoded in the public repository.
+    extra_channel_hints = tuple(
+        hint.strip().casefold()
+        for hint in (os.getenv("TELEGRAM_CHANNEL_NAME_HINTS") or "").split(",")
+        if hint.strip()
+    )
+    return bool(studio_val and (
+        studio_val.lower() in ("telegram", "t.me", "telegram (t.me)")
+        or studio_val.startswith("-100")
+        or (studio_val.startswith("-") and studio_val[1:].isdigit())
+        or any(k in studio_val.lower() for k in extra_channel_hints)
+    ))
+
+
+def _apply_studio_fields(video: Dict[str, Any], title: str, tags, provider: str, studio_val: str,
+                        services: VideoPersistenceServices):
+    """Set studio/channel on the video dict. Returns (tags, studio value stored in the DB)."""
+    tags, prod_names = _detect_studio_names(video, title, tags)
+    if provider == "telegram":
+        warn_if_channel_hints_missing(services.logger if services else None, is_configured=True)
+    is_tg_chan = _is_telegram_channel_studio(studio_val)
+    if is_tg_chan:
+        video["channel"] = studio_val
+        video["studio"] = prod_names[0] if prod_names else ""
+    elif prod_names:
+        video["studio"] = prod_names[0]
+
+    db_studio = prod_names[0] if prod_names else (None if (provider == "telegram" and is_tg_chan) else (studio_val or None))
+    return tags, db_studio
+
+
+def _clean_sync_tags(tags) -> set:
+    clean_tags = set()
+    for t in tags:
+        st = str(t).strip()
+        if st and st.lower() not in ("telegram", "t.me") and not st.startswith("-100"):
+            clean_tags.add(st)
+    return clean_tags
+
+
+def _persist_prepared_with_commit(services: VideoPersistenceServices, prepared: Dict[str, Any],
+                                  conn: db.Connection, commit: bool) -> None:
+    try:
+        services.persist_prepared_video(conn, prepared)
+        if commit:
+            conn.commit()
+    except Exception:
+        if commit:
+            try:
+                conn.rollback()
+            except Exception:
+                logger.debug("Ignored exception in sync_unique_video", exc_info=True)
+        raise
+
+
 def sync_unique_video(
     video: Dict[str, Any],
     genres: Set[str],
@@ -267,98 +477,15 @@ def sync_unique_video(
     # Studio (per-source override) i data dodania: first_seen z DB dla starych,
     # teraz dla nowych. Backfilluje tez kolumne studio.
     now = int(services.time_fn())
-    try:
-        _row = conn.execute(
-            """SELECT v.first_seen, v.studio, v.performers, v.plot, v.date_released,
-                      v.performer_resolution,
-                      EXISTS(SELECT 1 FROM video_metadata_overrides o
-                             WHERE o.video_id=v.id AND o.fields ? 'performers'),
-                      v.title, v.scene_match_source, v.scene_match_external_id,
-                      v.scene_match_url,
-                      EXISTS(SELECT 1 FROM video_metadata_overrides o
-                             WHERE o.video_id=v.id AND o.fields ? 'title')
-               FROM videos v WHERE v.id = %s""", (comp_id,)).fetchone()
-    except Exception:
-        try:
-            _row = conn.execute(
-                "SELECT first_seen, studio, performers FROM videos WHERE id = %s", (comp_id,)).fetchone()
-        except Exception:
-            _row = None
+    _row = _load_existing_video_row(conn, comp_id)
     first_seen = _row[0] if _row and _row[0] else now
     studio_val = (video.get("studio") or "").strip()
-    if not studio_val and _row and len(_row) > 1 and _row[1]:
-        studio_val = _row[1]
-    if _row and len(_row) > 3 and _row[3] and not video.get("plot"):
-        video["plot"] = _row[3]
-    if _row and len(_row) > 4 and _row[4] and not video.get("date_released"):
-        video["date_released"] = _row[4]
-
-    # Tytul: potwierdzone dopasowanie sceny StashDB/ThePornDB jest kanonicznym
-    # zrodlem tytulu (jak w _apply_matched_scene). Swiezy listing z Telegrama
-    # nie moze go cofnac do podpisu kanalu — inaczej NFO (a w nim nazwa
-    # widoczna w Jellyfin) traci tytul katalogowy przy kazdym przebiegu.
-    # Jawne nadpisanie operatora ma pierwszenstwo.
-    provider_title = title
-    catalog_title = ""
-    if _row and len(_row) > 7 and _row[7]:
-        catalog_title = str(_row[7]).strip()
-    scene_source = str(_row[8] or "").casefold() if _row and len(_row) > 8 else ""
-    has_catalog_match = any(
-        provider in scene_source for provider in ("stashdb", "theporndb", "tpdb")
-    )
-    title_overridden = bool(_row and len(_row) > 11 and _row[11])
-    if has_catalog_match and _row and len(_row) > 9 and _row[9]:
-        # Przenies proweniencje dopasowania do NFO, aby przebieg zapisu nie
-        # usuwal identyfikatora katalogowego z pliku.
-        video["scene_match_source"] = _row[8]
-        video["scene_match_external_id"] = _row[9]
-        if len(_row) > 10 and _row[10]:
-            video["scene_match_url"] = _row[10]
-    if has_catalog_match and catalog_title and not title_overridden:
-        title = catalog_title
-        # Zachowaj podpis dostawcy w <originaltitle> jako proweniencje.
-        video["original_title"] = provider_title
-        video["title"] = catalog_title
+    studio_val = _backfill_from_row(video, _row, studio_val)
+    title = _apply_catalog_title(video, title, provider, _row)
 
     # Obsada: swiezy listing wygrywa, ale pusty NIE kasuje tego, co juz mamy
     # w DB (backfill/matcher) — inaczej NFO traciloby obsade do kolejnego backfillu.
-    _fresh_perfs = services.normalize_performers(video.get("performers", []))
-    effective_resolution = video.get("performer_resolution")
-    if video.get("performer_resolution"):
-        _fresh_perfs = list(dict.fromkeys(
-            str(value).strip() for value in video.get("performers", []) if str(value).strip()
-        ))
-    if _row and len(_row) > 6 and _row[5]:
-        db_resolution = _row[5]
-        if isinstance(db_resolution, str):
-            try:
-                db_resolution = json.loads(db_resolution)
-            except (TypeError, ValueError):
-                db_resolution = {}
-        incoming_priority = int((effective_resolution or {}).get("priority") or -1)
-        stored_priority = int(db_resolution.get("priority") or -1) if isinstance(db_resolution, dict) else -1
-        if stored_priority > incoming_priority:
-            effective_resolution = db_resolution
-            if _row[2]:
-                try:
-                    _db_perfs = json.loads(_row[2]) if isinstance(_row[2], str) else _row[2]
-                    _fresh_perfs = list(dict.fromkeys(
-                        str(value).strip() for value in _db_perfs if str(value).strip()
-                    ))
-                except Exception:
-                    logger.debug("Ignored exception in sync_unique_video", exc_info=True)
-    if _row and len(_row) > 6 and _row[6] and _row[2]:
-        try:
-            _db_perfs = json.loads(_row[2]) if isinstance(_row[2], str) else _row[2]
-            _fresh_perfs = services.normalize_performers(_db_perfs)
-        except Exception:
-            logger.debug("Ignored exception in sync_unique_video", exc_info=True)
-    elif not video.get("performer_resolution") and not _fresh_perfs and _row and len(_row) > 2 and _row[2]:
-        try:
-            _db_perfs = json.loads(_row[2]) if isinstance(_row[2], str) else []
-            _fresh_perfs = services.normalize_performers(_db_perfs)
-        except Exception:
-            logger.debug("Ignored exception in sync_unique_video", exc_info=True)
+    _fresh_perfs, effective_resolution = _resolve_fresh_performers(video, _row, services)
 
     # Normalize performers once so NFO and DB stay consistent (deduped order).
     _perfs = _fresh_perfs
@@ -376,47 +503,8 @@ def sync_unique_video(
              "performer_resolution": effective_resolution}
 
     # Detect production studios and add as tags and production_studios
-    prod_names = []
-    try:
-        from studio_tags import detect_production_studios, detect_production_studio_names
-        detected_studios = detect_production_studios(title, tags)
-        if detected_studios:
-            tags = set(tags) | set(detected_studios)
-        prod_names = detect_production_studio_names(title, tags)
-        if prod_names:
-            video["production_studios"] = prod_names
-    except Exception:
-        logger.debug("Ignored exception in sync_unique_video", exc_info=True)
-    # For Telegram, distinguish actual production studios from source channel names.
-    # Deployment-specific channel titles can be supplied through the environment
-    # instead of being hardcoded in the public repository.
-    if provider == "telegram":
-        warn_if_channel_hints_missing(services.logger if services else None, is_configured=True)
-    extra_channel_hints = tuple(
-        hint.strip().casefold()
-        for hint in (os.getenv("TELEGRAM_CHANNEL_NAME_HINTS") or "").split(",")
-        if hint.strip()
-    )
-    is_tg_chan = bool(studio_val and (
-        studio_val.lower() in ("telegram", "t.me", "telegram (t.me)")
-        or studio_val.startswith("-100")
-        or (studio_val.startswith("-") and studio_val[1:].isdigit())
-        or any(k in studio_val.lower() for k in extra_channel_hints)
-    ))
-    if is_tg_chan:
-        video["channel"] = studio_val
-        video["studio"] = prod_names[0] if prod_names else ""
-    elif prod_names:
-        video["studio"] = prod_names[0]
-
-    db_studio = prod_names[0] if prod_names else (None if (provider == "telegram" and is_tg_chan) else (studio_val or None))
-
-    clean_tags = set()
-    for t in tags:
-        st = str(t).strip()
-        if st and st.lower() not in ("telegram", "t.me") and not st.startswith("-100"):
-            clean_tags.add(st)
-    tags = clean_tags
+    tags, db_studio = _apply_studio_fields(video, title, tags, provider, studio_val, services)
+    tags = _clean_sync_tags(tags)
 
     prepared = {
         "comp_id": comp_id, "provider": provider, "title": title,
@@ -429,17 +517,7 @@ def sync_unique_video(
         return prepared
 
     # Record into DB with relative file path and composite video_id.
-    try:
-        services.persist_prepared_video(conn, prepared)
-        if commit:
-            conn.commit()
-    except Exception:
-        if commit:
-            try:
-                conn.rollback()
-            except Exception:
-                logger.debug("Ignored exception in sync_unique_video", exc_info=True)
-        raise
+    _persist_prepared_with_commit(services, prepared, conn, commit)
     # The catalog row is durable; publish sidecars (NFO first so the library
     # scanner sees metadata before a new stream file becomes visible).
     write_media_files(services, prepared, conn, commit=commit)
@@ -459,19 +537,8 @@ def write_media_files(services: VideoPersistenceServices, prepared: Dict[str, An
         conn.commit()
 
 
-def flush_collected(
-    collected: Dict[str, Dict[str, Any]],
-    conn: db.Connection,
-    media_dir: Path,
-    source_name: str = "",
-    *,
-    raise_on_error: bool = False,
-    services: VideoPersistenceServices,
-) -> int:
-    """Flush collected videos to DB and media_dir, merging previously known genres and tags from DB.
-    Clears the dictionary after writing to free memory and prevent re-writing."""
-    if not collected:
-        return 0
+def _drop_short_videos(collected: Dict[str, Dict[str, Any]], source_name: str,
+                       services: VideoPersistenceServices) -> None:
     short_ids = [
         video_id for video_id, item in collected.items()
         if not passes_minimum_video_duration((item.get("video") or {}).get("duration"))
@@ -481,8 +548,10 @@ def flush_collected(
     if short_ids:
         services.logger.info("Skipped %d video(s) shorter than 420 seconds%s",
                              len(short_ids), f" ({source_name})" if source_name else "")
-    if not collected:
-        return 0
+
+
+def _drop_hidden_duplicates(collected: Dict[str, Dict[str, Any]], source_name: str,
+                            conn: db.Connection, services: VideoPersistenceServices) -> None:
     try:
         hidden = {r[0] for r in conn.execute(
             "SELECT loser_id FROM video_duplicate_decisions WHERE state='active'")}
@@ -496,14 +565,11 @@ def flush_collected(
     except db.OperationalError:
         # Compatible with old catalogs until init_db has run its migration.
         pass
-    if not collected:
-        return 0
-    count = len(collected)
-    label = f" ({source_name})" if source_name else ""
-    services.logger.info(f"Writing {count} videos{label} to {media_dir} and DB...")
 
-    errors = []
-    # Merge previously known genres and tags from DB so we don't lose tags across syncs
+
+def _merge_stored_metadata(collected: Dict[str, Dict[str, Any]], conn: db.Connection,
+                           services: VideoPersistenceServices, errors: List[str]) -> None:
+    """Merge previously known genres and tags from DB so we don't lose tags across syncs."""
     for comp_id, item in collected.items():
         try:
             cur = conn.execute("SELECT categories, tags FROM videos WHERE id = %s", (comp_id,))
@@ -518,6 +584,9 @@ def flush_collected(
             errors.append(f"{comp_id} metadata read: {type(e).__name__}: {e}")
             services.logger.error("Failed to read existing metadata for %s: %s", comp_id, e)
 
+
+def _prepare_collected_items(collected: Dict[str, Dict[str, Any]], media_dir: Path, conn: db.Connection,
+                             services: VideoPersistenceServices, errors: List[str]) -> List[Dict[str, Any]]:
     prepared_items = []
     for comp_id, item in collected.items():
         try:
@@ -535,7 +604,12 @@ def flush_collected(
         except Exception as e:
             errors.append(f"{comp_id}: {type(e).__name__}: {e}")
             services.logger.error(f"Failed to write video {comp_id}: {e}")
+    return prepared_items
 
+
+def _persist_prepared_batch(prepared_items: List[Dict[str, Any]], conn: db.Connection,
+                            services: VideoPersistenceServices, errors: List[str]) -> Tuple[int, List[Dict[str, Any]]]:
+    """Write all catalog rows in one transaction. Returns (rows written, rows committed)."""
     written = 0
     committed_items: List[Dict[str, Any]] = []
     try:
@@ -556,18 +630,53 @@ def flush_collected(
         errors.append(f"database batch: {type(e).__name__}: {e}")
         services.logger.warning(f"Database batch failed: {e}")
         written = 0
+    return written, committed_items
 
-    # Publish sidecars only after the catalog batch is durable, so a rolled-back
-    # batch cannot leave unmanaged .strm/.nfo files in the library. A failed
-    # publication leaves the entry registered as nothing at all: its catalog row
-    # survives, the library never sees a half-written item, and
-    # republish_pending_videos() retries it from the database on the next pass.
+
+def _publish_committed_items(committed_items: List[Dict[str, Any]], conn: db.Connection,
+                             services: VideoPersistenceServices, errors: List[str]) -> None:
     for prepared in committed_items:
         try:
             write_media_files(services, prepared, conn)
         except Exception as e:
             errors.append(f"{prepared['comp_id']} file write: {type(e).__name__}: {e}")
             services.logger.error("Failed to publish files for %s: %s", prepared["comp_id"], e)
+
+
+def flush_collected(
+    collected: Dict[str, Dict[str, Any]],
+    conn: db.Connection,
+    media_dir: Path,
+    source_name: str = "",
+    *,
+    raise_on_error: bool = False,
+    services: VideoPersistenceServices,
+) -> int:
+    """Flush collected videos to DB and media_dir, merging previously known genres and tags from DB.
+    Clears the dictionary after writing to free memory and prevent re-writing."""
+    if not collected:
+        return 0
+    _drop_short_videos(collected, source_name, services)
+    if not collected:
+        return 0
+    _drop_hidden_duplicates(collected, source_name, conn, services)
+    if not collected:
+        return 0
+    count = len(collected)
+    label = f" ({source_name})" if source_name else ""
+    services.logger.info(f"Writing {count} videos{label} to {media_dir} and DB...")
+
+    errors: List[str] = []
+    _merge_stored_metadata(collected, conn, services, errors)
+    prepared_items = _prepare_collected_items(collected, media_dir, conn, services, errors)
+    written, committed_items = _persist_prepared_batch(prepared_items, conn, services, errors)
+
+    # Publish sidecars only after the catalog batch is durable, so a rolled-back
+    # batch cannot leave unmanaged .strm/.nfo files in the library. A failed
+    # publication leaves the entry registered as nothing at all: its catalog row
+    # survives, the library never sees a half-written item, and
+    # republish_pending_videos() retries it from the database on the next pass.
+    _publish_committed_items(committed_items, conn, services, errors)
 
     if errors:
         services.logger.warning("Saved %d/%d videos%s; there were %d write/commit errors.", written, count, label, len(errors))

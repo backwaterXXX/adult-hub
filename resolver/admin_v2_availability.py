@@ -65,18 +65,43 @@ def _preview(db_url, video_ids):
         conn.close()
 
 
-def build_router(admin):
-    router = APIRouter(route_class=V2ErrorRoute)
+async def _read_video_ids(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    return _parse_ids(body)
 
+
+def _history_items(rows) -> list[dict]:
+    items = []
+    for row in rows:
+        status = _safe_status(row[0])
+        items.append({"status": status, "checked_at": row[1].isoformat(),
+                      "evidence": _STATUS_LABELS[status]})
+    return items
+
+
+def _history_items_for(db_url, video_id, limit) -> list[dict]:
+    conn = None
+    try:
+        conn = db.connect(db_url)
+        rows = conn.execute(
+            "SELECT status,checked_at,evidence FROM video_availability_checks "
+            "WHERE video_id=%s ORDER BY checked_at DESC,id DESC LIMIT %s", (video_id, limit)
+        ).fetchall()
+        return _history_items(rows)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _route_preview(router, admin):
     @router.post("/api/v2/availability/preview")
     async def preview(request: Request):
         if admin._admin_blocked(request):
             return admin.JSONResponse({"ok": False, "error": "Admin is only available locally."}, status_code=403)
-        try:
-            body = await request.json()
-        except Exception:
-            body = None
-        video_ids = _parse_ids(body)
+        video_ids = await _read_video_ids(request)
         if video_ids is None:
             return admin.JSONResponse({"ok": False, "error": f"Choose 1 to {MAX_ITEMS} distinct videos."}, status_code=400)
         try:
@@ -85,16 +110,16 @@ def build_router(admin):
             logger.warning("Request failed in preview", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not preview availability checks."}, status_code=503)
 
+    return preview
+
+
+def _route_execute(router, admin):
     @router.post("/api/v2/availability/execute")
     async def execute(request: Request):
         denied = admin._write_denied(request)
         if denied is not None:
             return denied
-        try:
-            body = await request.json()
-        except Exception:
-            body = None
-        video_ids = _parse_ids(body)
+        video_ids = await _read_video_ids(request)
         if video_ids is None:
             return admin.JSONResponse({"ok": False, "error": f"Choose 1 to {MAX_ITEMS} distinct videos."}, status_code=400)
         try:
@@ -111,30 +136,28 @@ def build_router(admin):
             logger.warning("Request failed in execute", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Could not queue availability check."}, status_code=503)
 
+    return execute
+
+
+def _route_history(router, admin):
     @router.get("/api/v2/availability/history")
     async def history(request: Request, video_id: str, limit: int = 10):
         if admin._admin_blocked(request):
             return admin.JSONResponse({"ok": False, "error": "Admin is only available locally."}, status_code=403)
         if not video_id or len(video_id) > 1000 or limit < 1 or limit > 50:
             return admin.JSONResponse({"ok": False, "error": "Invalid availability history query."}, status_code=400)
-        conn = None
         try:
-            conn = db.connect(admin.HUB_DB_URL)
-            rows = conn.execute(
-                "SELECT status,checked_at,evidence FROM video_availability_checks "
-                "WHERE video_id=%s ORDER BY checked_at DESC,id DESC LIMIT %s", (video_id, limit)
-            ).fetchall()
-            items = []
-            for row in rows:
-                status = _safe_status(row[0])
-                items.append({"status": status, "checked_at": row[1].isoformat(),
-                              "evidence": _STATUS_LABELS[status]})
-            return {"ok": True, "items": items}
+            return {"ok": True, "items": _history_items_for(admin.HUB_DB_URL, video_id, limit)}
         except Exception:
             logger.warning("Request failed in history", exc_info=True)
             return admin.JSONResponse({"ok": False, "error": "Availability history is unavailable."}, status_code=503)
-        finally:
-            if conn is not None:
-                conn.close()
 
+    return history
+
+
+def build_router(admin):
+    router = APIRouter(route_class=V2ErrorRoute)
+    _route_preview(router, admin)
+    _route_execute(router, admin)
+    _route_history(router, admin)
     return router

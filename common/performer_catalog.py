@@ -54,31 +54,12 @@ def clean_credit_candidate(value: str) -> str:
     if not curr:
         return ""
     if "\n" in curr:
-        lines = [line.strip(" \t\r\n-–—:[]()") for line in curr.splitlines() if line.strip(" \t\r\n-–—:[]()")]
-        if len(lines) > 1:
-            for cand_line in reversed(lines):
-                c = clean_credit_candidate(cand_line)
-                if is_valid_performer_name(c):
-                    curr = cand_line
-                    break
-            else:
-                curr = lines[-1]
+        curr = _choose_credit_line(curr)
     for _ in range(5):
         prev = curr
-        curr = _LEADING_TAG_RE.sub("", curr).strip(" \t\r\n-–—:[]()")
-        curr = _LEADING_AGGREGATOR_RE.sub("", curr).strip(" \t\r\n-–—:[]()")
-        curr = _TRAILING_AGGREGATOR_RE.sub("", curr).strip(" \t\r\n-–—:[]()")
-        curr = _STUDIO_ACRONYM_PREFIX_RE.sub("", curr).strip(" \t\r\n-–—:[]()")
-        for pat in _STUDIO_PREFIX_PATTERNS:
-            subbed = pat.sub("", curr).strip(" \t\r\n-–—:[]()")
-            if subbed != curr:
-                curr = subbed
-                break
-        for pat in _STUDIO_SUFFIX_PATTERNS:
-            subbed = pat.sub("", curr).strip(" \t\r\n-–—:[]()")
-            if subbed != curr:
-                curr = subbed
-                break
+        curr = _strip_credit_affixes(curr)
+        curr = _strip_first_matching(curr, _STUDIO_PREFIX_PATTERNS)
+        curr = _strip_first_matching(curr, _STUDIO_SUFFIX_PATTERNS)
         bare = strip_nationality_prefix(curr).strip(" \t\r\n-–—:[]()")
         if bare:
             curr = bare
@@ -87,6 +68,36 @@ def clean_credit_candidate(value: str) -> str:
     words = curr.split()
     if len(words) >= 3 and words[0].casefold() in _NON_NAME_CREDIT_PREFIXES:
         curr = " ".join(words[1:]).strip(" \t\r\n-–—:[]()")
+    return curr
+
+
+def _choose_credit_line(curr: str) -> str:
+    """Pick the last line of a multi-line credit that cleans to a valid performer name."""
+    lines = [line.strip(" \t\r\n-–—:[]()") for line in curr.splitlines() if line.strip(" \t\r\n-–—:[]()")]
+    if len(lines) > 1:
+        for cand_line in reversed(lines):
+            c = clean_credit_candidate(cand_line)
+            if is_valid_performer_name(c):
+                return cand_line
+        return lines[-1]
+    return curr
+
+
+def _strip_credit_affixes(curr: str) -> str:
+    """Apply the tag, aggregator and studio-acronym removals once, in their fixed order."""
+    curr = _LEADING_TAG_RE.sub("", curr).strip(" \t\r\n-–—:[]()")
+    curr = _LEADING_AGGREGATOR_RE.sub("", curr).strip(" \t\r\n-–—:[]()")
+    curr = _TRAILING_AGGREGATOR_RE.sub("", curr).strip(" \t\r\n-–—:[]()")
+    curr = _STUDIO_ACRONYM_PREFIX_RE.sub("", curr).strip(" \t\r\n-–—:[]()")
+    return curr
+
+
+def _strip_first_matching(curr: str, patterns: list) -> str:
+    """Apply the first pattern that changes curr and return the result; unchanged when none does."""
+    for pat in patterns:
+        subbed = pat.sub("", curr).strip(" \t\r\n-–—:[]()")
+        if subbed != curr:
+            return subbed
     return curr
 
 
@@ -207,13 +218,37 @@ def match_catalog(text_fields: Iterable[tuple[str, str]], records: Iterable[dict
     fields = [(str(field), _credit_text(text)) for field, text in text_fields if text]
     fields = [(field, text) for field, text in fields if text]
     prepared = prepared or prepare_catalog(records)
-    index = prepared["index"]
     exact: dict[str, dict] = {}
     exact_order: dict[str, tuple[int, int]] = {}
     proposals: list[dict] = []
     claimed: dict[str, list[tuple[int, int]]] = defaultdict(list)
     normalized_fields = [(field, text, *_normalized_with_spans(text)) for field, text in fields]
 
+    _collect_exact_matches(normalized_fields, prepared, exact, exact_order, proposals, claimed)
+
+    # Typo review is restricted to explicit credits, long aliases and a single
+    # edit (including adjacent transposition) to avoid fuzzy matches in prose.
+    index = prepared["index"]
+    for field, text in fields:
+        for line in text.splitlines():
+            line = line.strip()
+            if not re.search(r",|&|\band\b", line, re.IGNORECASE):
+                continue
+            for raw_candidate in re.split(r",|&|\band\b", line, flags=re.IGNORECASE):
+                _review_credit_candidate(raw_candidate, field, index, prepared, proposals)
+    return sorted(exact.values(), key=lambda record: exact_order.get(record["id"], (len(fields), 0))), proposals
+
+
+def _collect_exact_matches(
+    normalized_fields: list,
+    prepared: dict,
+    exact: dict,
+    exact_order: dict,
+    proposals: list,
+    claimed: dict,
+) -> None:
+    """Record unambiguous alias matches and ambiguity proposals for every probed span."""
+    index = prepared["index"]
     # Probe only substrings whose lengths exist in the alias index. This avoids
     # rebuilding and scanning tens of thousands of aliases for every video.
     for field_index, (field, text, normalized_text, offsets) in enumerate(normalized_fields):
@@ -226,31 +261,19 @@ def match_catalog(text_fields: Iterable[tuple[str, str]], records: Iterable[dict
                 if not collisions:
                     continue
                 span = (offsets[pos][0], offsets[pos + length - 1][1])
-                if span[0] and text[span[0] - 1].isalnum():
-                    continue
-                if span[1] < len(text) and text[span[1]].isalnum():
+                if not _is_word_bounded(text, span):
                     continue
                 if any(a < span[1] and span[0] < b for a, b in claimed[field]):
                     continue
                 # Ambiguous names are suggestions only; never guess an identity.
-                unique_ids = {row["id"] for row in collisions}
-                if len(unique_ids) != 1:
-                    # If exactly one persisted performer's canonical name matches,
-                    # prefer them over secondary aliases or synthetic unpersisted bios.
-                    canonical_matches = [
-                        row for row in collisions
-                        if row.get("persisted") and normalize_name(row["name"]) == key
-                    ]
-                    if len({r["id"] for r in canonical_matches}) == 1:
-                        collisions = canonical_matches
-                        unique_ids = {collisions[0]["id"]}
-                    else:
-                        proposals.append({"candidate": text[span[0]:span[1]], "matched_text": text[span[0]:span[1]],
-                                          "source_field": field, "reason": "ambiguous_catalog_alias",
-                                          "performer_id": None})
-                        claimed[field].append(span)
-                        continue
-                record = collisions[0]
+                resolved = _resolve_collisions(key, collisions)
+                if resolved is None:
+                    proposals.append({"candidate": text[span[0]:span[1]], "matched_text": text[span[0]:span[1]],
+                                      "source_field": field, "reason": "ambiguous_catalog_alias",
+                                      "performer_id": None})
+                    claimed[field].append(span)
+                    continue
+                record = resolved[0]
                 alias_parts = re.findall(r"\w+", record["alias"], re.UNICODE)
                 if len(alias_parts) < 2 and len(key) < 10 and not record["trusted"]:
                     continue
@@ -258,58 +281,93 @@ def match_catalog(text_fields: Iterable[tuple[str, str]], records: Iterable[dict
                 exact_order.setdefault(record["id"], (field_index, span[0]))
                 claimed[field].append(span)
 
-    # Typo review is restricted to explicit credits, long aliases and a single
-    # edit (including adjacent transposition) to avoid fuzzy matches in prose.
-    for field, text in fields:
-        for line in text.splitlines():
-            line = line.strip()
-            if not re.search(r",|&|\band\b", line, re.IGNORECASE):
-                continue
-            for raw_candidate in re.split(r",|&|\band\b", line, flags=re.IGNORECASE):
-                detected_text = raw_candidate.strip(" \t\r\n-–—:[]()")
-                candidate = clean_credit_candidate(detected_text)
-                if not candidate:
-                    continue
-                curr_low = candidate.lower()
-                if is_non_performer_name(candidate) or curr_low in {"onlyfans", "of"}:
-                    continue
-                if curr_low in STUDIO_NAMES or any(curr_low.endswith(sfx) for sfx in STUDIO_SUFFIXES):
-                    continue
-                if curr_low in SINGLE_WORD_STOPWORDS or curr_low in TITLE_STOPWORDS:
-                    continue
 
-                key = normalize_name(detected_text)
-                candidate_key = normalize_name(candidate)
-                if len(key) < 6 or key in index or candidate_key in index:
-                    continue
-                words = candidate.split()
-                explicit_name_shape = (
-                    2 <= len(words) <= 4 and all(word[:1].isupper() for word in words)
-                ) or bool(re.search(r"[a-z][A-Z]", candidate) and len(words) == 1)
-                if explicit_name_shape and is_valid_performer_name(candidate):
-                    proposals.append({"candidate": candidate, "matched_text": detected_text,
-                                      "source_field": field, "reason": "uncatalogued_credit",
-                                      "performer_id": None})
-                scored = []
-                for length in (len(candidate_key) - 1, len(candidate_key), len(candidate_key) + 1):
-                    if length < 10:
-                        continue
-                    for alias_key in prepared["keys_by_length"].get(length, ()):
-                        if _edit_distance_one(candidate_key, alias_key):
-                            scored.extend((1, record) for record in index[alias_key])
-                if scored:
-                    top = max(score for score, _ in scored)
-                    winners = {row["id"]: row for score, row in scored if score == top}
-                    if len(winners) == 1:
-                        record = next(iter(winners.values()))
-                        proposals.append({"candidate": record["name"], "matched_text": candidate,
-                                          "source_field": field, "reason": "possible_typo",
-                                          # Legacy-profile fallback records are
-                                          # synthetic; only persisted catalog rows
-                                          # can satisfy the proposal FK.
-                                          "performer_id": (record["id"] if record["persisted"]
-                                                           else None)})
-    return sorted(exact.values(), key=lambda record: exact_order.get(record["id"], (len(fields), 0))), proposals
+def _is_word_bounded(text: str, span: tuple[int, int]) -> bool:
+    """Return True when the span is not glued to alphanumeric characters on either side."""
+    if span[0] and text[span[0] - 1].isalnum():
+        return False
+    if span[1] < len(text) and text[span[1]].isalnum():
+        return False
+    return True
+
+
+def _resolve_collisions(key: str, collisions: list) -> list | None:
+    """Return the collision rows to use, or None when the alias is ambiguous.
+
+    If exactly one persisted performer's canonical name matches, that performer
+    wins over secondary aliases or synthetic unpersisted bios.
+    """
+    if len({row["id"] for row in collisions}) == 1:
+        return collisions
+    canonical_matches = [
+        row for row in collisions
+        if row.get("persisted") and normalize_name(row["name"]) == key
+    ]
+    if len({r["id"] for r in canonical_matches}) == 1:
+        return canonical_matches
+    return None
+
+
+def _review_credit_candidate(raw_candidate: str, field: str, index: dict, prepared: dict, proposals: list) -> None:
+    """Append uncatalogued-credit and possible-typo proposals for one credit-list entry."""
+    detected_text = raw_candidate.strip(" \t\r\n-–—:[]()")
+    candidate = clean_credit_candidate(detected_text)
+    if not candidate:
+        return
+    if not _is_reviewable_credit(candidate):
+        return
+
+    key = normalize_name(detected_text)
+    candidate_key = normalize_name(candidate)
+    if len(key) < 6 or key in index or candidate_key in index:
+        return
+    words = candidate.split()
+    explicit_name_shape = (
+        2 <= len(words) <= 4 and all(word[:1].isupper() for word in words)
+    ) or bool(re.search(r"[a-z][A-Z]", candidate) and len(words) == 1)
+    if explicit_name_shape and is_valid_performer_name(candidate):
+        proposals.append({"candidate": candidate, "matched_text": detected_text,
+                          "source_field": field, "reason": "uncatalogued_credit",
+                          "performer_id": None})
+    record = _closest_typo_record(candidate_key, prepared, index)
+    if record is not None:
+        proposals.append({"candidate": record["name"], "matched_text": candidate,
+                          "source_field": field, "reason": "possible_typo",
+                          # Legacy-profile fallback records are
+                          # synthetic; only persisted catalog rows
+                          # can satisfy the proposal FK.
+                          "performer_id": (record["id"] if record["persisted"]
+                                           else None)})
+
+
+def _is_reviewable_credit(candidate: str) -> bool:
+    """Return False for labels, studios, and stopword-like candidates that must not be reviewed."""
+    curr_low = candidate.lower()
+    if is_non_performer_name(candidate) or curr_low in {"onlyfans", "of"}:
+        return False
+    if curr_low in STUDIO_NAMES or any(curr_low.endswith(sfx) for sfx in STUDIO_SUFFIXES):
+        return False
+    if curr_low in SINGLE_WORD_STOPWORDS or curr_low in TITLE_STOPWORDS:
+        return False
+    return True
+
+
+def _closest_typo_record(candidate_key: str, prepared: dict, index: dict) -> dict | None:
+    """Return the single closest catalog record one edit away from candidate_key, if unambiguous."""
+    scored = []
+    for length in (len(candidate_key) - 1, len(candidate_key), len(candidate_key) + 1):
+        if length < 10:
+            continue
+        for alias_key in prepared["keys_by_length"].get(length, ()):
+            if _edit_distance_one(candidate_key, alias_key):
+                scored.extend((1, record) for record in index[alias_key])
+    if not scored:
+        return None
+    top = max(score for score, _ in scored)
+    winners = {row["id"]: row for score, row in scored if score == top}
+    if len(winners) != 1:
+        return None
+    return next(iter(winners.values()))
 
 
 def load_catalog(conn) -> list[dict]:
@@ -327,24 +385,41 @@ def load_catalog(conn) -> list[dict]:
             by_id[str(pid)]["aliases"].append(str(alias))
             if str(origin) == "reviewed":
                 by_id[str(pid)]["trusted_aliases"].append(str(alias))
+    _merge_legacy_bios(conn, by_id)
+    _merge_legacy_aliases(conn, by_id)
+    return list(by_id.values())
+
+
+def _decode_legacy_aliases(legacy_aliases):
+    """Decode a JSON-text aliases column; invalid JSON yields an empty list."""
+    if isinstance(legacy_aliases, str):
+        import json
+        try:
+            legacy_aliases = json.loads(legacy_aliases or "[]")
+        except (TypeError, ValueError):
+            legacy_aliases = []
+    return legacy_aliases
+
+
+def _merge_legacy_bios(conn, by_id: dict) -> None:
+    """Add unpersisted performer_bios rows and their legacy aliases to by_id."""
     for name, legacy_aliases in conn.execute("SELECT name,aliases FROM performer_bios").fetchall():
         name = str(name or "").strip()
         if name:
             key = "local:" + normalize_name(name)
             by_id.setdefault(key, {"id": key, "name": name, "aliases": [],
                                    "trusted_aliases": [], "_persisted": False})
-            if isinstance(legacy_aliases, str):
-                import json
-                try:
-                    legacy_aliases = json.loads(legacy_aliases or "[]")
-                except (TypeError, ValueError):
-                    legacy_aliases = []
+            legacy_aliases = _decode_legacy_aliases(legacy_aliases)
             if isinstance(legacy_aliases, (list, tuple)):
                 for alias in legacy_aliases:
                     alias = str(alias or "").strip()
                     if alias:
                         by_id[key]["aliases"].append(alias)
                         by_id[key]["trusted_aliases"].append(alias)
+
+
+def _merge_legacy_aliases(conn, by_id: dict) -> None:
+    """Add rows from the legacy performer_aliases table, tolerating its absence."""
     try:
         legacy = conn.execute("SELECT alias,canonical FROM performer_aliases").fetchall()
     except Exception:
@@ -358,4 +433,3 @@ def load_catalog(conn) -> list[dict]:
             if alias:
                 by_id[key]["aliases"].append(alias)
                 by_id[key]["trusted_aliases"].append(alias)
-    return list(by_id.values())

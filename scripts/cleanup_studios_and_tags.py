@@ -70,54 +70,53 @@ def is_unwanted_tag(val: str, channel_name: str = "") -> bool:
     return False
 
 
-def process_nfo_file(nfo_path: Path, dry_run: bool = False) -> Tuple[bool, Optional[str], List[str]]:
-    """Process a single NFO file. Returns (changed, detected_channel, detected_studios)."""
+def _read_nfo_root(nfo_path: Path) -> Optional[ET.Element]:
     try:
         content = nfo_path.read_text(encoding="utf-8")
-        root = ET.fromstring(content)
+        return ET.fromstring(content)
     except Exception as exc:
         print(f"Error reading {nfo_path}: {exc}")
-        return False, None, []
+        return None
 
-    changed = False
 
-    # 1. Determine title and uniqueid
-    title_elem = root.find("title")
-    orig_title_elem = root.find("originaltitle")
-    title = clean_xml_element_text(title_elem)
-    orig_title = clean_xml_element_text(orig_title_elem)
-    search_title = f"{title} {orig_title}".strip()
-
-    # 2. Extract existing studio and tags
-    existing_studios = [clean_xml_element_text(s) for s in root.findall("studio") if clean_xml_element_text(s)]
-    existing_tags = [clean_xml_element_text(t) for t in root.findall("tag") if clean_xml_element_text(t)]
-
-    # 3. Determine Telegram channel name
-    channel_name = ""
+def _channel_from_studios(existing_studios: List[str]) -> str:
     for s in existing_studios:
         clean_s = s.replace("&amp;", "&")
         if clean_s in KNOWN_CHANNELS or any(kc.lower() == clean_s.lower() for kc in KNOWN_CHANNELS):
-            channel_name = clean_s
-            break
+            return clean_s
+    return ""
 
+
+def _channel_from_tags(tags) -> str:
+    for t in tags:
+        if t.startswith("Kanał: "):
+            return t[7:].strip()
+        if t in KNOWN_CHANNELS:
+            return t
+    return ""
+
+
+def _channel_from_uniqueid(root: ET.Element, nfo_path: Path) -> str:
+    uniq_elem = root.find("uniqueid")
+    uniq_text = clean_xml_element_text(uniq_elem)
+    for cid, cname in CHANNEL_ID_MAP.items():
+        if cid in uniq_text or cid in str(nfo_path):
+            return cname
+    return ""
+
+
+def _detect_channel_name(root: ET.Element, existing_studios: List[str],
+                         existing_tags: List[str], nfo_path: Path) -> str:
+    channel_name = _channel_from_studios(existing_studios)
     if not channel_name:
-        for t in existing_tags:
-            if t.startswith("Kanał: "):
-                channel_name = t[7:].strip()
-                break
-            elif t in KNOWN_CHANNELS:
-                channel_name = t
-                break
-
+        channel_name = _channel_from_tags(existing_tags)
     if not channel_name:
-        uniq_elem = root.find("uniqueid")
-        uniq_text = clean_xml_element_text(uniq_elem)
-        for cid, cname in CHANNEL_ID_MAP.items():
-            if cid in uniq_text or cid in str(nfo_path):
-                channel_name = cname
-                break
+        channel_name = _channel_from_uniqueid(root, nfo_path)
+    return channel_name
 
-    # 4. Detect true production studios
+
+def _detect_production_studios(search_title: str, existing_tags: List[str],
+                               channel_name: str) -> Set[str]:
     prod_studios: Set[str] = set()
     for t in existing_tags:
         if t.startswith("Studio: "):
@@ -127,24 +126,27 @@ def process_nfo_file(nfo_path: Path, dry_run: bool = False) -> Tuple[bool, Optio
     prod_studios.update(detected_from_title)
 
     # Filter out channel name if accidentally detected
-    prod_studios = {s for s in prod_studios if s and not is_unwanted_tag(s, channel_name) and s not in KNOWN_CHANNELS}
+    return {s for s in prod_studios if s and not is_unwanted_tag(s, channel_name) and s not in KNOWN_CHANNELS}
 
-    # 5. Clean up <studio> elements
+
+def _index_before(root: ET.Element, target_tags: Tuple[str, ...]) -> int:
+    """Index of the first child matching a target tag, in priority order; else the end."""
+    for target_tag in target_tags:
+        elem = root.find(target_tag)
+        if elem is not None:
+            return list(root).index(elem)
+    return len(root)
+
+
+def _replace_studio_elements(root: ET.Element, prod_studios: Set[str]) -> bool:
+    changed = False
     # Remove all current studio elements
-    studios_to_remove = root.findall("studio")
-    for s in studios_to_remove:
+    for s in root.findall("studio"):
         root.remove(s)
         changed = True
 
     # Find insertion index (e.g. before dateadded or runtime or genre or tag)
-    insert_idx = None
-    for target_tag in ("dateadded", "website", "plot", "runtime", "genre", "tag", "actor"):
-        elem = root.find(target_tag)
-        if elem is not None:
-            insert_idx = list(root).index(elem)
-            break
-    if insert_idx is None:
-        insert_idx = len(root)
+    insert_idx = _index_before(root, ("dateadded", "website", "plot", "runtime", "genre", "tag", "actor"))
 
     # Insert true production studios
     if prod_studios:
@@ -153,8 +155,11 @@ def process_nfo_file(nfo_path: Path, dry_run: bool = False) -> Tuple[bool, Optio
             new_s.text = ps
             root.insert(insert_idx + idx, new_s)
         changed = True
+    return changed
 
-    # 6. Clean up <tagline> and <plot>
+
+def _update_tagline_and_plot(root: ET.Element, channel_name: str) -> bool:
+    changed = False
     tagline_elem = root.find("tagline")
     if tagline_elem is not None:
         old_tl = clean_xml_element_text(tagline_elem)
@@ -169,65 +174,94 @@ def process_nfo_file(nfo_path: Path, dry_run: bool = False) -> Tuple[bool, Optio
             rep = f"Kanał: {channel_name}" if channel_name else ""
             plot_elem.text = old_plot.replace("Source: Telegram (t.me)", rep).strip()
             changed = True
+    return changed
 
-    # 7. Clean up <tag> elements
+
+def _build_clean_tags(tags, channel: str, prod_studios) -> Set[str]:
     clean_tags: Set[str] = set()
-    for t in existing_tags:
-        if not is_unwanted_tag(t, channel_name):
+    for t in tags:
+        if not is_unwanted_tag(t, channel):
             clean_tags.add(t)
 
-    if channel_name:
-        clean_tags.add(f"Kanał: {channel_name}")
+    if channel:
+        clean_tags.add(f"Kanał: {channel}")
 
     for ps in prod_studios:
         clean_tags.add(f"Studio: {ps}")
+    return clean_tags
+
+
+def _rebuild_tags(root: ET.Element, existing_tags: List[str], prod_studios: Set[str],
+                  channel_name: str) -> bool:
+    clean_tags = _build_clean_tags(existing_tags, channel_name, prod_studios)
 
     # Check if tags actually changed
     old_tags_set = set(existing_tags)
-    if clean_tags != old_tags_set:
-        changed = True
+    changed = clean_tags != old_tags_set
 
     # Remove all existing tag elements
     for t in root.findall("tag"):
         root.remove(t)
 
     # Insert clean tags (before <set> or <actor> or at end)
-    tag_insert_idx = None
-    for target_tag in ("set", "actor", "uniqueid"):
-        elem = root.find(target_tag)
-        if elem is not None:
-            tag_insert_idx = list(root).index(elem)
-            break
-    if tag_insert_idx is None:
-        tag_insert_idx = len(root)
+    tag_insert_idx = _index_before(root, ("set", "actor", "uniqueid"))
 
     for idx, t_text in enumerate(sorted(clean_tags)):
         new_tag = ET.Element("tag")
         new_tag.text = t_text
         root.insert(tag_insert_idx + idx, new_tag)
+    return changed
+
+
+def _write_nfo(nfo_path: Path, root: ET.Element) -> None:
+    # Format XML nicely
+    ET.indent(root, space="  ")
+    xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    # Ensure clean trailing newline
+    if not xml_bytes.endswith(b"\n"):
+        xml_bytes += b"\n"
+    tmp_path = nfo_path.with_suffix(".tmp.nfo")
+    tmp_path.write_bytes(xml_bytes)
+    tmp_path.replace(nfo_path)
+
+
+def process_nfo_file(nfo_path: Path, dry_run: bool = False) -> Tuple[bool, Optional[str], List[str]]:
+    """Process a single NFO file. Returns (changed, detected_channel, detected_studios)."""
+    root = _read_nfo_root(nfo_path)
+    if root is None:
+        return False, None, []
+
+    # 1. Determine title and uniqueid
+    title = clean_xml_element_text(root.find("title"))
+    orig_title = clean_xml_element_text(root.find("originaltitle"))
+    search_title = f"{title} {orig_title}".strip()
+
+    # 2. Extract existing studio and tags
+    existing_studios = [clean_xml_element_text(s) for s in root.findall("studio") if clean_xml_element_text(s)]
+    existing_tags = [clean_xml_element_text(t) for t in root.findall("tag") if clean_xml_element_text(t)]
+
+    # 3. Determine Telegram channel name
+    channel_name = _detect_channel_name(root, existing_studios, existing_tags, nfo_path)
+
+    # 4. Detect true production studios
+    prod_studios = _detect_production_studios(search_title, existing_tags, channel_name)
+
+    # 5. Clean up <studio> elements
+    changed = _replace_studio_elements(root, prod_studios)
+
+    # 6. Clean up <tagline> and <plot>
+    changed |= _update_tagline_and_plot(root, channel_name)
+
+    # 7. Clean up <tag> elements
+    changed |= _rebuild_tags(root, existing_tags, prod_studios, channel_name)
 
     if changed and not dry_run:
-        # Format XML nicely
-        ET.indent(root, space="  ")
-        xml_bytes = ET.tostring(root, encoding="utf-8", xml_declaration=True)
-        # Ensure clean trailing newline
-        if not xml_bytes.endswith(b"\n"):
-            xml_bytes += b"\n"
-        tmp_path = nfo_path.with_suffix(".tmp.nfo")
-        tmp_path.write_bytes(xml_bytes)
-        tmp_path.replace(nfo_path)
+        _write_nfo(nfo_path, root)
 
     return changed, channel_name, sorted(prod_studios)
 
 
-def run_cleanup():
-    print("=== Adult Hub: Variant 1 Studios & Tags Cleanup ===")
-    print(f"Media directory: {MEDIA_DIR}")
-
-    # Check NFO files
-    nfo_files = sorted(MEDIA_DIR.glob("*.nfo"))
-    print(f"Found {len(nfo_files)} .nfo files to inspect.")
-
+def _scan_nfo_files(nfo_files: List[Path]) -> Tuple[int, dict, dict]:
     updated_nfo_count = 0
     studios_found = {}
     channels_found = {}
@@ -243,7 +277,11 @@ def run_cleanup():
 
         if (i + 1) % 2000 == 0 or (i + 1) == len(nfo_files):
             print(f"Processed {i + 1}/{len(nfo_files)} NFO files...")
+    return updated_nfo_count, studios_found, channels_found
 
+
+def _print_nfo_summary(nfo_files: List[Path], updated_nfo_count: int,
+                       studios_found: dict, channels_found: dict) -> None:
     print("\n--- NFO Processing Complete ---")
     print(f"Updated NFO files: {updated_nfo_count}/{len(nfo_files)}")
     print(f"Distinct Channels ({len(channels_found)}):")
@@ -253,6 +291,59 @@ def run_cleanup():
     for s, cnt in sorted(studios_found.items(), key=lambda x: -x[1])[:25]:
         print(f"  {s}: {cnt}")
 
+
+def _pg_channel(old_studio, tags) -> str:
+    channel = old_studio if old_studio in KNOWN_CHANNELS else ""
+    if not channel:
+        channel = _channel_from_tags(tags)
+    return channel
+
+
+def _pg_production_studios(title, tags, channel: str) -> list:
+    prod_studios = detect_production_studio_names(title, existing_tags=tags)
+    for t in tags:
+        if t.startswith("Studio: "):
+            prod_studios.append(t.split("Studio: ", 1)[1].strip())
+    return sorted({
+        s for s in prod_studios
+        if s and not is_unwanted_tag(s, channel) and s not in KNOWN_CHANNELS
+    })
+
+
+def _update_pg_rows(conn, rows) -> int:
+    updated_pg = 0
+    with conn:
+        for vid_id, title, tags_raw, old_studio in rows:
+            try:
+                tags = json.loads(tags_raw or "[]")
+            except Exception:
+                tags = []
+
+            channel = _pg_channel(old_studio, tags)
+            prod_studios = _pg_production_studios(title, tags, channel)
+            clean_tags = _build_clean_tags(tags, channel, prod_studios)
+
+            new_tags_json = json.dumps(sorted(clean_tags))
+            new_studio = prod_studios[0] if prod_studios else None
+
+            if new_tags_json != tags_raw or new_studio != old_studio:
+                conn.execute("UPDATE videos SET tags = %s, studio = %s WHERE id = %s",
+                             (new_tags_json, new_studio, vid_id))
+                updated_pg += 1
+    return updated_pg
+
+
+def run_cleanup():
+    print("=== Adult Hub: Variant 1 Studios & Tags Cleanup ===")
+    print(f"Media directory: {MEDIA_DIR}")
+
+    # Check NFO files
+    nfo_files = sorted(MEDIA_DIR.glob("*.nfo"))
+    print(f"Found {len(nfo_files)} .nfo files to inspect.")
+
+    updated_nfo_count, studios_found, channels_found = _scan_nfo_files(nfo_files)
+    _print_nfo_summary(nfo_files, updated_nfo_count, studios_found, channels_found)
+
     # Update the PostgreSQL catalog.
     try:
         from common import db
@@ -261,52 +352,7 @@ def run_cleanup():
         rows = conn.execute("SELECT id, title, tags, studio FROM videos").fetchall()
         print(f"Found {len(rows)} videos in PostgreSQL.")
 
-        updated_pg = 0
-        with conn:
-            for vid_id, title, tags_raw, old_studio in rows:
-                try:
-                    tags = json.loads(tags_raw or "[]")
-                except Exception:
-                    tags = []
-
-                # Determine channel
-                channel = old_studio if old_studio in KNOWN_CHANNELS else ""
-                if not channel:
-                    for t in tags:
-                        if t.startswith("Kanał: "):
-                            channel = t[7:].strip()
-                            break
-                        elif t in KNOWN_CHANNELS:
-                            channel = t
-                            break
-
-                # Detect production studios
-                prod_studios = detect_production_studio_names(title, existing_tags=tags)
-                for t in tags:
-                    if t.startswith("Studio: "):
-                        prod_studios.append(t.split("Studio: ", 1)[1].strip())
-                prod_studios = sorted({
-                    s for s in prod_studios
-                    if s and not is_unwanted_tag(s, channel) and s not in KNOWN_CHANNELS
-                })
-
-                # Clean tags
-                clean_tags = set()
-                for t in tags:
-                    if not is_unwanted_tag(t, channel):
-                        clean_tags.add(t)
-                if channel:
-                    clean_tags.add(f"Kanał: {channel}")
-                for ps in prod_studios:
-                    clean_tags.add(f"Studio: {ps}")
-
-                new_tags_json = json.dumps(sorted(clean_tags))
-                new_studio = prod_studios[0] if prod_studios else None
-
-                if new_tags_json != tags_raw or new_studio != old_studio:
-                    conn.execute("UPDATE videos SET tags = %s, studio = %s WHERE id = %s",
-                                 (new_tags_json, new_studio, vid_id))
-                    updated_pg += 1
+        updated_pg = _update_pg_rows(conn, rows)
 
         print(f"Updated {updated_pg} records in PostgreSQL.")
     except Exception as exc:

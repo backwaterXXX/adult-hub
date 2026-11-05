@@ -53,28 +53,31 @@ def score_variant(variant: dict, *, purpose: str = "general") -> int:
     if purpose in ("artwork", "thumbnail") and height < 240:
         return -1
 
+    return _resolution_score(height) + _codec_score(variant.get("codec"))
+
+
+def _resolution_score(height: int) -> int:
+    """Return the resolution component of a variant score for a positive height."""
     # Resolution score:
     # 480p (height around 480) is the sweet spot for visual quality and minimal bandwidth
     if 400 <= height <= 540:
-        res_score = 500
-    elif 320 <= height < 400:  # 360p
-        res_score = 400
-    elif 540 < height <= 720:  # 720p
-        res_score = 300
-    elif height > 720:         # 1080p alternative (still smaller than original uncompressed)
-        res_score = 100
-    else:                      # < 320p
-        res_score = 50
+        return 500
+    if 320 <= height < 400:  # 360p
+        return 400
+    if 540 < height <= 720:  # 720p
+        return 300
+    if height > 720:         # 1080p alternative (still smaller than original uncompressed)
+        return 100
+    return 50                # < 320p
 
-    # Codec bonus
-    codec = str(variant.get("codec") or "").strip().lower()
-    codec_score = 0
+
+def _codec_score(codec_value: Any) -> int:
+    """Return the codec bonus for a raw codec value (first matching prefix wins)."""
+    codec = str(codec_value or "").strip().lower()
     for prefix, score in CODEC_SCORES.items():
         if codec.startswith(prefix):
-            codec_score = score
-            break
-
-    return res_score + codec_score
+            return score
+    return 0
 
 
 def select_optimal_variant(variants: list[dict], *, purpose: str = "general") -> Optional[dict]:
@@ -120,11 +123,7 @@ def fetch_and_select_best_variant_with_meta(
     client = http_client or httpx
 
     try:
-        if hasattr(client, "get"):
-            response = client.get(url, timeout=timeout)
-        else:
-            with client.Client(timeout=timeout) as c:
-                response = c.get(url)
+        response = _query_variants_endpoint(client, url, timeout)
 
         if response.status_code != 200:
             logger.debug("Variants query returned status %s for %s", response.status_code, video_id)
@@ -138,34 +137,50 @@ def fetch_and_select_best_variant_with_meta(
         if not isinstance(variants, list):
             return None, None
 
-        # Look up original file size
-        orig_size = None
-        for item in variants:
-            if isinstance(item, dict) and item.get("is_original"):
-                raw_size = item.get("file_size")
-                if isinstance(raw_size, int) and raw_size > 0:
-                    orig_size = raw_size
-                break
+        orig_size = _original_file_size(variants)
 
         # Check if alternative documents are ready and available
         if not payload.get("has_alternatives") or payload.get("status") not in ("ready", "processing"):
             return None, orig_size
 
-        best = select_optimal_variant(variants, purpose=purpose)
-        if best is not None:
-            best_id = str(best.get("id") or "").strip()
-            if best_id and best_id.lower() != "original":
-                logger.info(
-                    "Selected variant '%s' (%sx%s %s) for %s [purpose=%s]",
-                    best_id, best.get("width"), best.get("height"), best.get("codec"),
-                    video_id, purpose,
-                )
-                return best_id, orig_size
-
-        return None, orig_size
+        return _pick_variant_id(variants, video_id, purpose), orig_size
     except Exception as exc:
         logger.debug("Failed to query variants for %s: %s", video_id, exc)
         return None, None
+
+
+def _query_variants_endpoint(client: Any, url: str, timeout: float) -> Any:
+    """Issue the variants GET request using either a client object or the httpx module."""
+    if hasattr(client, "get"):
+        return client.get(url, timeout=timeout)
+    with client.Client(timeout=timeout) as c:
+        return c.get(url)
+
+
+def _original_file_size(variants: list) -> Optional[int]:
+    """Return the positive file size of the original variant, or None."""
+    for item in variants:
+        if isinstance(item, dict) and item.get("is_original"):
+            raw_size = item.get("file_size")
+            if isinstance(raw_size, int) and raw_size > 0:
+                return raw_size
+            return None
+    return None
+
+
+def _pick_variant_id(variants: list, video_id: str, purpose: str) -> Optional[str]:
+    """Return the id of the best alternative variant, or None when nothing usable exists."""
+    best = select_optimal_variant(variants, purpose=purpose)
+    if best is not None:
+        best_id = str(best.get("id") or "").strip()
+        if best_id and best_id.lower() != "original":
+            logger.info(
+                "Selected variant '%s' (%sx%s %s) for %s [purpose=%s]",
+                best_id, best.get("width"), best.get("height"), best.get("codec"),
+                video_id, purpose,
+            )
+            return best_id
+    return None
 
 
 def fetch_and_select_best_variant(

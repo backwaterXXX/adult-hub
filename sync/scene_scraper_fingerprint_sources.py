@@ -88,21 +88,8 @@ def search_stashdb_scene_by_oshash(
     )
 
 
-def search_stashdb_scene_by_fingerprint(
-    fingerprint: str,
-    algorithm: str,
-    *,
-    http_client: Optional[Any] = None,
-    max_distance: int = 0,
-    duration: Optional[int] = None,
-    duration_tolerance: int = 2,
-) -> Optional[_core.ScrapedScene]:
-    """Query StashDB by fingerprint and reject ambiguous or distant results."""
-    token = (_core.os.environ.get("STASHDB_API_KEY", "").strip()
-             or _core.os.environ.get("STASH_API_KEY", "").strip())
-    client = http_client or _core.httpx
-    if not token or client is None:
-        return None
+def _stashdb_fingerprint_groups(fingerprint: str, algorithm: str, client: Any, token: str):
+    """Ask StashDB for scenes matching one fingerprint; returns the raw result groups."""
     query = """
     query FindScenesByFingerprint($fingerprints: [[FingerprintQueryInput!]!]!) {
       findScenesBySceneFingerprints(fingerprints: $fingerprints) {
@@ -129,35 +116,46 @@ def search_stashdb_scene_by_fingerprint(
     if callable(getattr(response, "raise_for_status", None)):
         response.raise_for_status()
     payload = response.json() if callable(getattr(response, "json", None)) else _core._decode_scene_payload(response)
-    groups = (((payload or {}).get("data") or {}).get("findScenesBySceneFingerprints")
-              if isinstance(payload, dict) else None)
-    if not isinstance(groups, list) or not groups or not isinstance(groups[0], list):
-        return None
+    return (((payload or {}).get("data") or {}).get("findScenesBySceneFingerprints")
+            if isinstance(payload, dict) else None)
+
+
+def _stashdb_match_distance(scene: dict, fingerprint: str, algorithm: str, max_distance: int) -> Optional[int]:
+    """Hamming distance of a StashDB scene to the fingerprint, or None when it does not qualify."""
+    distance = 0
+    if algorithm == "PHASH":
+        stored = scene.get("fingerprints") if isinstance(scene.get("fingerprints"), list) else []
+        distances = [
+            (int(str(fp.get("hash") or ""), 16) ^ int(fingerprint, 16)).bit_count()
+            for fp in stored
+            if isinstance(fp, dict)
+            and str(fp.get("algorithm") or "").upper() == "PHASH"
+            and _core.re.fullmatch(r"[0-9a-fA-F]{16}", str(fp.get("hash") or ""))
+        ]
+        if not distances:
+            return None
+        distance = min(distances)
+        if distance > max_distance:
+            return None
+    return distance
+
+
+def _stashdb_candidates(scenes: list, fingerprint: str, algorithm: str, *, max_distance: int,
+                        duration: Optional[int], duration_tolerance: int) -> list:
     candidates = []
-    for scene in groups[0]:
+    for scene in scenes:
         if not isinstance(scene, dict) or not scene.get("title"):
             continue
         if not _duration_matches(duration, scene.get("duration"), duration_tolerance):
             continue
-        distance = 0
-        if algorithm == "PHASH":
-            stored = scene.get("fingerprints") if isinstance(scene.get("fingerprints"), list) else []
-            distances = [
-                (int(str(fp.get("hash") or ""), 16) ^ int(fingerprint, 16)).bit_count()
-                for fp in stored
-                if isinstance(fp, dict)
-                and str(fp.get("algorithm") or "").upper() == "PHASH"
-                and _core.re.fullmatch(r"[0-9a-fA-F]{16}", str(fp.get("hash") or ""))
-            ]
-            if not distances:
-                continue
-            distance = min(distances)
-            if distance > max_distance:
-                continue
+        distance = _stashdb_match_distance(scene, fingerprint, algorithm, max_distance)
+        if distance is None:
+            continue
         candidates.append((scene, distance))
-    if len(candidates) != 1:
-        return None
-    item, distance = candidates[0]
+    return candidates
+
+
+def _scraped_scene_from_stashdb(item: dict, algorithm: str, distance: int) -> _core.ScrapedScene:
     studio = item.get("studio") if isinstance(item.get("studio"), dict) else {}
     performers = item.get("performers") if isinstance(item.get("performers"), list) else []
     names = [str((person.get("performer") or {}).get("name") or "").strip()
@@ -182,6 +180,79 @@ def search_stashdb_scene_by_fingerprint(
         confidence=1.0 if algorithm == "OSHASH" else max(0.0, 1.0 - distance / 64),
         source=f"stashdb:{algorithm.lower()}",
     )
+
+
+def search_stashdb_scene_by_fingerprint(
+    fingerprint: str,
+    algorithm: str,
+    *,
+    http_client: Optional[Any] = None,
+    max_distance: int = 0,
+    duration: Optional[int] = None,
+    duration_tolerance: int = 2,
+) -> Optional[_core.ScrapedScene]:
+    """Query StashDB by fingerprint and reject ambiguous or distant results."""
+    token = (_core.os.environ.get("STASHDB_API_KEY", "").strip()
+             or _core.os.environ.get("STASH_API_KEY", "").strip())
+    client = http_client or _core.httpx
+    if not token or client is None:
+        return None
+    groups = _stashdb_fingerprint_groups(fingerprint, algorithm, client, token)
+    if not isinstance(groups, list) or not groups or not isinstance(groups[0], list):
+        return None
+    candidates = _stashdb_candidates(groups[0], fingerprint, algorithm, max_distance=max_distance,
+                                     duration=duration, duration_tolerance=duration_tolerance)
+    if len(candidates) != 1:
+        return None
+    item, distance = candidates[0]
+    return _scraped_scene_from_stashdb(item, algorithm, distance)
+
+
+def _theporndb_scene(item: dict) -> _core.ScrapedScene:
+    site = item.get("site") if isinstance(item.get("site"), dict) else {}
+    cast = item.get("performers") if isinstance(item.get("performers"), list) else []
+    names = [str(person.get("name") or "").strip()
+             for person in cast if isinstance(person, dict) and person.get("name")]
+    tags = item.get("tags") if isinstance(item.get("tags"), list) else []
+    image = item.get("poster_image") or item.get("image") or item.get("poster") or ""
+    return _core.ScrapedScene(
+        title=str(item.get("title") or "").strip(),
+        plot=str(item.get("description") or "").strip(),
+        date=str(item.get("date") or "")[:10],
+        duration=int(item.get("duration") or 0),
+        poster_url=str(image).strip(), performers=names,
+        tags=[str(tag.get("name") or "").strip()
+              for tag in tags if isinstance(tag, dict) and tag.get("name")],
+        studio=str(site.get("name") or "").strip(),
+        external_id=str(item.get("id") or item.get("_id") or ""),
+        url=str(item.get("url") or "").strip(), confidence=1.0,
+        source="theporndb:phash",
+    )
+
+
+def _theporndb_phash_scene(fingerprint: str, client: Any, token: str, duration: Optional[int],
+                           duration_tolerance: int) -> Optional[_core.ScrapedScene]:
+    response = _core.request_with_host_limit(
+        client,
+        "get",
+        f"https://api.theporndb.net/scenes/hash/{fingerprint}",
+        params={"type": "PHASH"},
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json",
+                 "User-Agent": _core.USER_AGENT},
+        timeout=_core.DEFAULT_TIMEOUT,
+    )
+    if response.status_code == 404:
+        return None
+    if callable(getattr(response, "raise_for_status", None)):
+        response.raise_for_status()
+    payload = response.json() if callable(getattr(response, "json", None)) else _core._decode_scene_payload(response)
+    item = payload.get("data") if isinstance(payload, dict) else None
+    if not (isinstance(item, dict) and str(item.get("title") or "").strip()):
+        return None
+    scene = _theporndb_scene(item)
+    if _duration_matches(duration, scene.duration, duration_tolerance):
+        return scene
+    return None
 
 
 def search_scene_by_phash(
@@ -211,42 +282,9 @@ def search_scene_by_phash(
              or _core.os.environ.get("THEPORNDB_API_KEY", "").strip())
     if token and client is not None:
         try:
-            response = _core.request_with_host_limit(
-                client,
-                "get",
-                f"https://api.theporndb.net/scenes/hash/{fingerprint}",
-                params={"type": "PHASH"},
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json",
-                         "User-Agent": _core.USER_AGENT},
-                timeout=_core.DEFAULT_TIMEOUT,
-            )
-            if response.status_code != 404:
-                if callable(getattr(response, "raise_for_status", None)):
-                    response.raise_for_status()
-                payload = response.json() if callable(getattr(response, "json", None)) else _core._decode_scene_payload(response)
-                item = payload.get("data") if isinstance(payload, dict) else None
-                if isinstance(item, dict) and str(item.get("title") or "").strip():
-                    site = item.get("site") if isinstance(item.get("site"), dict) else {}
-                    cast = item.get("performers") if isinstance(item.get("performers"), list) else []
-                    names = [str(person.get("name") or "").strip()
-                             for person in cast if isinstance(person, dict) and person.get("name")]
-                    tags = item.get("tags") if isinstance(item.get("tags"), list) else []
-                    image = item.get("poster_image") or item.get("image") or item.get("poster") or ""
-                    scene = _core.ScrapedScene(
-                        title=str(item.get("title") or "").strip(),
-                        plot=str(item.get("description") or "").strip(),
-                        date=str(item.get("date") or "")[:10],
-                        duration=int(item.get("duration") or 0),
-                        poster_url=str(image).strip(), performers=names,
-                        tags=[str(tag.get("name") or "").strip()
-                              for tag in tags if isinstance(tag, dict) and tag.get("name")],
-                        studio=str(site.get("name") or "").strip(),
-                        external_id=str(item.get("id") or item.get("_id") or ""),
-                        url=str(item.get("url") or "").strip(), confidence=1.0,
-                        source="theporndb:phash",
-                    )
-                    if _duration_matches(duration, scene.duration, duration_tolerance):
-                        return scene
+            scene = _theporndb_phash_scene(fingerprint, client, token, duration, duration_tolerance)
+            if scene is not None:
+                return scene
         except Exception as exc:
             errors.append(exc)
             _core.logger.warning("ThePornDB PHASH lookup failed (%s)", type(exc).__name__)

@@ -44,6 +44,22 @@ def _password(conninfo: str) -> str:
     return match.password or ""
 
 
+def _prune_old_snapshots(dest_dir: Path, dest: Path, keep: int) -> int:
+    cutoff = time.time() - max(keep, 1) * 86400
+    pruned = 0
+    for old in dest_dir.glob("adulthub-*.dump.gz"):
+        if old == dest:
+            continue
+        try:
+            if old.stat().st_mtime < cutoff:
+                old.unlink()
+                old.with_name(old.name + ".sha256").unlink(missing_ok=True)
+                pruned += 1
+        except OSError as e:
+            print(f"prune warning for {old.name}: {e}", file=sys.stderr)
+    return pruned
+
+
 def main() -> int:
     args = parse_args()
     conninfo = (args.db_url or "").strip()
@@ -100,18 +116,7 @@ def main() -> int:
         gzip_tmp.unlink(missing_ok=True)
         sidecar_tmp.unlink(missing_ok=True)
 
-    cutoff = time.time() - max(args.keep, 1) * 86400
-    pruned = 0
-    for old in dest_dir.glob("adulthub-*.dump.gz"):
-        if old == dest:
-            continue
-        try:
-            if old.stat().st_mtime < cutoff:
-                old.unlink()
-                old.with_name(old.name + ".sha256").unlink(missing_ok=True)
-                pruned += 1
-        except OSError as e:
-            print(f"prune warning for {old.name}: {e}", file=sys.stderr)
+    pruned = _prune_old_snapshots(dest_dir, dest, args.keep)
     size_kb = dest.stat().st_size // 1024
     print(f"{time.strftime('%Y-%m-%d %H:%M')}: backup {dest.name} "
           f"({size_kb} kB, {tables} tables, pg_restore --list ok, pruned {pruned})")

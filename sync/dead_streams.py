@@ -99,6 +99,13 @@ def probe_playlist_url(playlist_url: str, *, user_agent: Optional[str] = None) -
         return None
 
 
+def _resolver_play_url(services: DeadStreamServices, comp_id: str, mode: str) -> str:
+    url = f"{services.resolver_api_url.rstrip('/')}/admin/play/{comp_id}/stream"
+    if mode != "redirect":
+        url += "?mode=proxy"
+    return url
+
+
 def probe_stream_via_resolver(comp_id: str, *,
                               services: DeadStreamServices,
                               probe_playlist_fn: Optional[Callable[[str], Optional[bool]]] = None) -> Optional[bool]:
@@ -110,9 +117,7 @@ def probe_stream_via_resolver(comp_id: str, *,
     if httpx is None:
         return None
     mode = services.stream_mode_for_provider(comp_id)
-    url = f"{services.resolver_api_url.rstrip('/')}/admin/play/{comp_id}/stream"
-    if mode != "redirect":
-        url += "?mode=proxy"
+    url = _resolver_play_url(services, comp_id, mode)
     probe_fn = probe_playlist_fn or (lambda u: probe_playlist_url(u, user_agent=services.default_headers.get("User-Agent")))
     try:
         with httpx.Client(
@@ -178,14 +183,32 @@ def _probe_playlist_outcome(url: str, *, user_agent: str) -> str:
         return "transient_error" if _network_failure(exc) else "unknown"
 
 
+def _outcome_from_redirect_mode(services: DeadStreamServices, status: int, location, chunk: bytes) -> str:
+    if status == 302 and location:
+        return _probe_playlist_outcome(location, user_agent=services.default_headers.get("User-Agent", "Mozilla/5.0"))
+    body = chunk.decode("utf-8", errors="ignore").lower()
+    if status == 502 and any(marker in body for marker in RESOLVER_DEAD_MARKERS):
+        return "unavailable"
+    return "transient_error" if status in TRANSIENT_HTTP_STATUSES else "unknown"
+
+
+def _outcome_from_proxy_mode(status: int, chunk: bytes) -> str:
+    body = chunk.decode("utf-8", errors="ignore")
+    if status in (200, 206) and ("#EXTM3U" in body.upper() or b"ftyp" in chunk[:32]):
+        return "available"
+    if status == 502 and any(marker in body.lower() for marker in RESOLVER_DEAD_MARKERS):
+        return "unavailable"
+    if status in TRANSIENT_HTTP_STATUSES:
+        return "transient_error"
+    return "unknown"
+
+
 def probe_stream_via_resolver_outcome(comp_id: str, *, services: DeadStreamServices) -> str:
     """Detailed, bounded probe outcome for the Admin worker."""
     if httpx is None:
         return "unknown"
     mode = services.stream_mode_for_provider(comp_id)
-    url = f"{services.resolver_api_url.rstrip('/')}/admin/play/{comp_id}/stream"
-    if mode != "redirect":
-        url += "?mode=proxy"
+    url = _resolver_play_url(services, comp_id, mode)
     try:
         with httpx.Client(timeout=httpx.Timeout(services.resolver_timeout, connect=10.0),
                           follow_redirects=False) as client:
@@ -203,20 +226,8 @@ def probe_stream_via_resolver_outcome(comp_id: str, *, services: DeadStreamServi
         services.logger.debug("Detailed stream availability probe failed (%s)", type(exc).__name__)
         return "transient_error" if _network_failure(exc) else "unknown"
     if mode == "redirect":
-        if status == 302 and location:
-            return _probe_playlist_outcome(location, user_agent=services.default_headers.get("User-Agent", "Mozilla/5.0"))
-        body = chunk.decode("utf-8", errors="ignore").lower()
-        if status == 502 and any(marker in body for marker in RESOLVER_DEAD_MARKERS):
-            return "unavailable"
-        return "transient_error" if status in TRANSIENT_HTTP_STATUSES else "unknown"
-    body = chunk.decode("utf-8", errors="ignore")
-    if status in (200, 206) and ("#EXTM3U" in body.upper() or b"ftyp" in chunk[:32]):
-        return "available"
-    if status == 502 and any(marker in body.lower() for marker in RESOLVER_DEAD_MARKERS):
-        return "unavailable"
-    if status in TRANSIENT_HTTP_STATUSES:
-        return "transient_error"
-    return "unknown"
+        return _outcome_from_redirect_mode(services, status, location, chunk)
+    return _outcome_from_proxy_mode(status, chunk)
 
 
 def hide_dead_streams(collected: Dict[str, Dict[str, Any]], conn: db.Connection, *,
