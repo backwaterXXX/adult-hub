@@ -197,6 +197,118 @@ def _route_admin_v2_jellyfin_status(router, admin):
         return {"ok": True, **(await _jellyfin_probe())}
 
 
+_ATTENTION_KEYS = (
+    "pending_tasks", "failed_tasks", "failed_tasks_available", "unavailable_videos",
+    "unavailable_available", "sync_backlog_available", "sync_backlog_queued",
+    "sync_backlog_processing", "sync_backlog_oldest_age_seconds",
+    "last_sync_failed_sources", "last_sync_rate_limited",
+)
+
+_DB_COUNT_KEYS = (
+    "videos_total", "artwork_total", "oshash_total", "phash_total", "files_total",
+    "telegram_total", "fresh_24h", "photos_total", "bios_total", "aliases_total",
+    "dead_streams_total", "unplayable_total",
+)
+
+
+def _fill_runtime(runtime, result):
+    """Copy the allowlisted fields of the app's admin_extra result into runtime."""
+    if not isinstance(result, dict):
+        return
+    status = result.get("status")
+    if status in {"ok", "degraded", "error"}:
+        runtime["status"] = status
+    version = result.get("version")
+    if isinstance(version, str) and re.fullmatch(r"[A-Za-z0-9._+-]{1,80}", version):
+        runtime["version"] = version
+    cache_entries = result.get("cache_entries")
+    if type(cache_entries) is int and cache_entries >= 0:
+        runtime["cache_entries"] = cache_entries
+    providers = result.get("providers")
+    if isinstance(providers, list):
+        runtime["providers"] = sorted({
+            provider for provider in providers
+            if isinstance(provider, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,40}", provider)
+        })[:20]
+
+
+async def _runtime_status(admin, request):
+    """Read optional runtime fields from the app's admin_extra hook. Failures add nothing."""
+    runtime = {}
+    app = request.scope.get("app")
+    extra_fn = getattr(getattr(app, "state", None), "admin_extra", None)
+    if callable(extra_fn):
+        try:
+            _fill_runtime(runtime, await admin.asyncio.to_thread(extra_fn))
+        except Exception:
+            logger.debug("Ignored exception in admin_v2_status", exc_info=True)
+    return runtime
+
+
+def _attention_fields(admin):
+    """Return the allowlisted attention counters from the admin summary."""
+    try:
+        raw_attention = admin._attention_summary()
+        if isinstance(raw_attention, dict):
+            return {key: raw_attention[key] for key in _ATTENTION_KEYS if key in raw_attention}
+    except Exception:
+        logger.debug("Ignored exception in admin_v2_status", exc_info=True)
+    return {}
+
+
+def _db_size_value(size):
+    """Return the database size in MB when it is a finite, non-negative number, else None."""
+    if type(size) in {int, float}:
+        return size if math.isfinite(size) and size >= 0 else None
+    # PostgreSQL NUMERIC values are decoded by psycopg as Decimal;
+    # convert the allowlisted metric before JSON serialization.
+    if isinstance(size, Decimal) and size.is_finite() and size >= 0:
+        return float(size)
+    return None
+
+
+def _db_by_provider(by_provider):
+    """Group provider counts; all Telegram channels share the 'telegram' bucket."""
+    grouped = {}
+    for key, value in by_provider.items():
+        if not isinstance(key, str) or type(value) is not int or value < 0:
+            continue
+        provider = "telegram" if key.startswith("tg:[") else key[:40]
+        if not provider.replace("_", "").replace("-", "").isalnum():
+            continue
+        grouped[provider] = grouped.get(provider, 0) + value
+    return grouped
+
+
+def _sanitize_db_stats(db):
+    """Return the allowlisted database metrics for the Home view."""
+    db_result = {}
+    if not isinstance(db, dict):
+        return db_result
+    if db.get("database_backend") == "PostgreSQL":
+        db_result["database_backend"] = "PostgreSQL"
+    for key in _DB_COUNT_KEYS:
+        value = db.get(key)
+        if type(value) is int and value >= 0:
+            db_result[key] = value
+    size = _db_size_value(db.get("db_size_mb"))
+    if size is not None:
+        db_result["db_size_mb"] = size
+    db_result["db_ok"] = db.get("db_ok") is True
+    by_provider = db.get("by_provider")
+    if isinstance(by_provider, dict):
+        db_result["by_provider"] = _db_by_provider(by_provider)
+    channel_map = db.get("telegram_channels")
+    if isinstance(channel_map, dict):
+        # Channel IDs are not needed on Home; preserve only the count.
+        db_result["telegram_channels"] = {str(index): True for index, _ in enumerate(channel_map)}
+    for key in ("last_seen", "last_seen_human"):
+        value = db.get(key)
+        if isinstance(value, (str, int, float)) and len(str(value)) <= 64:
+            db_result[key] = value
+    return db_result
+
+
 def _route_admin_v2_status(router, admin):
     @router.get("/api/v2/status")
     async def admin_v2_status(request: Request):
@@ -208,88 +320,16 @@ def _route_admin_v2_status(router, admin):
             asyncio.to_thread(_sync_stale_after_seconds, admin.CONFIG_PATH, admin.HUB_DB_URL),
             asyncio.to_thread(_sync_history_for_status, admin),
         )
-        runtime = {}
-        app = request.scope.get("app")
-        extra_fn = getattr(getattr(app, "state", None), "admin_extra", None)
-        if callable(extra_fn):
-            try:
-                result = await admin.asyncio.to_thread(extra_fn)
-                if isinstance(result, dict):
-                    status = result.get("status")
-                    if status in {"ok", "degraded", "error"}:
-                        runtime["status"] = status
-                    version = result.get("version")
-                    if isinstance(version, str) and re.fullmatch(r"[A-Za-z0-9._+-]{1,80}", version):
-                        runtime["version"] = version
-                    cache_entries = result.get("cache_entries")
-                    if type(cache_entries) is int and cache_entries >= 0:
-                        runtime["cache_entries"] = cache_entries
-                    providers = result.get("providers")
-                    if isinstance(providers, list):
-                        runtime["providers"] = sorted({
-                            provider for provider in providers
-                            if isinstance(provider, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,40}", provider)
-                        })[:20]
-            except Exception:
-                logger.debug("Ignored exception in admin_v2_status", exc_info=True)
+        runtime = await _runtime_status(admin, request)
         # Keep the dashboard contract explicit: raw DB paths, exception text,
         # and arbitrary status-file keys are never returned to the browser.
-        attention = {}
-        try:
-            raw_attention = admin._attention_summary()
-            if isinstance(raw_attention, dict):
-                allowed = (
-                    "pending_tasks", "failed_tasks", "failed_tasks_available", "unavailable_videos",
-                    "unavailable_available", "sync_backlog_available", "sync_backlog_queued",
-                    "sync_backlog_processing", "sync_backlog_oldest_age_seconds",
-                    "last_sync_failed_sources", "last_sync_rate_limited",
-                )
-                attention = {key: raw_attention[key] for key in allowed if key in raw_attention}
-        except Exception:
-            logger.debug("Ignored exception in admin_v2_status", exc_info=True)
-        db_result = {}
-        if isinstance(db, dict):
-            if db.get("database_backend") == "PostgreSQL":
-                db_result["database_backend"] = "PostgreSQL"
-            for key in ("videos_total", "artwork_total", "oshash_total", "phash_total", "files_total", "telegram_total", "fresh_24h", "photos_total",
-                        "bios_total", "aliases_total", "dead_streams_total", "unplayable_total"):
-                value = db.get(key)
-                if type(value) is int and value >= 0:
-                    db_result[key] = value
-            size = db.get("db_size_mb")
-            if type(size) in {int, float}:
-                if math.isfinite(size) and size >= 0:
-                    db_result["db_size_mb"] = size
-            elif isinstance(size, Decimal) and size.is_finite() and size >= 0:
-                # PostgreSQL NUMERIC values are decoded by psycopg as Decimal;
-                # convert the allowlisted metric before JSON serialization.
-                db_result["db_size_mb"] = float(size)
-            db_result["db_ok"] = db.get("db_ok") is True
-            by_provider = db.get("by_provider")
-            if isinstance(by_provider, dict):
-                grouped = {}
-                for key, value in by_provider.items():
-                    if not isinstance(key, str) or type(value) is not int or value < 0:
-                        continue
-                    provider = "telegram" if key.startswith("tg:[") else key[:40]
-                    if not provider.replace("_", "").replace("-", "").isalnum():
-                        continue
-                    grouped[provider] = grouped.get(provider, 0) + value
-                db_result["by_provider"] = grouped
-            channel_map = db.get("telegram_channels")
-            if isinstance(channel_map, dict):
-                # Channel IDs are not needed on Home; preserve only the count.
-                db_result["telegram_channels"] = {str(index): True for index, _ in enumerate(channel_map)}
-            for key in ("last_seen", "last_seen_human"):
-                value = db.get(key)
-                if isinstance(value, (str, int, float)) and len(str(value)) <= 64:
-                    db_result[key] = value
+        attention = _attention_fields(admin)
         sync_result = _sanitized_sync_status(sync, sync_stale_after)
         _last_sync_run(sync_result, sync_history)
         return {
             "ok": True,
             "time_human": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "db": db_result,
+            "db": _sanitize_db_stats(db),
             "sync": sync_result,
             "attention": attention,
             "runtime": runtime,
