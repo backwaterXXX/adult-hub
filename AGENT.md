@@ -16,3 +16,11 @@ The core is Telegram-only: Telegram support, an HTTP resolver, and a shared Post
 - `docs/` is a private, local-only directory intentionally excluded from git and sync. Do not track it or remove the ignore rule.
 - Public tests: `python3 -m unittest discover -s tests`.
 - A standard clone must build both images and run Telegram.
+
+## Context management (Haiku 5.5)
+
+- Before starting each new task, check how much context is in use.
+- If context usage exceeds 10%, compact the conversation before proceeding.
+- When compacting, preserve the current task, decisions, modified files, and next steps.
+- Keep context below 100,000 tokens whenever possible.
+- Avoid unnecessary tool output (use targeted greps and line ranges, not whole files) and repeated file reads. Reuse what has already been read in the session.
