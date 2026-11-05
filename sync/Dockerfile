@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # test database rather than Debian Bookworm's older client.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg git \
     && install -d /usr/share/keyrings \
-    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
        | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
        > /etc/apt/sources.list.d/pgdg.list \
