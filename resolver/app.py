@@ -554,6 +554,91 @@ async def get_video_variants(video_id: str):
     raise HTTPException(status_code=404, detail=f"No video found for {video_id}")
 
 
+def _telegram_channel_unauthorized(raw_id: Optional[str]) -> bool:
+    channel_ref = (raw_id or "").split(":", 1)[0]
+    try:
+        tg_prov = get_provider("telegram")
+    except KeyError:
+        return False
+    auth_check = getattr(tg_prov, "is_channel_authorized", None)
+    return bool(callable(auth_check) and not auth_check(channel_ref))
+
+
+async def _live_cached_stream(cache_key: str) -> Optional[str]:
+    """Return the cached stream URL if it is usable, otherwise None."""
+    cand_stream = await asyncio.to_thread(cache.get, cache_key)
+    if not cand_stream or cand_stream.startswith("tg://"):
+        return cand_stream or None
+    if await upstream_url_alive(cand_stream) is False:
+        logger.info(f"Cached stream for {cache_key} is dead, re-resolving")
+        await asyncio.to_thread(cache.invalidate, cache_key)
+        return None
+    return cand_stream
+
+
+async def _resolve_play_candidate(cand_id: str, chosen_variant: Optional[str]):
+    """Resolve one failover candidate.
+
+    Returns ``(cache_key, stream_url, error)``. ``cache_key`` is None when the
+    candidate id cannot be parsed. ``stream_url`` is None when the candidate
+    should be skipped, and ``error`` then carries the reason if one is known.
+    """
+    try:
+        provider_name, raw_id = _parse_play_id_or_400(cand_id)
+    except Exception:
+        logger.debug("Ignored exception in play_stream", exc_info=True)
+        return None, None, None
+    cache_key = f"{provider_name}:{raw_id}"
+    if chosen_variant and chosen_variant.lower() != "original":
+        cache_key = f"{cache_key}:variant:{chosen_variant}"
+
+    if provider_name == "telegram" and _telegram_channel_unauthorized(raw_id):
+        return cache_key, None, HTTPException(status_code=403, detail="Channel not authorized")
+
+    use_cache = (provider_name != "telegram")
+    cand_stream = await _live_cached_stream(cache_key) if use_cache else None
+    if cand_stream:
+        return cache_key, cand_stream, None
+
+    try:
+        async with _stream_semaphore:
+            if use_cache:
+                cand_stream = await asyncio.to_thread(cache.get, cache_key)
+            if not cand_stream:
+                cand_stream = await _resolve_fresh_stream(
+                    provider_name, raw_id, cache_key, chosen_variant, use_cache,
+                )
+    except HTTPException as e:
+        logger.warning(f"Failed to resolve {cache_key}: {e}")
+        return cache_key, None, e
+    except Exception as e:
+        logger.warning(f"Failed to resolve {cache_key}: {e}")
+        if chosen_variant and "not found" in str(e).lower():
+            return cache_key, None, HTTPException(status_code=404, detail="Video not found")
+        return cache_key, None, e
+    return cache_key, cand_stream, None
+
+
+async def _resolve_fresh_stream(provider_name: str, raw_id: str, cache_key: str,
+                                chosen_variant: Optional[str], use_cache: bool) -> str:
+    prov = get_provider(provider_name)
+    if chosen_variant:
+        cand_stream = await prov.resolve_stream(raw_id, variant=chosen_variant)
+    else:
+        cand_stream = await prov.resolve_stream(raw_id)
+    if not cand_stream:
+        raise ValueError(f"Empty stream URL resolved for {cache_key}")
+    if cand_stream.startswith("tg://"):
+        logger.info(f"Resolved new telegram stream for {cache_key}")
+        return cand_stream
+    if await upstream_url_alive(cand_stream) is False:
+        raise ValueError(f"Freshly resolved URL is dead for {cache_key}")
+    if use_cache:
+        await asyncio.to_thread(cache.set, cache_key, cand_stream, ttl_seconds=cache_ttl_for_provider(provider_name))
+    logger.info(f"Resolved new stream for {cache_key}")
+    return cand_stream
+
+
 @api.api_route("/play/{video_id:path}/stream", methods=["GET", "HEAD"])
 async def play_stream(
     request: Request,
@@ -575,71 +660,9 @@ async def play_stream(
     last_error = None
 
     for cand_id in candidates:
-        try:
-            provider_name, raw_id = _parse_play_id_or_400(cand_id)
-        except Exception:
-            logger.debug("Ignored exception in play_stream", exc_info=True)
-            continue
-        cache_key = f"{provider_name}:{raw_id}"
-        if chosen_variant and chosen_variant.lower() != "original":
-            cache_key = f"{cache_key}:variant:{chosen_variant}"
-
-        if provider_name == "telegram":
-            channel_ref = (raw_id or "").split(":", 1)[0]
-            try:
-                tg_prov = get_provider("telegram")
-                auth_check = getattr(tg_prov, "is_channel_authorized", None)
-                if callable(auth_check) and not auth_check(channel_ref):
-                    last_error = HTTPException(status_code=403, detail="Channel not authorized")
-                    continue
-            except KeyError:
-                pass
-
-        use_cache = (provider_name != "telegram")
-        cand_stream = await asyncio.to_thread(cache.get, cache_key) if use_cache else None
-        if cand_stream:
-            if cand_stream.startswith("tg://"):
-                pass
-            else:
-                alive = await upstream_url_alive(cand_stream)
-                if alive is False:
-                    logger.info(f"Cached stream for {cache_key} is dead, re-resolving")
-                    await asyncio.to_thread(cache.invalidate, cache_key)
-                    cand_stream = None
-
-        if not cand_stream:
-            try:
-                async with _stream_semaphore:
-                    if use_cache:
-                        cand_stream = await asyncio.to_thread(cache.get, cache_key)
-                    if not cand_stream:
-                        prov = get_provider(provider_name)
-                        if chosen_variant:
-                            cand_stream = await prov.resolve_stream(raw_id, variant=chosen_variant)
-                        else:
-                            cand_stream = await prov.resolve_stream(raw_id)
-                        if not cand_stream:
-                            raise ValueError(f"Empty stream URL resolved for {cache_key}")
-                        if cand_stream.startswith("tg://"):
-                            logger.info(f"Resolved new telegram stream for {cache_key}")
-                        else:
-                            if await upstream_url_alive(cand_stream) is False:
-                                raise ValueError(f"Freshly resolved URL is dead for {cache_key}")
-                            if use_cache:
-                                await asyncio.to_thread(cache.set, cache_key, cand_stream, ttl_seconds=cache_ttl_for_provider(provider_name))
-                            logger.info(f"Resolved new stream for {cache_key}")
-            except HTTPException as e:
-                last_error = e
-                logger.warning(f"Failed to resolve {cache_key}: {e}")
-                continue
-            except Exception as e:
-                if chosen_variant and "not found" in str(e).lower():
-                    last_error = HTTPException(status_code=404, detail="Video not found")
-                else:
-                    last_error = e
-                logger.warning(f"Failed to resolve {cache_key}: {e}")
-                continue
-
+        cache_key, cand_stream, error = await _resolve_play_candidate(cand_id, chosen_variant)
+        if error is not None:
+            last_error = error
         if cand_stream:
             stream_url = cand_stream
             active_cache_key = cache_key
