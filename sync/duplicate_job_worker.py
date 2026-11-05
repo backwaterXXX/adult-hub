@@ -10,10 +10,20 @@ if __package__:
     from . import duplicate_jobs as _core
     from . import duplicate_job_external_handlers as _external_handlers
     from .duplicate_job_undo import _run_undo
+    from .duplicate_job_files import (
+        _append_sidecar_moves, _check_journal_ids, _load_recovery_snapshots,
+        _move_hidden_files,
+    )
+    from .duplicate_job_quarantine import _run_quarantine
 else:
     import duplicate_jobs as _core
     import duplicate_job_external_handlers as _external_handlers
     from duplicate_job_undo import _run_undo
+    from duplicate_job_files import (
+        _append_sidecar_moves, _check_journal_ids, _load_recovery_snapshots,
+        _move_hidden_files,
+    )
+    from duplicate_job_quarantine import _run_quarantine
 
 
 class _JobRun:
@@ -237,37 +247,6 @@ def _performer_priority(video):
     source = str(video.get('scene_match_source') or '').casefold()
     return (100 if any(token in source for token in ('oshash', 'phash', 'fingerprint'))
             else 70 if source else int((resolution or {}).get('priority') or 10))
-
-
-def _move_snapshot_files(conn, job_id, snapshots, services, run, missing_strm_message: str) -> None:
-    """Move each snapshot's library files into quarantine, recording moves for compensation."""
-    file_total = sum((len(snapshot['files']) for snapshot in snapshots))
-    moved_count = 0
-    _core._record_job_progress(conn, job_id, 'moving_files', completed=0, total=file_total)
-    for snapshot in snapshots:
-        for move in snapshot['files']:
-            src, dst = (_core.Path(move['source']), _core.Path(move['quarantine']))
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if src.exists():
-                if dst.exists():
-                    if not services.duplicate_file_matches(src, dst):
-                        raise FileExistsError('Quarantine file has different contents.')
-                    src.unlink()
-                else:
-                    services.duplicate_move_file(src, dst)
-                run.moved.append((src, dst))
-            elif dst.exists():
-                run.moved.append((src, dst))
-            elif not dst.exists():
-                if src.suffix == '.strm':
-                    raise FileNotFoundError(missing_strm_message)
-            moved_count += 1
-            _core._record_job_progress(conn, job_id, 'moving_files', completed=moved_count, total=file_total)
-
-
-def _move_hidden_files(conn, job_id, snapshots, services, run) -> None:
-    """Move each hidden item's library files into quarantine, recording moves for compensation."""
-    _move_snapshot_files(conn, job_id, snapshots, services, run, 'Missing STRM file for loser item.')
 
 
 class _KeeperMerge:
@@ -498,25 +477,6 @@ def _merge_keeper_metadata(conn, keeper, job_id, payload, snapshots, media_dir, 
         _finalize_keeper_row(conn, merge, keeper, job_id, snapshots, media_dir, services, now)
 
 
-def _check_journal_ids(recovery_snapshots: list, expected_ids: set) -> None:
-    snapshot_ids = {s.get('video', {}).get('id') for s in recovery_snapshots}
-    if snapshot_ids != expected_ids:
-        raise ValueError('Incomplete operation journal; manual repair required.')
-
-
-def _load_recovery_snapshots(conn, job_id):
-    persisted = conn.execute('SELECT result FROM video_duplicate_jobs WHERE id=%s', (job_id,)).fetchone()
-    recovery_snapshots = None
-    if persisted and persisted[0]:
-        try:
-            saved = _core.json.loads(persisted[0])
-            if isinstance(saved.get('snapshots'), list):
-                recovery_snapshots = saved['snapshots']
-        except (TypeError, ValueError):
-            pass
-    return recovery_snapshots
-
-
 def _require_pair_evidence(conn, pair_evidence, keeper: str, losers: list, manual_review: bool) -> None:
     for loser in losers:
         if not manual_review and not pair_evidence(conn, keeper, loser):
@@ -610,20 +570,6 @@ def _check_expected_revisions(keeper: str, expected_revisions: dict, revision_sn
                 raise ValueError('Library data changed after the preview; create a new operation plan.')
 
 
-def _append_sidecar_moves(services, relative: str, media_dir, op_dir, file_snapshots: list) -> None:
-    stream = services.resolve_media_path(relative, media_dir)
-    if stream.is_symlink() or not stream.resolve().is_relative_to(media_dir.resolve()):
-        raise ValueError('Unsafe library path detected.')
-    rel = stream.relative_to(media_dir.resolve())
-    for suffix in ('.strm', '.nfo', '.jpg', '.thumb_fail'):
-        src = stream.with_suffix(suffix)
-        dst = op_dir / 'files' / rel.parent / (rel.stem + suffix)
-        if src.is_symlink():
-            raise ValueError('Symlink detected in library files.')
-        if src.exists():
-            file_snapshots.append({'source': str(src), 'quarantine': str(dst)})
-
-
 def _hide_file_snapshots(files: list, shared_paths: set, op_dir, media_dir, services) -> list:
     file_snapshots = []
     for sf in files:
@@ -704,79 +650,6 @@ def _run_hide(conn, job_id, payload, media_dir, services, quarantine_root, now, 
     run.catalog_committed = True
     refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'hidden', services)
     result = {'operation_id': job_id, 'hidden': losers, 'keeper_id': keeper, 'local_state': 'hidden', 'jellyfin_refresh': 'updated' if refreshed else 'failed'}
-    _core._finish_job(conn, job_id, result)
-    conn.commit()
-    return result
-
-
-def _check_quarantine_target(conn, video_id: str, services) -> None:
-    if not video_id:
-        raise ValueError('Missing item to quarantine.')
-    if not conn.execute('SELECT 1 FROM videos WHERE id=%s', (video_id,)).fetchone():
-        raise ValueError('Item no longer exists.')
-    if services.video_is_disabled(video_id):
-        raise ValueError('Source of this item is disabled; decision was not saved.')
-    if conn.execute("SELECT 1 FROM video_duplicate_decisions WHERE loser_id=%s AND state='active'", (video_id,)).fetchone():
-        raise ValueError('Item is already quarantined.')
-
-
-def _build_quarantine_snapshot(conn, loser: str, media_dir, services, op_dir, payload: dict) -> dict:
-    video_row = conn.execute('SELECT * FROM videos WHERE id=%s', (loser,)).fetchone()
-    video_cols = _core.db.table_columns(conn, 'videos')
-    files = conn.execute('SELECT * FROM synced_files WHERE video_id=%s', (loser,)).fetchall()
-    sf_cols = _core.db.table_columns(conn, 'synced_files')
-    cats = conn.execute('SELECT * FROM video_categories WHERE video_id=%s', (loser,)).fetchall()
-    vc_cols = _core.db.table_columns(conn, 'video_categories')
-    file_snapshots = []
-    for file_row in files:
-        sf = dict(zip(sf_cols, file_row))
-        relative = sf.get('file_path') or ''
-        other = conn.execute('SELECT 1 FROM synced_files WHERE file_path=%s AND video_id<>%s', (relative, loser)).fetchone()
-        if other:
-            raise ValueError('File is shared by another entry; aborting quarantine.')
-        _append_sidecar_moves(services, relative, media_dir, op_dir, file_snapshots)
-    snapshot = {'video': dict(zip(video_cols, video_row)), 'synced_files': [dict(zip(sf_cols, r)) for r in files], 'categories': [dict(zip(vc_cols, r)) for r in cats], 'files': file_snapshots}
-    expected_revision = payload.get('expected_revision')
-    if expected_revision:
-        from common.admin_operations import _video_snapshot
-        current_revision, current = _video_snapshot(conn, loser)
-        if current_revision != expected_revision or current is None or current.get('active_decision') or current.get('source_disabled') or current.get('shared_paths'):
-            raise ValueError('Library data changed after the preview; create a new operation plan.')
-    return snapshot
-
-
-def _retire_quarantined_items(conn, job_id, snapshots: list, now) -> None:
-    _core._record_job_progress(conn, job_id, 'saving_catalog')
-    with conn:
-        for snapshot in snapshots:
-            loser = snapshot['video']['id']
-            conn.execute('DELETE FROM video_categories WHERE video_id=%s', (loser,))
-            conn.execute('DELETE FROM synced_files WHERE video_id=%s', (loser,))
-            conn.execute('DELETE FROM videos WHERE id=%s', (loser,))
-            conn.execute("INSERT INTO video_duplicate_decisions (loser_id,keeper_id,operation_id,state,created_at,snapshot) VALUES (%s,%s,%s,'active',%s,%s)", (loser, loser, job_id, now, _core.json.dumps(snapshot, ensure_ascii=False)))
-
-
-def _run_quarantine(conn, job_id, payload, media_dir, services, quarantine_root, now, run) -> dict:
-    """Quarantine one library item and store its undo snapshot."""
-    video_id = str(payload.get('video_id') or '')
-    _check_quarantine_target(conn, video_id, services)
-    quarantine_root.mkdir(parents=True, exist_ok=True)
-    op_dir = quarantine_root / job_id
-    op_dir.mkdir(parents=True, exist_ok=True)
-    services.write_catalog_backup(conn, op_dir, [video_id])
-    recovery_snapshots = _load_recovery_snapshots(conn, job_id)
-    if recovery_snapshots is not None:
-        _check_journal_ids(recovery_snapshots, {video_id})
-    snapshots = recovery_snapshots if recovery_snapshots is not None else []
-    if recovery_snapshots is None:
-        snapshots.append(_build_quarantine_snapshot(conn, video_id, media_dir, services, op_dir, payload))
-    _core._store_job_result_field(conn, job_id, 'operation_id', job_id)
-    _core._store_job_result_field(conn, job_id, 'snapshots', snapshots)
-    _move_snapshot_files(conn, job_id, snapshots, services, run, 'Missing STRM file for quarantined item.')
-    _retire_quarantined_items(conn, job_id, snapshots, now)
-    run.catalog_committed = True
-    refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'quarantined', services)
-    result = {'operation_id': job_id, 'quarantined': [video_id], 'local_state': 'quarantined', 'jellyfin_refresh': 'updated' if refreshed else 'failed'}
     _core._finish_job(conn, job_id, result)
     conn.commit()
     return result
