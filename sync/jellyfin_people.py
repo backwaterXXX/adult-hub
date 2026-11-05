@@ -53,8 +53,8 @@ def _legacy_names(conn) -> set:
         tables = db.table_names(conn)
         if "jellyfin_person_stash_sync" in tables:
             return {r[0] for r in conn.execute("SELECT name FROM jellyfin_person_stash_sync").fetchall()}
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "sync_jellyfin_people", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _legacy_names", exc_info=True)
     return set()
 
 
@@ -171,8 +171,8 @@ def _apply_birthdate(item: dict, birth) -> bool:
             item["PremiereDate"] = birth_iso
             try:
                 item["ProductionYear"] = int(birth.strip()[:4])
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "sync_jellyfin_people", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in _apply_birthdate", exc_info=True)
             return True
     return False
 

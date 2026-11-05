@@ -132,8 +132,8 @@ def migrate_synced_files(conn: db.Connection, media_dir: Path, *,
             if names and all(_STABLE_STRM_RE.match(n) for n in names):
                 svc.logger.debug("migrate_synced_files: all filenames stable, skipping.")
                 return
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "migrate_synced_files", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in migrate_synced_files", exc_info=True)
     rows = conn.execute("SELECT file_path, video_id, category, created_at FROM synced_files").fetchall()
     for old_name, video_id, category, created_at in rows:
         if not video_id or svc.video_is_disabled(video_id) or not conn.execute("SELECT 1 FROM videos WHERE id = %s", (video_id,)).fetchone():
@@ -181,8 +181,8 @@ def migrate_categories(conn: db.Connection, media_dir: Path, *,
         if row and row[0] == str(category_mapping_version):
             svc.logger.debug("migrate_categories: mapping v%s already applied, skipping.", category_mapping_version)
             return
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "migrate_categories", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in migrate_categories", exc_info=True)
     svc.logger.info("Checking database and NFO files for category migration...")
 
     # 1. Update videos table
@@ -202,8 +202,8 @@ def migrate_categories(conn: db.Connection, media_dir: Path, *,
                 if new_val != cats_val:
                     conn.execute("UPDATE videos SET categories = %s WHERE id = %s", (new_val, vid_id))
                     updated_videos += 1
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "migrate_categories", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in migrate_categories", exc_info=True)
 
         if updated_videos > 0:
             svc.logger.info(f"Updated categories for {updated_videos} videos in database.")
@@ -216,8 +216,8 @@ def migrate_categories(conn: db.Connection, media_dir: Path, *,
                 for cat in json.loads(cats_val):
                     if cat and not cat.startswith("Browse"):
                         conn.execute("INSERT INTO video_categories (video_id, category) VALUES (%s, %s) ON CONFLICT DO NOTHING", (vid_id, cat))
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "migrate_categories", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in migrate_categories", exc_info=True)
 
         # 3. Update synced_files category column
         cur3 = conn.execute("SELECT file_path, video_id FROM synced_files")
@@ -226,8 +226,8 @@ def migrate_categories(conn: db.Connection, media_dir: Path, *,
             if row and row[0]:
                 try:
                     conn.execute("UPDATE synced_files SET category = %s WHERE file_path = %s", (", ".join(json.loads(row[0])), f_path))
-                except Exception as _exc:
-                    logger.debug("Ignored exception in %s", "migrate_categories", exc_info=True)
+                except Exception:
+                    logger.debug("Ignored exception in migrate_categories", exc_info=True)
 
     # 4. Migrate NFO files on disk
     if media_dir.exists():
@@ -314,8 +314,8 @@ def migrate_display_titles(conn: db.Connection, media_dir: Path, *,
         if row and row[0] == str(display_title_version):
             svc.logger.debug("migrate_display_titles: v%s already applied, skipping.", display_title_version)
             return 0
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "migrate_display_titles", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in migrate_display_titles", exc_info=True)
 
     svc.logger.info("Checking NFO files for display title cleanup...")
     rows = conn.execute(

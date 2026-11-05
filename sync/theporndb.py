@@ -50,22 +50,22 @@ def _decode_http_payload(payload) -> Optional[dict]:
     if isinstance(payload, (bytes, bytearray)):
         try:
             return json.loads(bytes(payload).decode("utf-8", errors="ignore"))
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "_decode_http_payload", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
             return None
     if isinstance(payload, str):
         try:
             parsed = json.loads(payload)
             return parsed if isinstance(parsed, dict) else None
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "_decode_http_payload", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
             return None
     try:
         if callable(getattr(payload, "json", None)):
             data = payload.json()
             return data if isinstance(data, dict) else None
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_decode_http_payload", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
     try:
         content = getattr(payload, "content", None)
         if isinstance(content, (bytes, bytearray)):
@@ -73,8 +73,8 @@ def _decode_http_payload(payload) -> Optional[dict]:
         text = getattr(payload, "text", None)
         if isinstance(text, str):
             return json.loads(text)
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_decode_http_payload", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
     return None
 
 
@@ -126,8 +126,8 @@ def search_performer(
                     )
                     if getattr(resp, "status_code", 200) == 200:
                         data = resp.json()
-                except Exception as _exc:
-                    logger.debug("Ignored exception in %s", "search_performer", exc_info=True)
+                except Exception:
+                    logger.debug("Ignored exception in search_performer", exc_info=True)
                 if data is None:
                     legacy_url = f"{LEGACY_TPDB_API_URL}?q={quote(name.strip(), safe='')}"
                     try:
@@ -137,8 +137,8 @@ def search_performer(
                         )
                         if getattr(resp, "status_code", 200) == 200:
                             data = resp.json()
-                    except Exception as _exc:
-                        logger.debug("Ignored exception in %s", "search_performer", exc_info=True)
+                    except Exception:
+                        logger.debug("Ignored exception in search_performer", exc_info=True)
             if data is None:
                 import urllib.request
                 req = urllib.request.Request(url, headers=headers)
@@ -319,8 +319,8 @@ def backfill_tpdb(
                 for er in extra_rows:
                     if er and er[0]:
                         candidates.append(er[0])
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "backfill_tpdb", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in backfill_tpdb", exc_info=True)
     except Exception as e:
         logger.warning("backfill_tpdb query failed: %s", e)
         return 0, 0
@@ -332,8 +332,8 @@ def backfill_tpdb(
         if sleep and index > 0:
             try:
                 time.sleep(sleep)
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "backfill_tpdb", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in backfill_tpdb", exc_info=True)
         checked += 1
         try:
             info = search_performer(name, token=api_token, http_get=fetch, raise_on_error=True)

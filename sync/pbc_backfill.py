@@ -232,8 +232,8 @@ def _backfill_pbc(conn, limit, sleep, fetch, search, _core):
         if sleep and index > 0:
             try:
                 _core.time.sleep(sleep)
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "_backfill_pbc", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in _backfill_pbc", exc_info=True)
         checked += 1
         try:
             if _store_performer(conn, name, fetch, search, _core, lock_profile_enrichment, get_override_fields):

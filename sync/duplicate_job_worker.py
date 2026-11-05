@@ -211,8 +211,8 @@ def _parse_list_field(val):
             parsed = _core.json.loads(val)
             return parsed if isinstance(parsed, list) else []
         return [x.strip() for x in str(val).split(',') if x.strip()]
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_parse_list_field", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _parse_list_field", exc_info=True)
         return []
 
 

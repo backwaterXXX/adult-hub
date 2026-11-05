@@ -70,22 +70,22 @@ def _decode_http_payload(payload) -> Optional[dict]:
     if isinstance(payload, (bytes, bytearray)):
         try:
             return json.loads(bytes(payload).decode("utf-8", errors="ignore"))
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "_decode_http_payload", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
             return None
     if isinstance(payload, str):
         try:
             parsed = json.loads(payload)
             return parsed if isinstance(parsed, dict) else None
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "_decode_http_payload", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
             return None
     try:
         if callable(getattr(payload, "json", None)):
             data = payload.json()
             return data if isinstance(data, dict) else None
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_decode_http_payload", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
     try:
         content = getattr(payload, "content", None)
         if isinstance(content, (bytes, bytearray)):
@@ -93,8 +93,8 @@ def _decode_http_payload(payload) -> Optional[dict]:
         text = getattr(payload, "text", None)
         if isinstance(text, str):
             return json.loads(text)
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_decode_http_payload", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
     return None
 
 
@@ -285,8 +285,8 @@ def backfill_stashdb(
         if sleep and index > 0:
             try:
                 time.sleep(sleep)
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "backfill_stashdb", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in backfill_stashdb", exc_info=True)
         checked += 1
         try:
             info = search_performer(name, token=api_token, http_post=fetch, raise_on_error=True)

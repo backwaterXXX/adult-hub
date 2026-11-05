@@ -21,10 +21,11 @@ import sys
 import time
 from pathlib import Path
 from typing import List, Tuple
-from common.logging_setup import configure_logging
 import logging
+from common.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
+
 
 try:
     import httpx
@@ -84,7 +85,7 @@ def check_one(client: "httpx.Client", video_id: str) -> Tuple[bool, str]:
             sample_size=_resolver_sample_size,
         )
     except Exception as e:
-        logger.debug("Ignored exception in %s", "check_one", exc_info=True)
+        logger.debug("Ignored exception in check_one", exc_info=True)
         return False, f"resolver error: {e}"
 
     if status_code in (200, 206):
@@ -105,7 +106,7 @@ def check_one(client: "httpx.Client", video_id: str) -> Tuple[bool, str]:
             sample_size=_playlist_sample_size,
         )
     except Exception as e:
-        logger.debug("Ignored exception in %s", "check_one", exc_info=True)
+        logger.debug("Ignored exception in check_one", exc_info=True)
         return False, f"playlist fetch error: {e}"
 
     if pr_status in (200, 206):

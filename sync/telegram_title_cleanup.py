@@ -9,10 +9,10 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from xml.dom import minidom
+import logging
 
 from common import db
 from common.title_cleaning import clean_title_text, extract_title_hashtags
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +101,8 @@ def _display_title(title: str, performers: list[str], slug: str) -> str:
             from display_titles import clean_display_title
         return clean_display_title(title, performers=performers,
                                    provider="telegram", slug=slug) or title
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_display_title", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _display_title", exc_info=True)
         return title
 
 

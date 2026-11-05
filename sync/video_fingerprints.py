@@ -14,6 +14,7 @@ import time
 from io import BytesIO
 from typing import Callable, Optional
 from urllib.parse import quote
+import logging
 
 import httpx
 from common.telegram_transfer_budget import (
@@ -21,7 +22,6 @@ from common.telegram_transfer_budget import (
     DailyTelegramTransferBudgetUnavailable,
     reserve_telegram_fingerprint_bytes,
 )
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +261,6 @@ class FingerprintBudget:
         return start + len(data) - 1, bytes(data)
 
 
-
 def _stash_phash(image) -> str:
     """Use the repository's pinned Stash-compatible implementation."""
     from stash_phash.phash import perception_hash
@@ -338,13 +337,13 @@ def telegram_phash(video_id: str, duration: int, *, byte_budget: int = DEFAULT_B
             if original_size is not None and original_size > 0:
                 try:
                     size_sink(int(original_size))
-                except Exception as _exc:
-                    logger.debug("Ignored exception in %s", "telegram_phash", exc_info=True)
+                except Exception:
+                    logger.debug("Ignored exception in telegram_phash", exc_info=True)
         elif budget.total_size is not None:
             try:
                 size_sink(int(budget.total_size))
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "telegram_phash", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in telegram_phash", exc_info=True)
     virtual_mp4 = _FaststartMP4(budget)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RangeHandler)
     server.fingerprint_budget = budget

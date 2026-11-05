@@ -109,8 +109,8 @@ def _known_performer_names(conn) -> dict:
                     k = name_str.lower()
                     if k not in known_dict:
                         known_dict[k] = name_str
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "backfill_performers_from_titles", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in _known_performer_names", exc_info=True)
     try:
         for alias, canonical in conn.execute(
             "SELECT alias, canonical FROM performer_aliases"

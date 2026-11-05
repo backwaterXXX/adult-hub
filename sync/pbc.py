@@ -129,8 +129,8 @@ def ensure_tables(conn: db.Connection) -> None:
     try:
         from common.migrations import apply_migrations
         apply_migrations(conn)
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "ensure_tables", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in ensure_tables", exc_info=True)
 
 
 def known_performer_names(conn: db.Connection) -> List[str]:
@@ -170,8 +170,8 @@ def _performer_values(raw) -> Optional[List[str]]:
     if isinstance(raw, str) and raw.strip().startswith("["):
         try:
             parsed = json.loads(raw)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "known_performer_names", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in _performer_values", exc_info=True)
             return None
         if isinstance(parsed, list):
             return [str(v) for v in parsed]

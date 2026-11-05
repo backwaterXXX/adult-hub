@@ -53,10 +53,10 @@ def audit_telegram_import_state(url, api_key, media_dir, *, state_path, session=
             if not items or start >= total:
                 break
         return {"status": "checked", "findings": findings}
-    except Exception as _exc:
+    except Exception:
         # API exceptions can embed credential-bearing request details. The audit
         # report deliberately exposes only an unknown status.
-        logger.debug("Ignored exception in %s", "audit_telegram_import_state", exc_info=True)
+        logger.debug("Ignored exception in audit_telegram_import_state", exc_info=True)
         return {"status": "unknown", "findings": []}
 
 

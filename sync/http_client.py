@@ -6,8 +6,8 @@ import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Dict, Optional
-from common.http_rate_limit import wait_for_host_slot
 import logging
+from common.http_rate_limit import wait_for_host_slot
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +93,8 @@ def retry_after_from_error(
                     value = headers.get("Retry-After")
                 if value is not None:
                     return parse_retry_after_fn(value, default)
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "retry_after_from_error", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in retry_after_from_error", exc_info=True)
         current = current.__cause__ or current.__context__
     return default
 

@@ -94,8 +94,8 @@ def _get_cached_bumper_hashes() -> Set[int]:
             _BUMPER_HASHES_CACHE = load_bumper_hashes(cache_file)
             _BUMPER_HASHES_MTIME = mtime
         return _BUMPER_HASHES_CACHE or set()
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_get_cached_bumper_hashes", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _get_cached_bumper_hashes", exc_info=True)
         return _BUMPER_HASHES_CACHE or set()
 
 
@@ -123,8 +123,8 @@ def _valid_thumbnail_bytes(data: bytes, url: str, bumper_hashes: Optional[Set[in
                 minimum_short, minimum_long = minimum_size
                 if min(image.size) < minimum_short or max(image.size) < minimum_long:
                     return False
-        except Exception as _exc:
-            logger.debug("Ignored exception in %s", "_valid_thumbnail_bytes", exc_info=True)
+        except Exception:
+            logger.debug("Ignored exception in _valid_thumbnail_bytes", exc_info=True)
             return False
     try:
         try:
@@ -140,10 +140,10 @@ def _valid_thumbnail_bytes(data: bytes, url: str, bumper_hashes: Optional[Set[in
                 dh = compute_dhash(data)
                 if is_bumper_hash(dh, known_bumpers, max_distance=4):
                     return False
-            except Exception as _exc:
-                logger.debug("Ignored exception in %s", "_valid_thumbnail_bytes", exc_info=True)
-    except Exception as _exc:
-        logger.debug("Ignored exception in %s", "_valid_thumbnail_bytes", exc_info=True)
+            except Exception:
+                logger.debug("Ignored exception in _valid_thumbnail_bytes", exc_info=True)
+    except Exception:
+        logger.debug("Ignored exception in _valid_thumbnail_bytes", exc_info=True)
     return True
 
 
