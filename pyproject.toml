@@ -68,7 +68,6 @@ max-complexity = 10
 "resolver/providers/telegram_variants.py" = ["C901"]
 "resolver/stream_cache.py" = ["C901", "G004"]
 "resolver/telegram_stream.py" = ["C901"]
-"resolver/video_duplicates.py" = ["C901"]
 "restore_db.py" = ["C901", "E402", "T201"]
 "scripts/*.py" = ["E402", "T201"]
 "scripts/admin_classic_usage_report.py" = ["C901"]
