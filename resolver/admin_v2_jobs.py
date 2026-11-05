@@ -25,131 +25,189 @@ JOB_STAGE_LABELS = ALL_STAGES
 JOB_FAILURE_MESSAGES = FAILURE_MESSAGES
 
 
+def _availability_summary(result: dict) -> str | None:
+    if result.get("local_state") != "availability_checked":
+        return None
+    counts = result.get("counts")
+    if isinstance(counts, dict):
+        labels = (
+            ("available", "available"),
+            ("unavailable", "unavailable"),
+            ("transient_error", "temporary error"),
+            ("unknown", "inconclusive"),
+        )
+        values = [counts.get(key, 0) for key, _label in labels]
+        skipped = counts.get("skipped", 0)
+        if (all(type(value) is int and 0 <= value <= 20 for value in values)
+                and type(skipped) is int and 0 <= skipped <= 20
+                and sum(values) + skipped <= 20):
+            summary = ", ".join(f"{value} {label}" for value, (_key, label) in zip(values, labels))
+            if skipped:
+                summary += f", {skipped} skipped"
+            return f"Playback check: {summary}."
+    return "Playback check recorded. Review item details for the latest results."
+
+
+def _sync_failure_labels(failures: list) -> list[str]:
+    summaries = []
+    for failure in failures[:20]:
+        if not isinstance(failure, dict):
+            continue
+        label = failure.get("label")
+        if not isinstance(label, str) or len(label) > 256:
+            continue
+        detail = failure.get("detail")
+        if detail == "Telegram fetch/history operation failed.":
+            summaries.append(f"{label}: {detail}")
+        else:
+            error = failure.get("error")
+            if isinstance(error, str) and re.fullmatch(
+                    r"Sync failed \([A-Za-z0-9_]{1,80}\)\.", error):
+                summaries.append(f"{label}: {error}")
+            else:
+                summaries.append(label)
+    return summaries
+
+
+def _sync_summary(result: dict) -> str | None:
+    state = result.get("local_state")
+    if state == "sync failed":
+        failures = result.get("source_failures")
+        if isinstance(failures, list):
+            summaries = _sync_failure_labels(failures)
+            if summaries:
+                return "Sync failed: " + "; ".join(summaries) + ". Open Sources for per-source results."
+        return "Sync failed. Open Sources to inspect per-source results."
+    if state == "sync completed":
+        return "Sync completed. Open Sources to review per-source counts."
+    return None
+
+
+def _source_remove_summary(result: dict) -> str | None:
+    if result.get("local_state") != "source_removed":
+        return None
+    videos = result.get("videos_deleted")
+    runs = result.get("history_runs_removed")
+    if type(videos) is int and videos >= 0 and type(runs) is int and runs >= 0:
+        return f"Channel removed; {videos:,} videos and {runs:,} channel-only sync runs deleted."
+    return "Channel videos and sync history removed."
+
+
+def _source_readd_summary(result: dict) -> str | None:
+    if result.get("local_state") != "source_readded":
+        return None
+    ch = result.get("channel_id") or "channel"
+    return f"Channel {ch} configuration updated."
+
+
+def _metadata_summary(result: dict) -> str | None:
+    if result.get("local_state") != "metadata_scan_completed":
+        return None
+    summary = []
+    for key, label in (("entities_checked", "checked"), ("entities_enriched", "enriched")):
+        count = result.get(key)
+        if type(count) is int and 0 <= count <= 1_000_000_000:
+            summary.append(f"{label} {count:,} entities")
+    completed = result.get("providers_completed")
+    if type(completed) is int and 0 <= completed <= 5:
+        summary.append(f"{completed} provider steps completed")
+    failed = result.get("providers_failed")
+    if type(failed) is int and 1 <= failed <= 5:
+        noun = "step" if failed == 1 else "steps"
+        verb = "an error" if failed == 1 else "errors"
+        summary.append(f"{failed} provider {noun} reported {verb}")
+    detail = f" {', '.join(summary)}." if summary else " completed."
+    return f"External metadata scan{detail} Open System to review cumulative progress."
+
+
+def _fingerprint_summary(result: dict) -> str | None:
+    if result.get("local_state") != "telegram_fingerprint_scan_completed":
+        return None
+    checked = result.get("videos_checked")
+    enriched = result.get("metadata_enriched")
+    if (type(checked) is int and 0 <= checked <= 100
+            and type(enriched) is int and 0 <= enriched <= checked):
+        return f"Telegram fingerprint scan checked {checked} videos and enriched {enriched}."
+    return "Telegram fingerprint scan completed."
+
+
+def _artwork_generate_summary(result: dict) -> str | None:
+    local_state = result.get("local_state")
+    if local_state == "artwork_generated":
+        summary = "Artwork generated from a video frame."
+        if result.get("jellyfin_refresh") == "failed":
+            summary += " Local result saved; Jellyfin refresh failed."
+        elif result.get("jellyfin_refresh") == "skipped":
+            summary += " Jellyfin refresh was skipped."
+        elif result.get("jellyfin_refresh") == "unavailable":
+            summary += " Jellyfin item refresh was unavailable."
+        if result.get("jellyfin_library_refresh") == "failed":
+            summary += " The global Jellyfin library refresh failed."
+        return summary
+    if local_state == "artwork_already_valid":
+        return "Artwork was already valid when the task started; no changes were made."
+    return None
+
+
+def _artwork_download_summary(result: dict) -> str | None:
+    local_state = result.get("local_state")
+    if local_state == "artwork_downloaded":
+        provider = result.get("provider")
+        summary = (f"Artwork downloaded from {provider}."
+                   if provider in {"StashDB", "ThePornDB"} else "Artwork downloaded.")
+        if result.get("jellyfin_refresh") == "failed":
+            summary += " Local result saved; Jellyfin refresh failed."
+        return summary
+    if local_state == "artwork_not_found":
+        return "No matching artwork found on StashDB or ThePornDB."
+    if local_state == "artwork_download_failed":
+        return "A matching poster was found, but it could not be downloaded."
+    if local_state == "artwork_lookup_failed":
+        return "The artwork search did not complete; metadata providers reported errors."
+    return None
+
+
+_RESULT_SUMMARIES = {
+    "availability_check": _availability_summary,
+    "sync": _sync_summary,
+    "source_remove": _source_remove_summary,
+    "source_readd": _source_readd_summary,
+    "metadata_backfill": _metadata_summary,
+    "telegram_fingerprint_scan": _fingerprint_summary,
+    "artwork_generate": _artwork_generate_summary,
+    "artwork_download": _artwork_download_summary,
+}
+
+
+def _generic_result_summary(result: dict) -> str | None:
+    if result.get("restore_test") is True:
+        return "Backup restored and validated in a disposable database; that database was removed."
+    if result.get("backup_created") is True:
+        return "Database backup created and verified."
+    if result.get("jellyfin_refresh") == "failed":
+        return "Local result saved; Jellyfin refresh failed."
+    if result.get("refresh_requested") is True:
+        return "Jellyfin accepted the refresh request; check the library after its next refresh."
+    if result.get("jellyfin_import") == "not_confirmed":
+        return "Local metadata saved; Jellyfin accepted the refresh request, but import is not confirmed."
+    if result.get("jellyfin_import") == "confirmed":
+        return "Jellyfin imported the current local metadata file."
+    if result.get("recovery") == "in_progress":
+        return "Recovery in progress."
+    return None
+
+
 def _result_summary(job: dict) -> str | None:
     """Return fixed, safe result labels; never forward worker-provided text."""
     result = job.get("result")
     if isinstance(result, dict):
-        if (job.get("action") == "availability_check"
-                and result.get("local_state") == "availability_checked"):
-            counts = result.get("counts")
-            if isinstance(counts, dict):
-                labels = (
-                    ("available", "available"),
-                    ("unavailable", "unavailable"),
-                    ("transient_error", "temporary error"),
-                    ("unknown", "inconclusive"),
-                )
-                values = [counts.get(key, 0) for key, _label in labels]
-                skipped = counts.get("skipped", 0)
-                if (all(type(value) is int and 0 <= value <= 20 for value in values)
-                        and type(skipped) is int and 0 <= skipped <= 20
-                        and sum(values) + skipped <= 20):
-                    summary = ", ".join(f"{value} {label}" for value, (_key, label) in zip(values, labels))
-                    if skipped:
-                        summary += f", {skipped} skipped"
-                    return f"Playback check: {summary}."
-            return "Playback check recorded. Review item details for the latest results."
-        if job.get("action") == "sync":
-            if result.get("local_state") == "sync failed":
-                failures = result.get("source_failures")
-                if isinstance(failures, list):
-                    summaries = []
-                    for failure in failures[:20]:
-                        if not isinstance(failure, dict):
-                            continue
-                        label = failure.get("label")
-                        if not isinstance(label, str) or len(label) > 256:
-                            continue
-                        detail = failure.get("detail")
-                        if detail == "Telegram fetch/history operation failed.":
-                            summaries.append(f"{label}: {detail}")
-                        else:
-                            error = failure.get("error")
-                            if isinstance(error, str) and re.fullmatch(
-                                    r"Sync failed \([A-Za-z0-9_]{1,80}\)\.", error):
-                                summaries.append(f"{label}: {error}")
-                            else:
-                                summaries.append(label)
-                    if summaries:
-                        return "Sync failed: " + "; ".join(summaries) + ". Open Sources for per-source results."
-                return "Sync failed. Open Sources to inspect per-source results."
-            if result.get("local_state") == "sync completed":
-                return "Sync completed. Open Sources to review per-source counts."
-        if job.get("action") == "source_remove" and result.get("local_state") == "source_removed":
-            videos = result.get("videos_deleted")
-            runs = result.get("history_runs_removed")
-            if type(videos) is int and videos >= 0 and type(runs) is int and runs >= 0:
-                return f"Channel removed; {videos:,} videos and {runs:,} channel-only sync runs deleted."
-            return "Channel videos and sync history removed."
-        if job.get("action") == "source_readd" and result.get("local_state") == "source_readded":
-            ch = result.get("channel_id") or "channel"
-            return f"Channel {ch} configuration updated."
-        if job.get("action") == "metadata_backfill" and result.get("local_state") == "metadata_scan_completed":
-            summary = []
-            for key, label in (("entities_checked", "checked"), ("entities_enriched", "enriched")):
-                count = result.get(key)
-                if type(count) is int and 0 <= count <= 1_000_000_000:
-                    summary.append(f"{label} {count:,} entities")
-            completed = result.get("providers_completed")
-            if type(completed) is int and 0 <= completed <= 5:
-                summary.append(f"{completed} provider steps completed")
-            failed = result.get("providers_failed")
-            if type(failed) is int and 1 <= failed <= 5:
-                noun = "step" if failed == 1 else "steps"
-                verb = "an error" if failed == 1 else "errors"
-                summary.append(f"{failed} provider {noun} reported {verb}")
-            detail = f" {', '.join(summary)}." if summary else " completed."
-            return f"External metadata scan{detail} Open System to review cumulative progress."
-        if (job.get("action") == "telegram_fingerprint_scan"
-                and result.get("local_state") == "telegram_fingerprint_scan_completed"):
-            checked = result.get("videos_checked")
-            enriched = result.get("metadata_enriched")
-            if (type(checked) is int and 0 <= checked <= 100
-                    and type(enriched) is int and 0 <= enriched <= checked):
-                return f"Telegram fingerprint scan checked {checked} videos and enriched {enriched}."
-            return "Telegram fingerprint scan completed."
-        if job.get("action") == "artwork_generate" and result.get("local_state") == "artwork_generated":
-            summary = "Artwork generated from a video frame."
-            if result.get("jellyfin_refresh") == "failed":
-                summary += " Local result saved; Jellyfin refresh failed."
-            elif result.get("jellyfin_refresh") == "skipped":
-                summary += " Jellyfin refresh was skipped."
-            elif result.get("jellyfin_refresh") == "unavailable":
-                summary += " Jellyfin item refresh was unavailable."
-            if result.get("jellyfin_library_refresh") == "failed":
-                summary += " The global Jellyfin library refresh failed."
+        action = job.get("action")
+        summarize = _RESULT_SUMMARIES.get(action) if isinstance(action, str) else None
+        summary = summarize(result) if summarize is not None else None
+        if summary is None:
+            summary = _generic_result_summary(result)
+        if summary is not None:
             return summary
-        if job.get("action") == "artwork_generate" and result.get("local_state") == "artwork_already_valid":
-            return "Artwork was already valid when the task started; no changes were made."
-        if job.get("action") == "artwork_download":
-            local_state = result.get("local_state")
-            if local_state == "artwork_downloaded":
-                provider = result.get("provider")
-                summary = (f"Artwork downloaded from {provider}."
-                           if provider in {"StashDB", "ThePornDB"} else "Artwork downloaded.")
-                if result.get("jellyfin_refresh") == "failed":
-                    summary += " Local result saved; Jellyfin refresh failed."
-                return summary
-            if local_state == "artwork_not_found":
-                return "No matching artwork found on StashDB or ThePornDB."
-            if local_state == "artwork_download_failed":
-                return "A matching poster was found, but it could not be downloaded."
-            if local_state == "artwork_lookup_failed":
-                return "The artwork search did not complete; metadata providers reported errors."
-        if result.get("restore_test") is True:
-            return "Backup restored and validated in a disposable database; that database was removed."
-        if result.get("backup_created") is True:
-            return "Database backup created and verified."
-        if result.get("jellyfin_refresh") == "failed":
-            return "Local result saved; Jellyfin refresh failed."
-        if result.get("refresh_requested") is True:
-            return "Jellyfin accepted the refresh request; check the library after its next refresh."
-        if result.get("jellyfin_import") == "not_confirmed":
-            return "Local metadata saved; Jellyfin accepted the refresh request, but import is not confirmed."
-        if result.get("jellyfin_import") == "confirmed":
-            return "Jellyfin imported the current local metadata file."
-        if result.get("recovery") == "in_progress":
-            return "Recovery in progress."
     state = str(job.get("state") or "").lower()
     if state == "done":
         return "Completed."
@@ -158,6 +216,28 @@ def _result_summary(job: dict) -> str | None:
     if state == "cancelled":
         return "Cancelled before the worker started."
     return None
+
+
+def _source_failure_item(source: dict) -> dict:
+    item = {}
+    label = source.get("label")
+    error = source.get("error")
+    if isinstance(label, str) and len(label) <= 256:
+        item["label"] = label
+    if isinstance(error, str) and re.fullmatch(r"Sync failed \([A-Za-z0-9_]{1,80}\)\.", error):
+        item["error"] = error
+    return item
+
+
+def _run_source_failures(run: dict) -> list[dict]:
+    failures = []
+    for source in run.get("sources", []):
+        if not isinstance(source, dict) or source.get("success") is not False:
+            continue
+        item = _source_failure_item(source)
+        if item:
+            failures.append(item)
+    return failures
 
 
 def _attach_sync_failures(job: dict, history: dict | None) -> None:
@@ -175,61 +255,50 @@ def _attach_sync_failures(job: dict, history: dict | None) -> None:
         if (not isinstance(run, dict) or run.get("ended_at") != updated_at
                 or run.get("source_filter") != source_filter):
             continue
-        failures = []
-        for source in run.get("sources", []):
-            if not isinstance(source, dict) or source.get("success") is not False:
-                continue
-            item = {}
-            label = source.get("label")
-            error = source.get("error")
-            if isinstance(label, str) and len(label) <= 256:
-                item["label"] = label
-            if isinstance(error, str) and re.fullmatch(r"Sync failed \([A-Za-z0-9_]{1,80}\)\.", error):
-                item["error"] = error
-            if item:
-                failures.append(item)
+        failures = _run_source_failures(run)
         if failures:
             result["source_failures"] = failures[:100]
         return
 
 
-def _safe_job(job: dict, *, now=None) -> dict:
-    """Project persisted data onto fields safe for the v2 UI."""
-    result = job.get("result") if isinstance(job.get("result"), dict) else {}
-    state = str(job.get("state") or "unknown").lower()
-    local_state = result.get("local_state")
-    refresh_state = result.get("jellyfin_refresh")
-    import_state = result.get("jellyfin_import")
-    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
-    audit_mode = None
+_LOCAL_STATES = frozenset({"hidden", "dismissed", "restored", "quarantined", "source_removed", "source_readded", "metadata_updated", "metadata_scan_completed", "telegram_fingerprint_scan_completed", "artwork_downloaded", "artwork_generated", "artwork_already_valid", "artwork_not_found", "artwork_download_failed", "artwork_lookup_failed", "availability_checked", "audit_queued", "audit_completed", "metadata_quality_audit_completed", "nfo_repaired", "files_repaired"})
+_JELLYFIN_REFRESH_STATES = frozenset({"pending", "updated", "failed", "skipped", "unavailable", "not_required"})
+_JELLYFIN_IMPORT_STATES = frozenset({"not_requested", "not_confirmed", "confirmed"})
+
+
+def _choice(value, allowed) -> str | None:
+    return value if isinstance(value, str) and value in allowed else None
+
+
+def _audit_mode(job: dict, payload: dict) -> str | None:
     if job.get("action") == "catalog_full_audit":
-        audit_mode = "full"
-    elif job.get("action") == "metadata_quality_audit":
-        audit_mode = "metadata_quality"
-    elif job.get("action") == "consistency_audit":
+        return "full"
+    if job.get("action") == "metadata_quality_audit":
+        return "metadata_quality"
+    if job.get("action") == "consistency_audit":
         candidate = payload.get("mode")
-        audit_mode = candidate if candidate in {"file_consistency", "full"} else "full"
+        return candidate if candidate in {"file_consistency", "full"} else "full"
+    return None
+
+
+def _job_stage(state: str, progress: dict, result: dict) -> str:
     # These are fixed worker states. Never expose arbitrary result or payload
     # fields: they can contain source URLs, paths, or credentials.
-    progress = job.get("progress") if isinstance(job.get("progress"), dict) else {}
     recorded_stage = progress.get("stage")
     if state == "processing" and recorded_stage in JOB_STAGE_LABELS:
-        stage = recorded_stage
-    elif state == "queued":
-        stage = "queued"
-    elif state == "processing" and refresh_state == "pending":
-        stage = "jellyfin_refresh"
-    elif state == "processing" and result.get("recovery") == "in_progress":
-        stage = "recovery"
-    elif state == "processing":
-        stage = "processing"
-    else:
-        stage = state
-    safe_progress = {"stage": stage}
-    for key in ("updated_at", "completed", "total"):
-        value = progress.get(key)
-        if isinstance(value, int) and value >= 0:
-            safe_progress[key] = value
+        return recorded_stage
+    if state == "queued":
+        return "queued"
+    if state == "processing" and result.get("jellyfin_refresh") == "pending":
+        return "jellyfin_refresh"
+    if state == "processing" and result.get("recovery") == "in_progress":
+        return "recovery"
+    if state == "processing":
+        return "processing"
+    return state
+
+
+def _safe_events(job: dict) -> list[dict]:
     safe_events = []
     for event in job.get("events", []) if isinstance(job.get("events"), list) else []:
         if not isinstance(event, dict) or event.get("stage") not in JOB_STAGE_LABELS:
@@ -240,13 +309,53 @@ def _safe_job(job: dict, *, now=None) -> dict:
             if isinstance(value, int) and value >= 0:
                 safe_event[key] = value
         safe_events.append(safe_event)
+    return safe_events
+
+
+def _safe_parameters(job: dict, payload: dict) -> dict:
+    parameters = {}
+    for key in ("video_id", "source", "channel_id"):
+        value = payload.get(key)
+        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9:@+_.-]{1,250}", value):
+            parameters[key] = value
+    if isinstance(payload.get("sync_mode"), str) and payload["sync_mode"] in {"scheduled", "new", "backfill"}:
+        parameters["sync_mode"] = payload["sync_mode"]
+    if type(job.get("attempts")) is int:
+        parameters["attempts"] = job["attempts"]
+    return parameters
+
+
+def _sync_source_id(job: dict, result: dict) -> str | None:
+    # A configured source identifier is safe to link to the Sources view;
+    # arbitrary worker result fields (including URLs and credentials) stay private.
+    source_id = result.get("source")
+    if (job.get("action") == "sync" and isinstance(source_id, str)
+            and re.fullmatch(r"telegram:[A-Za-z0-9@+_.-]{1,250}", source_id)):
+        return source_id
+    return None
+
+
+def _safe_job(job: dict, *, now=None) -> dict:
+    """Project persisted data onto fields safe for the v2 UI."""
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    state = str(job.get("state") or "unknown").lower()
+    local_state = result.get("local_state")
+    payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    progress = job.get("progress") if isinstance(job.get("progress"), dict) else {}
+    stage = _job_stage(state, progress, result)
+    safe_progress = {"stage": stage}
+    for key in ("updated_at", "completed", "total"):
+        value = progress.get(key)
+        if isinstance(value, int) and value >= 0:
+            safe_progress[key] = value
+    safe_events = _safe_events(job)
     failure_code = job.get("failure_code")
     if not isinstance(failure_code, str) or failure_code not in JOB_FAILURE_MESSAGES:
         failure_code = None
     safe_job = {
         "id": str(job.get("id") or ""),
         "action": str(job.get("action") or "task"),
-        "audit_mode": audit_mode,
+        "audit_mode": _audit_mode(job, payload),
         "state": state,
         "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
@@ -258,10 +367,10 @@ def _safe_job(job: dict, *, now=None) -> dict:
         "failure_stage": next((event["stage"] for event in reversed(safe_events)
                                 if event["stage"] not in {"starting", "completed", "cancelled"}), None)
         if state == "failed" else None,
-        "local_state": local_state if isinstance(local_state, str) and local_state in {"hidden", "dismissed", "restored", "quarantined", "source_removed", "source_readded", "metadata_updated", "metadata_scan_completed", "telegram_fingerprint_scan_completed", "artwork_downloaded", "artwork_generated", "artwork_already_valid", "artwork_not_found", "artwork_download_failed", "artwork_lookup_failed", "availability_checked", "audit_queued", "audit_completed", "metadata_quality_audit_completed", "nfo_repaired", "files_repaired"} else None,
-        "jellyfin_refresh": refresh_state if isinstance(refresh_state, str) and refresh_state in {"pending", "updated", "failed", "skipped", "unavailable", "not_required"} else None,
-        "jellyfin_library_refresh": result.get("jellyfin_library_refresh") if isinstance(result.get("jellyfin_library_refresh"), str) and result.get("jellyfin_library_refresh") in {"pending", "updated", "failed", "skipped", "unavailable", "not_required"} else None,
-        "jellyfin_import": import_state if isinstance(import_state, str) and import_state in {"not_requested", "not_confirmed", "confirmed"} else None,
+        "local_state": _choice(local_state, _LOCAL_STATES),
+        "jellyfin_refresh": _choice(result.get("jellyfin_refresh"), _JELLYFIN_REFRESH_STATES),
+        "jellyfin_library_refresh": _choice(result.get("jellyfin_library_refresh"), _JELLYFIN_REFRESH_STATES),
+        "jellyfin_import": _choice(result.get("jellyfin_import"), _JELLYFIN_IMPORT_STATES),
         "error": (
             JOB_FAILURE_MESSAGES.get(job.get("failure_code"))
             or ("Job failed. Inspect local worker logs for details." if job.get("error") else None)
@@ -269,21 +378,9 @@ def _safe_job(job: dict, *, now=None) -> dict:
         "result_summary": _result_summary(job),
         "undo_available": bool(job.get("undo_available")) if job.get("undo_available") is not None else None,
     }
-    parameters = {}
-    for key in ("video_id", "source", "channel_id"):
-        value = payload.get(key)
-        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9:@+_.-]{1,250}", value):
-            parameters[key] = value
-    if isinstance(payload.get("sync_mode"), str) and payload["sync_mode"] in {"scheduled", "new", "backfill"}:
-        parameters["sync_mode"] = payload["sync_mode"]
-    if type(job.get("attempts")) is int:
-        parameters["attempts"] = job["attempts"]
-    safe_job["parameters"] = parameters
-    source_id = result.get("source")
-    if (job.get("action") == "sync" and isinstance(source_id, str)
-            and re.fullmatch(r"telegram:[A-Za-z0-9@+_.-]{1,250}", source_id)):
-        # A configured source identifier is safe to link to the Sources view;
-        # arbitrary worker result fields (including URLs and credentials) stay private.
+    safe_job["parameters"] = _safe_parameters(job, payload)
+    source_id = _sync_source_id(job, result)
+    if source_id is not None:
         safe_job["source_id"] = source_id
     return safe_job
 

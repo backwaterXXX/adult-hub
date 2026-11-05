@@ -101,37 +101,46 @@ class V2ErrorRoute(APIRoute):
                 # Do not log exception text: it can contain request data or secrets.
                 _LOG.error("Admin v2 request failed (%s)", type(exc).__name__)
                 response = v2_error_response(500, "The request could not be completed.")
-                if is_v2:
-                    await _record_mutation(request, response)
+                await _record_mutation(request, response)
                 return response
             if is_v2:
                 await _record_mutation(request, response)
             if response.status_code < 400 or not is_v2:
                 return response
-
-            raw = getattr(response, "body", b"")
-            try:
-                payload = json.loads(raw) if raw else {}
-            except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
-                payload = {}
-
-            message = "The request could not be completed."
-            if isinstance(payload, dict):
-                error = payload.get("error")
-                if isinstance(error, str) and error.strip():
-                    message = error.strip()
-                elif isinstance(error, dict) and isinstance(error.get("message"), str):
-                    message = error["message"].strip() or message
-                elif response.status_code == 409:
-                    message = "The data changed. Refresh and try again."
-                elif response.status_code == 403:
-                    message = "This action is not allowed."
-                extras = {key: value for key, value in payload.items()
-                          if key not in {"ok", "error", "detail"}}
-            else:
-                extras = {}
-
-            status = 400 if response.status_code == 422 else response.status_code
-            return v2_error_response(status, message, headers=response.headers, extras=extras)
+            return _normalized_error_response(response)
 
         return handler
+
+
+def _json_payload(raw) -> object:
+    try:
+        return json.loads(raw) if raw else {}
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _error_message(payload: dict, status: int) -> str:
+    message = "The request could not be completed."
+    error = payload.get("error")
+    if isinstance(error, str) and error.strip():
+        return error.strip()
+    if isinstance(error, dict) and isinstance(error.get("message"), str):
+        return error["message"].strip() or message
+    if status == 409:
+        return "The data changed. Refresh and try again."
+    if status == 403:
+        return "This action is not allowed."
+    return message
+
+
+def _normalized_error_response(response) -> JSONResponse:
+    payload = _json_payload(getattr(response, "body", b""))
+    if isinstance(payload, dict):
+        message = _error_message(payload, response.status_code)
+        extras = {key: value for key, value in payload.items()
+                  if key not in {"ok", "error", "detail"}}
+    else:
+        message = "The request could not be completed."
+        extras = {}
+    status = 400 if response.status_code == 422 else response.status_code
+    return v2_error_response(status, message, headers=response.headers, extras=extras)

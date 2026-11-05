@@ -12,6 +12,59 @@ from admin_v2_errors import V2ErrorRoute
 logger = logging.getLogger(__name__)
 
 
+_INVALID_SYNC_REQUEST = "Specify a valid sync request."
+_INVALID_SOURCE = "Source must be a configured source identifier."
+
+
+def _parse_sync_request(body) -> tuple[str, str, str | None]:
+    """Return (source, sync_mode, error message); the error is None for a valid request."""
+    if not isinstance(body, dict) or set(body) - {"source", "sync_mode"}:
+        return "", "", _INVALID_SYNC_REQUEST
+    source_value = body.get("source")
+    if source_value is not None and not isinstance(source_value, str):
+        return "", "", _INVALID_SOURCE
+    source = str(source_value or "").strip()
+    if source_value is not None and not source:
+        return "", "", _INVALID_SOURCE
+    sync_mode = str(body.get("sync_mode") or "scheduled").strip()
+    if sync_mode not in {"scheduled", "new", "backfill"}:
+        return "", "", "Sync mode must be scheduled, new, or backfill."
+    if sync_mode == "backfill" and (not source or source == "telegram"):
+        return "", "", "Choose one Telegram channel for history backfill."
+    return source, sync_mode, None
+
+
+def _allowed_sources(config) -> tuple[set, set]:
+    allowed = {item.provider for item in config.get_enabled_sources()}
+    telegram = config.get_source("telegram")
+    telegram_channel_ids = set()
+    if telegram:
+        for channel in telegram.channels:
+            if channel.enabled:
+                telegram_channel_ids.add(channel.id)
+                allowed.add(channel.id)
+                allowed.add(f"telegram:{channel.id}")
+    return allowed, telegram_channel_ids
+
+
+def _source_error(admin, source: str, sync_mode: str) -> str | None:
+    """Return the error message for a source that is not usable, or None."""
+    try:
+        from common.config_loader import load_config
+
+        config = load_config(str(admin.CONFIG_PATH))
+        allowed, telegram_channel_ids = _allowed_sources(config)
+        if sync_mode == "backfill" and source not in telegram_channel_ids | {
+                f"telegram:{value}" for value in telegram_channel_ids}:
+            return "History backfill is available only for Telegram channels."
+        if source not in allowed:
+            return "Source is not enabled in configuration."
+    except Exception:
+        logger.debug("Ignored exception in trigger_sync", exc_info=True)
+        return "Could not validate the source configuration."
+    return None
+
+
 def build_router(admin):
     router = APIRouter(route_class=V2ErrorRoute)
 
@@ -24,42 +77,14 @@ def build_router(admin):
             body = await request.json()
         except Exception:
             logger.debug("Ignored exception in trigger_sync", exc_info=True)
-            return admin.JSONResponse({"ok": False, "error": "Specify a valid sync request."}, status_code=400)
-        if not isinstance(body, dict) or set(body) - {"source", "sync_mode"}:
-            return admin.JSONResponse({"ok": False, "error": "Specify a valid sync request."}, status_code=400)
-        source_value = body.get("source")
-        if source_value is not None and not isinstance(source_value, str):
-            return admin.JSONResponse({"ok": False, "error": "Source must be a configured source identifier."}, status_code=400)
-        source = str(source_value or "").strip()
-        if source_value is not None and not source:
-            return admin.JSONResponse({"ok": False, "error": "Source must be a configured source identifier."}, status_code=400)
-        sync_mode = str(body.get("sync_mode") or "scheduled").strip()
-        if sync_mode not in {"scheduled", "new", "backfill"}:
-            return admin.JSONResponse({"ok": False, "error": "Sync mode must be scheduled, new, or backfill."}, status_code=400)
-        if sync_mode == "backfill" and (not source or source == "telegram"):
-            return admin.JSONResponse({"ok": False, "error": "Choose one Telegram channel for history backfill."}, status_code=400)
+            return admin.JSONResponse({"ok": False, "error": _INVALID_SYNC_REQUEST}, status_code=400)
+        source, sync_mode, error = _parse_sync_request(body)
+        if error is not None:
+            return admin.JSONResponse({"ok": False, "error": error}, status_code=400)
         if source:
-            try:
-                from common.config_loader import load_config
-
-                config = load_config(str(admin.CONFIG_PATH))
-                allowed = {item.provider for item in config.get_enabled_sources()}
-                telegram = config.get_source("telegram")
-                telegram_channel_ids = set()
-                if telegram:
-                    for channel in telegram.channels:
-                        if channel.enabled:
-                            telegram_channel_ids.add(channel.id)
-                            allowed.add(channel.id)
-                            allowed.add(f"telegram:{channel.id}")
-                if sync_mode == "backfill" and source not in telegram_channel_ids | {
-                        f"telegram:{value}" for value in telegram_channel_ids}:
-                    return admin.JSONResponse({"ok": False, "error": "History backfill is available only for Telegram channels."}, status_code=400)
-                if source not in allowed:
-                    return admin.JSONResponse({"ok": False, "error": "Source is not enabled in configuration."}, status_code=400)
-            except Exception:
-                logger.debug("Ignored exception in trigger_sync", exc_info=True)
-                return admin.JSONResponse({"ok": False, "error": "Could not validate the source configuration."}, status_code=400)
+            error = _source_error(admin, source, sync_mode)
+            if error is not None:
+                return admin.JSONResponse({"ok": False, "error": error}, status_code=400)
         try:
             from video_duplicates import enqueue_job
 
