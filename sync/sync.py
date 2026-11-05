@@ -158,105 +158,56 @@ try:
 except ImportError:
     httpx = None
 
-logger = configure_logging("sync")
-
-# Keep a bounded copy of sync output on the shared data volume so the admin
-# panel can show progress without requiring access to container logs.
-try:
-    from logging.handlers import RotatingFileHandler
-    _activity_log = Path(os.getenv("SYNC_ACTIVITY_LOG_PATH", "/data/cache/sync_activity.log"))
-    _activity_log.parent.mkdir(parents=True, exist_ok=True)
-    if not any(getattr(handler, "baseFilename", None) == str(_activity_log.resolve()) for handler in logger.handlers):
-        _activity_handler = RotatingFileHandler(
-            _activity_log, maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8"
-        )
-        _activity_handler.setLevel(logging.INFO)
-        _activity_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-        logger.addHandler(_activity_handler)
-except OSError as e:
-    logger.warning("Could not open sync activity log: %s", e)
-
-# Configuration from Environment Variables
-RESOLVER_PUBLIC_URL = os.getenv("RESOLVER_PUBLIC_URL", "http://127.0.0.1:8090") # URL exposed to playback clients
-RESOLVER_API_URL = os.getenv("RESOLVER_API_URL", "http://localhost:8090")          # URL for sync to fetch API
-STREAM_PUBLIC_URL_TELEGRAM = os.getenv("STREAM_PUBLIC_URL_TELEGRAM", "").strip()
-MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "./media/adult")).resolve()
-DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None
-DATA_DIR = Path(os.getenv("DATA_DIR", "/data" if Path("/data").exists() else "./data")).resolve()
-
-# Configuration from config.yaml (PLAN_KONFIGURACJI.md)
-CONFIG = None
-try:
-    from common.config_loader import load_config, ConfigError
-    CONFIG = load_config()
-except ConfigError as ce:
-    logger.critical(f"FATAL CONFIG ERROR: {ce}")
-    raise SystemExit(f"FATAL CONFIG ERROR: {ce}")
-except Exception as e:
-    logger.critical(f"FATAL: could not load config: {e}")
-    raise SystemExit(f"FATAL: could not load config: {e}") from e
-
-if CONFIG:
-    RETENTION_DAYS = CONFIG.sync.retention_days
-
-    # Telegram plus generic upkeep knobs only.
-    _tg = CONFIG.get_source("telegram")
-    SYNC_TELEGRAM = _tg.enabled if _tg else False
-    TELEGRAM_CHANNELS = [ch.id for ch in _tg.channels if ch.enabled] if _tg else []
-    TELEGRAM_MAX_PAGES = _tg.defaults.get("max_pages", 1) if _tg else 1
-
-else:
-    RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "30"))
-
-    SYNC_TELEGRAM = os.getenv("SYNC_TELEGRAM", "false").lower() in ["true", "1", "yes"]
-    TELEGRAM_CHANNELS = [c.strip() for c in os.getenv("TELEGRAM_CHANNELS", "").split(",") if c.strip()]
-    TELEGRAM_MAX_PAGES = int(os.getenv("TELEGRAM_MAX_PAGES", "1"))
-
-JELLYFIN_URL = os.getenv("JELLYFIN_URL", "")
-JELLYFIN_API_KEY = os.getenv("JELLYFIN_API_KEY", "")
-
-HIDE_DEAD_STREAMS = os.getenv("HIDE_DEAD_STREAMS", "true").lower() in ["true", "1", "yes"]
-DEAD_STREAM_RESOLVER_TIMEOUT = 120.0
-# Denylist entries older than this (and no longer listed) expire.
-DEAD_STREAM_DENYLIST_DAYS = 90
-
-# Hide videos whose embeds need a real browser (mirrors the resolver list;
-# fetched live from /admin/api/unsupported-embeds when reachable).
-
-PBC_BACKFILL_PER_RUN = CONFIG.sync.pbc_backfill_per_run if CONFIG else int(os.getenv("PBC_BACKFILL_PER_RUN", "50"))
-TPDB_BACKFILL_PER_RUN = getattr(CONFIG.sync, "tpdb_backfill_per_run", 50) if CONFIG else int(os.getenv("TPDB_BACKFILL_PER_RUN", "50"))
-SCENE_BACKFILL_PER_RUN = getattr(CONFIG.sync, "scene_backfill_per_run", 500) if CONFIG else int(os.getenv("SCENE_BACKFILL_PER_RUN", "500"))
-JELLYFIN_PEOPLE_PER_RUN = CONFIG.sync.jellyfin_people_per_run if CONFIG else int(os.getenv("JELLYFIN_PEOPLE_PER_RUN", "25"))
+from sync_helpers import (
+    sanitize_filename,
+    format_category_name,
+    parse_duration_to_seconds,
+    parse_title_performers,
+    _merge_video_fields,
+    parse_retry_after,
+    _retry_after_from_error,
+    _is_retryable_error,
+    format_dateadded,
+    load_performer_thumbs,
+    load_performer_links,
+)
+from sync_settings import (
+    RESOLVER_PUBLIC_URL,
+    RESOLVER_API_URL,
+    STREAM_PUBLIC_URL_TELEGRAM,
+    MEDIA_DIR,
+    DB_URL,
+    DATA_DIR,
+    CONFIG,
+    JELLYFIN_URL,
+    JELLYFIN_API_KEY,
+    HIDE_DEAD_STREAMS,
+    DEAD_STREAM_RESOLVER_TIMEOUT,
+    DEAD_STREAM_DENYLIST_DAYS,
+    PBC_BACKFILL_PER_RUN,
+    TPDB_BACKFILL_PER_RUN,
+    SCENE_BACKFILL_PER_RUN,
+    JELLYFIN_PEOPLE_PER_RUN,
+    logger,
+)
 
 def stream_mode_for_provider(video_id: str) -> str:
     return _stream_mode_for_provider_impl(video_id, config=CONFIG)
 
-
-DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-}
-
-
 def get_provider_info(provider_key: str) -> Dict[str, str]:
     return _get_provider_info_impl(provider_key)
-
 
 def known_provider_names() -> Set[str]:
     return _known_provider_names_impl()
 
-
 def normalize_cleanup_provider(name: str) -> str:
     return _normalize_cleanup_provider_impl(name, config=CONFIG)
-
 
 def _telegram_channel_of_video(video_id: str) -> Optional[str]:
     return _telegram_channel_of_video_impl(video_id)
 
-
 def _normalized_success_set(providers_succeeded: Optional[Set[str]]) -> Set[str]:
     return _normalized_success_set_impl(providers_succeeded, config=CONFIG)
-
 
 def is_cleanup_allowed(video_id: str, provider: Optional[str] = None,
                        providers_succeeded: Optional[Set[str]] = None) -> bool:
@@ -265,19 +216,6 @@ def is_cleanup_allowed(video_id: str, provider: Optional[str] = None,
         provider=provider,
         providers_succeeded=providers_succeeded,
         config=CONFIG,
-    )
-
-_HTTP_CLIENT: Optional[Any] = None
-
-def get_http_client():
-    global _HTTP_CLIENT
-    _HTTP_CLIENT = _get_http_client(httpx, DEFAULT_HEADERS, _HTTP_CLIENT)
-    return _HTTP_CLIENT
-
-def http_get(url: str, headers: Optional[Dict[str, str]] = None, timeout: float = 15.0) -> bytes:
-    return _http_get(
-        url, headers=headers, timeout=timeout,
-        get_client=get_http_client, default_headers=DEFAULT_HEADERS,
     )
 
 def resolve_media_path(stored_path: str, media_dir: Path) -> Path:
@@ -333,6 +271,45 @@ def rewrite_all_stream_files(conn: db.Connection, media_dir: Path,
         write_stream_file_fn=write_stream_file,
     )
 
+
+
+
+
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+_HTTP_CLIENT: Optional[Any] = None
+
+def get_http_client():
+    global _HTTP_CLIENT
+    _HTTP_CLIENT = _get_http_client(httpx, DEFAULT_HEADERS, _HTTP_CLIENT)
+    return _HTTP_CLIENT
+
+def http_get(url: str, headers: Optional[Dict[str, str]] = None, timeout: float = 15.0) -> bytes:
+    return _http_get(
+        url, headers=headers, timeout=timeout,
+        get_client=get_http_client, default_headers=DEFAULT_HEADERS,
+    )
+
+
+
+
+
+
 def _data_migration_services() -> DataMigrationServices:
     return DataMigrationServices(
         logger=logger,
@@ -379,22 +356,6 @@ def init_db(db_url: str | None = None) -> db.Connection:
     return _init_db_impl(db_url or DB_URL, map_category_fn=map_category)
 
 
-def format_category_name(cat_id: str) -> str:
-    parts = cat_id.split("-")
-    if len(parts) > 1 and len(parts[-1]) == 5 and parts[-1].isalnum():
-        name_parts = parts[:-1]
-    else:
-        name_parts = parts
-    return " ".join(p.capitalize() for p in name_parts)
-
-def sanitize_filename(name: str) -> str:
-    clean = re.sub(r'[\\/*?:"<>|]', "", name)
-    clean = re.sub(r'\s+', " ", clean).strip()
-    return clean[:120]
-
-def parse_duration_to_seconds(dur_str: Optional[str]) -> int:
-    """Parse duration string supporting HH:MM:SS, MM:SS, SS, and min/sec text."""
-    return parse_duration_seconds(dur_str)
 
 
 
@@ -405,37 +366,22 @@ def parse_duration_to_seconds(dur_str: Optional[str]) -> int:
 
 
 
-def parse_title_performers(title: str, known_performers: Optional[Iterable[str]] = None) -> List[str]:
-    if isinstance(known_performers, dict):
-        known_set = known_performers
-    elif known_performers:
-        known_set = {k.strip().lower(): k.strip() for k in known_performers}
-    else:
-        known_set = {}
-    return _parse_title_performers_with_known_map(title, known_set)
 
 
 
 
-def _merge_video_fields(existing: Dict[str, Any], new: Dict[str, Any]):
-    """Union performers/categories from a duplicate sighting (order-preserving)."""
-    _merge_video_fields_impl(existing, new)
 
 
 
 
-def parse_retry_after(value: Any, default: float, cap: float = 60.0) -> float:
-    return _parse_retry_after(value, default, cap)
-
-
-def _retry_after_from_error(e: Exception, default: float) -> float:
-    return _retry_after_from_error_impl(e, default, parse_retry_after_fn=parse_retry_after)
 
 
 
 
-def _is_retryable_error(e: Exception) -> bool:
-    return _is_retryable_error_impl(e)
+
+
+
+
 
 
 _ACTIVE_SYNC_METRICS = None
@@ -546,16 +492,10 @@ def download_image_if_missing(url: str, dest_path: Path) -> bool:
 
 
 
-def format_dateadded(ts) -> str:
-    return _format_dateadded_impl(ts)
 
 
-def load_performer_thumbs(conn: db.Connection, names) -> Dict[str, str]:
-    return _load_performer_thumbs_impl(conn, names)
 
 
-def load_performer_links(conn: db.Connection, names) -> Dict[str, Dict[str, str]]:
-    return _load_performer_links_impl(conn, names)
 
 
 def _video_for_nfo(video: Dict[str, Any], conn: Optional[db.Connection] = None) -> Dict[str, Any]:

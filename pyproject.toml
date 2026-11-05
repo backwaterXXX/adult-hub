@@ -45,6 +45,7 @@ max-complexity = 10
 "sync/performer_enrichment.py" = ["C901", "G004"]
 "sync/runner.py" = ["C901", "G004"]
 "sync/sync.py" = ["F401", "G004"]
+"sync/sync_settings.py" = ["G004"]
 "sync/thumbnails.py" = ["C901", "G004"]
 "sync/video_persistence.py" = ["C901", "G004"]
 "tests/*.py" = ["E402"]
