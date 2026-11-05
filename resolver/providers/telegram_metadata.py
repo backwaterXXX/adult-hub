@@ -1,7 +1,7 @@
 """Telegram caption and performer metadata parsing helpers."""
 import os
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import logging
 
 from common.performers import is_valid_performer_name, prune_redundant_performers
@@ -47,49 +47,60 @@ def load_performer_catalog() -> List[dict]:
     return list(records)
 
 
+def _fetch_performer_rows() -> List[tuple]:
+    """Rows of ``videos.performers`` that are not empty JSON lists. Errors propagate."""
+    from common import db as _db
+    conn = _db.connect(_hub_db_url())
+    try:
+        rows = conn.execute(
+            "SELECT performers FROM videos WHERE performers <> '[]'::jsonb"
+        ).fetchall()
+    finally:
+        conn.close()
+    return rows
+
+
+def _collect_row_performers(raw: Any, alias_map: Dict[str, str], seen: set, names: List[str]) -> None:
+    """Append valid, de-duplicated performer names from one JSON ``performers`` value."""
+    import json as _json
+    try:
+        parsed = _json.loads(raw) if isinstance(raw, str) else []
+    except Exception:
+        logger.debug("Ignored exception in load_known_performers", exc_info=True)
+        return
+    if not isinstance(parsed, list):
+        return
+    for entry in parsed:
+        name = str(entry or "").strip()
+        if name and is_valid_performer_name(name):
+            if alias_map and name.lower() in alias_map:
+                name = alias_map[name.lower()]
+            if name.lower() not in seen and is_valid_performer_name(name):
+                seen.add(name.lower())
+                names.append(name)
+
+
 def load_known_performers() -> List[str]:
     """Dictionary of performers from videos.performers column (JSON lists).
 
     Cache invalidated by TTL. Missing DB / error -> [] (never raises).
     """
-    import json as _json
-    from common import db as _db
     if not _hub_db_url():
         return []
     now = __import__("time").time()
     cache = _KNOWN_PERFORMERS_CACHE
     if now - float(cache.get("mtime") or 0.0) < _PERFORMER_CACHE_TTL_SECONDS and cache.get("names"):
         return list(cache["names"])  # type: ignore[arg-type]
-    names: List[str] = []
-    seen = set()
     try:
-        conn = _db.connect(_hub_db_url())
-        try:
-            rows = conn.execute(
-                "SELECT performers FROM videos WHERE performers <> '[]'::jsonb"
-            ).fetchall()
-        finally:
-            conn.close()
+        rows = _fetch_performer_rows()
     except Exception:
         logger.debug("Ignored exception in load_known_performers", exc_info=True)
         return list(cache.get("names") or [])  # type: ignore[arg-type]
+    names: List[str] = []
+    seen: set = set()
     alias_map = load_alias_map()
     for (raw,) in rows:
-        try:
-            parsed = _json.loads(raw) if isinstance(raw, str) else []
-        except Exception:
-            logger.debug("Ignored exception in load_known_performers", exc_info=True)
-            continue
-        if not isinstance(parsed, list):
-            continue
-        for entry in parsed:
-            name = str(entry or "").strip()
-            if name and is_valid_performer_name(name):
-                if alias_map and name.lower() in alias_map:
-                    name = alias_map[name.lower()]
-                if name.lower() not in seen and is_valid_performer_name(name):
-                    seen.add(name.lower())
-                    names.append(name)
+        _collect_row_performers(raw, alias_map, seen, names)
     cache["mtime"] = __import__("time").time()
     cache["names"] = names
     return list(names)
@@ -132,6 +143,130 @@ def load_alias_map() -> Dict[str, str]:
     return dict(entries)
 
 
+def _is_unclaimed(claimed_spans: List[Tuple[int, int]], start: int, end: int) -> bool:
+    """True when the span [start, end) overlaps no already claimed span."""
+    return not any(c_start < end and start < c_end for c_start, c_end in claimed_spans)
+
+
+def _is_isolated_word(haystack: str, start: int, end: int) -> bool:
+    """False when the match is adjacent to a capitalised word (part of a longer name)."""
+    if re.match(r"^\s+[A-Z][a-z]+", haystack[end:]):
+        return False
+    if re.search(r"\b[A-Z][a-z]+\s+$", haystack[:start]):
+        return False
+    return True
+
+
+def _claim_span(
+    claimed_spans: List[Tuple[int, int]],
+    matched: List[str],
+    seen_lower: set,
+    start: int,
+    end: int,
+    display: str,
+) -> None:
+    """Mark [start, end) as claimed and record ``display`` once (case-insensitive)."""
+    claimed_spans.append((start, end))
+    if display.lower() not in seen_lower:
+        seen_lower.add(display.lower())
+        matched.append(display)
+
+
+def _claim_direct_matches(
+    pattern: str,
+    has_space: bool,
+    display: str,
+    haystack: str,
+    claimed_spans: List[Tuple[int, int]],
+    matched: List[str],
+    seen_lower: set,
+) -> bool:
+    """Claim unclaimed occurrences of ``pattern``; returns True when any was claimed."""
+    found = False
+    for m in re.finditer(pattern, haystack, re.IGNORECASE | re.UNICODE):
+        s, e = m.start(), m.end()
+        if _is_unclaimed(claimed_spans, s, e):
+            if not has_space and not _is_isolated_word(haystack, s, e):
+                continue
+            _claim_span(claimed_spans, matched, seen_lower, s, e, display)
+            found = True
+    return found
+
+
+def _claim_spaceless_matches(
+    nospace: str,
+    display: str,
+    haystack: str,
+    claimed_spans: List[Tuple[int, int]],
+    matched: List[str],
+    seen_lower: set,
+) -> None:
+    """Claim unclaimed occurrences of the spaceless variant of a multi-word name."""
+    pattern_ns = r"(?<!\w)" + re.escape(nospace) + r"(?!\w)"
+    for m in re.finditer(pattern_ns, haystack, re.IGNORECASE | re.UNICODE):
+        s, e = m.start(), m.end()
+        if _is_unclaimed(claimed_spans, s, e):
+            _claim_span(claimed_spans, matched, seen_lower, s, e, display)
+
+
+def _claim_needle_matches(
+    needle: str,
+    display: str,
+    haystack: str,
+    haystack_lower: str,
+    claimed_spans: List[Tuple[int, int]],
+    matched: List[str],
+    seen_lower: set,
+) -> None:
+    """Claim matches for one name or alias; invalid regex is skipped silently."""
+    has_space = " " in needle
+    nospace = needle.lower().replace(" ", "") if has_space else ""
+    try:
+        pattern = r"(?<!\w)" + re.escape(needle) + r"(?!\w)"
+        found = _claim_direct_matches(
+            pattern, has_space, display, haystack, claimed_spans, matched, seen_lower
+        )
+        if not found and has_space and len(nospace) >= 8 and nospace in haystack_lower:
+            _claim_spaceless_matches(
+                nospace, display, haystack, claimed_spans, matched, seen_lower
+            )
+    except re.error:
+        pass
+
+
+def _name_candidates(known_names, haystack_lower: str) -> List[str]:
+    """Known names that occur in the haystack, longest first."""
+    candidates = []
+    for name in (known_names or []):
+        clean = str(name or "").strip()
+        if len(clean) < 2 or not is_valid_performer_name(clean):
+            continue
+        clean_lower = clean.lower()
+        has_space = " " in clean
+        nospace = clean_lower.replace(" ", "") if has_space else ""
+        if clean_lower in haystack_lower or (has_space and len(nospace) >= 8 and nospace in haystack_lower):
+            candidates.append(clean)
+    candidates.sort(key=len, reverse=True)
+    return candidates
+
+
+def _alias_candidates(aliases, haystack_lower: str, seen_lower: set) -> List[Tuple[str, str]]:
+    """(alias, canonical) pairs that occur in the haystack, longest alias first."""
+    alias_candidates = []
+    for alias_lower, canonical in (aliases or {}).items():
+        alias = str(alias_lower or "").strip()
+        display = str(canonical or "").strip()
+        if len(alias) < 2 or not display or not is_valid_performer_name(display) or display.lower() in seen_lower:
+            continue
+        a_low = alias.lower()
+        has_space = " " in alias
+        nospace = a_low.replace(" ", "") if has_space else ""
+        if a_low in haystack_lower or (has_space and len(nospace) >= 8 and nospace in haystack_lower):
+            alias_candidates.append((alias, display))
+    alias_candidates.sort(key=lambda x: len(x[0]), reverse=True)
+    return alias_candidates
+
+
 def match_known_performers(text: str, known_names, aliases=None) -> List[str]:
     """Match performers from dictionary against text (title+caption+filename).
 
@@ -148,99 +283,24 @@ def match_known_performers(text: str, known_names, aliases=None) -> List[str]:
     haystack = str(text)
     claimed_spans: List[Tuple[int, int]] = []
     matched: List[str] = []
-    seen_lower = set()
-
-    def _is_unclaimed(start: int, end: int) -> bool:
-        return not any(c_start < end and start < c_end for c_start, c_end in claimed_spans)
-
-    def _is_isolated_word(start: int, end: int) -> bool:
-        if re.match(r"^\s+[A-Z][a-z]+", haystack[end:]):
-            return False
-        if re.search(r"\b[A-Z][a-z]+\s+$", haystack[:start]):
-            return False
-        return True
-
-    def _claim_span(start: int, end: int, display: str) -> None:
-        claimed_spans.append((start, end))
-        if display.lower() not in seen_lower:
-            seen_lower.add(display.lower())
-            matched.append(display)
-
+    seen_lower: set = set()
     haystack_lower = haystack.lower()
 
-    candidates = []
-    for name in (known_names or []):
-        clean = str(name or "").strip()
-        if len(clean) < 2 or not is_valid_performer_name(clean):
-            continue
-        clean_lower = clean.lower()
-        has_space = " " in clean
-        nospace = clean_lower.replace(" ", "") if has_space else ""
-        if clean_lower in haystack_lower or (has_space and len(nospace) >= 8 and nospace in haystack_lower):
-            candidates.append(clean)
-    candidates.sort(key=len, reverse=True)
-
-    for clean in candidates:
+    for clean in _name_candidates(known_names, haystack_lower):
         if len(matched) >= _MAX_PERFORMERS_PER_VIDEO:
             break
-        has_space = " " in clean
-        clean_lower = clean.lower()
-        nospace = clean_lower.replace(" ", "") if has_space else ""
-        display = (aliases or {}).get(clean_lower, clean)
-        try:
-            pattern = r"(?<!\w)" + re.escape(clean) + r"(?!\w)"
-            found = False
-            for m in re.finditer(pattern, haystack, re.IGNORECASE | re.UNICODE):
-                s, e = m.start(), m.end()
-                if _is_unclaimed(s, e):
-                    if not has_space and not _is_isolated_word(s, e):
-                        continue
-                    _claim_span(s, e, display)
-                    found = True
-            if not found and has_space and len(nospace) >= 8 and nospace in haystack_lower:
-                pattern_ns = r"(?<!\w)" + re.escape(nospace) + r"(?!\w)"
-                for m in re.finditer(pattern_ns, haystack, re.IGNORECASE | re.UNICODE):
-                    s, e = m.start(), m.end()
-                    if _is_unclaimed(s, e):
-                        _claim_span(s, e, display)
-        except re.error:
-            pass
+        display = (aliases or {}).get(clean.lower(), clean)
+        _claim_needle_matches(
+            clean, display, haystack, haystack_lower, claimed_spans, matched, seen_lower
+        )
 
-    alias_candidates = []
-    for alias_lower, canonical in (aliases or {}).items():
-        alias = str(alias_lower or "").strip()
-        display = str(canonical or "").strip()
-        if len(alias) < 2 or not display or not is_valid_performer_name(display) or display.lower() in seen_lower:
-            continue
-        a_low = alias.lower()
-        has_space = " " in alias
-        nospace = a_low.replace(" ", "") if has_space else ""
-        if a_low in haystack_lower or (has_space and len(nospace) >= 8 and nospace in haystack_lower):
-            alias_candidates.append((alias, display, has_space, nospace))
-    alias_candidates.sort(key=lambda x: len(x[0]), reverse=True)
-
-    for alias, display, has_space, nospace in alias_candidates:
+    for alias, display in _alias_candidates(aliases, haystack_lower, seen_lower):
         if len(matched) >= _MAX_PERFORMERS_PER_VIDEO:
             break
         if display.lower() in seen_lower:
             continue
-        try:
-            pattern = r"(?<!\w)" + re.escape(alias) + r"(?!\w)"
-            found = False
-            for m in re.finditer(pattern, haystack, re.IGNORECASE | re.UNICODE):
-                s, e = m.start(), m.end()
-                if _is_unclaimed(s, e):
-                    if not has_space and not _is_isolated_word(s, e):
-                        continue
-                    _claim_span(s, e, display)
-                    found = True
-            if not found and has_space and len(nospace) >= 8 and nospace in haystack_lower:
-                pattern_ns = r"(?<!\w)" + re.escape(nospace) + r"(?!\w)"
-                for m in re.finditer(pattern_ns, haystack, re.IGNORECASE | re.UNICODE):
-                    s, e = m.start(), m.end()
-                    if _is_unclaimed(s, e):
-                        _claim_span(s, e, display)
-        except re.error:
-            pass
+        _claim_needle_matches(
+            alias, display, haystack, haystack_lower, claimed_spans, matched, seen_lower
+        )
 
     return prune_redundant_performers(matched)

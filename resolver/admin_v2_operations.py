@@ -40,6 +40,151 @@ async def _read_operation_body(request: Request):
     return body, None
 
 
+_NO_MATCH = object()
+
+
+class _PreviewReject:
+    """Carries a JSON error response out of a preview validation step."""
+
+    __slots__ = ("response",)
+
+    def __init__(self, response):
+        self.response = response
+
+
+async def _preview_quarantine_scope(admin, body):
+    if set(body) != {"type", "video_ids"}:
+        return _NO_MATCH
+    from common.admin_operations import preview_quarantine
+    return await admin.asyncio.to_thread(
+        preview_quarantine, admin.HUB_DB_URL, body.get("video_ids"), str(admin.CONFIG_PATH)
+    )
+
+
+async def _preview_hide_scope(admin, body):
+    if set(body) not in (
+            {"type", "keeper_id", "loser_ids"},
+            {"type", "keeper_id", "loser_ids", "rules_version"}):
+        return _NO_MATCH
+    from common.admin_operations import preview_hide
+    rules_version = body.get("rules_version")
+    if "rules_version" in body and (type(rules_version) is not int or rules_version < 1):
+        return _PreviewReject(admin.JSONResponse({"error": "Specify a valid duplicate rules version."}, status_code=400))
+    hide_args = [admin.HUB_DB_URL, body.get("keeper_id"), body.get("loser_ids"), str(admin.CONFIG_PATH)]
+    if "rules_version" in body:
+        hide_args.append(rules_version)
+    return await admin.asyncio.to_thread(preview_hide, *hide_args)
+
+
+async def _preview_metadata_update_scope(admin, body):
+    if set(body) not in (
+            {"type", "video_id", "expected_revision", "changes", "reset_fields"},
+            {"type", "video_id", "expected_revision", "changes", "reset_fields", "proposal_id"}):
+        return _NO_MATCH
+    from common.admin_operations import preview_metadata_plan
+    if type(body.get("expected_revision")) is not int or body["expected_revision"] < 0:
+        return _PreviewReject(admin.JSONResponse({"error": "Specify the current metadata revision."}, status_code=400))
+    if "proposal_id" in body and (type(body["proposal_id"]) is not int or body["proposal_id"] <= 0):
+        return _PreviewReject(admin.JSONResponse({"error": "Specify a valid metadata proposal."}, status_code=400))
+    return await admin.asyncio.to_thread(
+        preview_metadata_plan, admin.HUB_DB_URL, body.get("video_id"), body["expected_revision"],
+        body.get("changes"), body.get("reset_fields"), body.get("proposal_id")
+    )
+
+
+async def _preview_metadata_update_batch_scope(admin, body):
+    if set(body) != {"type", "video_ids", "changes", "reset_fields"}:
+        return _NO_MATCH
+    from common.admin_operations import preview_metadata_batch_plan
+    return await admin.asyncio.to_thread(
+        preview_metadata_batch_plan, admin.HUB_DB_URL, body.get("video_ids"),
+        body.get("changes"), body.get("reset_fields")
+    )
+
+
+async def _preview_performer_merge_scope(admin, body):
+    if set(body) != {"type", "alias", "canonical"}:
+        return _NO_MATCH
+    from common.admin_operations import preview_performer_merge_plan
+    return await admin.asyncio.to_thread(
+        preview_performer_merge_plan, admin.HUB_DB_URL, body.get("alias"), body.get("canonical")
+    )
+
+
+async def _preview_auto_merge_exact_scope(admin, body):
+    if set(body) != {"type"}:
+        return _NO_MATCH
+    from common.admin_operations import preview_exact_merge_plan
+    return await admin.asyncio.to_thread(
+        preview_exact_merge_plan, admin.HUB_DB_URL, str(admin.CONFIG_PATH)
+    )
+
+
+async def _preview_restore_scope(admin, body):
+    if set(body) != {"type", "operation_id"} or not isinstance(body.get("operation_id"), str):
+        return _NO_MATCH
+    from common.admin_operations import preview_restore
+    return await admin.asyncio.to_thread(
+        preview_restore, admin.HUB_DB_URL, body["operation_id"]
+    )
+
+
+async def _preview_orphan_file_quarantine_scope(admin, body):
+    if set(body) != {"type", "audit_id", "finding_ids"}:
+        return _NO_MATCH
+    from common.admin_operations import preview_orphan_file_quarantine
+    return await admin.asyncio.to_thread(
+        preview_orphan_file_quarantine, admin.HUB_DB_URL, body.get("audit_id"), body.get("finding_ids")
+    )
+
+
+async def _preview_orphan_file_restore_scope(admin, body):
+    if set(body) != {"type", "operation_id"}:
+        return _NO_MATCH
+    from common.admin_operations import preview_orphan_file_restore
+    return await admin.asyncio.to_thread(
+        preview_orphan_file_restore, admin.HUB_DB_URL, body.get("operation_id")
+    )
+
+
+_PREVIEW_HANDLERS = {
+    "quarantine": _preview_quarantine_scope,
+    "hide": _preview_hide_scope,
+    "metadata_update": _preview_metadata_update_scope,
+    "metadata_update_batch": _preview_metadata_update_batch_scope,
+    "performer_merge": _preview_performer_merge_scope,
+    "auto_merge_exact": _preview_auto_merge_exact_scope,
+    "restore": _preview_restore_scope,
+    "orphan_file_quarantine": _preview_orphan_file_quarantine_scope,
+    "orphan_file_restore": _preview_orphan_file_restore_scope,
+}
+
+
+async def _dispatch_preview(admin, body):
+    """Return a preview result, a _PreviewReject, or reject unknown or mismatched scopes."""
+    handler = _PREVIEW_HANDLERS.get(body["type"])
+    if handler is not None:
+        result = await handler(admin, body)
+        if result is not _NO_MATCH:
+            return result
+    return _PreviewReject(admin.JSONResponse({"error": "This operation scope is invalid or unsupported."}, status_code=400))
+
+
+def _preview_response(admin, result):
+    if result["outcome"] == "invalid":
+        return admin.JSONResponse({"error": result["message"]}, status_code=400)
+    if result["outcome"] == "not_found":
+        return admin.JSONResponse({"error": result.get("message", "An item in this selection no longer exists.")}, status_code=404)
+    if result["outcome"] == "conflict":
+        return admin.JSONResponse({"error": result["message"]}, status_code=409)
+    if result["outcome"] == "stale":
+        return admin.JSONResponse({"error": result.get("message", "Selected data changed. Create a new preview."),
+                                   "revision": result.get("revision")}, status_code=409)
+    if result["outcome"] == "empty":
+        return {"ok": True, "items": [], "message": result["message"]}
+    return {"ok": True, **{key: value for key, value in result.items() if key != "outcome"}}
+
+
 def build_router(admin):
     router = APIRouter(route_class=V2ErrorRoute)
 
@@ -54,84 +199,13 @@ def build_router(admin):
         if not isinstance(body.get("type"), str):
             return admin.JSONResponse({"error": "Specify an operation type and its explicit scope."}, status_code=400)
         try:
-            if body["type"] == "quarantine" and set(body) == {"type", "video_ids"}:
-                from common.admin_operations import preview_quarantine
-                result = await admin.asyncio.to_thread(
-                    preview_quarantine, admin.HUB_DB_URL, body.get("video_ids"), str(admin.CONFIG_PATH)
-                )
-            elif body["type"] == "hide" and set(body) in (
-                    {"type", "keeper_id", "loser_ids"},
-                    {"type", "keeper_id", "loser_ids", "rules_version"}):
-                from common.admin_operations import preview_hide
-                rules_version = body.get("rules_version")
-                if "rules_version" in body and (type(rules_version) is not int or rules_version < 1):
-                    return admin.JSONResponse({"error": "Specify a valid duplicate rules version."}, status_code=400)
-                hide_args = [admin.HUB_DB_URL, body.get("keeper_id"), body.get("loser_ids"), str(admin.CONFIG_PATH)]
-                if "rules_version" in body:
-                    hide_args.append(rules_version)
-                result = await admin.asyncio.to_thread(preview_hide, *hide_args)
-            elif body["type"] == "metadata_update" and set(body) in (
-                    {"type", "video_id", "expected_revision", "changes", "reset_fields"},
-                    {"type", "video_id", "expected_revision", "changes", "reset_fields", "proposal_id"}):
-                from common.admin_operations import preview_metadata_plan
-                if type(body.get("expected_revision")) is not int or body["expected_revision"] < 0:
-                    return admin.JSONResponse({"error": "Specify the current metadata revision."}, status_code=400)
-                if "proposal_id" in body and (type(body["proposal_id"]) is not int or body["proposal_id"] <= 0):
-                    return admin.JSONResponse({"error": "Specify a valid metadata proposal."}, status_code=400)
-                result = await admin.asyncio.to_thread(
-                    preview_metadata_plan, admin.HUB_DB_URL, body.get("video_id"), body["expected_revision"],
-                    body.get("changes"), body.get("reset_fields"), body.get("proposal_id")
-                )
-            elif body["type"] == "metadata_update_batch" and set(body) == {
-                    "type", "video_ids", "changes", "reset_fields"}:
-                from common.admin_operations import preview_metadata_batch_plan
-                result = await admin.asyncio.to_thread(
-                    preview_metadata_batch_plan, admin.HUB_DB_URL, body.get("video_ids"),
-                    body.get("changes"), body.get("reset_fields")
-                )
-            elif body["type"] == "performer_merge" and set(body) == {"type", "alias", "canonical"}:
-                from common.admin_operations import preview_performer_merge_plan
-                result = await admin.asyncio.to_thread(
-                    preview_performer_merge_plan, admin.HUB_DB_URL, body.get("alias"), body.get("canonical")
-                )
-            elif body["type"] == "auto_merge_exact" and set(body) == {"type"}:
-                from common.admin_operations import preview_exact_merge_plan
-                result = await admin.asyncio.to_thread(
-                    preview_exact_merge_plan, admin.HUB_DB_URL, str(admin.CONFIG_PATH)
-                )
-            elif body["type"] == "restore" and set(body) == {"type", "operation_id"} \
-                    and isinstance(body.get("operation_id"), str):
-                from common.admin_operations import preview_restore
-                result = await admin.asyncio.to_thread(
-                    preview_restore, admin.HUB_DB_URL, body["operation_id"]
-                )
-            elif body["type"] == "orphan_file_quarantine" and set(body) == {"type", "audit_id", "finding_ids"}:
-                from common.admin_operations import preview_orphan_file_quarantine
-                result = await admin.asyncio.to_thread(
-                    preview_orphan_file_quarantine, admin.HUB_DB_URL, body.get("audit_id"), body.get("finding_ids")
-                )
-            elif body["type"] == "orphan_file_restore" and set(body) == {"type", "operation_id"}:
-                from common.admin_operations import preview_orphan_file_restore
-                result = await admin.asyncio.to_thread(
-                    preview_orphan_file_restore, admin.HUB_DB_URL, body.get("operation_id")
-                )
-            else:
-                return admin.JSONResponse({"error": "This operation scope is invalid or unsupported."}, status_code=400)
+            result = await _dispatch_preview(admin, body)
         except Exception:
             logger.warning("Request failed in preview_operation", exc_info=True)
             return admin.JSONResponse({"error": "Could not create the operation preview."}, status_code=503)
-        if result["outcome"] == "invalid":
-            return admin.JSONResponse({"error": result["message"]}, status_code=400)
-        if result["outcome"] == "not_found":
-            return admin.JSONResponse({"error": result.get("message", "An item in this selection no longer exists.")}, status_code=404)
-        if result["outcome"] == "conflict":
-            return admin.JSONResponse({"error": result["message"]}, status_code=409)
-        if result["outcome"] == "stale":
-            return admin.JSONResponse({"error": result.get("message", "Selected data changed. Create a new preview."),
-                                       "revision": result.get("revision")}, status_code=409)
-        if result["outcome"] == "empty":
-            return {"ok": True, "items": [], "message": result["message"]}
-        return {"ok": True, **{key: value for key, value in result.items() if key != "outcome"}}
+        if isinstance(result, _PreviewReject):
+            return result.response
+        return _preview_response(admin, result)
 
     @router.post("/api/v2/operations/execute")
     async def execute_operation(request: Request):

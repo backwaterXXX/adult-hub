@@ -389,7 +389,14 @@ def build_router(admin):
     router = APIRouter(route_class=V2ErrorRoute)
 
     register_duplicate_routes(router, admin)
+    _route_retry_job(router, admin)
+    _route_cancel_job(router, admin)
+    _route_admin_v2_jobs(router, admin)
+    _route_admin_v2_job(router, admin)
+    return router
 
+
+def _route_retry_job(router, admin):
     @router.post("/api/v2/jobs/{job_id}/retry")
     async def retry_job(request: Request, job_id: str):
         denied = admin._write_denied(request)
@@ -409,6 +416,8 @@ def build_router(admin):
             logger.warning("Request failed in retry_job", exc_info=True)
             return admin.JSONResponse({"error": "Could not retry task."}, status_code=500)
 
+
+def _route_cancel_job(router, admin):
     @router.post("/api/v2/jobs/{job_id}/cancel")
     async def cancel_job(request: Request, job_id: str):
         denied = admin._write_denied(request)
@@ -435,6 +444,8 @@ def build_router(admin):
             logger.warning("Request failed in cancel_job", exc_info=True)
             return admin.JSONResponse({"error": "Could not cancel task."}, status_code=500)
 
+
+def _route_admin_v2_jobs(router, admin):
     @router.get("/api/v2/jobs")
     async def admin_v2_jobs(
         request: Request,
@@ -484,6 +495,8 @@ def build_router(admin):
             "data": {"available": available, "incomplete": not available},
         }
 
+
+def _route_admin_v2_job(router, admin):
     @router.get("/api/v2/jobs/{job_id}")
     async def admin_v2_job(request: Request, job_id: str):
         if admin._admin_blocked(request):
@@ -505,5 +518,3 @@ def build_router(admin):
             history = None
         _attach_sync_failures(result["job"], history)
         return {"ok": True, "job": _safe_job(result["job"])}
-
-    return router

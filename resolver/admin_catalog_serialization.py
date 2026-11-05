@@ -6,6 +6,7 @@ import json
 import os
 import stat
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlsplit
@@ -51,12 +52,74 @@ def _safe_thumbnail(value: Any) -> str | None:
         return None
     return f"/admin/api/thumb?provider=telegram&ref={quote(ref, safe='')}"
 
-def _serialize_video(row, *, detail: bool, local_files: dict[str, str] | None = None) -> dict[str, Any]:
-    def get(name, fallback=None):
+def _row_value(row, name, fallback=None):
+    try:
+        return row[name]
+    except (KeyError, TypeError, IndexError):
+        return fallback
+
+def _iso_time(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        instant = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    if isinstance(value, (int, float)):
         try:
-            return row[name]
-        except (KeyError, TypeError, IndexError):
-            return fallback
+            return datetime.fromtimestamp(value, timezone.utc).isoformat().replace("+00:00", "Z")
+        except (OverflowError, OSError, ValueError):
+            return None
+    return None
+
+def _has_local_files(get, local_files):
+    stream_state = local_files.get("stream") if isinstance(local_files, dict) else None
+    return ({"present": True, "missing": False, "unknown": None}.get(stream_state)
+            if stream_state in {"present", "missing", "unknown"}
+            else bool(get("has_local_files", False)))
+
+def _unavailable_reason(raw_reason, dead_stream, playable):
+    unavailable_reason = _SAFE_UNAVAILABLE_REASONS.get(raw_reason) if isinstance(raw_reason, str) else None
+    if dead_stream and unavailable_reason is None:
+        unavailable_reason = "A dead-stream record is present."
+    elif playable == 0 and unavailable_reason is None:
+        unavailable_reason = "Marked unplayable."
+    return unavailable_reason
+
+def _add_detail_fields(video, get, local_files):
+    video["local_files"] = {
+        role: local_files.get(role, "unknown") if isinstance(local_files, dict) else "unknown"
+        for role in ("stream", "nfo", "artwork")
+    }
+    if local_files and local_files.get("artwork") == "present" and not video.get("artwork_url") and get("id"):
+        video["artwork_url"] = f"/admin/api/v2/library/videos/{quote(str(get('id') or ''), safe='')}/artwork"
+
+def _add_metadata_fields(video, get, metadata_overrides):
+    for field in ("title", "plot", "studio", "performers", "tags", "date_released"):
+        source_value = get(f"source_{field}", video.get(field))
+        if field in {"performers", "tags"}:
+            source_value = _json_value(source_value, [])
+        video["metadata_fields"][field] = {
+            "source": source_value,
+            "effective": video.get(field),
+            "overridden": isinstance(metadata_overrides, dict) and field in metadata_overrides,
+        }
+
+def _missing_fields(video) -> list[str]:
+    missing = []
+    if not str(video["title"] or "").strip():
+        missing.append("title")
+    if not video["performers"]:
+        missing.append("performers")
+    if not str(video["studio"] or "").strip():
+        missing.append("studio")
+    if not str(video["plot"] or "").strip():
+        missing.append("plot")
+    if not video["thumbnail"]:
+        missing.append("thumbnail")
+    return missing
+
+def _serialize_video(row, *, detail: bool, local_files: dict[str, str] | None = None) -> dict[str, Any]:
+    get = partial(_row_value, row)
 
     performers = _json_value(get("performers"), [])
     categories = _json_value(get("categories"), [])
@@ -65,31 +128,10 @@ def _serialize_video(row, *, detail: bool, local_files: dict[str, str] | None = 
     file_categories = get("file_categories") or []
     if isinstance(file_categories, str):
         file_categories = [file_categories]
-    def iso_time(value):
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            instant = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-            return instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-        if isinstance(value, (int, float)):
-            try:
-                return datetime.fromtimestamp(value, timezone.utc).isoformat().replace("+00:00", "Z")
-            except (OverflowError, OSError, ValueError):
-                return None
-        return None
-
-    stream_state = local_files.get("stream") if isinstance(local_files, dict) else None
-    has_local_files = ({"present": True, "missing": False, "unknown": None}.get(stream_state)
-                       if stream_state in {"present", "missing", "unknown"}
-                       else bool(get("has_local_files", False)))
+    has_local_files = _has_local_files(get, local_files)
     dead_stream = bool(get("dead_stream", False))
     playable = get("playable")
-    raw_reason = get("unavailable_reason")
-    unavailable_reason = _SAFE_UNAVAILABLE_REASONS.get(raw_reason) if isinstance(raw_reason, str) else None
-    if dead_stream and unavailable_reason is None:
-        unavailable_reason = "A dead-stream record is present."
-    elif playable == 0 and unavailable_reason is None:
-        unavailable_reason = "Marked unplayable."
+    unavailable_reason = _unavailable_reason(get("unavailable_reason"), dead_stream, playable)
     video = {
         "id": get("id"),
         "channel_id": _channel_id(get("id")),
@@ -110,9 +152,9 @@ def _serialize_video(row, *, detail: bool, local_files: dict[str, str] | None = 
         "availability": ("unavailable" if dead_stream or playable == 0
                          else "available" if playable == 1 else "unknown"),
         "unavailable_reason": unavailable_reason,
-        "unavailable_detected_at": iso_time(get("unavailable_detected_at")),
-        "first_seen": iso_time(get("first_seen")),
-        "last_seen": iso_time(get("last_seen")),
+        "unavailable_detected_at": _iso_time(get("unavailable_detected_at")),
+        "first_seen": _iso_time(get("first_seen")),
+        "last_seen": _iso_time(get("last_seen")),
         "has_local_files": has_local_files,
         "file_count": int(get("file_count", 0) or 0),
         "file_categories": list(file_categories),
@@ -125,33 +167,9 @@ def _serialize_video(row, *, detail: bool, local_files: dict[str, str] | None = 
         "artwork_url": f"/admin/api/v2/library/videos/{quote(str(get('id') or ''), safe='')}/artwork" if (get("id") and ((local_files and local_files.get("artwork") == "present") or (has_local_files and not detail))) else None,
     }
     if detail:
-        video["local_files"] = {
-            role: local_files.get(role, "unknown") if isinstance(local_files, dict) else "unknown"
-            for role in ("stream", "nfo", "artwork")
-        }
-        if local_files and local_files.get("artwork") == "present" and not video.get("artwork_url") and get("id"):
-            video["artwork_url"] = f"/admin/api/v2/library/videos/{quote(str(get('id') or ''), safe='')}/artwork"
-    for field in ("title", "plot", "studio", "performers", "tags", "date_released"):
-        source_value = get(f"source_{field}", video.get(field))
-        if field in {"performers", "tags"}:
-            source_value = _json_value(source_value, [])
-        video["metadata_fields"][field] = {
-            "source": source_value,
-            "effective": video.get(field),
-            "overridden": isinstance(metadata_overrides, dict) and field in metadata_overrides,
-        }
-    if not str(video["title"] or "").strip():
-        video["missing_fields"] = ["title"]
-    else:
-        video["missing_fields"] = []
-    if not video["performers"]:
-        video["missing_fields"].append("performers")
-    if not str(video["studio"] or "").strip():
-        video["missing_fields"].append("studio")
-    if not str(video["plot"] or "").strip():
-        video["missing_fields"].append("plot")
-    if not video["thumbnail"]:
-        video["missing_fields"].append("thumbnail")
+        _add_detail_fields(video, get, local_files)
+    _add_metadata_fields(video, get, metadata_overrides)
+    video["missing_fields"] = _missing_fields(video)
     return video
 
 def _channel_id(video_id: Any) -> str | None:
@@ -168,90 +186,112 @@ def _combine_file_states(states: list[str]) -> str:
         return "missing"
     return "present"
 
-def _local_file_status(file_names: list[Any], media_root: str | os.PathLike[str]) -> dict[str, str]:
-    """Check registered media roles without following or exposing filesystem paths."""
-    unknown = {"stream": "unknown", "nfo": "unknown", "artwork": "unknown"}
+def _ready_media_root(media_root: str | os.PathLike[str]) -> str | None:
+    """Return the media root as a string when it is a readable directory, else None."""
     try:
         root = os.fspath(media_root)
         root_info = os.stat(root)
         if not stat.S_ISDIR(root_info.st_mode):
-            return unknown
+            return None
         # Confirm the media root is mounted/readable before classifying a child
         # that is absent from the directory as genuinely missing.
         with os.scandir(root):
             pass
     except (OSError, TypeError, ValueError):
+        return None
+    return root
+
+def _strm_stem(raw_name: Any) -> str | None:
+    """Return the stem of a plain ``.strm`` file name, or None when the name is rejected."""
+    if (not isinstance(raw_name, str) or not raw_name or raw_name in {".", ".."}
+            or "/" in raw_name or "\\" in raw_name or any(ord(char) < 32 for char in raw_name)):
+        return None
+    name = os.path.basename(raw_name)
+    if name != raw_name or not name.lower().endswith(".strm"):
+        return None
+    return name[:-5]
+
+def _local_candidate_state(candidate: str, role: str) -> str:
+    try:
+        info = os.lstat(candidate)
+        state = "unknown" if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) else "present"
+        if state == "present" and role == "artwork":
+            try:
+                from common.image_utils import is_black_image
+                if is_black_image(candidate):
+                    state = "missing"
+            except Exception:
+                logger.debug("Ignored exception in _local_file_status", exc_info=True)
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unknown"
+    return state
+
+def _local_file_status(file_names: list[Any], media_root: str | os.PathLike[str]) -> dict[str, str]:
+    """Check registered media roles without following or exposing filesystem paths."""
+    unknown = {"stream": "unknown", "nfo": "unknown", "artwork": "unknown"}
+    root = _ready_media_root(media_root)
+    if root is None:
         return unknown
 
     role_states = {"stream": [], "nfo": [], "artwork": []}
     if not isinstance(file_names, list) or not file_names:
         return unknown
     for raw_name in file_names:
-        if (not isinstance(raw_name, str) or not raw_name or raw_name in {".", ".."}
-                or "/" in raw_name or "\\" in raw_name or any(ord(char) < 32 for char in raw_name)):
+        stem = _strm_stem(raw_name)
+        if stem is None:
             for states in role_states.values():
                 states.append("unknown")
             continue
-        name = os.path.basename(raw_name)
-        if name != raw_name or not name.lower().endswith(".strm"):
-            for states in role_states.values():
-                states.append("unknown")
-            continue
-        stem = name[:-5]
         for role, suffix in (("stream", ".strm"), ("nfo", ".nfo"), ("artwork", ".jpg")):
             candidate = os.path.join(root, stem + suffix)
-            try:
-                info = os.lstat(candidate)
-                state = "unknown" if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) else "present"
-                if state == "present" and role == "artwork":
-                    try:
-                        from common.image_utils import is_black_image
-                        if is_black_image(candidate):
-                            state = "missing"
-                    except Exception:
-                        logger.debug("Ignored exception in _local_file_status", exc_info=True)
-            except FileNotFoundError:
-                state = "missing"
-            except OSError:
-                state = "unknown"
-            role_states[role].append(state)
+            role_states[role].append(_local_candidate_state(candidate, role))
     return {role: _combine_file_states(states) for role, states in role_states.items()}
 
-def _resolve_local_artwork_path(file_names: list[Any], media_root: str | os.PathLike[str]) -> Path | None:
-    """Return the absolute Path to the local artwork file if present, else None."""
+def _resolve_media_root(media_root: str | os.PathLike[str]) -> Path | None:
     try:
         root = Path(media_root).resolve()
         if not root.is_dir():
             return None
     except (OSError, TypeError, ValueError):
         return None
+    return root
+
+def _resolve_artwork_candidate(root: Path, stem: str) -> Path | None:
+    candidate = (root / f"{stem}.jpg").resolve()
+    try:
+        if candidate.parent != root:
+            return None
+        info = os.lstat(candidate)
+        if not stat.S_ISLNK(info.st_mode) and stat.S_ISREG(info.st_mode):
+            try:
+                from common.image_utils import is_black_image
+                if is_black_image(candidate):
+                    return None
+            except Exception:
+                logger.debug("Ignored exception in _resolve_local_artwork_path", exc_info=True)
+            return candidate
+    except (OSError, ValueError):
+        return None
+    return None
+
+def _resolve_local_artwork_path(file_names: list[Any], media_root: str | os.PathLike[str]) -> Path | None:
+    """Return the absolute Path to the local artwork file if present, else None."""
+    root = _resolve_media_root(media_root)
+    if root is None:
+        return None
 
     if not isinstance(file_names, list) or not file_names:
         return None
 
     for raw_name in file_names:
-        if (not isinstance(raw_name, str) or not raw_name or raw_name in {".", ".."}
-                or "/" in raw_name or "\\" in raw_name or any(ord(char) < 32 for char in raw_name)):
+        stem = _strm_stem(raw_name)
+        if stem is None:
             continue
-        name = os.path.basename(raw_name)
-        if name != raw_name or not name.lower().endswith(".strm"):
-            continue
-        stem = name[:-5]
-        candidate = (root / f"{stem}.jpg").resolve()
-        try:
-            if candidate.parent != root:
-                continue
-            info = os.lstat(candidate)
-            if not stat.S_ISLNK(info.st_mode) and stat.S_ISREG(info.st_mode):
-                try:
-                    from common.image_utils import is_black_image
-                    if is_black_image(candidate):
-                        continue
-                except Exception:
-                    logger.debug("Ignored exception in _resolve_local_artwork_path", exc_info=True)
-                return candidate
-        except (OSError, ValueError):
-            continue
+        candidate = _resolve_artwork_candidate(root, stem)
+        if candidate is not None:
+            return candidate
     return None
 
 def _safe_telegram_post_url(provider: Any, video_id: Any) -> str | None:
@@ -273,3 +313,4 @@ def _safe_telegram_post_url(provider: Any, video_id: Any) -> str | None:
     if not channel:
         return None
     return f"https://t.me/c/{channel}/{message_id}"
+

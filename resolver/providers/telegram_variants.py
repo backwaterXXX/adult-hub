@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from telethon.tl import functions, types
 
@@ -40,25 +40,19 @@ def parse_tl_json(val: Any) -> Any:
     return val
 
 
-async def should_ignore_alt_documents(client: Any = None) -> bool:
-    """Check if alt_documents must be ignored per configuration or server flags.
-
-    Checks:
-      1. Local environment variable TELEGRAM_VIDEO_IGNORE_ALT_DOCUMENTS
-      2. Configuration file setting (if configured)
-      3. MTProto help.getAppConfig 'video_ignore_alt_documents'
-    """
-    global _APP_CONFIG_CACHE, _APP_CONFIG_CACHE_TIME
-
-    # 1. Environment variable override
+def _env_alt_documents_override() -> Optional[bool]:
+    """Return the explicit TELEGRAM_VIDEO_IGNORE_ALT_DOCUMENTS override, or None."""
     env_flag = (os.getenv("TELEGRAM_VIDEO_IGNORE_ALT_DOCUMENTS") or "").strip().lower()
     if env_flag in ("1", "true", "yes", "on"):
         return True
     if env_flag in ("0", "false", "no", "off"):
         # Explicit false override
         return False
+    return None
 
-    # 2. Check config loader
+
+def _config_ignores_alt_documents() -> bool:
+    """Return True when the telegram config source sets video_ignore_alt_documents."""
     try:
         from .telegram_config import _get_config
         cfg = _get_config()
@@ -68,22 +62,48 @@ async def should_ignore_alt_documents(client: Any = None) -> bool:
                 return True
     except Exception as exc:
         logger.debug("Config check for video_ignore_alt_documents skipped: %s", exc)
+    return False
+
+
+async def _app_config_ignores_alt_documents(client: Any) -> bool:
+    """Return the MTProto help.getAppConfig 'video_ignore_alt_documents' flag (cached)."""
+    global _APP_CONFIG_CACHE, _APP_CONFIG_CACHE_TIME
+
+    now = time.monotonic()
+    if _APP_CONFIG_CACHE is None or (now - _APP_CONFIG_CACHE_TIME) > _APP_CONFIG_CACHE_TTL:
+        try:
+            res = await client(functions.help.GetAppConfigRequest(hash=0))
+            if hasattr(res, "config"):
+                _APP_CONFIG_CACHE = parse_tl_json(res.config)
+                _APP_CONFIG_CACHE_TIME = now
+        except Exception as exc:
+            logger.debug("Failed to fetch MTProto app config: %s", exc)
+
+    if isinstance(_APP_CONFIG_CACHE, dict):
+        return bool(_APP_CONFIG_CACHE.get("video_ignore_alt_documents"))
+    return False
+
+
+async def should_ignore_alt_documents(client: Any = None) -> bool:
+    """Check if alt_documents must be ignored per configuration or server flags.
+
+    Checks:
+      1. Local environment variable TELEGRAM_VIDEO_IGNORE_ALT_DOCUMENTS
+      2. Configuration file setting (if configured)
+      3. MTProto help.getAppConfig 'video_ignore_alt_documents'
+    """
+    # 1. Environment variable override
+    env_override = _env_alt_documents_override()
+    if env_override is not None:
+        return env_override
+
+    # 2. Check config loader
+    if _config_ignores_alt_documents():
+        return True
 
     # 3. MTProto help.getAppConfig
     if client is not None:
-        now = time.monotonic()
-        if _APP_CONFIG_CACHE is None or (now - _APP_CONFIG_CACHE_TIME) > _APP_CONFIG_CACHE_TTL:
-            try:
-                res = await client(functions.help.GetAppConfigRequest(hash=0))
-                if hasattr(res, "config"):
-                    _APP_CONFIG_CACHE = parse_tl_json(res.config)
-                    _APP_CONFIG_CACHE_TIME = now
-            except Exception as exc:
-                logger.debug("Failed to fetch MTProto app config: %s", exc)
-
-        if isinstance(_APP_CONFIG_CACHE, dict):
-            if bool(_APP_CONFIG_CACHE.get("video_ignore_alt_documents")):
-                return True
+        return await _app_config_ignores_alt_documents(client)
 
     return False
 
@@ -124,27 +144,24 @@ def is_full_video_document(doc: Any) -> bool:
     return True
 
 
-def extract_variant_info(doc: Any, *, is_original: bool = False) -> Optional[Dict[str, Any]]:
-    """Extract truthful variant metadata from a Document or dict.
+def _find_video_attr(doc: Any) -> Any:
+    """Return the first video-like attribute of a Document, or None."""
+    for attr in (getattr(doc, "attributes", None) or []):
+        if isinstance(attr, types.DocumentAttributeVideo) or "Video" in type(attr).__name__:
+            return attr
+    return None
 
-    Returns None if the document is not a valid full video stream.
-    Bitrate is strictly separated into:
-      - bitrate: reliably known upstream bitrate (null when absent from MTProto)
-      - estimated_average_bitrate: calculated from file_size and duration
-    """
-    if not is_full_video_document(doc):
-        return None
 
+def _variant_doc_id(doc: Any) -> Any:
+    """Return the document id, falling back to dict keys for dict inputs."""
     doc_id = getattr(doc, "id", None)
     if doc_id is None and isinstance(doc, dict):
         doc_id = doc.get("id") or doc.get("file_unique_id")
+    return doc_id
 
-    video_attr = None
-    for attr in (getattr(doc, "attributes", None) or []):
-        if isinstance(attr, types.DocumentAttributeVideo) or "Video" in type(attr).__name__:
-            video_attr = attr
-            break
 
+def _video_attr_fields(doc: Any, video_attr: Any) -> Tuple[Any, Any, Any, Any]:
+    """Return raw (width, height, codec, duration) from the video attribute or dict."""
     w = getattr(video_attr, "w", None) if video_attr else None
     h = getattr(video_attr, "h", None) if video_attr else None
     codec = getattr(video_attr, "video_codec", None) if video_attr else None
@@ -156,7 +173,11 @@ def extract_variant_info(doc: Any, *, is_original: bool = False) -> Optional[Dic
         h = h if h is not None else doc.get("height", doc.get("h"))
         codec = codec if codec is not None else doc.get("codec")
         dur = dur if dur is not None else doc.get("duration")
+    return w, h, codec, dur
 
+
+def _size_and_mime(doc: Any) -> Tuple[Any, Any]:
+    """Return raw (size, mime_type) from the document or dict."""
     size = getattr(doc, "size", None)
     if size is None and isinstance(doc, dict):
         size = doc.get("size") or doc.get("file_size")
@@ -164,52 +185,78 @@ def extract_variant_info(doc: Any, *, is_original: bool = False) -> Optional[Dic
     mime_type = getattr(doc, "mime_type", None)
     if mime_type is None and isinstance(doc, dict):
         mime_type = doc.get("mime_type")
+    return size, mime_type
 
-    # Clean width / height
-    int_w = None
-    if w is not None:
-        try:
-            int_w = int(w) if int(w) > 0 else None
-        except (TypeError, ValueError):
-            pass
 
-    int_h = None
-    if h is not None:
-        try:
-            int_h = int(h) if int(h) > 0 else None
-        except (TypeError, ValueError):
-            pass
+def _positive_int_or_none(value: Any) -> Optional[int]:
+    """Integer value when > 0, else None (None input or unconvertible -> None)."""
+    if value is None:
+        return None
+    try:
+        return int(value) if int(value) > 0 else None
+    except (TypeError, ValueError):
+        return None
 
-    # Clean size
-    int_size = None
-    if size is not None:
-        try:
-            int_size = int(size) if int(size) >= 0 else None
-        except (TypeError, ValueError):
-            pass
 
-    # Clean duration
-    float_dur = None
-    if dur is not None:
-        try:
-            val_dur = float(dur)
-            float_dur = round(val_dur, 3) if val_dur > 0 else None
-        except (TypeError, ValueError):
-            pass
+def _non_negative_int_or_none(value: Any) -> Optional[int]:
+    """Integer value when >= 0, else None (None input or unconvertible -> None)."""
+    if value is None:
+        return None
+    try:
+        return int(value) if int(value) >= 0 else None
+    except (TypeError, ValueError):
+        return None
 
-    # Estimated average bitrate in bps: (file_size * 8) / duration
-    estimated_bitrate = None
+
+def _positive_duration_or_none(value: Any) -> Optional[float]:
+    """Duration rounded to 3 decimals when > 0, else None."""
+    if value is None:
+        return None
+    try:
+        val_dur = float(value)
+        return round(val_dur, 3) if val_dur > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _estimated_average_bitrate(int_size: Optional[int], float_dur: Optional[float]) -> Optional[int]:
+    """Estimated bitrate in bps: (file_size * 8) / duration, or None when unknown."""
     if int_size is not None and int_size > 0 and float_dur is not None and float_dur > 0:
-        estimated_bitrate = int(round((int_size * 8) / float_dur))
+        return int(round((int_size * 8) / float_dur))
+    return None
 
-    # Stable, opaque identifier: "original" for original, "alt_<id>" for alternatives
+
+def _variant_identifier(doc_id: Any, is_original: bool) -> str:
+    """Stable identifier: "original" for the original, "alt_<id>" for alternatives."""
     if is_original:
-        variant_id = "original"
-    else:
-        variant_id = f"alt_{doc_id}" if doc_id is not None else "alt_unknown"
+        return "original"
+    return f"alt_{doc_id}" if doc_id is not None else "alt_unknown"
+
+
+def extract_variant_info(doc: Any, *, is_original: bool = False) -> Optional[Dict[str, Any]]:
+    """Extract truthful variant metadata from a Document or dict.
+
+    Returns None if the document is not a valid full video stream.
+    Bitrate is strictly separated into:
+      - bitrate: reliably known upstream bitrate (null when absent from MTProto)
+      - estimated_average_bitrate: calculated from file_size and duration
+    """
+    if not is_full_video_document(doc):
+        return None
+
+    doc_id = _variant_doc_id(doc)
+    video_attr = _find_video_attr(doc)
+    w, h, codec, dur = _video_attr_fields(doc, video_attr)
+    size, mime_type = _size_and_mime(doc)
+
+    int_w = _positive_int_or_none(w)
+    int_h = _positive_int_or_none(h)
+    int_size = _non_negative_int_or_none(size)
+    float_dur = _positive_duration_or_none(dur)
+    estimated_bitrate = _estimated_average_bitrate(int_size, float_dur)
 
     return {
-        "id": variant_id,
+        "id": _variant_identifier(doc_id, is_original),
         "is_original": is_original,
         "width": int_w,
         "height": int_h,

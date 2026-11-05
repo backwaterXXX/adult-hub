@@ -131,22 +131,9 @@ def build_router(admin):
         user = await authorized_user(request.headers.get("X-Emby-Token", ""))
         if user is None:
             return admin.JSONResponse({"error": "Unauthorized."}, status_code=401)
-        length = request.headers.get("content-length")
-        try:
-            if length is not None and int(length) > MAX_BODY_BYTES:
-                return admin.JSONResponse({"error": "Request is too large."}, status_code=413)
-        except ValueError:
-            return admin.JSONResponse({"error": "Invalid request size."}, status_code=400)
-        raw = bytearray()
-        try:
-            async for chunk in request.stream():
-                if len(raw) + len(chunk) > MAX_BODY_BYTES:
-                    return admin.JSONResponse({"error": "Request is too large."}, status_code=413)
-                raw.extend(chunk)
-            body = json.loads(raw)
-        except Exception:
-            logger.debug("Ignored exception in submit_frames", exc_info=True)
-            return admin.JSONResponse({"error": "Invalid frame request."}, status_code=400)
+        body, rejection = await _read_frame_body(admin, request)
+        if rejection is not None:
+            return rejection
         profiles = accepted_profiles()
         if not _valid_frame_request(body, profiles):
             return admin.JSONResponse({"error": "Invalid frame request."}, status_code=400)
@@ -156,25 +143,9 @@ def build_router(admin):
             logger.debug("Ignored exception in submit_frames", exc_info=True)
             return admin.JSONResponse({"error": "Invalid or incomplete frames."}, status_code=400)
 
-        thumbnail_bytes = None
-        try:
-            thumbnail_bytes = _decode_thumbnail(body.get("thumbnail_jpeg_base64"))
-            from stash_phash import perception_hash, phash_to_string
-            from stash_phash.video import combine_images
-
-            sprite = combine_images(frames)
-            fingerprint = phash_to_string(perception_hash(sprite)).lower()
-            if not _HASH.fullmatch(fingerprint):
-                raise ValueError("Unexpected pHash format")
-            result = await asyncio.to_thread(
-                _store, admin, body["video_id"], fingerprint, body["decoder_profile"], str(user["Id"]),
-                thumbnail_bytes,
-            )
-            if result == "conflict":
-                return admin.JSONResponse({"error": "A different validated fingerprint already exists."}, status_code=409)
-        except Exception:
-            logger.warning("Request failed in submit_frames", exc_info=True)
-            return admin.JSONResponse({"error": "Could not save video fingerprint."}, status_code=503)
+        fingerprint, rejection = await _save_frame_fingerprint(admin, body, frames, user)
+        if rejection is not None:
+            return rejection
 
         match_found = None
         try:
@@ -196,11 +167,7 @@ def build_router(admin):
         except Exception:
             logger.debug("Ignored exception in generate_phash", exc_info=True)
             return admin.JSONResponse({"error": "Invalid generation request."}, status_code=400)
-        if (not isinstance(body, dict) or set(body) != {"video_id", "duration_us"}
-                or not isinstance(body.get("video_id"), str)
-                or not _VIDEO_ID.fullmatch(body["video_id"])
-                or type(body.get("duration_us")) is not int
-                or not 1 <= body["duration_us"] <= 86_400_000_000):
+        if not _valid_generate_request(body):
             return admin.JSONResponse({"error": "Invalid generation request."}, status_code=400)
         if _SERVER_PROFILE not in accepted_profiles():
             return admin.JSONResponse({"error": "Server pHash generation is not enabled."}, status_code=404)
@@ -216,20 +183,7 @@ def build_router(admin):
                 algorithm_version=PHASH_ALGORITHM_VERSION, decoder_profile=_SERVER_PROFILE,
                 user_id=str(user["Id"]),
             )
-            if result["outcome"] == "not_found":
-                return admin.JSONResponse({"error": "Video not found."}, status_code=404)
-            job = result["job"]
-            response = {
-                "ok": True, "job_id": job["id"], "state": job["state"],
-                "already_computed": result["outcome"] == "complete",
-                "thumbnail_ready": result["outcome"] == "complete",
-                "error_code": job.get("error_code"),
-            }
-            if result["outcome"] in {"queued", "existing"}:
-                return admin.JSONResponse(response, status_code=202)
-            if result["outcome"] == "terminal":
-                return admin.JSONResponse({"error": "This pHash task is terminal; retry it from Admin V2."}, status_code=409)
-            return response
+            return _generate_response(admin, result)
         except Exception:
             logger.exception("Could not enqueue server pHash generation")
             return admin.JSONResponse({"error": "Could not queue video fingerprint generation."}, status_code=503)
@@ -268,6 +222,75 @@ def build_router(admin):
         return Response(content=image, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
     return router
+
+
+async def _read_frame_body(admin, request: Request):
+    """Read the upload body. Returns (parsed_body, None) or (None, error_response)."""
+    length = request.headers.get("content-length")
+    try:
+        if length is not None and int(length) > MAX_BODY_BYTES:
+            return None, admin.JSONResponse({"error": "Request is too large."}, status_code=413)
+    except ValueError:
+        return None, admin.JSONResponse({"error": "Invalid request size."}, status_code=400)
+    raw = bytearray()
+    try:
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > MAX_BODY_BYTES:
+                return None, admin.JSONResponse({"error": "Request is too large."}, status_code=413)
+            raw.extend(chunk)
+        body = json.loads(raw)
+    except Exception:
+        logger.debug("Ignored exception in submit_frames", exc_info=True)
+        return None, admin.JSONResponse({"error": "Invalid frame request."}, status_code=400)
+    return body, None
+
+
+async def _save_frame_fingerprint(admin, body, frames, user):
+    """Compute and store the submitted pHash. Returns (fingerprint, None) or (None, error_response)."""
+    try:
+        thumbnail_bytes = _decode_thumbnail(body.get("thumbnail_jpeg_base64"))
+        from stash_phash import perception_hash, phash_to_string
+        from stash_phash.video import combine_images
+
+        sprite = combine_images(frames)
+        fingerprint = phash_to_string(perception_hash(sprite)).lower()
+        if not _HASH.fullmatch(fingerprint):
+            raise ValueError("Unexpected pHash format")
+        result = await asyncio.to_thread(
+            _store, admin, body["video_id"], fingerprint, body["decoder_profile"], str(user["Id"]),
+            thumbnail_bytes,
+        )
+        if result == "conflict":
+            return None, admin.JSONResponse({"error": "A different validated fingerprint already exists."}, status_code=409)
+    except Exception:
+        logger.warning("Request failed in submit_frames", exc_info=True)
+        return None, admin.JSONResponse({"error": "Could not save video fingerprint."}, status_code=503)
+    return fingerprint, None
+
+
+def _valid_generate_request(body: object) -> bool:
+    return (isinstance(body, dict) and set(body) == {"video_id", "duration_us"}
+            and isinstance(body.get("video_id"), str)
+            and bool(_VIDEO_ID.fullmatch(body["video_id"]))
+            and type(body.get("duration_us")) is int
+            and 1 <= body["duration_us"] <= 86_400_000_000)
+
+
+def _generate_response(admin, result):
+    if result["outcome"] == "not_found":
+        return admin.JSONResponse({"error": "Video not found."}, status_code=404)
+    job = result["job"]
+    response = {
+        "ok": True, "job_id": job["id"], "state": job["state"],
+        "already_computed": result["outcome"] == "complete",
+        "thumbnail_ready": result["outcome"] == "complete",
+        "error_code": job.get("error_code"),
+    }
+    if result["outcome"] in {"queued", "existing"}:
+        return admin.JSONResponse(response, status_code=202)
+    if result["outcome"] == "terminal":
+        return admin.JSONResponse({"error": "This pHash task is terminal; retry it from Admin V2."}, status_code=409)
+    return response
 
 
 def _decode_thumbnail(encoded: object) -> bytes | None:
@@ -328,6 +351,66 @@ def _decode_frames(raw_frames: list, duration_us: int):
     return decoded
 
 
+def _lock_telegram_video(conn, video_id: str) -> None:
+    row = conn.execute(
+        # Serialize first-time submissions too: locking only an existing
+        # provenance row leaves the absent-row case open to concurrent
+        # INSERT ... ON CONFLICT updates that silently replace one hash.
+        "SELECT provider FROM videos WHERE id=%s FOR UPDATE", (video_id,),
+    ).fetchone()
+    if not row or row[0] != "telegram":
+        raise ValueError("Video not found")
+
+
+def _upsert_video_fingerprint(conn, video_id: str, fingerprint: str) -> None:
+    conn.execute(
+        """INSERT INTO video_fingerprints(video_id,algorithm,fingerprint)
+           VALUES (%s,'PHASH',%s)
+           ON CONFLICT(video_id,algorithm) DO UPDATE SET
+           fingerprint=EXCLUDED.fingerprint,computed_at=CURRENT_TIMESTAMP""",
+        (video_id, fingerprint),
+    )
+
+
+def _write_phash_submission(conn, video_id: str, fingerprint: str, profile: str, user_id: str,
+                            thumbnail_bytes: bytes | None) -> str | None:
+    """Write fingerprint, provenance, and thumbnail rows. Returns "conflict" without writing."""
+    _lock_telegram_video(conn, video_id)
+    existing = conn.execute(
+        "SELECT fingerprint,generator_version FROM video_phash_provenance WHERE video_id=%s FOR UPDATE",
+        (video_id,),
+    ).fetchone()
+    if existing:
+        expected_generator = PHASH_ALGORITHM_VERSION + ":" + profile
+        if existing[1] == expected_generator and existing[0] != fingerprint:
+            return "conflict"
+        if existing[1] != expected_generator:
+            _upsert_video_fingerprint(conn, video_id, fingerprint)
+            conn.execute(
+                """UPDATE video_phash_provenance SET fingerprint=%s,generator_version=%s,
+                   decoder_profile=%s,submitted_by_user_id=%s,submitted_at=CURRENT_TIMESTAMP
+                   WHERE video_id=%s""",
+                (fingerprint, expected_generator, profile, user_id, video_id),
+            )
+    else:
+        _upsert_video_fingerprint(conn, video_id, fingerprint)
+        conn.execute(
+            """INSERT INTO video_phash_provenance
+               (video_id,fingerprint,generator_version,decoder_profile,submitted_by_user_id)
+               VALUES (%s,%s,%s,%s,%s)""",
+            (video_id, fingerprint, PHASH_ALGORITHM_VERSION + ":" + profile, profile, user_id),
+        )
+    if thumbnail_bytes is not None:
+        conn.execute(
+            """INSERT INTO video_phash_thumbnails(video_id,image_bytes)
+               VALUES (%s,%s)
+               ON CONFLICT(video_id) DO UPDATE SET
+               image_bytes=EXCLUDED.image_bytes,updated_at=CURRENT_TIMESTAMP""",
+            (video_id, thumbnail_bytes),
+        )
+    return None
+
+
 def _store(
     admin, video_id: str, fingerprint: str, profile: str, user_id: str,
     thumbnail_bytes: bytes | None = None, *, connection=None,
@@ -335,60 +418,10 @@ def _store(
     owns_connection = connection is None
     conn = connection or db.connect(admin.HUB_DB_URL)
     try:
-        row = conn.execute(
-            # Serialize first-time submissions too: locking only an existing
-            # provenance row leaves the absent-row case open to concurrent
-            # INSERT ... ON CONFLICT updates that silently replace one hash.
-            "SELECT provider FROM videos WHERE id=%s FOR UPDATE", (video_id,),
-        ).fetchone()
-        if not row or row[0] != "telegram":
-            raise ValueError("Video not found")
-        existing = conn.execute(
-            "SELECT fingerprint,generator_version FROM video_phash_provenance WHERE video_id=%s FOR UPDATE",
-            (video_id,),
-        ).fetchone()
-        if existing:
-            expected_generator = PHASH_ALGORITHM_VERSION + ":" + profile
-            if existing[1] == expected_generator and existing[0] != fingerprint:
-                if owns_connection:
-                    conn.rollback()
-                return "conflict"
-            if existing[1] != expected_generator:
-                conn.execute(
-                    """INSERT INTO video_fingerprints(video_id,algorithm,fingerprint)
-                       VALUES (%s,'PHASH',%s)
-                       ON CONFLICT(video_id,algorithm) DO UPDATE SET
-                       fingerprint=EXCLUDED.fingerprint,computed_at=CURRENT_TIMESTAMP""",
-                    (video_id, fingerprint),
-                )
-                conn.execute(
-                    """UPDATE video_phash_provenance SET fingerprint=%s,generator_version=%s,
-                       decoder_profile=%s,submitted_by_user_id=%s,submitted_at=CURRENT_TIMESTAMP
-                       WHERE video_id=%s""",
-                    (fingerprint, expected_generator, profile, user_id, video_id),
-                )
-        else:
-            conn.execute(
-                """INSERT INTO video_fingerprints(video_id,algorithm,fingerprint)
-                   VALUES (%s,'PHASH',%s)
-                   ON CONFLICT(video_id,algorithm) DO UPDATE SET
-                   fingerprint=EXCLUDED.fingerprint,computed_at=CURRENT_TIMESTAMP""",
-                (video_id, fingerprint),
-            )
-            conn.execute(
-                """INSERT INTO video_phash_provenance
-                   (video_id,fingerprint,generator_version,decoder_profile,submitted_by_user_id)
-                   VALUES (%s,%s,%s,%s,%s)""",
-                (video_id, fingerprint, PHASH_ALGORITHM_VERSION + ":" + profile, profile, user_id),
-            )
-        if thumbnail_bytes is not None:
-            conn.execute(
-                """INSERT INTO video_phash_thumbnails(video_id,image_bytes)
-                   VALUES (%s,%s)
-                   ON CONFLICT(video_id) DO UPDATE SET
-                   image_bytes=EXCLUDED.image_bytes,updated_at=CURRENT_TIMESTAMP""",
-                (video_id, thumbnail_bytes),
-            )
+        if _write_phash_submission(conn, video_id, fingerprint, profile, user_id, thumbnail_bytes) == "conflict":
+            if owns_connection:
+                conn.rollback()
+            return "conflict"
         if owns_connection:
             conn.commit()
         return "saved"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import urllib.parse
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from common.title_cleaning import clean_title_text, extract_title_hashtags
 
@@ -114,6 +114,21 @@ def _nested_unique_id(value) -> Optional[str]:
         return value.strip()
     return None
 
+def _extract_file_unique_id(message_dict: dict) -> Optional[str]:
+    """First non-empty nested file id, else first flat file id, else None."""
+    unique_id: Optional[str] = None
+    for key in ("video", "document", "video_note", "animation", "file"):
+        unique_id = _nested_unique_id(message_dict.get(key))
+        if unique_id:
+            break
+    if not unique_id:
+        for key in ("file_unique_id", "file_unique", "unique_id"):
+            candidate = message_dict.get(key)
+            if candidate:
+                unique_id = str(candidate)
+                break
+    return unique_id
+
 def extract_file_ref(message_dict) -> Optional[str]:
     """Wybiera material video (video / document-video), pomija tekst i zdjecia.
 
@@ -126,17 +141,7 @@ def extract_file_ref(message_dict) -> Optional[str]:
     if kind and kind not in ("video", "document-video", "video-note",
                              "animation", "document"):
         return None
-    unique_id: Optional[str] = None
-    for key in ("video", "document", "video_note", "animation", "file"):
-        unique_id = _nested_unique_id(message_dict.get(key))
-        if unique_id:
-            break
-    if not unique_id:
-        for key in ("file_unique_id", "file_unique", "unique_id"):
-            candidate = message_dict.get(key)
-            if candidate:
-                unique_id = str(candidate)
-                break
+    unique_id = _extract_file_unique_id(message_dict)
     if not unique_id:
         return None
     channel_id = message_dict.get("channel_id", message_dict.get("chat_id"))
@@ -205,12 +210,58 @@ def thumb_api_path(ref: str) -> str:
     """Wzgledna sciezka miniatury przez resolver (sync dokleja swoj base URL)."""
     return "/admin/api/thumb?provider=telegram&ref=" + urllib.parse.quote(ref or "", safe="")
 
-def message_object_to_dict(msg: Any, channel_ref: Any) -> dict:
-    """Normalize a Telethon-like message object into the provider's message shape."""
-    message_id = getattr(msg, "id", None)
+def _msg_caption_text(msg: Any) -> str:
+    """Message text from ``message`` or ``text``, always returned as a str."""
     caption = getattr(msg, "message", None) or getattr(msg, "text", None) or ""
     if not isinstance(caption, str):
         caption = str(caption)
+    return caption
+
+
+def _resolve_message_document(msg: Any, media: Any) -> Any:
+    """Document from media.document, falling back to a non-callable msg.document."""
+    document = getattr(media, "document", None) if media is not None else None
+    if document is None:
+        candidate = getattr(msg, "document", None)
+        if candidate is not None and not callable(candidate):
+            document = candidate
+    return document
+
+
+def _scan_video_attribute(document: Any, is_video: bool) -> Tuple[bool, int]:
+    """Return (is_video, duration) after scanning document attributes for a Video attribute."""
+    duration = 0
+    try:
+        for attr in (getattr(document, "attributes", None) or []):
+            if "Video" in type(attr).__name__:
+                is_video = True
+                dur = getattr(attr, "duration", None)
+                if dur:
+                    duration = int(dur)
+                break
+    except (TypeError, ValueError):
+        pass
+    return is_video, duration
+
+
+def _document_filename(document: Any) -> str:
+    """First non-blank ``file_name`` attribute of the document, stripped; else ""."""
+    filename = ""
+    try:
+        for attr in (getattr(document, "attributes", None) or []):
+            fname = getattr(attr, "file_name", None)
+            if isinstance(fname, str) and fname.strip():
+                filename = fname.strip()
+                break
+    except (TypeError, ValueError):
+        pass
+    return filename
+
+
+def message_object_to_dict(msg: Any, channel_ref: Any) -> dict:
+    """Normalize a Telethon-like message object into the provider's message shape."""
+    message_id = getattr(msg, "id", None)
+    caption = _msg_caption_text(msg)
     duration = 0
     mime_type = ""
     size = getattr(getattr(msg, "file", None), "size", None)
@@ -218,11 +269,7 @@ def message_object_to_dict(msg: Any, channel_ref: Any) -> dict:
     filename = ""
     kind = "none"
     media = getattr(msg, "media", None)
-    document = getattr(media, "document", None) if media is not None else None
-    if document is None:
-        candidate = getattr(msg, "document", None)
-        if candidate is not None and not callable(candidate):
-            document = candidate
+    document = _resolve_message_document(msg, media)
     if document is not None:
         mime_type = str(getattr(document, "mime_type", "") or "")
         if size is None:
@@ -230,25 +277,8 @@ def message_object_to_dict(msg: Any, channel_ref: Any) -> dict:
         doc_id = getattr(document, "id", None)
         if doc_id is not None:
             unique_id = str(doc_id)
-        is_video = mime_type.startswith("video")
-        try:
-            for attr in (getattr(document, "attributes", None) or []):
-                if "Video" in type(attr).__name__:
-                    is_video = True
-                    dur = getattr(attr, "duration", None)
-                    if dur:
-                        duration = int(dur)
-                    break
-        except (TypeError, ValueError):
-            pass
-        try:
-            for attr in (getattr(document, "attributes", None) or []):
-                fname = getattr(attr, "file_name", None)
-                if isinstance(fname, str) and fname.strip():
-                    filename = fname.strip()
-                    break
-        except (TypeError, ValueError):
-            pass
+        is_video, duration = _scan_video_attribute(document, mime_type.startswith("video"))
+        filename = _document_filename(document)
         kind = "video" if is_video else "other"
     out = {
         "channel_id": channel_ref,
