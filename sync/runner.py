@@ -14,6 +14,16 @@ logger = logging.getLogger(__name__)
 
 LOGGER = configure_logging("sync.runner")
 
+_SYNC_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SYNC_DIR not in sys.path:
+    sys.path.append(_SYNC_DIR)
+from runner_helpers import (  # noqa: E402
+    _WaitTimers,
+    _sync_child_args,
+    calculate_next_sleep_seconds,  # noqa: F401 - re-exported for runner.<name> callers
+    format_duration,  # noqa: F401 - re-exported for runner.<name> callers
+)
+
 try:
     from common.config_loader import ConfigError
 except ImportError:
@@ -93,30 +103,6 @@ def signal_handler(signum, frame):
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
-def calculate_next_sleep_seconds(daily_at_time, default_interval: int) -> float:
-    if not daily_at_time:
-        return float(default_interval)
-    import datetime
-    parts = daily_at_time.split(":")
-    target_h, target_m = int(parts[0]), int(parts[1])
-    now = datetime.datetime.now()
-    target = now.replace(hour=target_h, minute=target_m, second=0, microsecond=0)
-    if target <= now:
-        target += datetime.timedelta(days=1)
-    return max(1.0, (target - now).total_seconds())
-
-def format_duration(seconds: float) -> str:
-    total_sec = int(round(seconds))
-    hours = total_sec // 3600
-    minutes = (total_sec % 3600) // 60
-    secs = total_sec % 60
-    parts = []
-    if hours > 0:
-        parts.append(f"{hours}h")
-    if minutes > 0 or hours > 0:
-        parts.append(f"{minutes}m")
-    parts.append(f"{secs}s")
-    return " ".join(parts)
 
 if daily_at:
     LOGGER.info(f"[sync-daemon] Adult-Hub {APP_VERSION}; scheduled daily sync at {daily_at} (retry base {BASE_BACKOFF_SECONDS}s, max {MAX_BACKOFF_SECONDS}s)...")
@@ -262,18 +248,6 @@ def log_next_sync_schedule():
         LOGGER.warning(f"[sync-daemon] Could not read next sync schedule: {exc}")
 
 
-class _WaitTimers:
-    """Next-due times for the periodic checks inside wait_with_trigger."""
-
-    def __init__(self):
-        self.next_worker_attempt = 0.0
-        self.next_queue_error_log = 0.0
-        self.next_schedule_dispatch = 0.0
-        self.next_schedule_error_log = 0.0
-        self.next_system_schedule_check = 0.0
-        self.next_system_schedule_error_log = 0.0
-
-
 def _poll_system_schedule(timers: _WaitTimers, allow_schedule: bool) -> bool:
     """True when the Library sync cron slot was claimed, so the wait should end."""
     global system_sync_due
@@ -401,14 +375,6 @@ def _stop_child(process, grace_seconds: float | None = None):
     except subprocess.TimeoutExpired:
         process.kill()
         return process.wait()
-
-
-def _sync_child_args(source_filter, sync_mode):
-    source_arg = ["--source", source_filter] if source_filter else []
-    # Preserve the legacy child invocation for the default mode; only explicit
-    # administrative modes need an additional CLI argument.
-    mode_arg = ["--sync-mode", sync_mode] if sync_mode != "scheduled" else []
-    return source_arg, mode_arg
 
 
 def _wait_for_sync_child(process) -> bool:
