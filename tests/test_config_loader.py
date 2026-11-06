@@ -189,5 +189,16 @@ class TestTelegramOnlyValidation(unittest.TestCase):
         self.assertIn("Telegram-only", str(ctx.exception))
 
 
+class ConfigFileSignatureTest(unittest.TestCase):
+    def test_parent_path_that_is_a_file_counts_as_absent(self):
+        import tempfile
+        from common.config_loader import _config_file_signature
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plain_file = Path(tmp) / "plain.txt"
+            plain_file.write_text("not a directory", encoding="utf-8")
+            self.assertIsNone(_config_file_signature(plain_file / "overrides.json"))
+
+
 if __name__ == "__main__":
     unittest.main()

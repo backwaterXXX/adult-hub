@@ -1,13 +1,14 @@
 """Behavioral unit tests for Admin v2 source endpoints and concurrency (W2, W3)."""
 from __future__ import annotations
 
+import copy
 import json
 import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -17,7 +18,7 @@ try:
 except (ImportError, ModuleNotFoundError):
     import admin_v2_sources
 
-from common.managed_sources import ManagedConfigLockTimeout
+from common.managed_sources import ManagedConfigConflict, ManagedConfigLockTimeout
 
 
 class InlineAsyncio:
@@ -694,6 +695,111 @@ class TestAdminV2SourcesConcurrency(unittest.IsolatedAsyncioTestCase):
         self.assertIn("-100555", tg["channels"])
         self.assertEqual(tg["channels"]["-100555"]["studio"], "Readded Studio")
         self.assertTrue(tg["channels"]["-100555"]["enabled"])
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class TestChannelRollbackAndReaddRevision(unittest.IsolatedAsyncioTestCase):
+    """Rollback restores the pre-removal overrides; a queued re-add refuses a stale revision."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.prev_env = os.environ.get("ADMIN_SOURCE_OVERRIDES_PATH")
+        os.environ["ADMIN_SOURCE_OVERRIDES_PATH"] = str(Path(self.temp_dir.name) / "overrides.json")
+        self.addCleanup(self._restore_env)
+        self.admin = make_admin()
+        self.routes = {route.path: route.endpoint for route in admin_v2_sources.build_router(self.admin).routes}
+
+    def _restore_env(self):
+        if self.prev_env is None:
+            os.environ.pop("ADMIN_SOURCE_OVERRIDES_PATH", None)
+        else:
+            os.environ["ADMIN_SOURCE_OVERRIDES_PATH"] = self.prev_env
+
+    async def test_failed_enqueue_rollback_restores_channel_settings(self):
+        existing = {"telegram": {"channels": {"-1001": {"studio": "Studio A", "enabled": True}}}}
+        writes = []
+
+        def mock_update(config_path, candidate, expected_revision, **kwargs):
+            writes.append(copy.deepcopy(candidate))
+            return {"revision": expected_revision + 1}
+
+        def failing_enqueue(db_url, action, payload):
+            raise RuntimeError("DB connection failure")
+
+        with patch("common.managed_sources.read_overrides",
+                   return_value={"revision": 2, "overrides": copy.deepcopy(existing)}), \
+             patch("common.managed_sources.read_pending_source_audit", return_value=None), \
+             patch("common.managed_sources.preview_overrides", return_value={"changes": [], "truncated": False}), \
+             patch("common.managed_sources.update_overrides", side_effect=mock_update), \
+             patch("common.job_queue.enqueue_job", side_effect=failing_enqueue), \
+             patch.object(admin_v2_sources, "is_channel_removal_active", return_value=False):
+            req = make_post_request("/api/v2/sources/remove", {"expected_revision": 2, "channel_id": "-1001"})
+            resp = await self.routes["/api/v2/sources/remove"](req)
+
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(len(writes), 2)
+        # The staged write removes the channel entry and marks it removed.
+        self.assertEqual(writes[0]["telegram"]["removed_channels"], ["-1001"])
+        self.assertNotIn("-1001", writes[0]["telegram"]["channels"])
+        # The rollback writes the pre-removal overrides, including the channel settings.
+        self.assertEqual(writes[1]["telegram"]["channels"], existing["telegram"]["channels"])
+        self.assertNotIn("removed_channels", writes[1]["telegram"])
+
+
+class TestSourceReaddBaseRevision(unittest.TestCase):
+    """The queued save or restore applies only when the config revision still matches the request."""
+
+    def _payload(self, **extra):
+        payload = {
+            "channel_id": "-1001",
+            "studio": "Studio B",
+            "action_type": "save",
+            "config_path": str(REPO_ROOT / "tests" / "fixtures" / "config_telegram_only.yaml"),
+            "overrides": {"telegram": {"channels": {"-1002": {"studio": "Other", "enabled": True}}}},
+        }
+        payload.update(extra)
+        return payload
+
+    def _patches(self, current_revision):
+        from contextlib import ExitStack
+        update = MagicMock(return_value={"revision": current_revision + 1})
+        stack = ExitStack()
+        stack.enter_context(patch("common.managed_sources.is_channel_locked", return_value=False))
+        stack.enter_context(patch("common.managed_sources.read_overrides",
+                                  return_value={"revision": current_revision, "overrides": {}}))
+        stack.enter_context(patch("common.managed_sources.preview_overrides",
+                                  return_value={"changes": [], "truncated": False}))
+        stack.enter_context(patch("common.managed_sources.update_overrides", update))
+        return stack, update
+
+    def _run(self, payload):
+        from sync.duplicate_job_external_handlers import _action_source_readd
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = []
+        return _action_source_readd(conn, "job-1", payload, None, None)
+
+    def test_stale_base_revision_is_rejected_without_writing(self):
+        stack, update = self._patches(current_revision=5)
+        with stack, self.assertRaises(ManagedConfigConflict):
+            self._run(self._payload(base_revision=4))
+        update.assert_not_called()
+
+    def test_matching_base_revision_applies_the_update(self):
+        stack, update = self._patches(current_revision=5)
+        with stack:
+            result, _ = self._run(self._payload(base_revision=5))
+        self.assertEqual(result["local_state"], "source_readded")
+        update.assert_called_once()
+
+    def test_job_without_base_revision_keeps_previous_behaviour(self):
+        stack, update = self._patches(current_revision=5)
+        with stack:
+            result, _ = self._run(self._payload())
+        self.assertEqual(result["local_state"], "source_readded")
+        update.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -293,3 +293,42 @@ class TestManagedSourceOverrides(unittest.TestCase):
             path=self.overlay_path,
         )
         self.assertEqual(saved["revision"], 1)
+
+
+class TestDeletingChannelWaitOutsideConfigLock(unittest.TestCase):
+    """A save that must wait for a channel deletion does not hold the config lock while waiting."""
+
+    def test_wait_for_deleting_channel_does_not_hold_config_lock(self):
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        import common.managed_sources as managed
+
+        base = str(Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "config_telegram_only.yaml")
+        held = {"value": False}
+        observed = []
+        real_config_lock = managed.config_lock
+
+        @contextmanager
+        def tracking_lock(target, timeout=managed.DEFAULT_CONFIG_LOCK_TIMEOUT, poll_interval=0.05):
+            with real_config_lock(target, timeout=timeout, poll_interval=poll_interval):
+                held["value"] = True
+                try:
+                    yield
+                finally:
+                    held["value"] = False
+
+        def channel_still_deleting(channel_id, path=None):
+            observed.append(held["value"])
+            return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            overlay = Path(tmp) / "overrides.json"
+            patch_body = {"telegram": {"channels": {"-1009": {"enabled": True, "studio": "X"}}}}
+            with patch.object(managed, "config_lock", tracking_lock), \
+                 patch.object(managed, "is_channel_locked", channel_still_deleting), \
+                 self.assertRaises(managed.ManagedConfigConflict):
+                managed.update_overrides(base, patch_body, expected_revision=0, path=overlay, lock_timeout=0.2)
+
+        self.assertTrue(observed)
+        self.assertFalse(any(observed), "the config lock was held while waiting for the channel deletion")
