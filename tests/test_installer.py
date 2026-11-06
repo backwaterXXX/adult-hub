@@ -639,6 +639,127 @@ class TestStandaloneInstaller(unittest.TestCase):
         self.assertEqual(res_status.returncode, 0)
         self.assertIn("Jellyfin API:   ACTIVE", res_status.stdout)
 
+    def test_setup_both_ports_occupied_selects_distinct_alternatives(self):
+        """When both resolver and Jellyfin ports are occupied, setup finds distinct non-colliding ports."""
+        port1 = 8290
+        port2 = 8296
+        sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock1.bind(("127.0.0.1", port1))
+        sock1.listen(1)
+
+        sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock2.bind(("127.0.0.1", port2))
+        sock2.listen(1)
+
+        try:
+            mock_docker = make_mock_docker(self.isolated_root)
+            res = self.run_installer([
+                "--non-interactive",
+                "--bind-mode", "loopback",
+                "--resolver-port", str(port1),
+                "--jellyfin-port", str(port2),
+                "--docker-bin", mock_docker,
+                "--root-dir", str(self.isolated_root),
+            ])
+            self.assertEqual(res.returncode, 0)
+            env_content = (self.isolated_root / ".env").read_text()
+
+            # Parse selected ports
+            r_port = [line.split("=", 1)[1] for line in env_content.splitlines() if line.startswith("RESOLVER_PORT=")][0]
+            j_port = [line.split("=", 1)[1] for line in env_content.splitlines() if line.startswith("JELLYFIN_PORT=")][0]
+
+            self.assertNotEqual(r_port, str(port1))
+            self.assertNotEqual(j_port, str(port2))
+            self.assertNotEqual(r_port, j_port)
+        finally:
+            sock1.close()
+            sock2.close()
+
+    def test_interrupted_resume_with_existing_volume_and_valid_password(self):
+        """When volume exists and .env already has POSTGRES_PASSWORD, setup resumes cleanly."""
+        mock_docker = make_mock_docker(self.isolated_root, volume_exists=True)
+        # Create valid existing .env with standalone marker and postgres password
+        env_path = self.isolated_root / ".env"
+        env_path.write_text(
+            "ADULT_HUB_STANDALONE=true\n"
+            "POSTGRES_DB=adulthub\n"
+            "POSTGRES_USER=adulthub\n"
+            "POSTGRES_PASSWORD=preexisting-secret-pw\n"
+            "STANDALONE_DATABASE_URL=postgresql://adulthub:preexisting-secret-pw@database:5432/adulthub\n"
+        )
+        env_path.chmod(0o600)
+
+        res = self.run_installer([
+            "--non-interactive",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res.returncode, 0, f"Setup failed to resume:\n{res.stderr}")
+        env_after = env_path.read_text()
+        self.assertIn("POSTGRES_PASSWORD=preexisting-secret-pw", env_after)
+
+    def test_setup_preserves_preexisting_media_backups_and_data(self):
+        """Existing media files, backups, and data are strictly preserved during installer run."""
+        mock_docker = make_mock_docker(self.isolated_root)
+
+        # Pre-create media, backup, and cache files
+        media_file = self.isolated_root / "standalone" / "media" / "test_clip.strm"
+        media_file.parent.mkdir(parents=True, exist_ok=True)
+        media_file.write_text("http://127.0.0.1:8090/stream/123\n")
+
+        backup_file = self.isolated_root / "standalone" / "data" / "backups" / "backup_20261106.sql.gz"
+        backup_file.parent.mkdir(parents=True, exist_ok=True)
+        backup_file.write_bytes(b"gzip_compressed_backup_data")
+
+        data_file = self.isolated_root / "standalone" / "data" / "admin-source-overrides.json"
+        data_file.write_text('{"sources": {"telegram": {"channels": []}}}')
+
+        res = self.run_installer([
+            "--non-interactive",
+            "--bind-mode", "loopback",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res.returncode, 0)
+
+        # Verify all files remain intact
+        self.assertTrue(media_file.exists())
+        self.assertEqual(media_file.read_text(), "http://127.0.0.1:8090/stream/123\n")
+
+        self.assertTrue(backup_file.exists())
+        self.assertEqual(backup_file.read_bytes(), b"gzip_compressed_backup_data")
+
+        self.assertTrue(data_file.exists())
+        self.assertEqual(data_file.read_text(), '{"sources": {"telegram": {"channels": []}}}')
+
+    def test_setup_with_existing_env_and_missing_config(self):
+        """When .env already exists but config.yaml is missing, setup generates config and preserves .env."""
+        mock_docker = make_mock_docker(self.isolated_root)
+        env_path = self.isolated_root / ".env"
+        env_path.write_text(
+            "ADULT_HUB_STANDALONE=true\n"
+            "POSTGRES_DB=adulthub\n"
+            "POSTGRES_USER=adulthub\n"
+            "POSTGRES_PASSWORD=custom-pw-123\n"
+            "RESOLVER_BIND_IP=127.0.0.1\n"
+            "RESOLVER_PORT=8090\n"
+        )
+        env_path.chmod(0o600)
+
+        config_path = self.isolated_root / "standalone" / "config.yaml"
+        self.assertFalse(config_path.exists())
+
+        res = self.run_installer([
+            "--non-interactive",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res.returncode, 0)
+        self.assertTrue(config_path.exists())
+        self.assertIn("POSTGRES_PASSWORD=custom-pw-123", env_path.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

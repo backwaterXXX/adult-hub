@@ -6,15 +6,11 @@ Covers:
 3. First-run cleanup and retention safety (empty library, missing or unmounted media directory).
 """
 
-import copy
-import json
 import os
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 import sys
@@ -34,8 +30,8 @@ os.environ["SYNC_ACTIVITY_LOG_PATH"] = str(_ISOLATED_PATH / "sync_activity.log")
 def tearDownModule():
     _ISOLATED_DIR.cleanup()
 
-from common.config_loader import AppConfig, SourceConfig, SyncConfig, load_config, parse_and_validate_config
-from common.managed_sources import apply_overrides, preview_overrides, read_overrides, update_overrides
+from common.config_loader import load_config, parse_and_validate_config
+from common.managed_sources import preview_overrides, update_overrides
 from jellyfin_db import trigger_library_refresh
 from jellyfin_titles import sync_jellyfin_titles
 from jellyfin_people import sync_jellyfin_people
