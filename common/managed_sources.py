@@ -533,8 +533,13 @@ def update_overrides(
     import yaml
 
     target = overrides_path(path)
+    # Wait for a running channel deletion before taking the config lock. The deletion
+    # job holds the channel lock and then needs the config lock, so waiting while holding
+    # the config lock would block it and the writer would timeout against each other.
+    _wait_for_deleting_channels(patch, target, lock_timeout)
     with config_lock(target, timeout=lock_timeout):
-        _wait_for_deleting_channels(patch, target, lock_timeout)
+        # Re-check without waiting: a deletion may have started during the wait above.
+        _wait_for_deleting_channels(patch, target, 0.0)
         current = read_overrides(target)
         if (isinstance(expected_revision, bool) or not isinstance(expected_revision, int)
                 or expected_revision != current["revision"]):
