@@ -946,12 +946,12 @@
     try {
       const result = await window.AdminV2.postJson(SOURCE_CREATE_URL, { expected_revision: revision, channel: { id, studio } });
       state.editorCandidate = null; state.configRevision = result.revision; closeSourceDetail();
-      setNotice('success', result.audit_pending
+      setNotice('success', result.queued ? result.message : result.audit_pending
         ? 'Telegram channel added. Its audit record is queued until the database is available.'
-        : 'Telegram channel added. The next sync will apply it.'); announce('Telegram channel added.'); await loadSources();
+        : 'Telegram channel added. The next sync will apply it.'); announce(result.queued ? result.message : 'Telegram channel added.'); await loadSources();
       if (typeof CustomEvent === 'function') document.dispatchEvent(new CustomEvent('adminv2:sources-changed'));
       if (state.settingsAvailable && !state.auditPending && state.historyAvailable
-          && state.configRevision === result.revision) {
+          && state.configRevision === result.revision && !result.queued) {
         setNotice('success', 'Telegram channel added. The next sync will apply it.');
       }
     } catch (error) {
@@ -1042,10 +1042,10 @@
       });
       state.overrides = candidate;
       state.configRevision = result.revision;
-      setNotice('success', result.audit_pending
+      setNotice('success', result.queued ? result.message : result.audit_pending
         ? 'Channel name updated. Its audit record is queued until the database is available.'
         : 'Channel name updated. The next sync will apply it.');
-      announce('Channel name updated.');
+      announce(result.queued ? result.message : 'Channel name updated.');
       await loadSources();
       if (typeof CustomEvent === 'function') document.dispatchEvent(new CustomEvent('adminv2:sources-changed'));
       const updatedItem = state.items.find(candidateItem => itemKey(candidateItem) === itemKey(item));
@@ -1138,10 +1138,10 @@
       state.configRevision = result.revision;
       state.editorCandidate = null;
       closeSourceDetail(false);
-      setNotice('success', result.audit_pending
+      setNotice('success', result.queued ? result.message : result.audit_pending
         ? 'Source settings saved. Their audit record is queued until the database is available.'
         : 'Source settings saved. The next sync will apply them.');
-      announce(result.audit_pending ? 'Source settings saved; audit record queued.' : 'Source settings saved.');
+      announce(result.queued ? result.message : result.audit_pending ? 'Source settings saved; audit record queued.' : 'Source settings saved.');
       await loadSources();
     } catch (error) {
       const staleRevision = error.status === 409;
