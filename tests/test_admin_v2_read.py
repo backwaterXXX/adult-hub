@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import sys
 import time
 import unittest
@@ -609,7 +610,8 @@ class TestJobProgressProjection(unittest.TestCase):
         conn = Connection()
         observed = []
         services = SimpleNamespace(trigger_jellyfin_refresh=lambda: observed.append(list(conn.statements)) or True)
-        result = duplicate_jobs._refresh_jellyfin_with_progress(conn, "job-2", "hidden", services)
+        with patch.dict(os.environ, {"JELLYFIN_URL": "http://jellyfin:8096", "JELLYFIN_API_KEY": "test-key"}):
+            result = duplicate_jobs._refresh_jellyfin_with_progress(conn, "job-2", "hidden", services)
         self.assertTrue(result)
         self.assertEqual(len(observed), 1)
         sql, params = observed[0][0]

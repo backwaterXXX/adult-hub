@@ -331,17 +331,18 @@ def _add_search_condition(conditions: list[str], params: list[Any], q, columns: 
         params.extend([f"%{q}%"] * len(searchable))
 
 
+def _escape_channel_like_pattern(cid: str) -> str:
+    escaped = cid.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"telegram:{escaped}:%"
+
+
 def _add_channel_condition(conditions: list[str], params: list[Any], query: dict[str, Any]) -> None:
-    channel_ids = query.get("channel_ids") or ([query["channel_id"]] if query.get("channel_id") else [])
-    if not channel_ids:
+    raw_channels = query.get("channel_ids") or ([query["channel_id"]] if query.get("channel_id") else [])
+    if not raw_channels:
         return
-    # IDs are composite strings. Exact prefix matching avoids LIKE
-    # wildcard interpretation and keeps studio as production metadata.
-    channel_clauses = ["left(v.id, length(%s)) = %s" for _ in channel_ids]
-    conditions.append("(" + " OR ".join(channel_clauses) + ")")
-    for cid in channel_ids:
-        prefix = f"telegram:{cid}:"
-        params.extend([prefix, prefix])
+    channel_ids = list(dict.fromkeys(raw_channels))[:50]
+    conditions.append("v.id LIKE ANY(%s)")
+    params.append([_escape_channel_like_pattern(cid) for cid in channel_ids])
 
 
 def _add_text_condition(conditions: list[str], params: list[Any], field: str, value,

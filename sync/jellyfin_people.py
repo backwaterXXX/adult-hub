@@ -38,15 +38,6 @@ def format_pbc_overview(bio: str, birth: str = "", nationality: str = "",
     return "\n\n".join(parts)
 
 
-def _column_exists(conn, probe_sql: str) -> bool:
-    """Return True when the probe query runs, meaning the optional column exists."""
-    try:
-        conn.execute(probe_sql)
-        return True
-    except Exception:
-        return False
-
-
 def _legacy_names(conn) -> set:
     """Names still carrying markers from the retired jellyfin_person_stash_sync table."""
     try:
@@ -252,9 +243,10 @@ def sync_jellyfin_people(conn: db.Connection, url: str, api_key: str,
         return 0, 0
 
     legacy_names = _legacy_names(conn)
-    has_nationality = _column_exists(conn, "SELECT nationality FROM performer_bios LIMIT 1")
+    bio_cols = set(db.table_columns(conn, "performer_bios"))
+    has_nationality = "nationality" in bio_cols
     nat_expr = "COALESCE(b.nationality, '')" if has_nationality else "''"
-    has_links = _column_exists(conn, "SELECT stashdb_url, pbc_url FROM performer_bios LIMIT 1")
+    has_links = "stashdb_url" in bio_cols and "pbc_url" in bio_cols
     links_expr = "COALESCE(b.stashdb_url, ''), COALESCE(b.pbc_url, '')" if has_links else "'', ''"
 
     rows = _select_person_rows(conn, limit, nat_expr, links_expr)

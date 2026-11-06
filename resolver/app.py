@@ -289,13 +289,24 @@ def _check_database_ready() -> None:
         conn.close()
 
 
+_WARNED_DB_NOT_READY: bool = False
+
+
 @api.get("/health/ready")
 async def health_readiness():
     """Readiness for requests that depend on the shared catalog database."""
+    global _WARNED_DB_NOT_READY
     try:
         await asyncio.to_thread(_check_database_ready)
-    except Exception:
-        logger.warning("Request failed in health_readiness", exc_info=True)
+        if _WARNED_DB_NOT_READY:
+            _WARNED_DB_NOT_READY = False
+            logger.info("Database connection restored in health_readiness")
+    except Exception as exc:
+        if not _WARNED_DB_NOT_READY:
+            _WARNED_DB_NOT_READY = True
+            logger.warning("Database unavailable in health_readiness: %s", exc)
+        else:
+            logger.debug("Database unavailable in health_readiness: %s", exc)
         return JSONResponse({"status": "not_ready", "database": "unavailable"}, status_code=503)
     return {**(await asyncio.to_thread(_provider_health)), "database": "ok"}
 

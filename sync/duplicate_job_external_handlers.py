@@ -116,12 +116,11 @@ def _action_source_readd(conn, job_id, payload, media_dir, services):
         read_overrides,
         update_overrides,
     )
-    ch_lock_path = payload.get("overrides_path")
-    if is_channel_locked(channel_id, path=ch_lock_path) or _is_channel_removal_active_db(conn, channel_id):
+    if is_channel_locked(channel_id) or _is_channel_removal_active_db(conn, channel_id):
         raise ChannelRemovalStillActive(f"Channel removal is still active for '{channel_id}'.")
 
     ch_canon = canonical_channel_id(channel_id)
-    current = read_overrides(path=ch_lock_path)
+    current = read_overrides()
     base_revision = payload.get("base_revision")
     if base_revision is not None and current["revision"] != base_revision:
         # The payload carries the full overrides snapshot from the request. Applying it
@@ -133,13 +132,12 @@ def _action_source_readd(conn, job_id, payload, media_dir, services):
     config_path = _resolve_config_path(payload)
 
     preview_result = preview_overrides(
-        config_path, candidate, expected_revision=current["revision"], path=ch_lock_path
+        config_path, candidate, expected_revision=current["revision"]
     )
     saved = update_overrides(
         config_path,
         candidate,
         expected_revision=current["revision"],
-        path=ch_lock_path,
         audit_event={"changes": preview_result["changes"], "truncated": preview_result["truncated"]},
     )
     result = {
@@ -196,8 +194,14 @@ def _action_duplicate_reconcile(conn, job_id, payload, media_dir, services):
     # Automatic merges hide library entries, so a scheduled pass only reports
     # candidates until the operator opts in.
     execute_merges = _core.os.getenv("DUPLICATE_AUTO_MERGE_ENABLED", "false").strip().lower() == "true"
-    result = reconcile(getattr(conn, "_url", None) or _core.os.getenv("DATABASE_URL"),
-                       execute_merges=execute_merges)
+    merge_telegram_file_id = (
+        _core.os.getenv("DUPLICATE_AUTO_MERGE_TELEGRAM_FILE_ID", "true").strip().lower() == "true"
+    )
+    result = reconcile(
+        getattr(conn, "_url", None) or _core.os.getenv("DATABASE_URL"),
+        execute_merges=execute_merges,
+        merge_telegram_file_id=merge_telegram_file_id,
+    )
     result["local_state"] = "duplicate_reconciliation_completed"
     return result, True
 

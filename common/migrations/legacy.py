@@ -77,6 +77,9 @@ from common.migrations.m0060_video_job_lease_token import migration as video_job
 from common.migrations.m0061_schedule_stages import migration as schedule_stages
 from common.migrations.m0062_artwork_generation_schedule import migration as artwork_generation_schedule
 from common.migrations.m0063_source_removal_indexes import migration as source_removal_indexes
+from common.migrations.m0064_video_duplicate_decisions_evidence import (
+    migration as video_duplicate_decisions_evidence,
+)
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -144,4 +147,5 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     schedule_stages,
     artwork_generation_schedule,
     source_removal_indexes,
+    video_duplicate_decisions_evidence,
 )

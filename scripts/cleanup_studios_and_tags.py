@@ -43,8 +43,13 @@ def _init_channel_config() -> None:
                     KNOWN_CHANNELS.add(studio)
                 if cid and studio:
                     CHANNEL_ID_MAP[cid] = studio
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"Error loading channel config: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if not KNOWN_CHANNELS:
+        print("Error: No known channels loaded from configuration. Refusing to run with empty allow-list.", file=sys.stderr)
+        sys.exit(1)
 
 
 _init_channel_config()

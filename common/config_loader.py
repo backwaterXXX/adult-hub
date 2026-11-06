@@ -411,16 +411,25 @@ def parse_and_validate_config(data: Any) -> AppConfig:
 
 
 def find_config_file(explicit_path: Optional[str] = None) -> Path:
-    candidates = []
     if explicit_path:
-        candidates.append(Path(explicit_path))
+        p = Path(explicit_path)
+        if p.is_file():
+            return p.resolve()
+        raise ConfigError(f"Explicit configuration file '{explicit_path}' does not exist.")
+
     env_path = os.getenv("CONFIG_PATH")
     if env_path:
-        candidates.append(Path(env_path))
-    candidates.append(Path("/config/config.yaml"))
-    candidates.append(Path("/app/config.yaml"))
-    candidates.append(Path(__file__).parent / "config.yaml")
-    candidates.append(Path.cwd() / "config.yaml")
+        p = Path(env_path)
+        if p.is_file():
+            return p.resolve()
+        raise ConfigError(f"CONFIG_PATH '{env_path}' does not exist.")
+
+    candidates = [
+        Path("/config/config.yaml"),
+        Path("/app/config.yaml"),
+        Path(__file__).parent / "config.yaml",
+        Path.cwd() / "config.yaml",
+    ]
 
     for p in candidates:
         if p.is_file():
@@ -449,9 +458,9 @@ def load_config(config_path: Optional[str] = None, force_reload: bool = False) -
     from common.managed_sources import overrides_path
     overlay_path = overrides_path()
     file_path = find_config_file(config_path)
-    cacheable = config_path is None
     base_signature = _config_file_signature(file_path)
     overlay_signature = _config_file_signature(overlay_path)
+    cacheable = base_signature is not None
     cache_key = (base_signature, overlay_signature)
     if (cacheable and _CACHED_CONFIG is not None and not force_reload
             and _CACHED_CONFIG_KEY == cache_key):
@@ -474,7 +483,11 @@ def load_config(config_path: Optional[str] = None, force_reload: bool = False) -
         overlay = read_overrides(overlay_path)
         revision = overlay["revision"]
         data = apply_overrides(data, overlay)
-    config = parse_and_validate_config(data)
+    try:
+        config = parse_and_validate_config(data)
+    except ConfigError as err:
+        origin = f"{file_path} (with overlay {overlay_path})" if has_managed_overlay else str(file_path)
+        raise ConfigError(f"Invalid configuration in {origin}: {err}") from err
     config.managed_revision = revision
     if cacheable:
         _CACHED_CONFIG = config

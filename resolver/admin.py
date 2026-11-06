@@ -7,6 +7,7 @@ ADMIN_PUBLIC controls access through the public domain.
 """
 
 import asyncio  # noqa: F401 - shared by the split Admin v2 route modules
+import html
 import json
 import logging
 import os
@@ -173,7 +174,7 @@ async def admin_v2_page(request: Request):
         )
     template_path = Path(__file__).parent / "templates" / "admin_v2.html"
     try:
-        source = template_path.read_text(encoding="utf-8").replace("__APP_VERSION__", APP_VERSION)
+        source = template_path.read_text(encoding="utf-8").replace("__APP_VERSION__", html.escape(APP_VERSION))
     except OSError:
         return HTMLResponse("<h1>Admin v2 is unavailable.</h1>", status_code=503)
     return HTMLResponse(

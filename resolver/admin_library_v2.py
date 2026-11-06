@@ -88,7 +88,7 @@ def _parse_channel_ids(channel_id: str) -> list[str]:
             if cid.startswith("telegram:"):
                 cid = cid[len("telegram:"):]
             channel_ids.append(cid)
-    return channel_ids
+    return list(dict.fromkeys(channel_ids))[:50]
 
 
 def _validate_missing_fields(missing_fields: list[str]) -> list[str]:

@@ -183,12 +183,12 @@ def _store_video_fingerprint(conn: Any, video_id: str, algorithm: str, fingerpri
     return implementation(conn, video_id, algorithm, fingerprint, media_probe=media_probe)
 
 
-def backfill_scenes(conn: Any, media_dir: Path, limit: int=50, sleep_sec: float=0.5, http_client: Optional[Any]=None) -> Tuple[int, int]:
+def backfill_scenes(conn: Any, media_dir: Path, limit: int=50, sleep_sec: float=0.5, http_client: Optional[Any]=None, stop_requested: Optional[Any]=None) -> Tuple[int, int]:
     try:
         from .scene_scraper_backfill import backfill_scenes as implementation
     except ImportError:
         from scene_scraper_backfill import backfill_scenes as implementation
-    return implementation(conn, media_dir, limit, sleep_sec, http_client)
+    return implementation(conn, media_dir, limit, sleep_sec, http_client, stop_requested=stop_requested)
 
 
 def _apply_matched_scene(conn: Any, media_dir: Path, video_id: str, matched: ScrapedScene,

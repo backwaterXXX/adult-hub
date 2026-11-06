@@ -67,7 +67,14 @@ def _part(row):
     return extract_part_identity(row)
 
 
-def _telegram_document_id(video_id: str) -> str | None:
+def _telegram_document_id(video_id: str, row: dict | None = None) -> str | None:
+    try:
+        from video_duplicate_scoring import _telegram_file_id
+        if row is not None:
+            return _telegram_file_id(row)
+        return _telegram_file_id({"id": video_id, "provider": "telegram"})
+    except ImportError:
+        pass
     clean = str(video_id or "").strip()
     if not clean.startswith("telegram:"):
         return None
@@ -96,8 +103,8 @@ def pair_evidence(conn, left_id: str, right_id: str) -> dict | None:
     if len(rows) != 2:
         return None
     a, b = (dict(zip(_PAIR_NAMES, row)) for row in rows)
-    doc_a = _telegram_document_id(a['id'])
-    doc_b = _telegram_document_id(b['id'])
+    doc_a = _telegram_document_id(a['id'], a)
+    doc_b = _telegram_document_id(b['id'], b)
     same_tg_doc = bool(doc_a and doc_b and doc_a == doc_b)
     if not _durations_compatible(a, b, same_tg_doc):
         return None

@@ -25,7 +25,6 @@ if __package__:
     from .scene_scraper_apply import (
         _apply_matched_scene,
         _backfill_linked_scene_artwork,
-        _is_generated_telegram_post_title,
         _scene_match_provenance,
     )
     from .scene_scraper_caption_matches import (
@@ -38,7 +37,6 @@ else:
     from scene_scraper_apply import (
         _apply_matched_scene,
         _backfill_linked_scene_artwork,
-        _is_generated_telegram_post_title,
         _scene_match_provenance,
     )
     from scene_scraper_caption_matches import (
@@ -60,7 +58,6 @@ __all__ = [
     "_cached_video_fingerprint",
     "_fingerprint_backfill_module",
     "_fingerprint_feature_enabled",
-    "_is_generated_telegram_post_title",
     "_load_official_stashdb_performers",
     "_scene_match_provenance",
     "_store_video_fingerprint",
@@ -196,12 +193,83 @@ def apply_pending_fingerprint_proposals(conn: Any, media_dir: Path, *, limit: in
     return processed, applied
 
 
+def _never_stop() -> bool:
+    return False
+
+
+def _resolve_stop_fn(stop_requested: Any) -> Any:
+    if stop_requested is not None:
+        return stop_requested
+    try:
+        if __package__:
+            from .sync_shutdown import stop_requested as default_stop_requested
+        else:
+            from sync_shutdown import stop_requested as default_stop_requested
+        return default_stop_requested
+    except ImportError:
+        return _never_stop
+
+
+def _run_backfill_stages(conn, media_dir, limit, sleep_sec, http_client, _stop) -> Tuple[int, int]:
+    checked, updated = apply_pending_fingerprint_proposals(
+        conn, media_dir, limit=limit, http_client=http_client
+    )
+    if _stop():
+        return checked, updated
+
+    hash_c, hash_u = _core.backfill_telegram_fingerprints(
+        conn, media_dir, limit=min(limit, 20), sleep_sec=sleep_sec, http_client=http_client,
+    )
+    checked += hash_c
+    updated += hash_u
+    if _stop():
+        return checked, updated
+
+    oshash_c, oshash_u = _core.backfill_missing_telegram_oshashes(
+        conn, limit=_core._telegram_oshash_batch_limit(), sleep_sec=min(sleep_sec, 0.1), http_client=http_client,
+    )
+    checked += oshash_c
+    updated += oshash_u
+    if _stop():
+        return checked, updated
+
+    split_c, split_u = _backfill_split_part_matches(
+        conn, media_dir, limit=min(100, limit), sleep_sec=sleep_sec, http_client=http_client,
+    )
+    checked += split_c
+    updated += split_u
+    if _stop():
+        return checked, updated
+
+    title_c, title_u = _backfill_caption_title_matches(
+        conn, media_dir, limit=min(100, limit), sleep_sec=sleep_sec, http_client=http_client,
+    )
+    checked += title_c
+    updated += title_u
+    if _stop():
+        return checked, updated
+
+    art_c, art_u = _backfill_linked_scene_artwork(
+        conn, media_dir, limit=min(100, limit), sleep_sec=sleep_sec, http_client=http_client,
+    )
+    checked += art_c
+    updated += art_u
+    if _stop():
+        return checked, updated
+
+    text_c, text_u = _backfill_stashdb_caption_matches(
+        conn, limit=min(512, limit),
+    )
+    return checked + text_c, updated + text_u
+
+
 def backfill_scenes(
     conn: Any,
     media_dir: Path,
     limit: int = 50,
     sleep_sec: float = 0.5,
     http_client: Optional[Any] = None,
+    stop_requested: Optional[Any] = None,
 ) -> Tuple[int, int]:
     """Run fingerprint, split-sequence and caption matching for Telegram scenes."""
     if not conn or not media_dir:
@@ -215,43 +283,15 @@ def backfill_scenes(
         logger.debug("Ignored exception in backfill_scenes", exc_info=True)
         return 0, 0
 
-    checked, updated = apply_pending_fingerprint_proposals(conn, media_dir, limit=500, http_client=http_client)
-    hash_checked, hash_updated = _core.backfill_telegram_fingerprints(
-        conn, media_dir, limit=min(limit, 20), sleep_sec=sleep_sec, http_client=http_client,
-    )
-    checked += hash_checked
-    updated += hash_updated
-    missing_hash_limit = _core._telegram_oshash_batch_limit()
-    oshash_checked, oshash_computed = _core.backfill_missing_telegram_oshashes(
-        conn, limit=missing_hash_limit, sleep_sec=min(sleep_sec, 0.1), http_client=http_client,
-    )
-    checked += oshash_checked
-    updated += oshash_computed
+    _stop = _resolve_stop_fn(stop_requested)
+    clamped_limit = max(1, min(int(limit), 500))
 
-    split_checked, split_updated = _backfill_split_part_matches(
-        conn, media_dir, limit=min(100, max(1, limit)), sleep_sec=sleep_sec,
-        http_client=http_client,
-    )
-    checked += split_checked
-    updated += split_updated
+    if _stop():
+        return 0, 0
 
-    title_checked, title_updated = _backfill_caption_title_matches(
-        conn, media_dir, limit=min(100, max(1, limit)), sleep_sec=sleep_sec,
-        http_client=http_client,
+    checked, updated = _run_backfill_stages(
+        conn, media_dir, clamped_limit, sleep_sec, http_client, _stop
     )
-    checked += title_checked
-    updated += title_updated
-    artwork_checked, artwork_updated = _backfill_linked_scene_artwork(
-        conn, media_dir, limit=min(100, max(1, limit)), sleep_sec=sleep_sec,
-        http_client=http_client,
-    )
-    checked += artwork_checked
-    updated += artwork_updated
-    text_checked, text_updated = _backfill_stashdb_caption_matches(
-        conn, limit=min(512, max(1, limit)),
-    )
-    checked += text_checked
-    updated += text_updated
     _core.logger.info(
         "Telegram metadata backfill complete: checked=%d, enriched=%d "
         "(fingerprint, split-title/runtime, linked-scene artwork, caption-title and StashDB-alias stages)",

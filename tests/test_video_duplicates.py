@@ -89,7 +89,7 @@ class TestAutomaticDuplicateRules(unittest.TestCase):
         proof = pair_evidence(conn, "telegram:-1001:1:doc123", "telegram:-1002:2:doc123")
         self.assertEqual(proof, {"type": "telegram_file_id", "file_id": "doc123"})
 
-    def test_reconcile_auto_merges_same_telegram_file_when_execute_merges_false(self):
+    def test_reconcile_does_not_merge_when_execute_merges_false(self):
         left_id = "telegram:-1001:1:doc999"
         right_id = "telegram:-1001:2:doc999"
         scan_mock = {
@@ -127,7 +127,7 @@ class TestAutomaticDuplicateRules(unittest.TestCase):
                             return [r1, r2]
                         return []
                     def fetchone(self_inner):
-                        return None
+                        return (100,)
                 return Result()
 
         with patch("video_duplicates.scan_duplicate_index", return_value=scan_mock), \
@@ -138,11 +138,19 @@ class TestAutomaticDuplicateRules(unittest.TestCase):
 
             res = video_duplicate_automation.reconcile(None, execute_merges=False)
             self.assertEqual(res["outcome"], "completed")
+            self.assertEqual(len(enqueued_batches), 0)
+            self.assertEqual(res["mode"], "report")
+
+            video_duplicate_automation.reconcile(None, execute_merges=True, merge_telegram_file_id=True)
             self.assertEqual(len(enqueued_batches), 1)
             action, payload = enqueued_batches[0]
             self.assertEqual(action, "hide")
             self.assertEqual(payload["evidence"], "telegram_file_id")
             self.assertTrue(payload["automatic"])
+
+            enqueued_batches.clear()
+            video_duplicate_automation.reconcile(None, execute_merges=True, merge_telegram_file_id=False)
+            self.assertEqual(len(enqueued_batches), 0)
 
     def test_find_duplicate_candidates_can_exclude_same_telegram_file_for_decision_panel(self):
         found_mock = [

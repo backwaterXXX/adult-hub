@@ -124,8 +124,8 @@ def reconcile_telegram_channel(
             if next_status == "quarantined" and old_status != "quarantined":
                 try:
                     _restore_files(files)
-                except Exception:
-                    pass
+                except Exception as restore_exc:
+                    logger.warning("Could not restore files during failed quarantine of %s: %s", video_id, restore_exc)
             counts["errors"] += 1
             logger.warning("Could not quarantine unavailable Telegram item %s: %s", video_id, exc)
     conn.commit()

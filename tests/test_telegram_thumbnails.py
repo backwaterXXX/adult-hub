@@ -89,6 +89,16 @@ class TestTelegramThumbnails(unittest.IsolatedAsyncioTestCase):
             download.assert_awaited_once()
             self.assertFalse(provider._thumb_tasks)
 
+    async def test_black_image_is_cached_as_none_with_negative_ttl(self):
+        provider = telegram.TelegramProvider()
+        with patch.object(provider, "_download_thumb_uncached", AsyncMock(return_value=b"fake-bytes")), \
+             patch("common.image_utils.is_black_image", return_value=True):
+            data = await provider.download_thumb("-1001:42:unique")
+            self.assertIsNone(data)
+            self.assertIn("-1001:42:unique", provider._thumb_cache)
+            cached_exp, cached_data = provider._thumb_cache["-1001:42:unique"]
+            self.assertIsNone(cached_data)
+
     async def test_cache_expires_and_evicts_by_bytes_and_entry_limit(self):
         provider = telegram.TelegramProvider()
         with patch.object(telegram, "THUMB_CACHE_MAX_BYTES", 6), \

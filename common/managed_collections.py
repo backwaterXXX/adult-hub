@@ -89,6 +89,8 @@ async def _jellyfin_file_index(client, base_url: str, headers: dict) -> dict[str
 
 
 def _json_list(raw) -> list:
+    if isinstance(raw, list):
+        return raw
     try:
         value = json.loads(raw) if raw else []
     except (ValueError, TypeError):

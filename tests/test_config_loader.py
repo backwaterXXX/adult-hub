@@ -199,6 +199,31 @@ class ConfigFileSignatureTest(unittest.TestCase):
             plain_file.write_text("not a directory", encoding="utf-8")
             self.assertIsNone(_config_file_signature(plain_file / "overrides.json"))
 
+    def test_find_config_file_fails_fast_on_missing_explicit_path(self):
+        from common.config_loader import find_config_file
+        with self.assertRaises(ConfigError) as ctx:
+            find_config_file("/nonexistent/explicit/config.yaml")
+        self.assertIn("Explicit configuration file", str(ctx.exception))
+
+    def test_find_config_file_fails_fast_on_missing_env_path(self):
+        import os
+        from unittest.mock import patch
+        from common.config_loader import find_config_file
+        with patch.dict(os.environ, {"CONFIG_PATH": "/nonexistent/env/config.yaml"}):
+            with self.assertRaises(ConfigError) as ctx:
+                find_config_file()
+            self.assertIn("CONFIG_PATH", str(ctx.exception))
+
+    def test_load_config_prefixes_validation_error_with_origin(self):
+        import tempfile
+        from common.config_loader import load_config
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_cfg = Path(tmp) / "config.yaml"
+            bad_cfg.write_text("sources: [{provider: 'invalid-name'}]", encoding="utf-8")
+            with self.assertRaises(ConfigError) as ctx:
+                load_config(str(bad_cfg))
+            self.assertIn(str(bad_cfg), str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

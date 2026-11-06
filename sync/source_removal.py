@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -11,15 +12,17 @@ from typing import Any
 import yaml
 from common import db
 
+logger = logging.getLogger(__name__)
+
 
 def _channel_ids(channel_id: str) -> set[str]:
-    clean = channel_id.strip()
-    values = {channel_id, clean}
-    if clean.startswith("-100"):
-        values.add(clean[4:])
-    else:
-        values.add("-100" + clean.lstrip("-"))
-    return values
+    try:
+        from common.managed_sources import channel_aliases
+        return channel_aliases(channel_id)
+    except ImportError:
+        clean = channel_id.strip()
+        canonical = clean[4:] if clean.startswith("-100") else clean.lstrip("-")
+        return {channel_id, clean, canonical, f"-{canonical}", f"-100{canonical}"}
 
 
 def _escape_like_prefix(prefix: str) -> str:
@@ -338,6 +341,26 @@ def remove_telegram_channel(conn, media_dir: Path, channel_id: str, job_id: str,
                             total=len(deletable_ids))
 
         _delete_channel_sources(conn, tables, aliases, prefixes)
+        if "telegram_unavailable_quarantine" in tables:
+            rows = conn.execute(
+                "SELECT files FROM telegram_unavailable_quarantine WHERE channel_id = ANY(%s)",
+                (aliases,),
+            ).fetchall()
+            for (files_data,) in rows:
+                if files_data:
+                    try:
+                        from telegram_unavailable import _restore_files
+                    except ImportError:
+                        from .telegram_unavailable import _restore_files
+                    try:
+                        _restore_files(files_data)
+                    except Exception as exc:
+                        logger.warning("Failed restoring quarantined files on channel removal: %s", exc)
+            with conn:
+                conn.execute(
+                    "DELETE FROM telegram_unavailable_quarantine WHERE channel_id = ANY(%s)",
+                    (aliases,),
+                )
         if "telegram_channel_state" in tables:
             with conn:
                 conn.execute("DELETE FROM telegram_channel_state WHERE channel_id = ANY(%s)", (aliases,))

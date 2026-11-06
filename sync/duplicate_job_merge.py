@@ -170,7 +170,8 @@ def _retire_loser_rows(conn, keeper: str, loser: str, job_id, snapshot: dict, no
     conn.execute('DELETE FROM video_categories WHERE video_id=%s', (loser,))
     conn.execute('DELETE FROM synced_files WHERE video_id=%s', (loser,))
     conn.execute('DELETE FROM videos WHERE id=%s', (loser,))
-    conn.execute("INSERT INTO video_duplicate_decisions (loser_id,keeper_id,operation_id,state,created_at,snapshot,rules_version) VALUES (%s,%s,%s,'active',%s,%s,%s)", (loser, keeper, job_id, now, _core.json.dumps(snapshot, ensure_ascii=False), payload.get('rules_version')))
+    evidence = str(payload.get('evidence') or '')
+    conn.execute("INSERT INTO video_duplicate_decisions (loser_id,keeper_id,operation_id,state,created_at,snapshot,rules_version,evidence) VALUES (%s,%s,%s,'active',%s,%s,%s,%s)", (loser, keeper, job_id, now, _core.json.dumps(snapshot, ensure_ascii=False), payload.get('rules_version'), evidence))
 
 
 def _merge_loser(conn, merge: _KeeperMerge, keeper: str, job_id, payload: dict, snapshot: dict, now) -> None:

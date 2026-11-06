@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Callable
 from common.migrations.base import Migration
+
+logger = logging.getLogger(__name__)
 
 
 def apply(conn: Any, *, map_category_fn: Callable[[str], str | None] | None = None, **kwargs) -> None:
@@ -38,6 +41,8 @@ def apply(conn: Any, *, map_category_fn: Callable[[str], str | None] | None = No
         cur = conn.execute(
             "SELECT id, categories FROM videos WHERE categories IS NOT NULL AND categories != ''"
         )
+        skipped = 0
+        populated = 0
         for vid_id, cats_val in cur.fetchall():
             try:
                 if cats_val.startswith("["):
@@ -51,8 +56,23 @@ def apply(conn: Any, *, map_category_fn: Callable[[str], str | None] | None = No
                             "INSERT INTO video_categories (video_id, category) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                             (vid_id, m_cat),
                         )
+                        populated += 1
             except Exception:
-                pass
+                skipped += 1
+                logger.warning(
+                    "0006_data_normalizations failed to normalize categories for video %s: %r",
+                    vid_id,
+                    cats_val,
+                    exc_info=True,
+                )
+        if skipped > 0:
+            logger.warning(
+                "0006_data_normalizations populated video_categories (inserted=%d, skipped=%d)",
+                populated,
+                skipped,
+            )
+        else:
+            logger.info("0006_data_normalizations populated video_categories (inserted=%d)", populated)
 
 
 migration = Migration(

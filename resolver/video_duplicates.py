@@ -522,8 +522,7 @@ def find_duplicate_candidates(db_url: str | None, limit: int = 200, offset: int 
     if wanted_category:
         found = [pair for pair in found if pair.get("category") == wanted_category]
     if not include_same_telegram_file and wanted_category != "Same file":
-        found = [pair for pair in found if not (pair.get("evidence") == "telegram_file_id"
-                 and any("Same Telegram file" in r for r in pair.get("reasons", [])))]
+        found = [pair for pair in found if pair.get("evidence") != "telegram_file_id"]
     return {"pairs": found[offset:offset + limit], "total": len(found),
             "truncated": offset + limit < len(found), "offset": offset,
             "category": category, "scanned": scanned, "complete": scan_complete,

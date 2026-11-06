@@ -15,12 +15,14 @@ logger = logging.getLogger(__name__)
 
 
 _WARNED_MISSING_CHANNEL_HINTS: bool = False
+_WARNED_IS_TELEGRAM_CONFIGURED: bool = False
 
 
 def reset_channel_hints_warning() -> None:
     """Reset the channel hints warning latch (primarily for test isolation)."""
-    global _WARNED_MISSING_CHANNEL_HINTS
+    global _WARNED_MISSING_CHANNEL_HINTS, _WARNED_IS_TELEGRAM_CONFIGURED
     _WARNED_MISSING_CHANNEL_HINTS = False
+    _WARNED_IS_TELEGRAM_CONFIGURED = False
 
 
 def _is_telegram_configured() -> bool:
@@ -34,8 +36,13 @@ def _is_telegram_configured() -> bool:
                 channels = getattr(tg, "channels", [])
                 if channels and any(getattr(ch, "enabled", True) for ch in channels):
                     return True
-    except Exception:
-        logger.debug("Ignored exception in _is_telegram_configured", exc_info=True)
+    except Exception as exc:
+        global _WARNED_IS_TELEGRAM_CONFIGURED
+        if not _WARNED_IS_TELEGRAM_CONFIGURED:
+            _WARNED_IS_TELEGRAM_CONFIGURED = True
+            logger.warning("Could not read configuration to determine Telegram status: %s", exc)
+        else:
+            logger.debug("Could not read configuration to determine Telegram status: %s", exc)
     if os.getenv("TELEGRAM_API_ID") and (
         os.getenv("TELEGRAM_CHANNELS") or os.getenv("SYNC_TELEGRAM", "").lower() in ("true", "1", "yes")
     ):
@@ -124,7 +131,8 @@ def _merge_performer_resolution(existing: Dict[str, Any], new: Dict[str, Any]) -
     old_resolution = existing.get("performer_resolution") or {}
     if new_resolution and int(new_resolution.get("priority") or 0) >= int(old_resolution.get("priority") or -1):
         existing["performer_resolution"] = new_resolution
-        existing["performers"] = new.get("performers") or []
+        if new.get("performers"):
+            existing["performers"] = new["performers"]
 
 
 def _merge_video_fields(existing: Dict[str, Any], new: Dict[str, Any]) -> None:

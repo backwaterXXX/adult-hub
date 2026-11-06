@@ -131,9 +131,6 @@ def compare_pair(left_id: str, right_id: str, left_duration: float, right_durati
                  *, left_aspect: float | None = None, right_aspect: float | None = None,
                  cache_dir: str | None = None, byte_budget: int = 256 * 1024 * 1024) -> tuple[str, dict, bytes | None]:
     """Fine-verify a candidate with 8 anchors, a +/-2 s search and SSIM."""
-    # Import here so missing optional dependencies fail before any frame is fetched.
-    import numpy as np  # noqa: F401
-    from PIL import Image, ImageDraw  # noqa: F401
     if left_duration <= 0 or right_duration <= 0:
         return "inconclusive", {"reason": "missing_duration"}, None
     left_anchors = [left_duration * (0.10 + 0.80 * i / 7) for i in range(8)]

@@ -46,27 +46,33 @@ def find_active_oshash_merges(
     offset = max(0, int(offset))
     conn = _decision_conn(db_url, db_api=db_api)
     try:
+        has_evidence_col = "evidence" in db_api.table_columns(conn, "video_duplicate_decisions")
+        evidence_expr = "COALESCE(d.evidence, '')" if has_evidence_col else "''"
         decisions = conn.execute(
-            """SELECT d.operation_id,d.keeper_id,d.loser_id,d.created_at,fl.fingerprint
+            f"""SELECT d.operation_id,d.keeper_id,d.loser_id,d.created_at,fl.fingerprint,{evidence_expr}
                FROM video_duplicate_decisions d
-               JOIN video_fingerprints fk ON fk.video_id=d.keeper_id AND fk.algorithm='OSHASH'
-               JOIN video_fingerprints fl ON fl.video_id=d.loser_id AND fl.algorithm='OSHASH'
+               LEFT JOIN video_fingerprints fk ON fk.video_id=d.keeper_id AND fk.algorithm='OSHASH'
+               LEFT JOIN video_fingerprints fl ON fl.video_id=d.loser_id AND fl.algorithm='OSHASH'
                                            AND fl.fingerprint=fk.fingerprint
                JOIN videos vk ON vk.id=d.keeper_id AND vk.provider='telegram'
                JOIN videos vl ON vl.id=d.loser_id AND vl.provider='telegram'
                WHERE d.state='active'
+                 AND ((fl.fingerprint IS NOT NULL AND fl.fingerprint=fk.fingerprint)
+                      OR {evidence_expr}='telegram_file_id')
                ORDER BY d.created_at DESC,d.operation_id,d.loser_id"""
         ).fetchall()
         by_operation: dict[str, dict] = {}
-        for operation_id, keeper_id, loser_id, created_at, fingerprint in decisions:
+        for operation_id, keeper_id, loser_id, created_at, fingerprint, evidence in decisions:
             operation_id, keeper_id, loser_id = str(operation_id), str(keeper_id), str(loser_id)
-            if not re.fullmatch(r"[0-9a-fA-F]{16}", str(fingerprint or "")):
+            has_valid_oshash = bool(fingerprint and re.fullmatch(r"[0-9a-fA-F]{16}", str(fingerprint)))
+            if not has_valid_oshash and str(evidence) != "telegram_file_id":
                 continue
             group = by_operation.setdefault(operation_id, {
                 "operation_id": operation_id, "keeper_id": keeper_id,
                 "created_at": int(created_at), "oshashes": set(), "loser_ids": [],
             })
-            group["oshashes"].add(str(fingerprint).lower())
+            if has_valid_oshash:
+                group["oshashes"].add(str(fingerprint).lower())
             group["loser_ids"].append(loser_id)
 
         all_operations = sorted(by_operation.values(), key=lambda row: (-row["created_at"], row["operation_id"]))

@@ -31,3 +31,11 @@ class TelegramOshashResult:
         # Keep the existing two-value unpacking contract for internal callers.
         yield self.fingerprint
         yield self.bytes_read
+
+
+PART_MARKER_REGEX = r"(part[[:space:]_.-]*|pt[.]?[[:space:]_.-]*|s[[:space:]_.-]*)[0-9]{1,2}"
+PART_MARKER_SQL = (
+    f"(COALESCE(v.title,'') ~* '{PART_MARKER_REGEX}'\n"
+    f"  OR COALESCE(v.source_filename,'') ~* '{PART_MARKER_REGEX}'\n"
+    f"  OR COALESCE(v.source_text,'') ~* '{PART_MARKER_REGEX}')"
+)

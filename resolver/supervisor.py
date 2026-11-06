@@ -89,8 +89,14 @@ class _Worker:
 
     def start_if_due(self, now: float) -> None:
         if self.process is None and now >= self.restart_at:
-            self.process = subprocess.Popen(self.command, start_new_session=True)
-            _log(f"started {self.label} pid={self.process.pid}")
+            try:
+                self.process = subprocess.Popen(self.command, start_new_session=True)
+                _log(f"started {self.label} pid={self.process.pid}")
+            except OSError as exc:
+                _log(f"failed to start {self.label}: {exc}; retrying in {self.restart_delay:g}s", logging.ERROR)
+                self.process = None
+                self.restart_at = now + self.restart_delay
+                self.restart_delay = min(self.restart_delay * 2.0, MAX_RESTART_DELAY)
 
     def reap_if_exited(self) -> None:
         if self.process is not None and self.process.poll() is not None:
@@ -120,9 +126,16 @@ def main() -> int:
     )
 
     while not _stop_requested:
+        now = time.monotonic()
         for worker in workers:
-            worker.start_if_due(time.monotonic())
-        child = subprocess.Popen(UVICORN_COMMAND)
+            worker.start_if_due(now)
+        try:
+            child = subprocess.Popen(UVICORN_COMMAND)
+        except OSError as exc:
+            _log(f"failed to start Uvicorn: {exc}; retrying in {restart_delay:g}s", logging.ERROR)
+            _sleep(restart_delay)
+            restart_delay = min(restart_delay * 2.0, MAX_RESTART_DELAY)
+            continue
         started_at = time.monotonic()
         _log(f"started Uvicorn pid={child.pid}")
 
@@ -151,8 +164,10 @@ def _watch_child(child: subprocess.Popen, workers, started_at: float) -> tuple[s
     failures = 0
     healthy_seen = False
     while not _stop_requested:
+        now = time.monotonic()
         for worker in workers:
             worker.reap_if_exited()
+            worker.start_if_due(now)
         return_code = child.poll()
         if return_code is not None:
             return f"Uvicorn exited with code {return_code}", healthy_seen

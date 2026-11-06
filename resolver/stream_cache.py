@@ -41,10 +41,38 @@ class PersistentLRUCache:
 
         self.db_url = db_url or db_path or os.getenv("DATABASE_URL") or None
         self._pg_ok = bool(self.db_url)
+        self._consecutive_errors = 0
+        self._pg_recovery_at = 0.0
         self._init_db()
 
-    def _pg(self):
-        return db.connect(self.db_url) if self._pg_ok else None
+    def _pg(self, now: Optional[float] = None):
+        if not self.db_url:
+            return None
+        current_time = time.time() if now is None else now
+        if not self._pg_ok:
+            if current_time < self._pg_recovery_at:
+                return None
+        try:
+            conn = db.connect(self.db_url)
+            if not self._pg_ok:
+                self._pg_ok = True
+                self._consecutive_errors = 0
+                logger.info("PostgreSQL stream cache recovered.")
+            return conn
+        except Exception as e:
+            self._handle_pg_error(e, current_time)
+            raise
+
+    def _handle_pg_error(self, exc: Exception, now: float) -> None:
+        self._consecutive_errors += 1
+        logger.debug("PostgreSQL cache error (count=%d): %s", self._consecutive_errors, exc)
+        if self._consecutive_errors >= 3:
+            if self._pg_ok:
+                logger.warning(
+                    "PostgreSQL cache failing (%s); degrading to in-memory mode for 30s.", exc
+                )
+            self._pg_ok = False
+            self._pg_recovery_at = now + 30.0
 
     def _init_db(self):
         if not self._pg_ok:
@@ -72,19 +100,19 @@ class PersistentLRUCache:
             self._pg_ok = False
 
     def _pg_write(self, sql: str, params=()):
-        if not self._pg_ok:
-            return False
         try:
-            conn = db.connect(self.db_url)
-        except Exception as e:
-            logger.debug(f"PostgreSQL cache write skipped (no connection): {e}")
+            conn = self._pg()
+        except Exception:
+            return False
+        if not conn:
             return False
         try:
             with conn:
                 conn.execute(sql, params)
+            self._consecutive_errors = 0
             return True
         except Exception as e:
-            logger.debug(f"PostgreSQL cache write error: {e}")
+            self._handle_pg_error(e, time.time())
             return False
         finally:
             conn.close()
@@ -94,7 +122,7 @@ class PersistentLRUCache:
         with self._lock:
             if key in self._memory:
                 return self._get_from_memory(key, now)
-            if self._pg_ok:
+            if self._pg_ok or (self.db_url and now >= self._pg_recovery_at):
                 return self._get_from_postgres(key, now)
             return None
 
@@ -114,9 +142,10 @@ class PersistentLRUCache:
 
     def _get_from_postgres(self, key: str, now: float) -> Optional[str]:
         try:
-            conn = db.connect(self.db_url)
-        except Exception as e:
-            logger.debug(f"PostgreSQL cache get error: {e}")
+            conn = self._pg(now)
+        except Exception:
+            return None
+        if not conn:
             return None
         try:
             cur = conn.execute(
@@ -132,12 +161,14 @@ class PersistentLRUCache:
                         self._memory.popitem(last=False)
                     conn.execute("UPDATE stream_cache SET last_accessed = %s WHERE cache_key = %s", (now, key))
                     conn.commit()
+                    self._consecutive_errors = 0
                     return url
                 else:
                     conn.execute("DELETE FROM stream_cache WHERE cache_key = %s", (key,))
                     conn.commit()
+            self._consecutive_errors = 0
         except Exception as e:
-            logger.debug(f"PostgreSQL cache get error: {e}")
+            self._handle_pg_error(e, now)
             try:
                 conn.rollback()
             except Exception:
@@ -156,12 +187,11 @@ class PersistentLRUCache:
             if len(self._memory) > self.max_entries:
                 self._memory.popitem(last=False)
 
-            if not self._pg_ok:
-                return
             try:
-                conn = db.connect(self.db_url)
-            except Exception as e:
-                logger.debug(f"PostgreSQL cache set error: {e}")
+                conn = self._pg(now)
+            except Exception:
+                return
+            if not conn:
                 return
             try:
                 with conn:
@@ -183,8 +213,9 @@ class PersistentLRUCache:
                                 SELECT cache_key FROM stream_cache ORDER BY last_accessed ASC LIMIT %s
                             )
                         """, (overflow,))
+                self._consecutive_errors = 0
             except Exception as e:
-                logger.debug(f"PostgreSQL cache set error: {e}")
+                self._handle_pg_error(e, now)
             finally:
                 conn.close()
 
@@ -199,14 +230,17 @@ class PersistentLRUCache:
         with self._lock:
             if self._pg_ok:
                 try:
-                    conn = db.connect(self.db_url)
+                    conn = self._pg(now)
+                except Exception:
+                    conn = None
+                if conn:
                     try:
                         cur = conn.execute("SELECT count(*) FROM stream_cache WHERE expire_at > %s", (now,))
                         return cur.fetchone()[0]
+                    except Exception as e:
+                        self._handle_pg_error(e, now)
                     finally:
                         conn.close()
-                except Exception:
-                    logger.debug("Ignored exception in __len__", exc_info=True)
             return sum(1 for _, exp, _ in self._memory.values() if exp > now)
 
     def clear(self) -> int:
@@ -230,6 +264,10 @@ class PersistentLRUCache:
                         ).fetchall()
                         live_keys.update(str(row[0]) for row in rows)
                         conn.execute("DELETE FROM stream_cache")
+                    self._consecutive_errors = 0
+                except Exception as e:
+                    self._handle_pg_error(e, now)
+                    raise
                 finally:
                     conn.close()
             self._memory.clear()

@@ -328,12 +328,15 @@ def _build_auto_groups(db_url, pairs: list, by_id: dict, active_losers: set, vis
     return auto_groups, skipped
 
 
-def _select_auto_work(auto_groups: dict, execute_merges: bool, limit: int) -> list:
+def _select_auto_work(auto_groups: dict, execute_merges: bool, limit: int,
+                      *, merge_telegram_file_id: bool = True) -> list:
     work = []
+    if not execute_merges:
+        return work
     claimed_ids: set[str] = set()
     for payload in auto_groups.values():
         is_same_telegram_file = payload.get("evidence") == "telegram_file_id"
-        if not execute_merges and not is_same_telegram_file:
+        if is_same_telegram_file and not merge_telegram_file_id:
             continue
         group_ids = {payload["keeper_id"], *payload["loser_ids"]}
         if group_ids & claimed_ids:
@@ -356,8 +359,54 @@ def _incomplete_scan_result(db_url, visual: dict, scan: dict) -> dict:
             "phash_queued": 0, "merge_jobs_queued": 0}
 
 
+def _blocked_channel_prefixes(db_url: str | None, planned_per_prefix: dict[str, set[str]]) -> set[str]:
+    conn = db.connect(db_url)
+    blocked_prefixes: set[str] = set()
+    try:
+        for prefix, losers in planned_per_prefix.items():
+            count_row = conn.execute(
+                "SELECT count(*) FROM videos WHERE id LIKE %s", (f"{prefix}%",)
+            ).fetchone()
+            total = int(count_row[0]) if count_row else 0
+            limit = max(10, int(total * 0.25))
+            if len(losers) > limit:
+                logger.warning(
+                    "Skipping auto-hide for channel '%s': would hide %d of %d catalogued entries (>1/4)",
+                    prefix, len(losers), total,
+                )
+                blocked_prefixes.add(prefix)
+    finally:
+        conn.close()
+    return blocked_prefixes
+
+
+def _filter_work_by_scale_guard(db_url: str | None, work: list) -> list:
+    if not work:
+        return work
+    planned_per_prefix: dict[str, set[str]] = {}
+    for action, payload in work:
+        if action != "hide":
+            continue
+        for loser_id in payload.get("loser_ids", []):
+            parts = str(loser_id).split(":")
+            if len(parts) >= 3 and parts[0] == "telegram":
+                prefix = f"telegram:{parts[1]}:"
+                planned_per_prefix.setdefault(prefix, set()).add(loser_id)
+    if not planned_per_prefix:
+        return work
+
+    blocked = _blocked_channel_prefixes(db_url, planned_per_prefix)
+    if not blocked:
+        return work
+    return [
+        (action, payload) for action, payload in work
+        if not any(any(str(lid).startswith(bp) for bp in blocked) for lid in payload.get("loser_ids", []))
+    ]
+
+
 def reconcile(db_url: str | None, *, limit: int = MAX_AUTO_LOSERS,
-              execute_merges: bool = True) -> dict:
+              execute_merges: bool = False,
+              merge_telegram_file_id: bool = True) -> dict:
     """Queue missing pHashes and reversible hides for high-confidence matches."""
     from common.job_queue import enqueue_jobs_batch
     from common.phash_jobs import enqueue as enqueue_phash
@@ -375,10 +424,12 @@ def reconcile(db_url: str | None, *, limit: int = MAX_AUTO_LOSERS,
     by_id, phashes, active_losers, visual_pairs = _load_reconcile_state(db_url, ids)
     phash_jobs = _enqueue_missing_phashes(db_url, ids, by_id, phashes, enqueue_phash)
     auto_groups, skipped = _build_auto_groups(db_url, pairs, by_id, active_losers, visual_pairs)
-    work = _select_auto_work(auto_groups, execute_merges, limit)
+    work = _select_auto_work(auto_groups, execute_merges, limit,
+                             merge_telegram_file_id=merge_telegram_file_id)
+    work = _filter_work_by_scale_guard(db_url, work)
     job_ids = enqueue_jobs_batch(db_url, work)
     return {"outcome": "completed", **visual, "scanned": scan.get("scanned", 0),
             "phash_queued": phash_jobs, "merge_jobs_queued": len(job_ids),
-            "merge_candidates": len(auto_groups), "mode": "automatic" if (execute_merges or work) else "report",
+            "merge_candidates": len(auto_groups), "mode": "automatic" if execute_merges else "report",
             "skipped_safety_checks": skipped}
 

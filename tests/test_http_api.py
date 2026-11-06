@@ -1499,7 +1499,9 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn('id="main-content"', page.text)
         self.assertIn('/admin/assets-v2/admin-v2.js', page.text)
-        self.assertNotIn("{{APP_VERSION}}", page.text)
+        self.assertNotIn("__APP_VERSION__", page.text)
+        self.assertIn("Admin v3.1", page.text)
+        self.assertIn(f"v{resolver_app.APP_VERSION}", page.text)
 
 
 

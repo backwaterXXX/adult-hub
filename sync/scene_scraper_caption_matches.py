@@ -10,8 +10,10 @@ logger = logging.getLogger(__name__)
 
 if __package__:
     from . import scene_scrapers as _core
+    from .scene_scraper_models import PART_MARKER_SQL
 else:
     import scene_scrapers as _core
+    from scene_scraper_models import PART_MARKER_SQL
 
 def _load_official_stashdb_performers(conn: Any) -> list[dict]:
     """Load only active StashDB identities and their approved official aliases."""
@@ -49,15 +51,13 @@ def _fetch_caption_title_rows(conn: Any, attempt_source: str, limit: int):
     """Candidate videos for caption title lookup. None when the query is unavailable."""
     try:
         return conn.execute(
-            """SELECT v.id,v.source_text,v.duration
+            f"""SELECT v.id,v.source_text,v.duration
                FROM videos v LEFT JOIN external_metadata_attempts a
                  ON a.entity_type='video' AND a.entity_key=v.id AND a.source=%s
                WHERE v.provider='telegram' AND v.source_text IS NOT NULL AND v.source_text<>''
                  AND COALESCE((v.performer_resolution->>'priority')::integer,0)<70
                  AND v.scene_match_external_id IS NULL
-                 AND NOT (COALESCE(v.title,'') ~* '(part[[:space:]_.-]*|pt[.]?[[:space:]_.-]*|s[[:space:]_.-]*)[0-9]{1,2}'
-                   OR COALESCE(v.source_filename,'') ~* '(part[[:space:]_.-]*|pt[.]?[[:space:]_.-]*|s[[:space:]_.-]*)[0-9]{1,2}'
-                   OR COALESCE(v.source_text,'') ~* '(part[[:space:]_.-]*|pt[.]?[[:space:]_.-]*|s[[:space:]_.-]*)[0-9]{1,2}')
+                 AND NOT {PART_MARKER_SQL}
                  AND (a.entity_key IS NULL OR a.next_attempt_at<=CURRENT_TIMESTAMP)
                ORDER BY a.last_attempt_at ASC NULLS FIRST,v.first_seen ASC,v.id ASC LIMIT %s""",
             (attempt_source, max(1, int(limit))),

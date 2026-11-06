@@ -18,6 +18,8 @@ from admin_v2_duplicate_routes import (
 
 logger = logging.getLogger(__name__)
 
+_WARNED_JOB_HISTORY_ERROR: bool = False
+
 
 JOB_STATES = {"all", "active", "queued", "processing", "done", "failed", "cancelled"}
 JOB_ACTIONS = frozenset(ALL_ACTIONS)
@@ -456,6 +458,7 @@ def _route_admin_v2_jobs(router, admin):
     ):
         if admin._admin_blocked(request):
             return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
+        global _WARNED_JOB_HISTORY_ERROR
         state = state.strip().lower()
         action = action.strip().lower()
         if state not in JOB_STATES:
@@ -475,9 +478,17 @@ def _route_admin_v2_jobs(router, admin):
                 offset,
                 include_failure_code=True,
             )
-        except Exception:
-            logger.warning("Request failed in admin_v2_jobs", exc_info=True)
+        except Exception as exc:
+            if not _WARNED_JOB_HISTORY_ERROR:
+                _WARNED_JOB_HISTORY_ERROR = True
+                logger.warning("Could not load job history in admin_v2_jobs: %s", exc)
+            else:
+                logger.debug("Could not load job history in admin_v2_jobs: %s", exc)
             return admin.JSONResponse({"error": "Could not load job history."}, status_code=503)
+
+        if _WARNED_JOB_HISTORY_ERROR:
+            _WARNED_JOB_HISTORY_ERROR = False
+            logger.info("Job history loading recovered in admin_v2_jobs")
 
         available = bool(page.get("available"))
         total = int(page.get("total") or 0) if available else 0

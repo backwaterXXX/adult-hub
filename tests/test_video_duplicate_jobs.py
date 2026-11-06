@@ -154,6 +154,11 @@ class TestVideoDuplicateJobs(PgTestCase):
         self.root = Path(self.temp.name)
         self.data_dir_patch = patch.object(sync, "DATA_DIR", self.root)
         self.data_dir_patch.start()
+        self.env_patch = patch.dict(os.environ, {
+            "JELLYFIN_URL": os.getenv("JELLYFIN_URL") or "http://jellyfin.test:8096",
+            "JELLYFIN_API_KEY": os.getenv("JELLYFIN_API_KEY") or "test-jellyfin-key",
+        })
+        self.env_patch.start()
         self.db_path = self.db_url
         self.media = self.root / "library"
         self.media.mkdir()
@@ -163,6 +168,7 @@ class TestVideoDuplicateJobs(PgTestCase):
         self._add_video(self.loser)
 
     def tearDown(self):
+        self.env_patch.stop()
         self.data_dir_patch.stop()
         self.temp.cleanup()
         super().tearDown()
@@ -1829,7 +1835,7 @@ class TestVideoDuplicateJobs(PgTestCase):
 class TestScheduledReconcileMergeGate(unittest.TestCase):
     """A scheduled reconciliation queues hides only after an explicit opt-in."""
 
-    def execute_merges_argument(self) -> bool:
+    def execute_merges_argument(self) -> tuple[bool, bool]:
         import duplicate_job_external_handlers
         import video_duplicate_automation
 
@@ -1839,16 +1845,57 @@ class TestScheduledReconcileMergeGate(unittest.TestCase):
                 "duplicate_reconcile", None, "job-1", {}, Path("/nonexistent-media-dir"), MagicMock())
         self.assertTrue(committed)
         self.assertEqual(result["local_state"], "duplicate_reconciliation_completed")
-        return reconcile.call_args.kwargs["execute_merges"]
+        return (
+            reconcile.call_args.kwargs["execute_merges"],
+            reconcile.call_args.kwargs.get("merge_telegram_file_id", True),
+        )
 
     def test_reports_candidates_when_the_flag_is_unset(self):
         with patch.dict(os.environ):
             os.environ.pop("DUPLICATE_AUTO_MERGE_ENABLED", None)
-            self.assertFalse(self.execute_merges_argument())
+            execute_merges, merge_tg = self.execute_merges_argument()
+            self.assertFalse(execute_merges)
+            self.assertTrue(merge_tg)
+
+        import video_duplicate_automation
+        fake_scan = {
+            "complete": True,
+            "scanned": 2,
+            "pairs": [{
+                "evidence": "telegram_file_id",
+                "left": {"id": "telegram:1:1:aaa"},
+                "right": {"id": "telegram:1:2:aaa"},
+                "members": [{"id": "telegram:1:1:aaa"}, {"id": "telegram:1:2:aaa"}],
+                "score": 100.0,
+                "category": "Same file",
+            }],
+        }
+        auto_groups = {
+            ("telegram:1:1:aaa", ("telegram:1:2:aaa",)): {
+                "keeper_id": "telegram:1:1:aaa",
+                "loser_ids": ["telegram:1:2:aaa"],
+                "evidence": "telegram_file_id",
+            }
+        }
+        with patch("video_duplicates.scan_duplicate_index", return_value=fake_scan), \
+             patch.object(video_duplicate_automation, "_reconcile_visual", return_value={}), \
+             patch.object(video_duplicate_automation, "_load_reconcile_state", return_value=({}, {}, set(), [])), \
+             patch.object(video_duplicate_automation, "_enqueue_missing_phashes", return_value=0), \
+             patch.object(video_duplicate_automation, "_build_auto_groups", return_value=(auto_groups, 0)), \
+             patch.object(video_duplicate_automation, "_filter_work_by_scale_guard", side_effect=lambda db_url, work: work), \
+             patch("common.job_queue.enqueue_jobs_batch", return_value=[]) as mock_enqueue:
+            with patch.dict(os.environ):
+                os.environ.pop("DUPLICATE_AUTO_MERGE_ENABLED", None)
+                res = video_duplicate_automation.reconcile(None, execute_merges=False)
+                mock_enqueue.assert_called_once_with(None, [])
+                self.assertEqual(res["mode"], "report")
+                self.assertEqual(res["merge_jobs_queued"], 0)
 
     def test_operator_opt_in_queues_automatic_merges(self):
         with patch.dict(os.environ, {"DUPLICATE_AUTO_MERGE_ENABLED": "true"}):
-            self.assertTrue(self.execute_merges_argument())
+            execute_merges, merge_tg = self.execute_merges_argument()
+            self.assertTrue(execute_merges)
+            self.assertTrue(merge_tg)
 
 
 if __name__ == "__main__":

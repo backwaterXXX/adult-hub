@@ -21,11 +21,19 @@ def collect_source_issues(admin, now, health, issues):
     configured = _load_configured_sources(admin, health)
     try:
         history = _load_sync_history(admin, health)
-        labels, configured_source_states = _source_labels_and_states(configured)
-        _append_failure_issues(history, health, issues, labels, configured_source_states)
-        _append_never_run_issues(history, configured, health, issues)
-    except Exception:
+    except Exception as exc:
+        logger.warning("Could not load sync history for source issues: %s", exc)
+        health["available"]["sync_history"] = False
         history = {"runs": []}
+
+    if health["available"]["sync_history"]:
+        try:
+            labels, configured_source_states = _source_labels_and_states(configured)
+            _append_failure_issues(history, health, issues, labels, configured_source_states)
+            _append_never_run_issues(history, configured, health, issues)
+        except Exception as exc:
+            logger.warning("Error processing sync history issues: %s", exc)
+
     if not health["available"]["sync_history"]:
         issues.append(_issue(
             "system", "high", "Sync history unavailable",

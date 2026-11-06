@@ -31,7 +31,8 @@ def is_channel_removal_active(admin, channel_id: str) -> bool:
         return True
     try:
         from common.job_queue import connect_queue
-        aliases = {channel_id, f"-100{canonical_channel_id(channel_id)}", canonical_channel_id(channel_id)}
+        from common.managed_sources import canonical_channel_id, channel_aliases
+        aliases = channel_aliases(channel_id)
         conn = connect_queue(admin.HUB_DB_URL)
         try:
             rows = conn.execute(

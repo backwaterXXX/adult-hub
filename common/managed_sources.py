@@ -89,6 +89,18 @@ def canonical_channel_id(channel_id: str) -> str:
     return clean.lstrip("-")
 
 
+def channel_aliases(channel_id: str) -> set[str]:
+    clean = channel_id.strip()
+    canonical = canonical_channel_id(clean)
+    return {
+        channel_id,
+        clean,
+        canonical,
+        f"-{canonical}",
+        f"-100{canonical}",
+    }
+
+
 def channel_lock_path(channel_id: str, path: str | Path | None = None) -> Path:
     target = overrides_path(path)
     clean = canonical_channel_id(channel_id)

@@ -54,19 +54,35 @@ def _names(value: Any, aliases: dict[str, str] | None = None) -> tuple[set[str],
             normalized.setdefault(canonical, item.strip())
     return set(normalized), normalized
 
-def _telegram_file_id(row: dict) -> str | None:
-    """Validate Telegram's provider_video_id and return its opaque last field."""
-    if row.get("provider") != "telegram":
-        return None
-    video_id = str(row.get("id") or "")
-    ref = video_id[len("telegram:"):] if video_id.startswith("telegram:") else ""
+def _parse_telegram_ref(ref: str) -> str | None:
     parts = ref.rsplit(":", 2)
-    if len(parts) != 3 or not parts[0] or not parts[2]:
+    if len(parts) == 3 and parts[0] and parts[2] and parts[1].isascii() and parts[1].isdigit():
+        return parts[2]
+    return None
+
+
+def _telegram_file_id(row: dict | str) -> str | None:
+    """Validate Telegram's provider_video_id or id and return its opaque last field."""
+    if isinstance(row, str):
+        row = {"id": row, "provider": "telegram"}
+    prov = row.get("provider")
+    if prov is not None and prov != "telegram":
         return None
-    if not parts[1].isascii() or not parts[1].isdigit():
-        return None
-    # Slug is checked only as a diagnostic below, never as identity evidence.
-    return parts[2]
+    for key in ("provider_video_id", "id"):
+        raw = str(row.get(key) or "").strip()
+        if not raw:
+            continue
+        if key == "id" and not raw.startswith("telegram:"):
+            continue
+        val = raw[len("telegram:"):] if raw.startswith("telegram:") else raw
+        parsed = _parse_telegram_ref(val)
+        if parsed:
+            return parsed
+    slug = str(row.get("slug") or "").strip()
+    video_id = str(row.get("id") or "").strip()
+    if slug and video_id == f"telegram:{slug}":
+        return slug
+    return None
 
 def _duration_values(row: dict) -> int | None:
     try:

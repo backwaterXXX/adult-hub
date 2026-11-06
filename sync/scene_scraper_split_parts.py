@@ -10,8 +10,10 @@ from typing import Any, Iterable, Optional, Tuple
 
 if __package__:
     from . import scene_scrapers as _core
+    from .scene_scraper_models import PART_MARKER_SQL
 else:
     import scene_scrapers as _core
+    from scene_scraper_models import PART_MARKER_SQL
 
 
 _PART_MARKER = re.compile(
@@ -275,22 +277,22 @@ def _accepted_scenes(candidates, query_title: str, runtime: int, tolerance: int,
         accepted[dedupe_key] = _to_scraped_scene(item, source)
     return accepted
 
-def _fetch_split_candidate_rows(conn: Any, attempt_source: str):
+def _fetch_split_candidate_rows(conn: Any, attempt_source: str, limit: int = 1000):
     """Telegram rows whose title or caption carries a part marker. None when the query is unavailable."""
     try:
         return conn.execute(
-            """SELECT v.id,v.title,v.source_filename,v.source_text,v.duration,
+            f"""SELECT v.id,v.title,v.source_filename,v.source_text,v.duration,
                       v.performer_resolution,v.scene_match_external_id,
                       (a.next_attempt_at IS NULL OR a.next_attempt_at<=CURRENT_TIMESTAMP)
                FROM videos v
                LEFT JOIN external_metadata_attempts a
                  ON a.entity_type='video' AND a.entity_key=v.id AND a.source=%s
                WHERE v.provider='telegram'
-                 AND (COALESCE(v.title,'') ~* '(part[[:space:]_.-]*|pt[.]?[[:space:]_.-]*|s[[:space:]_.-]*)[0-9]{1,2}'
-                   OR COALESCE(v.source_filename,'') ~* '(part[[:space:]_.-]*|pt[.]?[[:space:]_.-]*|s[[:space:]_.-]*)[0-9]{1,2}'
-                   OR COALESCE(v.source_text,'') ~* '(part[[:space:]_.-]*|pt[.]?[[:space:]_.-]*|s[[:space:]_.-]*)[0-9]{1,2}')
-               ORDER BY v.first_seen ASC,v.id ASC""",
-            (attempt_source,),
+                 AND (a.next_attempt_at IS NULL OR a.next_attempt_at<=CURRENT_TIMESTAMP)
+                 AND {PART_MARKER_SQL}
+               ORDER BY v.first_seen ASC,v.id ASC
+               LIMIT %s""",
+            (attempt_source, max(1, int(limit))),
         ).fetchall()
     except Exception as exc:
         _core.logger.debug("Split-sequence query unavailable (%s)", type(exc).__name__)
@@ -301,10 +303,6 @@ def _import_split_helpers():
     """(extract_telegram_metadata, parse_split_part_title, search_split_scene), or None when unavailable."""
     try:
         from common.telegram_metadata import extract_telegram_metadata
-        if __package__:
-            from .scene_scraper_split_parts import parse_split_part_title, search_split_scene
-        else:
-            from scene_scraper_split_parts import parse_split_part_title, search_split_scene
     except ImportError as exc:
         _core.logger.warning("Split-sequence lookup unavailable (%s)", type(exc).__name__)
         return None
@@ -407,10 +405,6 @@ def _search_split_group(conn: Any, media_dir: Path, parts: list, total_duration:
         name for part in parts for name in part["explicit_cast"] if str(name).strip()
     ))
     try:
-        from .scene_scraper_split_parts import SPLIT_DURATION_TOLERANCE_SECONDS
-    except ImportError:
-        from scene_scraper_split_parts import SPLIT_DURATION_TOLERANCE_SECONDS
-    try:
         scene = search(
             query_title, duration=total_duration, source_texts=source_texts,
             caption_performers=explicit_cast, http_client=http_client,
@@ -418,22 +412,27 @@ def _search_split_group(conn: Any, media_dir: Path, parts: list, total_duration:
         )
         outcome = "found" if scene else "no_match"
         if scene:
-            with conn:
-                for part in parts:
-                    updated += int(_core._apply_matched_scene(
+            for part in parts:
+                with conn:
+                    applied = _core._apply_matched_scene(
                         conn, media_dir, part["video_id"], scene,
                         http_client=http_client, now=now,
-                    ))
-        if _core.record_attempt:
+                    )
+                    updated += int(applied)
+                    if _core.record_attempt:
+                        _core.record_attempt(conn, "video", part["video_id"], attempt_source, outcome)
+        elif _core.record_attempt:
             for part in parts:
-                _core.record_attempt(conn, "video", part["video_id"], attempt_source, outcome)
+                with conn:
+                    _core.record_attempt(conn, "video", part["video_id"], attempt_source, outcome)
     except Exception as exc:
         if _core.record_attempt:
             for part in parts:
                 try:
-                    _core.record_attempt(
-                        conn, "video", part["video_id"], attempt_source, "error", error=exc,
-                    )
+                    with conn:
+                        _core.record_attempt(
+                            conn, "video", part["video_id"], attempt_source, "error", error=exc,
+                        )
                 except Exception:
                     _core.logger.debug("Could not save split-title retry state for %s", part["video_id"])
         _core.logger.warning("Split-sequence lookup failed for %s (%s)",
@@ -456,7 +455,8 @@ def _backfill_split_part_matches(
     also applies when the sync process is interrupted part way through a group.
     """
     attempt_source = "telegram_split_title_duration_v1"
-    rows = _fetch_split_candidate_rows(conn, attempt_source)
+    candidate_limit = max(100, int(limit) * 12)
+    rows = _fetch_split_candidate_rows(conn, attempt_source, limit=candidate_limit)
     if not rows:
         return 0, 0
 

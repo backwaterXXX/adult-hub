@@ -502,7 +502,8 @@ CREATE TABLE public.video_duplicate_decisions (
     state text NOT NULL,
     created_at timestamp with time zone NOT NULL,
     snapshot text,
-    rules_version integer
+    rules_version integer,
+    evidence text DEFAULT ''::text NOT NULL
 );
 
 CREATE TABLE public.video_duplicate_dismissals (

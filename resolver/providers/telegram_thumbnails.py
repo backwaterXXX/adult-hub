@@ -49,6 +49,13 @@ async def _fetch_and_cache_thumb_impl(provider, ref: str) -> Optional[bytes]:
             return await provider._download_thumb_uncached(ref)
     try:
         data = await asyncio.wait_for(fetch(), timeout=tg.THUMB_TIMEOUT_SECONDS)
+        if data:
+            try:
+                from common.image_utils import is_black_image
+                if await asyncio.to_thread(is_black_image, data):
+                    data = None
+            except Exception:
+                logger.debug("Ignored exception checking black image in thumbnail provider", exc_info=True)
     except Exception:
         provider._cache_thumb(ref, None)
         raise
