@@ -48,6 +48,7 @@ max-complexity = 10
 "sync/sync_settings.py" = ["G004"]
 "sync/thumbnails.py" = ["C901", "G004"]
 "sync/video_persistence.py" = ["C901", "G004"]
+"sync/video_flush.py" = ["C901", "G004"]
 "tests/*.py" = ["E402"]
 "tests/test_resolver_http.py" = ["LOG001"]
 "tools/*.py" = ["T201"]
