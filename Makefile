@@ -22,7 +22,7 @@ export APP_VERSION
 # counters from leaking between concurrent suites.
 TEST_ENV = ADULT_HUB_REQUIRE_TEST_DATABASE=1 ADULT_HUB_TEST_PROFILE=full CONFIG_PATH=tests/fixtures/config_telegram_only.yaml TELEGRAM_FINGERPRINT_USAGE_PATH=/tmp/adulthub-test-fingerprint-usage-$$.json
 
-.PHONY: help install-dev lock test python-test coverage ui-contracts js-check proxy-origin lint deploy dev dev-down dev-logs
+.PHONY: help install-dev lock test python-test coverage ui-contracts js-check proxy-origin lint deploy dev dev-down dev-logs setup
 
 help:
 	@printf '%s\n' \
@@ -35,6 +35,7 @@ help:
 	  'js-check       Check syntax for every Admin v2 JavaScript file' \
 	  'proxy-origin   Run the proxy-origin contract' \
 	  'lint           Run Ruff correctness checks across the repository' \
+	  'setup          Run the interactive standalone setup installer' \
 	  'deploy         Build and restart the release stack with the VERSION image tag' \
 	  'dev            Start the isolated hot-reload resolver and ephemeral test database' \
 	  'dev-down       Stop the isolated development stack' \
@@ -87,6 +88,9 @@ proxy-origin:
 
 lint:
 	$(RUFF) check .
+
+setup:
+	@scripts/setup.sh
 
 # Application services only: Jellyfin is defined in the same file and is not
 # part of a release, so it stays out of a deploy.
