@@ -7,16 +7,26 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from common import db
 from common.duration import MIN_VIDEO_DURATION_SECONDS, passes_minimum_video_duration
 from common.video_metadata import load_metadata_state
 
-if __package__:
-    from .video_persistence import VideoPersistenceServices, logger, write_media_files
-else:
-    from video_persistence import VideoPersistenceServices, logger, write_media_files
+if TYPE_CHECKING:
+    if __package__:
+        from .video_persistence import VideoPersistenceServices
+    else:
+        from video_persistence import VideoPersistenceServices
+
+
+def _persistence_module():
+    """Return video_persistence. It imports this module at its end, so the import stays local."""
+    if __package__:
+        from . import video_persistence
+    else:
+        import video_persistence
+    return video_persistence
 
 
 def _drop_short_videos(collected: Dict[str, Dict[str, Any]], source_name: str,
@@ -108,7 +118,7 @@ def _persist_prepared_batch(prepared_items: List[Dict[str, Any]], conn: db.Conne
         try:
             conn.rollback()
         except Exception:
-            logger.debug("Ignored exception in flush_collected", exc_info=True)
+            _persistence_module().logger.debug("Ignored exception in flush_collected", exc_info=True)
         errors.append(f"database batch: {type(e).__name__}: {e}")
         services.logger.warning(f"Database batch failed: {e}")
         written = 0
@@ -119,7 +129,7 @@ def _publish_committed_items(committed_items: List[Dict[str, Any]], conn: db.Con
                              services: VideoPersistenceServices, errors: List[str]) -> None:
     for prepared in committed_items:
         try:
-            write_media_files(services, prepared, conn)
+            _persistence_module().write_media_files(services, prepared, conn)
         except Exception as e:
             errors.append(f"{prepared['comp_id']} file write: {type(e).__name__}: {e}")
             services.logger.error("Failed to publish files for %s: %s", prepared["comp_id"], e)
@@ -247,14 +257,14 @@ def republish_pending_videos(
             prepared = prepared_from_catalog(comp_id, media_dir, conn, services)
             if prepared is None:
                 continue
-            write_media_files(services, prepared, conn)
+            _persistence_module().write_media_files(services, prepared, conn)
             published += 1
         except Exception as exc:
             failed += 1
             try:
                 conn.rollback()
             except Exception:
-                logger.debug("Ignored exception in republish_pending_videos", exc_info=True)
+                _persistence_module().logger.debug("Ignored exception in republish_pending_videos", exc_info=True)
             services.logger.error("Republish failed for %s: %s", comp_id, exc)
     services.logger.info(
         "Republished %d/%d catalog row(s) awaiting library publication (%d failed, %d still pending)",
