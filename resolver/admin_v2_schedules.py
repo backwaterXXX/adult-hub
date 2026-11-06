@@ -43,7 +43,7 @@ async def _queue_run(admin, request: Request, schedule_id: str, *, system: bool)
             admin._wake_worker("jobs")
         return admin.JSONResponse({"ok": True, **result}, status_code=202)
     except Exception:
-        logger.warning("Request failed in queue_run", exc_info=True)
+        logger.warning("Request failed in _queue_run", exc_info=True)
         return admin.JSONResponse({"ok": False, "error": "Could not run schedule."}, status_code=503)
 
 

@@ -80,7 +80,7 @@ async def _authorized_user(token: str) -> dict | None:
         is_admin = bool(((user.get("Policy") or {}).get("IsAdministrator")))
         return user if is_admin or user_id.lower() in allowed else None
     except Exception:
-        logger.debug("Ignored exception in authorized_user", exc_info=True)
+        logger.debug("Ignored exception in _authorized_user", exc_info=True)
         return None
 
 

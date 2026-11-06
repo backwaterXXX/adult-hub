@@ -821,7 +821,7 @@ async def _relay_upstream_body(ctx, sresp):
         try:
             await ctx.__aexit__(None, None, None)
         except Exception:
-            logger.debug("Ignored exception in proxy_stream", exc_info=True)
+            logger.debug("Ignored exception in _relay_upstream_body", exc_info=True)
 
 
 async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[str] = None):

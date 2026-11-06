@@ -37,7 +37,7 @@ async def _make_preview(admin, body):
     except MetadataValidationError as exc:
         return admin.JSONResponse({"error": str(exc)}, status_code=400)
     except Exception:
-        logger.warning("Request failed in make_preview", exc_info=True)
+        logger.warning("Request failed in _make_preview", exc_info=True)
         return admin.JSONResponse({"error": "Could not review metadata changes."}, status_code=503)
 
 
