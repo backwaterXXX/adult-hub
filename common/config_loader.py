@@ -438,7 +438,8 @@ def _config_file_signature(path: Path) -> tuple | None:
     """Return a cheap invalidation key for an atomically replaced config file."""
     try:
         stat = path.stat()
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
+        # A parent component that is a file means the config is absent, not unreadable.
         return None
     return (str(path.resolve()), stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
