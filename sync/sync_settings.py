@@ -48,21 +48,13 @@ except Exception as e:
     logger.critical(f"FATAL: could not load config: {e}")
     raise SystemExit(f"FATAL: could not load config: {e}") from e
 
-if CONFIG:
-    RETENTION_DAYS = CONFIG.sync.retention_days
+RETENTION_DAYS = CONFIG.sync.retention_days
 
-    # Telegram plus generic upkeep knobs only.
-    _tg = CONFIG.get_source("telegram")
-    SYNC_TELEGRAM = _tg.enabled if _tg else False
-    TELEGRAM_CHANNELS = [ch.id for ch in _tg.channels if ch.enabled] if _tg else []
-    TELEGRAM_MAX_PAGES = _tg.defaults.get("max_pages", 1) if _tg else 1
-
-else:
-    RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "30"))
-
-    SYNC_TELEGRAM = os.getenv("SYNC_TELEGRAM", "false").lower() in ["true", "1", "yes"]
-    TELEGRAM_CHANNELS = [c.strip() for c in os.getenv("TELEGRAM_CHANNELS", "").split(",") if c.strip()]
-    TELEGRAM_MAX_PAGES = int(os.getenv("TELEGRAM_MAX_PAGES", "1"))
+# Telegram plus generic upkeep knobs only.
+_tg = CONFIG.get_source("telegram")
+SYNC_TELEGRAM = _tg.enabled if _tg else False
+TELEGRAM_CHANNELS = [ch.id for ch in _tg.channels if ch.enabled] if _tg else []
+TELEGRAM_MAX_PAGES = _tg.defaults.get("max_pages", 1) if _tg else 1
 
 JELLYFIN_URL = os.getenv("JELLYFIN_URL", "")
 JELLYFIN_API_KEY = os.getenv("JELLYFIN_API_KEY", "")
@@ -75,7 +67,7 @@ DEAD_STREAM_DENYLIST_DAYS = 90
 # Hide videos whose embeds need a real browser (mirrors the resolver list;
 # fetched live from /admin/api/unsupported-embeds when reachable).
 
-PBC_BACKFILL_PER_RUN = CONFIG.sync.pbc_backfill_per_run if CONFIG else int(os.getenv("PBC_BACKFILL_PER_RUN", "50"))
-TPDB_BACKFILL_PER_RUN = getattr(CONFIG.sync, "tpdb_backfill_per_run", 50) if CONFIG else int(os.getenv("TPDB_BACKFILL_PER_RUN", "50"))
-SCENE_BACKFILL_PER_RUN = getattr(CONFIG.sync, "scene_backfill_per_run", 500) if CONFIG else int(os.getenv("SCENE_BACKFILL_PER_RUN", "500"))
-JELLYFIN_PEOPLE_PER_RUN = CONFIG.sync.jellyfin_people_per_run if CONFIG else int(os.getenv("JELLYFIN_PEOPLE_PER_RUN", "25"))
+PBC_BACKFILL_PER_RUN = CONFIG.sync.pbc_backfill_per_run
+TPDB_BACKFILL_PER_RUN = getattr(CONFIG.sync, "tpdb_backfill_per_run", 50)
+SCENE_BACKFILL_PER_RUN = getattr(CONFIG.sync, "scene_backfill_per_run", 500)
+JELLYFIN_PEOPLE_PER_RUN = CONFIG.sync.jellyfin_people_per_run
