@@ -19,6 +19,7 @@ STANDALONE_MARKER="ADULT_HUB_STANDALONE=true"
 
 # Options
 NON_INTERACTIVE=0
+STATUS_ONLY=0
 BIND_MODE=""
 SELECTED_BIND_IP=""
 RESOLVER_PORT_OVERRIDE=""
@@ -36,6 +37,7 @@ Adult Hub Standalone interactive and repeatable installer.
 Options:
   -h, --help               Show this help message and exit
   -y, --non-interactive    Run non-interactively using defaults or environment
+  --status                 Show readiness and status summary without changing configuration
   --bind-mode MODE         Network binding mode: 'loopback' (default) or 'lan'
   --bind-ip IP             Host IP address to bind (required if bind-mode is 'lan')
   --resolver-port PORT     Port for resolver API and admin (default: 8090)
@@ -56,6 +58,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -y|--non-interactive)
             NON_INTERACTIVE=1
+            shift
+            ;;
+        --status)
+            STATUS_ONLY=1
             shift
             ;;
         --bind-mode)
@@ -168,6 +174,90 @@ if command -v "${DOCKER_BIN}" >/dev/null 2>&1; then
             exit 1
         fi
     fi
+fi
+
+print_summary() {
+    echo ""
+    echo "================================================================================"
+    echo "                   Adult Hub Standalone Setup Summary                           "
+    echo "================================================================================"
+    echo "Deployment Mode:    Standalone Compose (${COMPOSE_PROJECT_NAME})"
+    echo "Version:            ${APP_VERSION}"
+    echo "Bind Address:       ${RESOLVER_BIND_IP}"
+    echo "Resolver Port:      ${RESOLVER_PORT}"
+    echo "Jellyfin Port:      ${JELLYFIN_PORT}"
+    echo ""
+    echo "Service Endpoints:"
+    echo "  - Admin UI:       ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/"
+    echo "  - Jellyfin UI:    http://${JELLYFIN_BIND_IP}:${JELLYFIN_PORT}/"
+    echo ""
+    echo "Status:"
+    echo "  - Core Services:  ${SERVICES_STATUS}"
+    echo "  - Telegram Auth:  ${TG_AUTH_STATE}"
+    local jf_api_key="${STANDALONE_JELLYFIN_API_KEY:-${JELLYFIN_API_KEY:-}}"
+    if [ -z "${jf_api_key}" ] && [ -f .env ]; then
+        jf_api_key="$(grep -E '^[[:space:]]*(STANDALONE_)?JELLYFIN_API_KEY=' .env | head -n1 | cut -d= -f2- | tr -d '[:space:]"' || true)"
+    fi
+    if [ -n "${jf_api_key}" ]; then
+        echo "  - Jellyfin API:   ACTIVE"
+    else
+        echo "  - Jellyfin API:   INACTIVE (API key optional; basic playback available)"
+    fi
+    echo ""
+    echo "Next Steps:"
+    if [[ "${TG_AUTH_STATE}" == *"AUTHORIZED"* ]] && [[ "${TG_AUTH_STATE}" != *"NOT_AUTHORIZED"* ]] && [[ "${TG_AUTH_STATE}" != *"FAILED"* ]]; then
+        echo "  1. Open Admin UI at ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/#sources to add your first channel."
+        echo "  2. Access Jellyfin UI at http://${JELLYFIN_BIND_IP}:${JELLYFIN_PORT}/ for media playback."
+    else
+        echo "  1. If Telegram credentials are not yet configured, set TELEGRAM_API_ID and"
+        echo "     TELEGRAM_API_HASH in .env."
+        echo "  2. Complete Telegram authentication by running 'make setup' interactively"
+        echo "     (or place an authenticated session in ${STANDALONE_DATA_DIR}/telegram.session)."
+        echo "  3. Open Admin UI at ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/#sources to add your first channel."
+        echo "  4. Access Jellyfin UI at http://${JELLYFIN_BIND_IP}:${JELLYFIN_PORT}/ for media playback."
+    fi
+    echo "================================================================================"
+    echo ""
+}
+
+if [ "${STATUS_ONLY}" -eq 1 ]; then
+    if [ ! -f .env ]; then
+        echo "[NOTICE] Standalone deployment is not initialized yet in '${ROOT_DIR}'." >&2
+        echo "         Run 'make setup' or 'scripts/setup.sh' to install Adult Hub." >&2
+        exit 1
+    fi
+    RESOLVER_BIND_IP="$(grep -E '^[[:space:]]*RESOLVER_BIND_IP=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "127.0.0.1")"
+    RESOLVER_PORT="$(grep -E '^[[:space:]]*RESOLVER_PORT=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "8090")"
+    JELLYFIN_BIND_IP="$(grep -E '^[[:space:]]*JELLYFIN_BIND_IP=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "127.0.0.1")"
+    JELLYFIN_PORT="$(grep -E '^[[:space:]]*JELLYFIN_PORT=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "8096")"
+    STANDALONE_RESOLVER_PUBLIC_URL="$(grep -E '^[[:space:]]*STANDALONE_RESOLVER_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "http://${RESOLVER_BIND_IP}:${RESOLVER_PORT}")"
+    STANDALONE_DATA_DIR="./standalone/data"
+    STANDALONE_CONFIG_PATH="./standalone/config.yaml"
+
+    SERVICES_STATUS="Not running / withheld"
+    TG_AUTH_STATE="NOT_CONFIGURED"
+    if command -v "${DOCKER_BIN}" >/dev/null 2>&1; then
+        if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" ps --status running -q resolver sync 2>/dev/null | grep -q .; then
+            SERVICES_STATUS="Running"
+        fi
+        if [ -f "${STANDALONE_DATA_DIR}/telegram.session" ]; then
+            if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" run --rm --no-deps resolver python3 -m providers.telegram_auth check 2>/dev/null; then
+                TG_AUTH_STATE="AUTHORIZED"
+            else
+                TG_AUTH_STATE="UNAUTHORIZED (Session check failed)"
+            fi
+        else
+            TG_API_ID="$(grep -E '^[[:space:]]*TELEGRAM_API_ID=' .env | cut -d= -f2- | tr -d '[:space:]"' || true)"
+            TG_API_HASH="$(grep -E '^[[:space:]]*TELEGRAM_API_HASH=' .env | cut -d= -f2- | tr -d '[:space:]"' || true)"
+            if [ -n "${TG_API_ID}" ] && [ -n "${TG_API_HASH}" ]; then
+                TG_AUTH_STATE="PENDING_INTERACTIVE_AUTH (Run 'make setup' to authenticate)"
+            else
+                TG_AUTH_STATE="UNCONFIGURED"
+            fi
+        fi
+    fi
+    print_summary
+    exit 0
 fi
 
 # -----------------------------------------------------------------------------
@@ -485,6 +575,7 @@ JELLYFIN_PORT=${JELLYFIN_PORT}
 # Public URLs and access control
 STANDALONE_RESOLVER_PUBLIC_URL=${STANDALONE_RESOLVER_PUBLIC_URL}
 STANDALONE_JELLYFIN_URL=http://jellyfin:8096
+STANDALONE_JELLYFIN_API_KEY=
 STANDALONE_ADMIN_PUBLIC=false
 ADMIN_WRITE_TOKEN=${ADMIN_TOKEN}
 
@@ -757,37 +848,4 @@ fi
 # -----------------------------------------------------------------------------
 # 9. Final Summary Display (never print secrets)
 # -----------------------------------------------------------------------------
-echo ""
-echo "================================================================================"
-echo "                   Adult Hub Standalone Setup Summary                           "
-echo "================================================================================"
-echo "Deployment Mode:    Standalone Compose (${COMPOSE_PROJECT_NAME})"
-echo "Version:            ${APP_VERSION}"
-echo "Bind Address:       ${RESOLVER_BIND_IP}"
-echo "Resolver Port:      ${RESOLVER_PORT}"
-echo "Jellyfin Port:      ${JELLYFIN_PORT}"
-echo ""
-echo "Service Endpoints:"
-echo "  - Admin UI:       ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/"
-echo "  - Jellyfin UI:    http://${JELLYFIN_BIND_IP}:${JELLYFIN_PORT}/"
-echo ""
-echo "Status:"
-echo "  - Core Services:  ${SERVICES_STATUS}"
-echo "  - Telegram Auth:  ${TG_AUTH_STATE}"
-echo ""
-echo "Next Steps:"
-if [ "${TG_AUTH_STATE}" = "AUTHORIZED" ]; then
-    echo "  1. Add Telegram channel IDs in ${STANDALONE_CONFIG_PATH} under 'sources[0].channels'."
-    echo "  2. Access the Admin UI at ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/ to manage"
-    echo "     channels and view system health."
-else
-    echo "  1. If Telegram credentials are not yet configured, set TELEGRAM_API_ID and"
-    echo "     TELEGRAM_API_HASH in .env."
-    echo "  2. Complete Telegram authentication by running 'make setup' interactively"
-    echo "     (or place an authenticated session in ${STANDALONE_DATA_DIR}/telegram.session)."
-    echo "  3. Add Telegram channel IDs in ${STANDALONE_CONFIG_PATH} under 'sources[0].channels'."
-    echo "  4. Access the Admin UI at ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/ to manage"
-    echo "     channels and view system health."
-fi
-echo "================================================================================"
-echo ""
+print_summary

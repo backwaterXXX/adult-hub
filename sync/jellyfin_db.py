@@ -52,7 +52,7 @@ def trigger_library_refresh(url, api_key, *, min_interval=3.0, http_client_facto
     global _LAST_LIBRARY_REFRESH_TIME, _LAST_LIBRARY_REFRESH_RESULT
     log = logger or _LOGGER
     if not url or not api_key:
-        log.warning("Jellyfin refresh skipped: JELLYFIN_URL/JELLYFIN_API_KEY not set")
+        log.info("Jellyfin refresh skipped: JELLYFIN_URL/JELLYFIN_API_KEY not set")
         return False
     now = time_fn()
     if _LAST_LIBRARY_REFRESH_RESULT and (now - _LAST_LIBRARY_REFRESH_TIME) < min_interval:

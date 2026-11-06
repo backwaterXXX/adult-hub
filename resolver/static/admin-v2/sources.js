@@ -299,16 +299,18 @@
     }
     node.replaceChildren(...children);
   }
-  function setSourcesState(kind, title, description) {
+  function setSourcesState(kind, title, description, action = null) {
     const node = $('#sourcesState');
     if (!node) return;
     node.hidden = false;
     node.className = `catalog-state${kind === 'error' ? ' state-error' : ''}`;
-    node.replaceChildren(
+    const children = [
       create('span', 'empty-icon', kind === 'loading' ? '◌' : kind === 'error' ? '!' : '◉'),
       create('strong', '', title),
-      create('span', '', description)
-    );
+      create('span', '', description),
+    ];
+    if (action) children.push(action);
+    node.replaceChildren(...children);
     $('#sourcesTableWrap').hidden = true;
     renderPagination(0);
   }
@@ -1188,11 +1190,22 @@
 
     if (!state.items.length) {
       const unavailable = !state.configAvailable;
-      setSourcesState(unavailable ? 'error' : 'empty',
-        unavailable ? 'Sources unavailable' : 'No sources configured',
-        unavailable ? 'The source configuration could not be loaded. Try refreshing in a moment.'
-                    : 'No channels are configured. Add channels in configuration to use this screen.');
-      setFeedback(unavailable ? 'Source configuration unavailable.' : 'No channels configured.');
+      let action = null;
+      if (!unavailable && state.settingsAvailable && state.configRevision !== null) {
+        action = create('button', 'button button-primary empty-action-button', 'Add Telegram channel');
+        action.type = 'button';
+        action.id = 'sourcesEmptyAddChannel';
+        action.addEventListener('click', event => openAddChannel(event.currentTarget));
+      }
+      setSourcesState(
+        unavailable ? 'error' : 'empty',
+        unavailable ? 'Sources unavailable' : 'No channels configured',
+        unavailable
+          ? 'The source configuration could not be loaded. Try refreshing in a moment.'
+          : 'No Telegram channels are configured yet. Add your first channel through Admin to start synchronizing.',
+        action,
+      );
+      setFeedback(unavailable ? 'Source configuration unavailable.' : 'No channels configured. Add your first channel to start.');
       return;
     }
     if (!visible.length) {
@@ -1278,6 +1291,7 @@
       else if (!state.settingsAvailable) setNotice('warning', 'Source editing is unavailable until settings and revision can be loaded together.');
       else if (state.auditPending) setNotice('warning', 'A source change audit is waiting for the database. It will be retried automatically; new source changes are paused until it is recorded.');
       else if (!state.historyAvailable) setNotice('warning', 'Sync history is unavailable, so the latest results are unknown.');
+      state.loading = false;
       render();
     } catch (error) {
       if (error.name === 'AbortError' || sequence !== state.seq || !isSourcesRoute() || sourcesTab() !== 'channels') return;

@@ -353,7 +353,12 @@ def _action_artwork_download(conn, job_id, payload, media_dir, services):
         result["local_state"] = "artwork_downloaded"
         refreshed = _core._refresh_jellyfin_with_progress(
             conn, job_id, "artwork_downloaded", services)
-        result["jellyfin_refresh"] = "updated" if refreshed else "failed"
+        jf_url = _core.os.getenv("JELLYFIN_URL", "").strip()
+        jf_key = _core.os.getenv("JELLYFIN_API_KEY", "").strip()
+        if not jf_url or not jf_key:
+            result["jellyfin_refresh"] = "skipped"
+        else:
+            result["jellyfin_refresh"] = "updated" if refreshed else "failed"
     return result, True
 
 

@@ -579,6 +579,66 @@ class TestStandaloneInstaller(unittest.TestCase):
         self.assertNotIn("telegram_auth auth", docker_calls)
         self.assertNotIn("up -d resolver sync backup", docker_calls)
 
+    def test_setup_status_flag(self):
+        """--status flag displays summary without running services or mutating environment."""
+        mock_docker = make_mock_docker(self.isolated_root, auth_check_ok=True)
+        # 1. Uninitialized checkout
+        res_uninit = self.run_installer(["--status", "--root-dir", str(self.isolated_root)])
+        self.assertEqual(res_uninit.returncode, 1)
+        self.assertIn("Standalone deployment is not initialized yet", res_uninit.stderr)
+
+        # 2. Initialize minimal standalone environment
+        res_init = self.run_installer([
+            "--non-interactive",
+            "--bind-mode", "loopback",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res_init.returncode, 0)
+
+        # 3. Query status
+        (self.isolated_root / "docker_calls.log").write_text("")
+        res_status = self.run_installer([
+            "--status",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res_status.returncode, 0)
+        self.assertIn("Adult Hub Standalone Setup Summary", res_status.stdout)
+        self.assertIn("Admin UI:", res_status.stdout)
+        self.assertIn("/admin/#sources", res_status.stdout)
+        self.assertIn("Jellyfin UI:", res_status.stdout)
+        self.assertIn("Jellyfin API:   INACTIVE (API key optional; basic playback available)", res_status.stdout)
+        self.assertIn("Next Steps:", res_status.stdout)
+
+        # Confirm no service startup
+        docker_calls = (self.isolated_root / "docker_calls.log").read_text()
+        self.assertNotIn("up -d", docker_calls)
+
+    def test_setup_summary_reports_active_jellyfin_api_key(self):
+        """Summary accurately reports ACTIVE Jellyfin API status when API key is configured."""
+        mock_docker = make_mock_docker(self.isolated_root, auth_check_ok=True)
+        res_init = self.run_installer([
+            "--non-interactive",
+            "--bind-mode", "loopback",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res_init.returncode, 0)
+
+        env_path = self.isolated_root / ".env"
+        env_content = env_path.read_text()
+        env_content = env_content.replace("STANDALONE_JELLYFIN_API_KEY=", "STANDALONE_JELLYFIN_API_KEY=test-jellyfin-key-123\n")
+        env_path.write_text(env_content)
+
+        res_status = self.run_installer([
+            "--status",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res_status.returncode, 0)
+        self.assertIn("Jellyfin API:   ACTIVE", res_status.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

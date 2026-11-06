@@ -331,7 +331,25 @@ def apply_overrides(base_data: Any, overlay: Any) -> dict[str, Any]:
     }
     for provider, raw in normalized["overrides"].items():
         if not isinstance(provider, str) or provider not in by_provider:
-            raise ConfigError("Managed settings may only override providers present in the base configuration.")
+            if provider == "telegram":
+                tg_source = {
+                    "provider": "telegram",
+                    "enabled": True,
+                    "defaults": {
+                        "stream_mode": "proxy",
+                        "max_pages": 1,
+                        "min_duration_seconds": 420,
+                        "history_batch_size": 100,
+                        "tags_whitelist": [],
+                        "tags_blacklist": [],
+                    },
+                    "channels": [],
+                }
+                base_sources.append(tg_source)
+                result["sources"] = base_sources
+                by_provider["telegram"] = tg_source
+            else:
+                raise ConfigError("Managed settings may only override providers present in the base configuration.")
         source = by_provider[provider]
         if provider == "telegram":
             _apply_telegram_override(source, raw, provider)

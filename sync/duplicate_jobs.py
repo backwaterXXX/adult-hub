@@ -291,6 +291,12 @@ def _finish_job(conn, job_id: str, result: dict) -> None:
 
 def _refresh_jellyfin_with_progress(conn, job_id: str, local_state: str, services) -> bool:
     """Persist local success and the remote request stage before calling Jellyfin."""
+    import os
+    if not os.getenv("JELLYFIN_URL", "").strip() or not os.getenv("JELLYFIN_API_KEY", "").strip():
+        _record_job_progress(
+            conn, job_id, "refreshing_jellyfin", local_state=local_state, jellyfin_refresh="skipped"
+        )
+        return False
     _record_job_progress(
         conn, job_id, "refreshing_jellyfin", local_state=local_state, jellyfin_refresh="pending"
     )
@@ -422,6 +428,9 @@ def _performer_refresh(conn: db.Connection, job_id: str, payload: dict,
         services.create_nfo_file(video, genres, tag_set, nfo_path, conn=conn)
         updated += 1
         _record_job_progress(conn, job_id, "writing_nfo", completed=index + 1, total=len(ids))
+    import os
+    if not os.getenv("JELLYFIN_URL", "").strip() or not os.getenv("JELLYFIN_API_KEY", "").strip():
+        return {"videos_refreshed": updated, "jellyfin_refresh": "skipped"}
     refreshed = services.trigger_jellyfin_refresh()
     if not refreshed:
         raise RuntimeError("Jellyfin did not accept the library refresh request.")
