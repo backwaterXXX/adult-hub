@@ -17,7 +17,17 @@ ROOT = Path(__file__).resolve().parents[1]
 SETUP_SCRIPT = ROOT / "scripts" / "setup.sh"
 
 
-def make_mock_docker(directory: Path, *, daemon_ok=True, compose_v2_ok=True, volume_exists=False, active_prod_project=False):
+def make_mock_docker(
+    directory: Path,
+    *,
+    daemon_ok=True,
+    compose_v2_ok=True,
+    volume_exists=False,
+    active_prod_project=False,
+    auth_check_ok=False,
+    auth_run_ok=True,
+    active_session_services=False,
+):
     """Create a mock docker executable script for isolated installer testing."""
     mock_bin = directory / "mock_docker.sh"
     content = f"""#!/usr/bin/env bash
@@ -57,14 +67,24 @@ case "$cmd" in
             fi
             exit 0
         fi
-        if [[ "$all_args" =~ "ps" ]]; then
+        if [[ "$all_args" =~ (^|[[:space:]])ps([[:space:]]|$) ]]; then
+            if [[ "$all_args" =~ "resolver sync" ]]; then
+                {"echo 'active_container_id'" if active_session_services else "exit 0"}
+                exit 0
+            fi
             echo '{{"Health": "healthy", "State": "running"}}'
             exit 0
         fi
-        if [[ "$all_args" =~ "up" ]]; then
+        if [[ "$all_args" =~ (^|[[:space:]])up([[:space:]]|$) ]]; then
             exit 0
         fi
-        if [[ "$all_args" =~ "run" ]]; then
+        if [[ "$all_args" =~ (^|[[:space:]])run([[:space:]]|$) ]]; then
+            if [[ "$all_args" =~ "telegram_auth check" ]]; then
+                {"exit 0" if auth_check_ok else "exit 1"}
+            fi
+            if [[ "$all_args" =~ "telegram_auth auth" ]]; then
+                {"exit 0" if auth_run_ok else "exit 1"}
+            fi
             exit 0
         fi
         exit 0
@@ -94,7 +114,7 @@ class TestStandaloneInstaller(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def run_installer(self, args, *, env=None, cwd=None):
+    def run_installer(self, args, *, env=None, cwd=None, input_data=None):
         cmd = [str(SETUP_SCRIPT)] + args
         run_env = os.environ.copy()
         if env:
@@ -104,6 +124,7 @@ class TestStandaloneInstaller(unittest.TestCase):
             cmd,
             cwd=target_cwd,
             env=run_env,
+            input=input_data,
             capture_output=True,
             text=True,
             timeout=15,
@@ -353,6 +374,210 @@ class TestStandaloneInstaller(unittest.TestCase):
         ])
         self.assertEqual(res.returncode, 1)
         self.assertIn("Existing config ./standalone/config.yaml is incompatible", res.stderr)
+
+    def test_setup_with_already_authorized_session_starts_services(self):
+        """Pre-existing authorized Telegram session skips login and starts resolver, sync, and backup."""
+        # 1. First run to generate environment
+        mock_docker = make_mock_docker(self.isolated_root, auth_check_ok=True)
+        res1 = self.run_installer([
+            "--non-interactive",
+            "--bind-mode", "loopback",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res1.returncode, 0)
+
+        # Set Telegram credentials in .env
+        env_path = self.isolated_root / ".env"
+        env_content = env_path.read_text()
+        env_content = env_content.replace("TELEGRAM_API_ID=", "TELEGRAM_API_ID=123456\n")
+        env_content = env_content.replace("TELEGRAM_API_HASH=", "TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789\n")
+        env_path.write_text(env_content)
+
+        # Create session file
+        session_file = self.isolated_root / "standalone" / "data" / "telegram.session"
+        session_file.write_bytes(b"existing_valid_session")
+
+        # 2. Second run: already authorized
+        res2 = self.run_installer([
+            "--non-interactive",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res2.returncode, 0)
+        self.assertIn("Telegram session authorized. Starting resolver, sync, and backup...", res2.stdout)
+        self.assertIn("Telegram Auth:  AUTHORIZED", res2.stdout)
+        self.assertIn("Core Services:  All services up and running", res2.stdout)
+
+        # Verify docker compose up was called for resolver, sync, backup
+        docker_calls = (self.isolated_root / "docker_calls.log").read_text()
+        self.assertIn("up -d resolver sync backup", docker_calls)
+
+    def test_setup_interactive_auth_success_updates_env_and_starts_services(self):
+        """Interactive setup prompts for API ID/Hash, runs one-shot auth, and starts services."""
+        mock_docker = make_mock_docker(self.isolated_root, auth_check_ok=False, auth_run_ok=True)
+        # Inputs: API ID, API Hash
+        input_stream = "123456\nabcdef0123456789abcdef0123456789\n"
+
+        res = self.run_installer(
+            [
+                "--bind-mode", "loopback",
+                "--docker-bin", mock_docker,
+                "--root-dir", str(self.isolated_root),
+            ],
+            input_data=input_stream,
+        )
+        self.assertEqual(res.returncode, 0, f"STDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}")
+
+        # Ensure credentials saved in .env
+        env_content = (self.isolated_root / ".env").read_text()
+        self.assertIn("TELEGRAM_API_ID=123456", env_content)
+        self.assertIn("TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789", env_content)
+
+        # Ensure auth container was called and services started
+        docker_calls = (self.isolated_root / "docker_calls.log").read_text()
+        self.assertIn("telegram_auth auth", docker_calls)
+        self.assertIn("up -d resolver sync backup", docker_calls)
+        self.assertIn("Telegram Auth:  AUTHORIZED", res.stdout)
+
+    def test_setup_auth_failure_withholds_services(self):
+        """When authentication fails or is cancelled, resolver, sync, and backup are withheld."""
+        mock_docker = make_mock_docker(self.isolated_root, auth_check_ok=False, auth_run_ok=False)
+
+        # Setup with credentials in .env
+        res1 = self.run_installer([
+            "--non-interactive",
+            "--bind-mode", "loopback",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res1.returncode, 0)
+        env_path = self.isolated_root / ".env"
+        env_content = env_path.read_text()
+        env_content = env_content.replace("TELEGRAM_API_ID=", "TELEGRAM_API_ID=123456\n")
+        env_content = env_content.replace("TELEGRAM_API_HASH=", "TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789\n")
+        env_path.write_text(env_content)
+
+        # Clear docker call log before test run
+        (self.isolated_root / "docker_calls.log").write_text("")
+
+        res2 = self.run_installer(
+            [
+                "--docker-bin", mock_docker,
+                "--root-dir", str(self.isolated_root),
+            ],
+            input_data="\n",
+        )
+        self.assertEqual(res2.returncode, 0)
+        self.assertIn("Telegram authentication failed or was cancelled", res2.stderr)
+        self.assertIn("Services 'resolver', 'sync', and 'backup' remain withheld", res2.stderr)
+
+        # Crucial: resolver, sync, backup must NOT be started
+        docker_calls = (self.isolated_root / "docker_calls.log").read_text()
+        self.assertNotIn("up -d resolver sync backup", docker_calls)
+        self.assertIn("NOT_AUTHORIZED", res2.stdout)
+
+    def test_setup_concurrent_session_process_blocks_auth(self):
+        """Running resolver or sync container blocks authentication to prevent SQLite locks."""
+        mock_docker = make_mock_docker(self.isolated_root, active_session_services=True)
+
+        res1 = self.run_installer([
+            "--non-interactive",
+            "--bind-mode", "loopback",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res1.returncode, 0)
+        env_path = self.isolated_root / ".env"
+        env_content = env_path.read_text()
+        env_content = env_content.replace("TELEGRAM_API_ID=", "TELEGRAM_API_ID=123456\n")
+        env_content = env_content.replace("TELEGRAM_API_HASH=", "TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789\n")
+        env_path.write_text(env_content)
+
+        (self.isolated_root / "docker_calls.log").write_text("")
+
+        res2 = self.run_installer(
+            [
+                "--docker-bin", mock_docker,
+                "--root-dir", str(self.isolated_root),
+            ],
+            input_data="\n",
+        )
+        self.assertIn("Cannot authenticate while resolver or sync service is running", res2.stderr)
+        docker_calls = (self.isolated_root / "docker_calls.log").read_text()
+        self.assertNotIn("telegram_auth auth", docker_calls)
+        self.assertNotIn("up -d resolver sync backup", docker_calls)
+
+    def test_setup_protects_existing_unauthorized_session(self):
+        """If target session file exists but is not authorized, setup refuses to overwrite and withholds services."""
+        mock_docker = make_mock_docker(self.isolated_root, auth_check_ok=False)
+
+        res1 = self.run_installer([
+            "--non-interactive",
+            "--bind-mode", "loopback",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res1.returncode, 0)
+        env_path = self.isolated_root / ".env"
+        env_content = env_path.read_text()
+        env_content = env_content.replace("TELEGRAM_API_ID=", "TELEGRAM_API_ID=123456\n")
+        env_content = env_content.replace("TELEGRAM_API_HASH=", "TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789\n")
+        env_path.write_text(env_content)
+
+        # Place unauthorized session
+        session_file = self.isolated_root / "standalone" / "data" / "telegram.session"
+        session_file.write_bytes(b"preserved_pre_existing_data")
+
+        (self.isolated_root / "docker_calls.log").write_text("")
+
+        res2 = self.run_installer(
+            [
+                "--docker-bin", mock_docker,
+                "--root-dir", str(self.isolated_root),
+            ],
+            input_data="\n",
+        )
+        self.assertIn("Existing Telegram session file is present but not authorized", res2.stderr)
+        self.assertIn("setup will never delete or overwrite this file", res2.stderr)
+        # Pre-existing bytes strictly preserved
+        self.assertEqual(session_file.read_bytes(), b"preserved_pre_existing_data")
+
+        docker_calls = (self.isolated_root / "docker_calls.log").read_text()
+        self.assertNotIn("telegram_auth auth", docker_calls)
+        self.assertNotIn("up -d resolver sync backup", docker_calls)
+
+    def test_setup_non_interactive_without_session_withholds_services(self):
+        """Non-interactive setup with credentials but missing session informs user and withholds services."""
+        mock_docker = make_mock_docker(self.isolated_root, auth_check_ok=False)
+
+        res1 = self.run_installer([
+            "--non-interactive",
+            "--bind-mode", "loopback",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res1.returncode, 0)
+        env_path = self.isolated_root / ".env"
+        env_content = env_path.read_text()
+        env_content = env_content.replace("TELEGRAM_API_ID=", "TELEGRAM_API_ID=123456\n")
+        env_content = env_content.replace("TELEGRAM_API_HASH=", "TELEGRAM_API_HASH=abcdef0123456789abcdef0123456789\n")
+        env_path.write_text(env_content)
+
+        (self.isolated_root / "docker_calls.log").write_text("")
+
+        res2 = self.run_installer([
+            "--non-interactive",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res2.returncode, 0)
+        self.assertIn("interactive authentication is required", res2.stdout)
+        self.assertIn("PENDING_INTERACTIVE_AUTH", res2.stdout)
+
+        docker_calls = (self.isolated_root / "docker_calls.log").read_text()
+        self.assertNotIn("telegram_auth auth", docker_calls)
+        self.assertNotIn("up -d resolver sync backup", docker_calls)
 
 
 if __name__ == "__main__":

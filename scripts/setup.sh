@@ -601,48 +601,155 @@ else
     fi
     echo "[SUCCESS] Database migration completed successfully."
 
-    # Telegram authentication inspection
-    # Check if TELEGRAM_API_ID and TELEGRAM_API_HASH are configured
+    # Telegram authentication inspection and first-run login
     TG_API_ID="$(grep -E '^[[:space:]]*TELEGRAM_API_ID=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
     TG_API_HASH="$(grep -E '^[[:space:]]*TELEGRAM_API_HASH=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
-    TG_SESSION_FILE="${ROOT_DIR}/standalone/data/telegram.session"
+    HOST_DATA_DIR="$(grep -E '^[[:space:]]*STANDALONE_DATA_DIR=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
+    HOST_DATA_DIR="${HOST_DATA_DIR:-./standalone/data}"
+    if [[ "${HOST_DATA_DIR}" != /* ]]; then
+        HOST_DATA_DIR="${ROOT_DIR}/${HOST_DATA_DIR#./}"
+    fi
+    TG_SESSION_FILE="${HOST_DATA_DIR}/telegram.session"
 
+    # 1. Prompt for API credentials if missing and running interactively
     if [ -z "${TG_API_ID}" ] || [ -z "${TG_API_HASH}" ]; then
-        TG_AUTH_STATE="UNCONFIGURED (TELEGRAM_API_ID / TELEGRAM_API_HASH missing in .env)"
+        if [ "${NON_INTERACTIVE}" -eq 0 ]; then
+            echo ""
+            echo "================================================================================"
+            echo "                      Telegram API Configuration                                "
+            echo "================================================================================"
+            echo "Adult Hub connects to Telegram MTProto via your user account."
+            echo "You can obtain your Telegram API ID and API Hash from: https://my.telegram.org"
+            echo ""
+            read -rp "Enter Telegram API ID: " input_api_id
+            read -rp "Enter Telegram API Hash: " input_api_hash
+            echo ""
+
+            valid_creds=0
+            if python3 -c "
+import sys
+try:
+    aid = int(sys.argv[1].strip())
+    ahash = sys.argv[2].strip()
+    if aid <= 0 or len(ahash) < 16 or not all(c in '0123456789abcdefABCDEF' for c in ahash):
+        sys.exit(1)
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" "${input_api_id}" "${input_api_hash}" 2>/dev/null; then
+                valid_creds=1
+            fi
+
+            if [ "${valid_creds}" -eq 1 ]; then
+                python3 -c "
+import sys
+fpath, aid, ahash = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(fpath, 'r', encoding='utf-8') as f:
+    lines = f.readlines()
+new_lines = []
+for line in lines:
+    if line.strip().startswith('TELEGRAM_API_ID='):
+        new_lines.append(f'TELEGRAM_API_ID={aid}\n')
+    elif line.strip().startswith('TELEGRAM_API_HASH='):
+        new_lines.append(f'TELEGRAM_API_HASH={ahash}\n')
+    else:
+        new_lines.append(line)
+with open(fpath, 'w', encoding='utf-8') as f:
+    f.writelines(new_lines)
+" .env "${input_api_id}" "${input_api_hash}"
+                chmod 0600 .env 2>/dev/null || true
+                TG_API_ID="${input_api_id}"
+                TG_API_HASH="${input_api_hash}"
+                echo "[SUCCESS] Telegram API credentials saved to .env."
+            else
+                echo "[ERROR] Invalid Telegram API credentials. API ID must be a positive integer and API Hash a valid hex string." >&2
+                TG_AUTH_STATE="FAILED_CREDENTIAL_VALIDATION"
+            fi
+        fi
+    fi
+
+    # 2. Check if credentials are ready
+    if [ -z "${TG_API_ID}" ] || [ -z "${TG_API_HASH}" ]; then
+        if [ "${TG_AUTH_STATE}" = "NOT_CONFIGURED" ]; then
+            TG_AUTH_STATE="UNCONFIGURED (TELEGRAM_API_ID / TELEGRAM_API_HASH missing in .env)"
+        fi
         echo ""
-        echo "[NOTICE] Telegram credentials (TELEGRAM_API_ID / TELEGRAM_API_HASH) are not set."
+        echo "[NOTICE] Telegram credentials (TELEGRAM_API_ID / TELEGRAM_API_HASH) are not configured."
         echo "         Services 'resolver', 'sync', and 'backup' are withheld until Telegram is authorized."
-    elif [ ! -f "${TG_SESSION_FILE}" ]; then
-        TG_AUTH_STATE="BLOCKED_ON_STAGE_3_AUTH (Session file missing; requires Stage 3 interactive auth)"
-        echo ""
-        echo "[NOTICE] Telegram credentials are set, but session file '${TG_SESSION_FILE}' is missing."
-        echo "         Safe interactive SMS authorization cannot be completed through the existing interface"
-        echo "         without modifying Stage 3 authentication internals."
-        echo "         Services 'resolver', 'sync', and 'backup' are withheld until authorization is completed."
     else
-        # Test if session is authorized
-        is_authed=0
-        if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" run --rm --no-deps resolver python -c "
-import asyncio, sys
-from providers.telegram_session import login
-# If session is authorized, login returns 'already_authorized'
-res = asyncio.run(login('', api_id_fn=lambda: int('${TG_API_ID}'), api_hash_fn=lambda: '${TG_API_HASH}', session_path_fn=lambda: '/data/telegram.session'))
-sys.exit(0 if res == 'already_authorized' else 1)
-" 2>/dev/null; then
-            is_authed=1
+        # 3. Prevent concurrent session process access (Requirement 5)
+        has_concurrent=0
+        if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" ps --status running -q resolver sync 2>/dev/null | grep -q .; then
+            has_concurrent=1
         fi
 
-        if [ "${is_authed}" -eq 1 ]; then
-            TG_AUTH_STATE="AUTHORIZED"
-            echo "==> Telegram session authorized. Starting resolver, sync, and backup..."
-            "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d resolver sync backup
-            SERVICES_STATUS="All services up and running"
+        if [ "${has_concurrent}" -eq 1 ]; then
+            echo "" >&2
+            echo "================================================================================" >&2
+            echo "[ERROR] Cannot authenticate while resolver or sync service is running!" >&2
+            echo "================================================================================" >&2
+            echo "Active resolver or sync containers detected in project '${COMPOSE_PROJECT_NAME}'." >&2
+            echo "To prevent SQLite session database lock conflicts, stop running services before" >&2
+            echo "attempting authentication." >&2
+            echo "================================================================================" >&2
+            TG_AUTH_STATE="BLOCKED (Concurrent resolver/sync process running)"
         else
-            TG_AUTH_STATE="NOT_AUTHORIZED (Requires Stage 3 interactive auth or re-login)"
-            echo ""
-            echo "[NOTICE] Telegram session is present but not authorized."
-            echo "         Interactive login requires Stage 3 authentication internals."
-            echo "         Services 'resolver', 'sync', and 'backup' remain withheld."
+            # 4. Check if session is already authorized
+            is_authed=0
+            if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" run --rm --no-deps resolver python3 -m providers.telegram_auth check 2>/dev/null; then
+                is_authed=1
+            fi
+
+            if [ "${is_authed}" -eq 1 ]; then
+                TG_AUTH_STATE="AUTHORIZED"
+                echo "==> Telegram session authorized. Starting resolver, sync, and backup..."
+                "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d resolver sync backup
+                SERVICES_STATUS="All services up and running"
+            elif [ -f "${TG_SESSION_FILE}" ]; then
+                # Existing session file exists, but failed authorization!
+                # Requirement 6: never delete or overwrite existing session file.
+                echo "" >&2
+                echo "================================================================================" >&2
+                echo "[ERROR] Existing Telegram session file is present but not authorized!" >&2
+                echo "================================================================================" >&2
+                echo "Session file '${TG_SESSION_FILE}' exists, but authorization check failed." >&2
+                echo "To protect existing session data, setup will never delete or overwrite this file." >&2
+                echo "" >&2
+                echo "Please back up or remove '${TG_SESSION_FILE}' manually before re-authenticating." >&2
+                echo "================================================================================" >&2
+                TG_AUTH_STATE="FAILED (Existing session file unauthorized; preserved)"
+            elif [ "${NON_INTERACTIVE}" -eq 1 ]; then
+                # Non-interactive mode: cannot prompt for SMS/2FA
+                TG_AUTH_STATE="PENDING_INTERACTIVE_AUTH (Run 'make setup' interactively to authenticate)"
+                echo ""
+                echo "[NOTICE] Telegram credentials are set, but interactive authentication is required."
+                echo "         Run 'make setup' interactively to complete login with SMS/2FA code."
+                echo "         Services 'resolver', 'sync', and 'backup' are withheld until authorized."
+            else
+                # 5. Interactive first-run authentication
+                echo ""
+                echo "==> Starting first-run Telegram authentication..."
+                auth_ok=0
+                DOCKER_RUN_TTY="-i"
+                if [ -t 0 ]; then
+                    DOCKER_RUN_TTY="-it"
+                fi
+                if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" run --rm ${DOCKER_RUN_TTY} --no-deps resolver python3 -m providers.telegram_auth auth; then
+                    auth_ok=1
+                fi
+
+                if [ "${auth_ok}" -eq 1 ]; then
+                    TG_AUTH_STATE="AUTHORIZED"
+                    echo "==> Telegram authentication completed successfully. Starting resolver, sync, and backup..."
+                    "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d resolver sync backup
+                    SERVICES_STATUS="All services up and running"
+                else
+                    TG_AUTH_STATE="NOT_AUTHORIZED (Authentication failed or cancelled)"
+                    echo "" >&2
+                    echo "[ERROR] Telegram authentication failed or was cancelled." >&2
+                    echo "        Services 'resolver', 'sync', and 'backup' remain withheld." >&2
+                fi
+            fi
         fi
     fi
 fi
@@ -669,12 +776,18 @@ echo "  - Core Services:  ${SERVICES_STATUS}"
 echo "  - Telegram Auth:  ${TG_AUTH_STATE}"
 echo ""
 echo "Next Steps:"
-echo "  1. If Telegram credentials are not yet configured, set TELEGRAM_API_ID and"
-echo "     TELEGRAM_API_HASH in .env."
-echo "  2. Complete Telegram authentication (pending Stage 3 interactive login"
-echo "     internals or place an authenticated session in ${STANDALONE_DATA_DIR}/telegram.session)."
-echo "  3. Add Telegram channel IDs in ${STANDALONE_CONFIG_PATH} under 'sources[0].channels'."
-echo "  4. Access the Admin UI at ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/ to manage"
-echo "     channels and view system health."
+if [ "${TG_AUTH_STATE}" = "AUTHORIZED" ]; then
+    echo "  1. Add Telegram channel IDs in ${STANDALONE_CONFIG_PATH} under 'sources[0].channels'."
+    echo "  2. Access the Admin UI at ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/ to manage"
+    echo "     channels and view system health."
+else
+    echo "  1. If Telegram credentials are not yet configured, set TELEGRAM_API_ID and"
+    echo "     TELEGRAM_API_HASH in .env."
+    echo "  2. Complete Telegram authentication by running 'make setup' interactively"
+    echo "     (or place an authenticated session in ${STANDALONE_DATA_DIR}/telegram.session)."
+    echo "  3. Add Telegram channel IDs in ${STANDALONE_CONFIG_PATH} under 'sources[0].channels'."
+    echo "  4. Access the Admin UI at ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/ to manage"
+    echo "     channels and view system health."
+fi
 echo "================================================================================"
 echo ""

@@ -116,7 +116,14 @@ from .telegram_history import (
     fetch_history as _fetch_history_impl,
     passes_tag_filter,
 )
-from .telegram_session import login as _login_impl, require_client as _require_client_impl
+from .telegram_session import (
+    interactive_login,  # noqa: F401 - compatibility export
+    is_session_authorized,  # noqa: F401 - compatibility export
+    login as _login_impl,
+    require_client as _require_client_impl,
+    validate_api_credentials,  # noqa: F401 - compatibility export
+    validate_phone_number,  # noqa: F401 - compatibility export
+)
 from .telegram_variants import (
     extract_message_variants,
     extract_variant_info,  # noqa: F401 - compatibility export
