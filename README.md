@@ -64,69 +64,44 @@ The catalog and sidecar files are stored locally; video files remain in Telegram
 
 ---
 
-## Quick Start (Standard Clone: Telegram)
+## Quick Start
 
-A standard deployment requires the public core repository, Docker Compose, and a PostgreSQL 17 database that the containers can reach over the Compose `selfhost` network.
+Get Adult Hub up and running with bundled PostgreSQL and Jellyfin in three commands.
 
-### 0. Prerequisites
+### Prerequisites
 
-* **Docker** with the **Docker Compose** plugin.
-* **PostgreSQL 17**, reachable from the containers as host `postgres`. Create a database and user for the hub and set the matching `DATABASE_URL` in `.env`. The database server is not part of this repository.
-* The external network `selfhost` declared in `docker-compose.yml`. Compose will not create it, so create it once (or reuse the network created by your database stack) before starting:
+* **Docker** with the **Docker Compose v2** plugin (`docker compose`)
+* **Git** and **Make**
+* **Telegram API credentials**: Obtain your `API ID` and `API Hash` from [my.telegram.org](https://my.telegram.org) (under *API development tools*).
 
-```sh
-docker network create selfhost
-```
-
-For tests and host tools, point `TEST_DATABASE_URL` at a separate database (never the production one).
-
-### 1. Clone & Configure
+### Installation
 
 ```sh
-git clone <CORE_REPOSITORY_URL> adult-hub
+git clone https://github.com/backwaterXXX/adult-hub.git
 cd adult-hub
-cp config.example.yaml config.yaml
-cp .env.example .env
+make setup
 ```
 
-Edit `.env` and `config.yaml`:
-* **`.env`**: Set your `HOST_IP`, `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `DATABASE_URL`, your Telegram MTProto API credentials (`TELEGRAM_API_ID`, `TELEGRAM_API_HASH`), and your public playback URL (`RESOLVER_PUBLIC_URL`).
-* **Optional source hints**: Set in `.env` to forward to resolver and sync: `TELEGRAM_SIGNATURE_CHANNEL` is a channel handle used in captions to accept a first-line cast list; `TELEGRAM_CHANNEL_NAME_HINTS` is a comma-separated list of channel titles that should be treated as Telegram sources rather than production studios.
-* **`config.yaml`**: Add your authorized Telegram channels under the `sources` section (the default example channel is fictional and disabled).
+The interactive installer guides you through setup:
+1. **Network binding**: Choose **Loopback** (default, `127.0.0.1`) for local host access, or **LAN** to make streaming accessible to phones, TVs, and companion players on your home network.
+2. **Automated initialization**: Creates isolated directories under `./standalone/`, generates cryptographically secure secrets in `.env`, starts the bundled PostgreSQL and Jellyfin containers, and executes schema migrations.
+3. **Telegram authorization**: Prompts for your Telegram `API ID` and `API Hash`, then performs interactive MTProto login (phone number, login code, and 2FA password if enabled) to authorize the session directly in your terminal.
+4. **Service startup**: Launches the resolver, sync worker, and backup scheduler once authorization succeeds.
 
-Advanced environment variables and fallback behavior are documented in the example configuration and Compose files.
+> No manual database creation, Docker network creation, `.env` editing, YAML configuration, or Jellyfin API key is required for basic setup.
 
-### 2. Build & Launch
+### First Steps
 
-```sh
-make deploy
-```
+1. **Add Your First Channel**: Open the Admin UI at [http://127.0.0.1:8090/admin/](http://127.0.0.1:8090/admin/) (or your configured LAN IP), go to **Sources** (`/admin/#sources`), and enter your channel username (e.g. `@channel_name`) to begin indexing.
+2. **Jellyfin Initial Setup**:
+   * Open Jellyfin at [http://127.0.0.1:8096/](http://127.0.0.1:8096/) (or your configured LAN IP) and complete the initial setup wizard.
+   * Add your media library:
+     * **Content type**: `Movies`
+     * **Display name**: `Adult` (or your choice)
+     * **Folder path**: `/media/adult`
+   * In library settings, disable the **NFO metadata saver** while keeping the **NFO reader** enabled (Adult Hub generates and owns the NFO sidecars; Jellyfin mounts `/media/adult` read-only).
 
-The optional `tools/generate_latest_artwork.py` command requires `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `JELLYFIN_USER_ID`, and `JELLYFIN_ADULT_LIBRARY_ID` in the environment or local `.env`. Set `MEDIA_DIR` only when the library is not at `./media/adult`.
-
-`make deploy` reads the release number from `VERSION`, exports it as
-`APP_VERSION`, and recreates the resolver, sync, and backup services from
-images tagged with that release. Running `docker compose build resolver sync`
-and `docker compose up -d resolver sync backup` directly still works, but tags and
-labels the images `dev` unless you export `APP_VERSION` yourself.
-
-Resolver and sync source code is packaged into their Docker images; Compose mounts runtime data and configuration but does not overlay `/app`. Rebuild and recreate both services after code changes. This keeps each image self-contained so restoring a retained versioned image actually restores its application code.
-
-### Isolated resolver development loop
-
-For resolver UI/API work, `make dev` starts `docker-compose.dev.yml` in the background: Uvicorn watches the mounted resolver source and reloads on Python changes. The stack publishes only `127.0.0.1:18090`, creates a disposable PostgreSQL database in tmpfs, and runs migrations against that database before starting the resolver. It uses `config.example.yaml` and mounts source files read-only; it does not use `.env`, production networks, media, Jellyfin, Telegram sessions, or runtime data. Database and `/data`/`/cache` state are ephemeral and disappear when their containers are recreated. Use `make dev-logs` to follow resolver output and `make dev-down` to stop the stack.
-
-The application version lives in `VERSION` and is what the resolver health endpoint, the admin panel header, and the sync startup log report — `common/app_version.py` reads that file from the image, never the tag. `make deploy` exports the same value as `APP_VERSION`, which Compose then uses for image tags and the OCI image version label. Use Git tags in the form `vX.Y.Z` for releases, keeping the tag and `VERSION` aligned; `.env` deliberately does not store the number, so a bumped release cannot be deployed under a stale tag. Retain each release's matching source commit and resolver/sync image tags together for rollback. The `adult-hub-common` package has its own package version in `common/pyproject.toml`.
-
-Check resolver liveness and readiness separately. Liveness only confirms the
-process can answer; readiness also verifies the PostgreSQL connection. The
-Prometheus endpoint is available to trusted, non-public-domain scrapers at
-`/metrics`.
-
-```sh
-curl http://127.0.0.1:8090/admin/health/live
-curl http://127.0.0.1:8090/admin/health/ready
-```
+For advanced installation options, deploying against existing PostgreSQL infrastructure, updates, reverse proxy configuration, and troubleshooting, see [INSTALL.md](INSTALL.md).
 
 ---
 
@@ -264,6 +239,21 @@ Most database-backed tests require a disposable PostgreSQL database. Set `TEST_D
 
 The test suite needs the resolver and sync dependencies installed. If an import is missing, the tests fail during startup so the setup issue is visible. Set `ADULT_HUB_TEST_PROFILE=partial` only when you intentionally run the tests in an environment that leaves out one of those components; tests for the missing component will be skipped.
 
+### Isolated resolver development loop
+
+For resolver UI/API work, `make dev` starts `docker-compose.dev.yml` in the background: Uvicorn watches the mounted resolver source and reloads on Python changes. The stack publishes only `127.0.0.1:18090`, creates a disposable PostgreSQL database in tmpfs, and runs migrations against that database before starting the resolver. It uses `config.example.yaml` and mounts source files read-only; it does not use `.env`, production networks, media, Jellyfin, Telegram sessions, or runtime data. Database and `/data`/`/cache` state are ephemeral and disappear when their containers are recreated. Use `make dev-logs` to follow resolver output and `make dev-down` to stop the stack.
+
+### Versioning and release deployment
+
+The application version lives in `VERSION` and is what the resolver health endpoint, the admin panel header, and the sync startup log report — `common/app_version.py` reads that file from the image, never the tag. `make deploy` exports the same value as `APP_VERSION`, which Compose then uses for image tags and the OCI image version label. Use Git tags in the form `vX.Y.Z` for releases, keeping the tag and `VERSION` aligned; `.env` deliberately does not store the number, so a bumped release cannot be deployed under a stale tag. Retain each release's matching source commit and resolver/sync image tags together for rollback. The `adult-hub-common` package has its own package version in `common/pyproject.toml`.
+
+Check resolver liveness and readiness separately. Liveness only confirms the process can answer; readiness also verifies the PostgreSQL connection. The Prometheus endpoint is available to trusted, non-public-domain scrapers at `/metrics`.
+
+```sh
+curl http://127.0.0.1:8090/admin/health/live
+curl http://127.0.0.1:8090/admin/health/ready
+```
+
 ### Maintenance scripts
 
 The one-off tools under `scripts/` are grouped by their effect:
@@ -330,11 +320,7 @@ Performer evaluation is an optional operational workflow and is not included in 
   # Recreate schema from scratch (wipes tables and reapplies all migrations)
   python3 migrate_db.py recreate --yes
   ```
-- **Backup & Restore**: Backups are managed by the host system. The Compose
-  stack does not run a backup scheduler. Existing backup files remain in place;
-  the optional manual database backup and restore tools are still available.
-  Automatic history pruning previously run by the backup scheduler is no
-  longer scheduled by this stack.
+- **Backup & Restore**: The Compose stack includes a dedicated `backup` service running `backup_scheduler.py` that takes daily verified PostgreSQL snapshots (`adulthub-YYYYMMDD-HHMM.dump.gz` with companion `.sha256` checksums) at `BACKUP_DAILY_AT` (default `04:30`), prunes snapshots older than `BACKUP_KEEP_DAYS` (default 7 days), and cleans historical audit logs. Manual snapshots and database restoration can be performed with `backup_db.py` and `restore_db.py`. See [INSTALL.md](INSTALL.md#6-backup-and-database-restoration) for operational procedures.
 
 ### Architecture Highlights
 - `common/`: Shared configuration loader and validation logic used across both containers, the PostgreSQL layer (`db.py`, a psycopg 3 wrapper over `DATABASE_URL`), versioned database migrations (`common/migrations/`, `migrate_db.py`, `restore_db.py`), plus `job_queue.py` (durable task queue) and `managed_collections.py`.
