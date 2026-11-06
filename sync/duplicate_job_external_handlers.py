@@ -109,6 +109,7 @@ def _action_source_readd(conn, job_id, payload, media_dir, services):
     if not channel_id:
         raise ValueError("Channel re-add requires a valid Telegram channel ID.")
     from common.managed_sources import (
+        ManagedConfigConflict,
         canonical_channel_id,
         is_channel_locked,
         preview_overrides,
@@ -121,6 +122,13 @@ def _action_source_readd(conn, job_id, payload, media_dir, services):
 
     ch_canon = canonical_channel_id(channel_id)
     current = read_overrides(path=ch_lock_path)
+    base_revision = payload.get("base_revision")
+    if base_revision is not None and current["revision"] != base_revision:
+        # The payload carries the full overrides snapshot from the request. Applying it
+        # over a newer revision would silently drop the changes made since then.
+        raise ManagedConfigConflict(
+            f"Source settings changed after the re-add for '{channel_id}' was queued. Submit it again."
+        )
     candidate = _channel_candidate_overrides(payload, current, channel_id, ch_canon)
     config_path = _resolve_config_path(payload)
 

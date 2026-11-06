@@ -388,8 +388,12 @@ def _stage_channel_removal(overrides, channel_id):
     return overrides
 
 
-async def _rollback_channel_removal(admin, candidate, channel_id, saved):
-    """Undo a removal whose deletion job could not be queued. Returns the error response."""
+async def _rollback_channel_removal(admin, original, channel_id, saved):
+    """Restore the overrides from before the removal. Returns the error response.
+
+    `original` is the snapshot taken before the removal was staged, so per-channel
+    settings (studio, enabled) come back along with `removed_channels`.
+    """
     from common.managed_sources import preview_overrides, update_overrides
 
     try:
@@ -397,13 +401,7 @@ async def _rollback_channel_removal(admin, candidate, channel_id, saved):
     except Exception:
         logger.debug("Ignored exception in remove_source", exc_info=True)
     try:
-        rollback_candidate = copy.deepcopy(candidate)
-        rollback_tg = rollback_candidate.get("telegram", {})
-        rem = [ch for ch in rollback_tg.get("removed_channels", []) if ch != channel_id]
-        if rem:
-            rollback_tg["removed_channels"] = rem
-        else:
-            rollback_tg.pop("removed_channels", None)
+        rollback_candidate = copy.deepcopy(original)
         rollback_preview = await admin.asyncio.to_thread(
             preview_overrides, admin.CONFIG_PATH, rollback_candidate,
             expected_revision=saved["revision"],
@@ -431,7 +429,7 @@ async def _rollback_channel_removal(admin, candidate, channel_id, saved):
     )
 
 
-async def _enqueue_channel_removal(admin, candidate, channel_id, saved):
+async def _enqueue_channel_removal(admin, original, channel_id, saved):
     """Queue the source_remove job. Returns (job_id, None), or (None, response) after a rollback."""
     try:
         from common.job_queue import enqueue_job
@@ -440,7 +438,7 @@ async def _enqueue_channel_removal(admin, candidate, channel_id, saved):
         )
     except Exception as enqueue_exc:
         _LOG.error("Failed to enqueue source_remove job: %s", enqueue_exc)
-        return None, await _rollback_channel_removal(admin, candidate, channel_id, saved)
+        return None, await _rollback_channel_removal(admin, original, channel_id, saved)
     return job_id, None
 
 
@@ -471,6 +469,7 @@ def _route_remove_source(router, admin):
                     {"error": "Channel deletion is already queued or in progress."},
                     status_code=409,
                 )
+            original = copy.deepcopy(current["overrides"])
             candidate = _stage_channel_removal(current["overrides"], channel_id)
             preview_result = await admin.asyncio.to_thread(
                 preview_overrides, admin.CONFIG_PATH, candidate,
@@ -482,7 +481,7 @@ def _route_remove_source(router, admin):
                 audit_event={"changes": preview_result["changes"],
                              "truncated": preview_result["truncated"]},
             )
-            job_id, failure = await _enqueue_channel_removal(admin, candidate, channel_id, saved)
+            job_id, failure = await _enqueue_channel_removal(admin, original, channel_id, saved)
             if failure is not None:
                 return failure
         except Exception as exc:
@@ -538,6 +537,7 @@ async def _queue_channel_update(admin, body, observed, ch_str, ch_conf):
                 "studio": ch_studio,
                 "channel_config": ch_conf if isinstance(ch_conf, dict) else None,
                 "overrides": body["overrides"],
+                "base_revision": observed["revision"],
                 "action_type": "save",
             }
         )
@@ -570,6 +570,7 @@ async def _queue_channel_restore(admin, body, observed, orig_id):
             enqueue_job, admin.HUB_DB_URL, "source_readd", {
                 "channel_id": orig_id,
                 "overrides": body["overrides"],
+                "base_revision": observed["revision"],
                 "action_type": "restore",
             }
         )
