@@ -27,6 +27,7 @@ JELLYFIN_PORT_OVERRIDE=""
 PUBLIC_URL_OVERRIDE=""
 SKIP_DOCKER_START=0
 SKIP_DOCKER_CHECK=0
+SOURCE_BUILD=0
 
 print_usage() {
     cat <<EOF
@@ -44,6 +45,7 @@ Options:
   --jellyfin-port PORT     Port for Jellyfin UI and playback (default: 8096)
   --public-url URL         Client-facing resolver/playback URL for LAN playback
   --skip-docker-start      Generate config, .env, and runtime dirs without launching containers
+  --source-build           Build application images from local repository source instead of using prebuilt images
   --docker-bin PATH        Path to Docker binary (default: docker)
   --root-dir PATH          Target installation directory root (default: repo root)
 EOF
@@ -90,6 +92,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-docker-check)
             SKIP_DOCKER_CHECK=1
+            shift
+            ;;
+        --source-build|--build)
+            SOURCE_BUILD=1
             shift
             ;;
         --docker-bin)
@@ -678,6 +684,16 @@ if [ "${SKIP_DOCKER_START}" -eq 1 ]; then
     SERVICES_STATUS="Skipped (--skip-docker-start)"
     TG_AUTH_STATE="Pending"
 else
+    if [ "${SOURCE_BUILD}" -eq 1 ]; then
+        echo "==> Building container images from repository source (--source-build specified)..."
+        "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" build resolver sync
+    else
+        echo "==> Consuming prebuilt container images (default)..."
+        if ! "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" pull --ignore-pull-failures resolver sync 2>/dev/null; then
+            echo "[INFO] Prebuilt published images may not be available yet. Falling back to local build if needed."
+        fi
+    fi
+
     echo "==> Starting core database and Jellyfin services..."
     "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d database jellyfin
 

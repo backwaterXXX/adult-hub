@@ -46,16 +46,49 @@ PHASE 2: On-Demand Playback (Real-time)
 
 ## Quick Start
 
-The standalone installer bundles PostgreSQL and Jellyfin.
+The fastest way to install Adult Hub is using prebuilt container images with Docker Compose. This path requires no Git repository clone, compiler, or local image builds.
+
+> **Prebuilt Image Availability**: Official container images (`ghcr.io/backwaterxxx/adult-hub-resolver` and `ghcr.io/backwaterxxx/adult-hub-sync`) are published automatically to the GitHub Container Registry as part of tagged releases.
 
 ### Prerequisites
 
 - **Docker** with the **Compose v2** plugin (`docker compose`) and a running Docker daemon.
-- **Git** and **Make**.
 - **Telegram API credentials**: obtain your API ID and API Hash from [my.telegram.org](https://my.telegram.org), under *API development tools*.
 - Access to your Telegram account to receive the login code, plus your 2FA password if enabled.
 
 ### Installation
+
+1. Download and extract the standalone release bundle:
+
+```sh
+mkdir adult-hub && cd adult-hub
+curl -sSL https://github.com/backwaterXXX/adult-hub/releases/latest/download/adult-hub-standalone.tar.gz | tar -xz
+```
+
+2. Copy configuration templates and add credentials:
+
+```sh
+cp .env.example .env
+cp config.example.yaml config.yaml
+```
+
+Edit `.env` to configure your passwords, tokens, and Telegram API credentials (`TELEGRAM_API_ID` and `TELEGRAM_API_HASH`).
+
+3. Pull published images, authenticate Telegram interactively, and start the stack:
+
+```sh
+docker compose pull
+docker compose run --rm telegram-auth
+docker compose up -d
+```
+
+`telegram-auth` prompts for your phone number, code, and optional 2FA password, and writes an authorized session token to `./data/telegram.session`. Startup automatically applies database migrations and brings up PostgreSQL, Jellyfin, Resolver, Sync, and Backup services.
+
+To access the stack from other devices on your local network (LAN), set `RESOLVER_BIND_IP` and `JELLYFIN_BIND_IP` to your host's LAN IP, and set `STANDALONE_STREAM_PUBLIC_URL_TELEGRAM=http://<YOUR_LAN_IP>:8090` in `.env`.
+
+### Alternative: Automated Source Installer
+
+If you are developing locally, working from a Git checkout, or installing before prebuilt images are published for your commit, use the interactive source installer:
 
 ```sh
 git clone https://github.com/backwaterXXX/adult-hub.git
@@ -63,38 +96,29 @@ cd adult-hub
 make setup
 ```
 
-The interactive installer generates configuration and secrets, creates directories under `./standalone/`, starts PostgreSQL and Jellyfin, applies database migrations, and guides you through Telegram login.
-
-Choose **Loopback** (default, `127.0.0.1`) for access from the server itself, or **LAN** for playback on phones, TVs, and companion players on your home network. The installer checks port availability and lets you choose alternative ports.
-
-Complete Telegram authentication to start the resolver, sync worker, and backup scheduler. If you interrupt login, run `make setup` again to resume. Basic setup needs no manual database creation, YAML editing, or Jellyfin API key.
+The installer verifies prerequisites, prompts for binding modes, generates credentials, and builds images from source (`make setup --source-build`). See [INSTALL.md](INSTALL.md) for full options.
 
 ### First Steps
 
-1. Open the **Admin URL printed by the installer**. Enter the generated `ADMIN_WRITE_TOKEN` from `.env` in the panel to enable management actions.
+1. Open the **Admin URL** ([http://127.0.0.1:8090/admin/](http://127.0.0.1:8090/admin/) or your configured LAN address). Enter the `ADMIN_WRITE_TOKEN` from `.env` in the panel to enable management actions.
 2. In **Sources**, add your first Telegram channel, for example `@channel_name`.
-3. Open the **Jellyfin URL printed by the installer** and complete its setup wizard. Add a **Movies** library pointing to `/media/adult`, with a display name such as **Adult**.
+3. Open **Jellyfin** ([http://127.0.0.1:8096/](http://127.0.0.1:8096/) or your configured LAN address) and complete its setup wizard. Add a **Movies** library pointing to `/media/adult`, with a display name such as **Adult**.
 4. In the Jellyfin library settings, keep the **NFO reader** enabled and disable the **NFO metadata saver**. Adult Hub generates the sidecars; Jellyfin mounts the media directory read-only.
 
-Default addresses are [http://127.0.0.1:8090/admin/](http://127.0.0.1:8090/admin/) and [http://127.0.0.1:8096/](http://127.0.0.1:8096/). LAN installations and custom ports use the addresses printed by the installer. Playback devices must be able to reach the resolver address.
+Playback devices must be able to reach the resolver address.
 
-Inspect installation status without changing configuration:
-
-```sh
-scripts/setup.sh --status
-```
-
-For an existing standalone installation, update services and apply migrations with:
+To update prebuilt standalone services and apply migrations:
 
 ```sh
-make update
+docker compose pull
+docker compose up -d
 ```
 
 See [INSTALL.md](INSTALL.md) for installation options, existing PostgreSQL infrastructure, updates, backups, reverse proxies, and troubleshooting.
 
 ## Admin Panel
 
-The English Admin v2 interface is available at `/admin/` and `/admin/v2/`.
+The Admin interface is available at `/admin/` and `/admin/v2/`.
 
 - **Home:** overview of the library and current activity.
 - **Library:** search videos, inspect availability, edit metadata with previews, review duplicates and metadata suggestions, and restore quarantined items.

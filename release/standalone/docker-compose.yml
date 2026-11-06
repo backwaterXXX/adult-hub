@@ -1,0 +1,268 @@
+# Adult Hub Standalone Deployment using Prebuilt Container Images.
+# Runs an isolated multi-container stack with PostgreSQL 17, Jellyfin,
+# Adult Hub Resolver, Sync Worker, and automated daily backups.
+name: adult-hub-standalone
+
+services:
+  database:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in .env}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  migration:
+    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:0.4.14}
+    restart: "no"
+    command:
+      - python
+      - -c
+      - from db_schema import init_db; conn = init_db(); conn.close()
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - DATABASE_URL=${STANDALONE_DATABASE_URL:-postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}}
+      - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${CONFIG_PATH:-./config.yaml}:/config/config.yaml:ro
+
+  jellyfin:
+    image: ${JELLYFIN_IMAGE:-jellyfin/jellyfin:12.4}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl --noproxy 'localhost' -Lk -fsS http://localhost:8096/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    ports:
+      - "${JELLYFIN_BIND_IP:-127.0.0.1}:${JELLYFIN_PORT:-8096}:8096"
+    environment:
+      - JELLYFIN_PublishedServerUrl=${JELLYFIN_PUBLISHED_SERVER_URL:-http://${JELLYFIN_BIND_IP:-127.0.0.1}:${JELLYFIN_PORT:-8096}}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - jellyfin_config:/config
+      - jellyfin_cache:/cache
+      - ${MEDIA_DIR:-./media}:/media/adult:ro
+
+  resolver:
+    image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:0.4.14}
+    restart: unless-stopped
+    ports:
+      - "${RESOLVER_BIND_IP:-127.0.0.1}:${RESOLVER_PORT:-8090}:8090"
+    depends_on:
+      database:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/admin/health/ready')"]
+      interval: 15s
+      timeout: 15s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${CONFIG_PATH:-./config.yaml}:/config/config.yaml:ro
+      - ${CACHE_DIR:-./cache}:/cache
+      - ${DATA_DIR:-./data}:/data
+      - ${MEDIA_DIR:-./media}:/media/adult
+    environment:
+      - TZ=${TZ:-Europe/Warsaw}
+      - PYTHONUNBUFFERED=1
+      - APP_VERSION=${APP_VERSION:-0.4.14}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ADMIN_V2_MONITOR_BACKUPS=${ADMIN_V2_MONITOR_BACKUPS:-false}
+      - RESOLVER_WATCHDOG_INTERVAL_SECONDS=${RESOLVER_WATCHDOG_INTERVAL_SECONDS:-10}
+      - RESOLVER_WATCHDOG_TIMEOUT_SECONDS=${RESOLVER_WATCHDOG_TIMEOUT_SECONDS:-4}
+      - RESOLVER_WATCHDOG_FAILURES=${RESOLVER_WATCHDOG_FAILURES:-12}
+      - RESOLVER_WATCHDOG_STARTUP_GRACE_SECONDS=${RESOLVER_WATCHDOG_STARTUP_GRACE_SECONDS:-45}
+      - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
+      - ADMIN_SOURCE_OVERRIDES_PATH=${ADMIN_SOURCE_OVERRIDES_PATH:-/data/admin-source-overrides.json}
+      - DATA_DIR=${DATA_DIR:-/data}
+      - RESOLVER_CONCURRENCY_LIMIT=${RESOLVER_CONCURRENCY_LIMIT:-10}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-1500}
+      - MAX_CACHE_ENTRIES=${MAX_CACHE_ENTRIES:-2000}
+      - DATABASE_URL=${STANDALONE_DATABASE_URL:-postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}}
+      - BACKUP_DIR=/data/backups
+      - BACKUP_DAILY_AT=${BACKUP_DAILY_AT:-04:30}
+      - BACKUP_RESTORE_DATABASE_URL=${BACKUP_RESTORE_DATABASE_URL:-}
+      - ENABLE_ADMIN=${ENABLE_ADMIN:-true}
+      - ADMIN_PUBLIC=${STANDALONE_ADMIN_PUBLIC:-false}
+      - ADMIN_WRITE_TOKEN=${ADMIN_WRITE_TOKEN:-}
+      - ADMIN_DUPLICATE_TOKEN=${ADMIN_DUPLICATE_TOKEN:-}
+      - PUBLIC_DOMAIN=${PUBLIC_DOMAIN:-media.example.org}
+      - FORWARDED_ALLOW_IPS=${RESOLVER_TRUSTED_PROXY_IPS:-127.0.0.1,::1}
+      - MEDIA_DIR=/media/adult
+      - LINKCHECK_LOG_PATH=/data/linkcheck.log
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
+      - TELEGRAM_SESSION_PATH=${TELEGRAM_SESSION_PATH:-/data/telegram.session}
+      - TELEGRAM_SIGNATURE_CHANNEL=${TELEGRAM_SIGNATURE_CHANNEL:-}
+      - TELEGRAM_CHANNEL_NAME_HINTS=${TELEGRAM_CHANNEL_NAME_HINTS:-}
+      - TELEGRAM_PARALLEL_STREAM_ENABLED=${TELEGRAM_PARALLEL_STREAM_ENABLED:-false}
+      - TELEGRAM_DOWNLOAD_WORKERS=${TELEGRAM_DOWNLOAD_WORKERS:-3}
+      - TELEGRAM_DOWNLOAD_GLOBAL_WORKERS=${TELEGRAM_DOWNLOAD_GLOBAL_WORKERS:-6}
+      - TELEGRAM_DOWNLOAD_BLOCK_BYTES=${TELEGRAM_DOWNLOAD_BLOCK_BYTES:-524288}
+      - TELEGRAM_READ_AHEAD_BYTES=${TELEGRAM_READ_AHEAD_BYTES:-33554432}
+      - TELEGRAM_STREAM_CACHE_BYTES=${TELEGRAM_STREAM_CACHE_BYTES:-134217728}
+      - TELEGRAM_STREAM_CACHE_TTL_SECONDS=${TELEGRAM_STREAM_CACHE_TTL_SECONDS:-120}
+      - JELLYFIN_URL=${STANDALONE_JELLYFIN_URL:-http://jellyfin:8096}
+      - JELLYFIN_API_KEY=${STANDALONE_JELLYFIN_API_KEY:-}
+      - STASHDB_API_KEY=${STASHDB_API_KEY:-}
+      - STASH_API_KEY=${STASH_API_KEY:-}
+      - STASHDB_API_URL=${STASHDB_API_URL:-https://stashdb.org/graphql}
+      - PHASH_UPLOAD_ENABLED=${PHASH_UPLOAD_ENABLED:-false}
+      - VIDEO_VISUAL_WORKER_ENABLED=${VIDEO_VISUAL_WORKER_ENABLED:-false}
+      - PHASH_ACCEPTED_DECODER_PROFILES=${PHASH_ACCEPTED_DECODER_PROFILES:-}
+      - PHASH_ALLOWED_USER_IDS=${PHASH_ALLOWED_USER_IDS:-}
+      - TELEGRAM_FINGERPRINT_DAILY_BYTE_BUDGET=${TELEGRAM_FINGERPRINT_DAILY_BYTE_BUDGET:-30000000000}
+      - TELEGRAM_FINGERPRINT_MAX_BYTES_PER_SECOND=${TELEGRAM_FINGERPRINT_MAX_BYTES_PER_SECOND:-2097152}
+      - TELEGRAM_FINGERPRINT_USAGE_PATH=${TELEGRAM_FINGERPRINT_USAGE_PATH:-/data/cache/telegram-fingerprint-daily-usage.json}
+      - PHASH_SERVER_BYTE_BUDGET=${PHASH_SERVER_BYTE_BUDGET:-${TELEGRAM_PHASH_BYTE_BUDGET:-268435456}}
+      - PHASH_SERVER_TIMEOUT_SECONDS=${PHASH_SERVER_TIMEOUT_SECONDS:-1200}
+      - PHASH_SERVER_BYTES_PER_SECOND=${PHASH_SERVER_BYTES_PER_SECOND:-2097152}
+      - PHASH_SERVER_IDLE_BYTES_PER_SECOND=${PHASH_SERVER_IDLE_BYTES_PER_SECOND:-10000000}
+
+  sync:
+    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:0.4.14}
+    restart: unless-stopped
+    stop_grace_period: 4m
+    mem_limit: 1g
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      database:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+      resolver:
+        condition: service_healthy
+      jellyfin:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import os,sys; from common.worker_capabilities import read_worker_capabilities; sys.exit(0 if read_worker_capabilities(os.environ.get('ADMIN_WORKER_CAPABILITIES_PATH', '/data/cache/worker-capabilities.json'))['available'] else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${CONFIG_PATH:-./config.yaml}:/config/config.yaml:ro
+      - ${DATA_DIR:-./data}:/data
+      - ${CACHE_DIR:-./cache}:/cache
+      - ${MEDIA_DIR:-./media}:/media/adult
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        if [ ! -f "$${TELEGRAM_SESSION_PATH:-/data/telegram.session}" ]; then
+          echo "[ERROR] Telegram session file ($${TELEGRAM_SESSION_PATH:-/data/telegram.session}) is missing or unauthorized." >&2
+          echo "[ERROR] Run 'docker compose run --rm telegram-auth' to authenticate before starting sync." >&2
+          exit 1
+        fi
+        exec python runner.py
+    environment:
+      - TZ=${TZ:-Europe/Warsaw}
+      - PYTHONUNBUFFERED=1
+      - APP_VERSION=${APP_VERSION:-0.4.14}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
+      - ADMIN_SOURCE_OVERRIDES_PATH=${ADMIN_SOURCE_OVERRIDES_PATH:-/data/admin-source-overrides.json}
+      - ADMIN_WORKER_CAPABILITIES_PATH=${ADMIN_WORKER_CAPABILITIES_PATH:-/data/cache/worker-capabilities.json}
+      - DATA_DIR=${DATA_DIR:-/data}
+      - RESOLVER_PUBLIC_URL=${STANDALONE_STREAM_RESOLVER_URL:-${RESOLVER_PUBLIC_URL:-http://resolver:8090}}
+      - STREAM_PUBLIC_URL_TELEGRAM=${STANDALONE_STREAM_PUBLIC_URL_TELEGRAM:-}
+      - RESOLVER_API_URL=${RESOLVER_API_URL:-http://resolver:8090}
+      - MEDIA_DIR=/media/adult
+      - DATABASE_URL=${STANDALONE_DATABASE_URL:-postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}}
+      - BACKUP_RESTORE_DATABASE_URL=${BACKUP_RESTORE_DATABASE_URL:-}
+      - BACKUP_DIR=/data/backups
+      - BACKUP_KEEP_DAYS=${BACKUP_KEEP_DAYS:-7}
+      - BACKUP_DAILY_AT=${BACKUP_DAILY_AT:-04:30}
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
+      - TELEGRAM_SESSION_PATH=${TELEGRAM_SESSION_PATH:-/data/telegram.session}
+      - TELEGRAM_SIGNATURE_CHANNEL=${TELEGRAM_SIGNATURE_CHANNEL:-}
+      - TELEGRAM_CHANNEL_NAME_HINTS=${TELEGRAM_CHANNEL_NAME_HINTS:-}
+      - HIDE_DEAD_STREAMS=${HIDE_DEAD_STREAMS:-true}
+      - DUPLICATE_AUTO_MERGE_ENABLED=${DUPLICATE_AUTO_MERGE_ENABLED:-false}
+      - DUPLICATE_AUTO_MERGE_TELEGRAM_FILE_ID=${DUPLICATE_AUTO_MERGE_TELEGRAM_FILE_ID:-true}
+      - JELLYFIN_URL=${STANDALONE_JELLYFIN_URL:-http://jellyfin:8096}
+      - JELLYFIN_API_KEY=${STANDALONE_JELLYFIN_API_KEY:-}
+      - THEPORNDB_API_TOKEN=${THEPORNDB_API_TOKEN:-}
+      - THEPORNDB_API_KEY=${THEPORNDB_API_KEY:-}
+      - STASHDB_API_KEY=${STASHDB_API_KEY:-}
+      - STASH_API_KEY=${STASH_API_KEY:-}
+      - STASHDB_API_URL=${STASHDB_API_URL:-https://stashdb.org/graphql}
+      - TELEGRAM_OSHASH_BACKFILL_PER_RUN=${TELEGRAM_OSHASH_BACKFILL_PER_RUN:-200}
+      - TELEGRAM_FINGERPRINTS_ENABLED=${TELEGRAM_FINGERPRINTS_ENABLED:-true}
+      - TELEGRAM_PHASH_ENABLED=${TELEGRAM_PHASH_ENABLED:-true}
+      - TELEGRAM_AVAILABILITY_CHECKS_PER_RUN=${TELEGRAM_AVAILABILITY_CHECKS_PER_RUN:-20}
+      - TELEGRAM_FINGERPRINT_DAILY_BYTE_BUDGET=${TELEGRAM_FINGERPRINT_DAILY_BYTE_BUDGET:-30000000000}
+      - TELEGRAM_FINGERPRINT_MAX_BYTES_PER_SECOND=${TELEGRAM_FINGERPRINT_MAX_BYTES_PER_SECOND:-2097152}
+      - TELEGRAM_FINGERPRINT_USAGE_PATH=${TELEGRAM_FINGERPRINT_USAGE_PATH:-/data/cache/telegram-fingerprint-daily-usage.json}
+      - TELEGRAM_PHASH_BYTE_BUDGET=${TELEGRAM_PHASH_BYTE_BUDGET:-268435456}
+      - TELEGRAM_PHASH_TIMEOUT_SECONDS=${TELEGRAM_PHASH_TIMEOUT_SECONDS:-1200}
+
+  backup:
+    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:0.4.14}
+    restart: unless-stopped
+    mem_limit: 256m
+    depends_on:
+      database:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+      resolver:
+        condition: service_healthy
+    environment:
+      - TZ=${TZ:-Europe/Warsaw}
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DATABASE_URL=${STANDALONE_DATABASE_URL:-postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}}
+      - BACKUP_DIR=/data/backups
+      - BACKUP_KEEP_DAYS=${BACKUP_KEEP_DAYS:-7}
+      - BACKUP_DAILY_AT=${BACKUP_DAILY_AT:-04:30}
+      - BACKUP_LOCK_PATH=/data/cache/backup.lock
+      - MEDIA_DIR=/media/adult
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${DATA_DIR:-./data}:/data
+      - ${MEDIA_DIR:-./media}:/media/adult:ro
+    command: ["python", "backup_scheduler.py"]
+
+  telegram-auth:
+    image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:0.4.14}
+    profiles: ["tools"]
+    restart: "no"
+    stdin_open: true
+    tty: true
+    command: ["python3", "-m", "providers.telegram_auth", "auth"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID:?TELEGRAM_API_ID is required in .env}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:?TELEGRAM_API_HASH is required in .env}
+      - TELEGRAM_SESSION_PATH=${TELEGRAM_SESSION_PATH:-/data/telegram.session}
+      - DATA_DIR=${DATA_DIR:-/data}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${DATA_DIR:-./data}:/data
+
+volumes:
+  postgres_data:
+  jellyfin_config:
+  jellyfin_cache:

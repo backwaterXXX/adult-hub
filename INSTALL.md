@@ -9,58 +9,170 @@ For a fast three-command setup on a new system, see the [Quick Start in README.m
 ## Table of Contents
 
 1. [Deployment Architectures](#1-deployment-architectures)
-2. [Standalone Deployment (`make setup`)](#2-standalone-deployment-make-setup)
+2. [Standalone Prebuilt Image Bundle (Downloadable Archive)](#2-standalone-prebuilt-image-bundle-downloadable-archive)
+   - [Overview and Bundle Contents](#overview-and-bundle-contents)
+   - [Prerequisites](#prerequisites)
+   - [Three-Step Installation](#three-step-installation)
+   - [Interactive Telegram Authentication Service](#interactive-telegram-authentication-service)
+   - [Network Binding and Client-Facing Playback](#network-binding-and-client-facing-playback)
+   - [Updating Prebuilt Deployments](#updating-prebuilt-deployments)
+3. [Standalone Repository Installer (`make setup`)](#3-standalone-repository-installer-make-setup)
    - [Overview and Directory Layout](#overview-and-directory-layout)
    - [Running `make setup`](#running-make-setup)
-   - [Setup Options and Non-Interactive Flags](#setup-options-and-non-interactive-flags)
+   - [Setup Options, Prebuilt Consumption, and Source Build](#setup-options-prebuilt-consumption-and-source-build)
    - [Resuming or Recovering Interrupted Setup](#resuming-or-recovering-interrupted-setup)
-3. [Existing Infrastructure / Production Deployment (`make deploy`)](#3-existing-infrastructure-production-deployment-make-deploy)
+4. [Existing Infrastructure / Production Deployment (`make deploy`)](#4-existing-infrastructure-production-deployment-make-deploy)
    - [Overview and Differences from Standalone](#overview-and-differences-from-standalone)
    - [Prerequisites and External Services](#prerequisites-and-external-services)
    - [Initial Configuration](#initial-configuration)
    - [Applying Migrations](#applying-migrations)
    - [Deployment with `make deploy`](#deployment-with-make-deploy)
-4. [Maintenance and Updates](#4-maintenance-and-updates)
-   - [Updating Standalone Deployments (`make update`)](#updating-standalone-deployments-make-update)
+5. [Maintenance and Updates](#5-maintenance-and-updates)
+   - [Updating Prebuilt Standalone Deployments](#updating-prebuilt-standalone-deployments)
+   - [Updating Repository Standalone Deployments (`make update`)](#updating-repository-standalone-deployments-make-update)
    - [Updating Production Deployments](#updating-production-deployments)
-5. [Storage, Volumes, and Data Persistence](#5-storage-volumes-and-data-persistence)
-6. [Backup and Database Restoration](#6-backup-and-database-restoration)
+6. [Storage, Volumes, and Data Persistence](#6-storage-volumes-and-data-persistence)
+7. [Backup and Database Restoration](#7-backup-and-database-restoration)
    - [Automated Scheduled Backups](#automated-scheduled-backups)
    - [Manual Database Snapshots](#manual-database-snapshots)
    - [Restoring from a Backup](#restoring-from-a-backup)
-7. [Jellyfin Integration](#7-jellyfin-integration)
+8. [Jellyfin Integration](#8-jellyfin-integration)
    - [Basic Setup (No API Key Required)](#basic-setup-no-api-key-required)
    - [Recommended Jellyfin Library Configuration](#recommended-jellyfin-library-configuration)
    - [Optional API Key Integration](#optional-api-key-integration)
-8. [Reverse Proxy and Network Configuration](#8-reverse-proxy-and-network-configuration)
-9. [Troubleshooting and Common Issues](#9-troubleshooting-and-common-issues)
-10. [Operational Limitations and Safety Bounds](#10-operational-limitations-and-safety-bounds)
-11. [Verification Scope and Runtime Limits](#11-verification-scope-and-runtime-limits)
+9. [Reverse Proxy and Network Configuration](#9-reverse-proxy-and-network-configuration)
+10. [Troubleshooting and Common Issues](#10-troubleshooting-and-common-issues)
+11. [Operational Limitations and Safety Bounds](#11-operational-limitations-and-safety-bounds)
+12. [Verification Scope and Runtime Limits](#12-verification-scope-and-runtime-limits)
 
 ---
 
 ## 1. Deployment Architectures
 
-Adult Hub supports two distinct deployment models:
+Adult Hub supports three deployment workflows:
 
-| Feature | Standalone Deployment | Existing Infrastructure / Production |
-|---|---|---|
-| **Primary File** | `compose.standalone.yml` | `docker-compose.yml` |
-| **Compose Project** | `adult-hub-standalone` | `adult-hub` |
-| **Setup Command** | `make setup` (`scripts/setup.sh`) | Manual config + `make deploy` |
-| **Update Command** | `make update` (`scripts/update.sh`) | `make deploy` |
-| **Marker in `.env`** | `ADULT_HUB_STANDALONE=true` | None (omitted) |
-| **Database** | Bundled PostgreSQL 17 container (`postgres:17-alpine`) | External PostgreSQL 17 cluster |
-| **Database Migrations** | Automatic via ephemeral `migration` container | Manual via `python3 migrate_db.py apply` |
-| **Docker Network** | Internal Compose network | External network (`selfhost: external: true`) |
-| **Jellyfin Service** | Bundled container on bridge network (`jellyfin/jellyfin:12.4`) | Host networking (`network_mode: host`) with GPU pass-through |
-| **Data Layout** | Isolated under `./standalone/` | Dedicated host paths (`./data`, `./jf-config`, etc.) |
+| Feature | Prebuilt Release Bundle (Recommended) | Standalone Repository Installer | Existing Infrastructure / Production |
+|---|---|---|---|
+| **Primary File** | `docker-compose.yml` (from bundle) | `compose.standalone.yml` | `docker-compose.yml` |
+| **Compose Project** | `adult-hub-standalone` | `adult-hub-standalone` | `adult-hub` |
+| **Setup Workflow** | `pull` -> `run telegram-auth` -> `up -d` | `make setup` (`scripts/setup.sh`) | Manual config + `make deploy` |
+| **Update Command** | `docker compose pull && docker compose up -d` | `make update` (`scripts/update.sh`) | `make deploy` |
+| **Build Directives** | None (prebuilt published images) | Local build fallback / `--source-build` | Source build via `make deploy` |
+| **Marker in `.env`** | `ADULT_HUB_STANDALONE=true` | `ADULT_HUB_STANDALONE=true` | None (omitted) |
+| **Database** | Bundled PostgreSQL 17 (`postgres:17-alpine`) | Bundled PostgreSQL 17 (`postgres:17-alpine`) | External PostgreSQL 17 cluster |
+| **Database Migrations**| Automatic via ephemeral `migration` container | Automatic via ephemeral `migration` container | Manual via `python3 migrate_db.py apply` |
+| **Docker Network** | Internal Compose network | Internal Compose network | External network (`selfhost`) |
+| **Jellyfin Service** | Bundled container (`jellyfin/jellyfin:12.4`) | Bundled container (`jellyfin/jellyfin:12.4`) | Host networking (`network_mode: host`) |
+| **Data Layout** | Isolated under `./data`, `./media`, `./cache` | Isolated under `./standalone/` | Dedicated host paths (`./data`, etc.) |
 
 ---
 
-## 2. Standalone Deployment (`make setup`)
+## 2. Standalone Prebuilt Image Bundle (Downloadable Archive)
 
-Standalone deployment is an all-in-one setup that bundles all services (PostgreSQL 17, Jellyfin container using image tag `jellyfin/jellyfin:12.4`, Resolver, Sync worker, and Backup scheduler). It requires no pre-existing database or external Docker network.
+The standalone release bundle is the fastest and cleanest installation method for users who do not intend to modify the Adult Hub codebase. It does not require cloning the Git repository, installing build dependencies, or compiling container images locally.
+
+> [!NOTE]
+> **Prebuilt Image Availability**: Official container images (`ghcr.io/backwaterxxx/adult-hub-resolver` and `ghcr.io/backwaterxxx/adult-hub-sync`) are published automatically to the GitHub Container Registry (GHCR) upon publication of tagged releases.
+
+### Overview and Bundle Contents
+
+The downloadable archive (`adult-hub-standalone-v0.4.14.tar.gz` or `.zip`) contains everything needed to operate the stack:
+
+```
+adult-hub/
+├── docker-compose.yml        # Self-contained Compose file (no build directives or repo mounts)
+├── .env.example              # Environment configuration template
+├── config.example.yaml       # Channel and sync configuration template
+└── README.md                 # Quick reference instructions
+```
+
+### Prerequisites
+
+- **Docker Engine** (24.0+) with the **Docker Compose v2** plugin (`docker compose`).
+- **Telegram MTProto API Credentials**: Register an application at [my.telegram.org](https://my.telegram.org) under *API development tools* to obtain an integer `API ID` and hexadecimal `API Hash`.
+- Access to your Telegram account to receive login codes and 2FA authentication.
+
+### Three-Step Installation
+
+1. **Extract Release Bundle & Prepare Configuration**:
+
+   ```sh
+   mkdir adult-hub && cd adult-hub
+   curl -sSL https://github.com/backwaterXXX/adult-hub/releases/latest/download/adult-hub-standalone.tar.gz | tar -xz
+   cp .env.example .env
+   cp config.example.yaml config.yaml
+   ```
+
+   Edit `.env` to configure:
+   - `POSTGRES_PASSWORD`: A strong random password for the internal database.
+   - `ADMIN_WRITE_TOKEN`: A secret token for the web admin panel.
+   - `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`: Your Telegram API credentials from [my.telegram.org](https://my.telegram.org).
+
+2. **Pull Images & Authenticate Telegram**:
+
+   Pull the prebuilt images:
+   ```sh
+   docker compose pull
+   ```
+
+   Run the interactive Telegram login service:
+   ```sh
+   docker compose run --rm telegram-auth
+   ```
+
+   Follow the interactive prompts:
+   - Enter your phone number in international format (e.g. `+1234567890`).
+   - Enter the login code delivered to your Telegram app.
+   - Enter your 2FA cloud password if enabled.
+
+   The session token is saved securely to `./data/telegram.session`.
+
+3. **Start Core and Application Services**:
+
+   ```sh
+   docker compose up -d
+   ```
+
+   Docker Compose starts PostgreSQL, executes schema migrations via an ephemeral `migration` container gated by `service_completed_successfully`, and brings up Jellyfin, the Resolver API, the Sync worker, and automated database backups.
+
+### Interactive Telegram Authentication Service
+
+The `telegram-auth` service is declared under the `tools` Compose profile (`profiles: ["tools"]`). This design guarantees that:
+- `docker compose up -d` will **never** inadvertently start or block on the authentication service.
+- Running `docker compose run --rm telegram-auth` executes in an isolated one-off container before long-running services start, preventing SQLite session database lock collisions on `telegram.session`.
+- Startup of `sync` will fail fast and clearly if `telegram.session` has not been generated yet, advising the operator to run `telegram-auth`.
+
+### Network Binding and Client-Facing Playback
+
+By default, services bind to `127.0.0.1` (loopback) for security. To enable streaming to smart TVs, Android TV players, and companion apps on your home network:
+
+1. In `.env`, set `RESOLVER_BIND_IP` and `JELLYFIN_BIND_IP` to your host's private LAN IP (e.g. `192.168.1.100`):
+   ```env
+   RESOLVER_BIND_IP=192.168.1.100
+   JELLYFIN_BIND_IP=192.168.1.100
+   ```
+2. Set `STANDALONE_STREAM_PUBLIC_URL_TELEGRAM` to your resolver endpoint reachable by client devices:
+   ```env
+   STANDALONE_STREAM_PUBLIC_URL_TELEGRAM=http://192.168.1.100:8090
+   ```
+   Inside the Docker bridge network, Jellyfin resolves stream links through Compose internal DNS (`http://resolver:8090`), while client-facing players use the configured LAN URL.
+
+### Updating Prebuilt Deployments
+
+To update an existing release bundle installation to a new version:
+
+```sh
+docker compose pull
+docker compose up -d
+```
+
+Compose automatically downloads newer image versions, runs schema migrations via the migration container, and restarts application services without modifying configuration, media, or database files.
+
+---
+
+## 3. Standalone Repository Installer (`make setup`)
+
+Standalone deployment via repository checkout bundles all services (PostgreSQL 17, Jellyfin container using image tag `jellyfin/jellyfin:12.4`, Resolver, Sync worker, and Backup scheduler). It requires no pre-existing database or external Docker network.
 
 ### Overview and Directory Layout
 
@@ -115,9 +227,19 @@ The installer executes `scripts/setup.sh` and performs the following steps:
    - Runs `python3 -m providers.telegram_auth auth` in an interactive container. Enter your phone number (international format, e.g. `+1234567890`), login code received in Telegram, and 2FA password (if enabled).
 10. **Application Stack Startup**: Starts `resolver`, `sync`, and `backup` services once authorization succeeds. If authentication is postponed, core database and Jellyfin services remain running while resolver, sync, and backup remain withheld until authorization is completed.
 
-### Setup Options and Non-Interactive Flags
+### Setup Options, Prebuilt Consumption, and Source Build
 
-You can bypass prompts or inspect status using flags with `scripts/setup.sh`:
+By default, `scripts/setup.sh` is configured to consume prebuilt published container images (`ghcr.io/backwaterxxx/adult-hub-resolver` and `ghcr.io/backwaterxxx/adult-hub-sync`). If the prebuilt images are not yet available on the registry (for example, on development branches prior to publication), the installer falls back to building images from repository source.
+
+To explicitly force building from local source:
+
+```sh
+scripts/setup.sh --source-build
+# or using make:
+make setup SOURCE_BUILD=1
+```
+
+You can also bypass prompts or inspect status using flags with `scripts/setup.sh`:
 
 ```sh
 # Show configuration summary and service health without modifying anything
@@ -134,12 +256,16 @@ scripts/setup.sh --resolver-port 8091 --jellyfin-port 8097
 
 # Prepare config and directories without launching Docker containers
 scripts/setup.sh --skip-docker-start
+
+# Force building images from local source code
+scripts/setup.sh --source-build
 ```
 
 Available flags:
 - `-h, --help`: Display usage summary.
 - `-y, --non-interactive`: Accept defaults or environment variables without prompting.
 - `--status`: Display current service status, endpoints, and authentication state without altering files.
+- `--source-build`: Build container images locally from repository Dockerfiles instead of consuming prebuilt images.
 - `--bind-mode MODE`: Network binding mode: `loopback` (default) or `lan`.
 - `--bind-ip IP`: Private IP address to bind (required when `--bind-mode lan` is used non-interactively).
 - `--resolver-port PORT`: Port for resolver API and admin panel (default: `8090`).
@@ -163,7 +289,7 @@ The installer is idempotent and safe to re-run at any time:
 
 ---
 
-## 3. Existing Infrastructure / Production Deployment (`make deploy`)
+## 4. Existing Infrastructure / Production Deployment (`make deploy`)
 
 The production deployment uses `docker-compose.yml` to integrate Adult Hub into an existing self-hosted server environment alongside an external PostgreSQL cluster, reverse proxy, and hardware-accelerated media stack.
 
@@ -242,9 +368,20 @@ What `make deploy` does **not** do:
 
 ---
 
-## 4. Maintenance and Updates
+## 5. Maintenance and Updates
 
-### Updating Standalone Deployments (`make update`)
+### Updating Prebuilt Standalone Deployments
+
+For release bundle deployments, updating is entirely container-native:
+
+```sh
+docker compose pull
+docker compose up -d
+```
+
+Compose automatically downloads newer image versions, runs schema migrations via the migration container, and restarts application services without modifying configuration, media, or database files.
+
+### Updating Repository Standalone Deployments (`make update`)
 
 For standalone installations, `make update` runs `scripts/update.sh` to safely upgrade images, apply migrations, and restart containers without data loss.
 
@@ -307,7 +444,7 @@ For production deployments:
 
 ---
 
-## 5. Storage, Volumes, and Data Persistence
+## 6. Storage, Volumes, and Data Persistence
 
 Understanding where data is stored is critical for backups, disk sizing, and persistence:
 
@@ -323,7 +460,7 @@ Understanding where data is stored is critical for backups, disk sizing, and per
 
 ---
 
-## 6. Backup and Database Restoration
+## 7. Backup and Database Restoration
 
 ### Automated Scheduled Backups
 
@@ -376,7 +513,7 @@ python3 restore_db.py --latest
 
 ---
 
-## 7. Jellyfin Integration
+## 8. Jellyfin Integration
 
 Adult Hub integrates with Jellyfin by generating media files directly onto the filesystem:
 - **`.strm` files**: Small text files containing the stream URL pointing to the Adult Hub resolver endpoint.
@@ -423,7 +560,7 @@ To enable:
 
 ---
 
-## 8. Reverse Proxy and Network Configuration
+## 9. Reverse Proxy and Network Configuration
 
 When accessing Adult Hub from remote devices or outside your home network, use a reverse proxy (such as Caddy or Nginx) with HTTPS.
 
@@ -455,7 +592,7 @@ To ensure Uvicorn correctly identifies client IP addresses and protocols behind 
 
 ---
 
-## 9. Troubleshooting and Common Issues
+## 10. Troubleshooting and Common Issues
 
 ### Port Conflict on 8090 or 8096
 
@@ -520,7 +657,7 @@ To ensure Uvicorn correctly identifies client IP addresses and protocols behind 
 
 ---
 
-## 10. Operational Limitations and Safety Bounds
+## 11. Operational Limitations and Safety Bounds
 
 - **Single Worker Topology**: Run only one sync worker against a single data mount. Worker coordination and job queues use Linux filesystem locks (`flock`) under `/data`. Multi-host distributed worker clusters sharing network shares (NFS/CIFS) are unsupported.
 - **On-Demand Streaming**: Adult Hub does not download full video files to disk; it indexes metadata and streams chunks on demand over Telegram MTProto. If a message is deleted from Telegram or upstream servers throttle your IP, playback will stall or fail.
@@ -529,7 +666,7 @@ To ensure Uvicorn correctly identifies client IP addresses and protocols behind 
 
 ---
 
-## 11. Verification Scope and Runtime Limits
+## 12. Verification Scope and Runtime Limits
 
 This documentation was written and verified against the repository implementation as follows:
 

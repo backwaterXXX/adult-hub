@@ -1,0 +1,35 @@
+# =============================================================================
+# Adult Hub Standalone Configuration
+# =============================================================================
+# Copy this file to 'config.yaml' before starting:
+#   cp config.example.yaml config.yaml
+#
+# Channels can also be managed dynamically via the web admin panel at /admin/#sources
+# =============================================================================
+
+sync:
+  interval_minutes: 60
+  daily_at: "03:30"
+  run_on_startup: true
+  retention_days: 30
+  retry_backoff_base_seconds: 30
+  retry_backoff_max_seconds: 1800
+  shutdown_grace_seconds: 180
+  stream_mode_default: proxy
+  category_fetch_delay_seconds: 2.5
+  pbc_backfill_per_run: 50
+  tpdb_backfill_per_run: 50
+  scene_backfill_per_run: 500
+  jellyfin_people_per_run: 25
+
+sources:
+  - provider: telegram
+    enabled: true
+    defaults:
+      stream_mode: proxy
+      max_pages: 1
+      min_duration_seconds: 420
+      history_batch_size: 100
+      tags_whitelist: []
+      tags_blacklist: []
+    channels: []

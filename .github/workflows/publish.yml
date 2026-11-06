@@ -1,0 +1,115 @@
+name: Publish Container Images and Release Bundle
+
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Explicit image tag (defaults to VERSION file)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish-images:
+    name: Build & Publish GHCR Images and Release Bundle
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Resolve image names and version
+        id: prep
+        run: |
+          OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME#v}"
+          else
+            TAG="${VERSION}"
+          fi
+          echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "resolver_image=ghcr.io/${OWNER}/adult-hub-resolver" >> "$GITHUB_OUTPUT"
+          echo "sync_image=ghcr.io/${OWNER}/adult-hub-sync" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Resolver image
+        id: meta-resolver
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.prep.outputs.resolver_image }}
+          tags: |
+            type=raw,value=${{ steps.prep.outputs.tag }}
+            type=semver,pattern={{version}},value=${{ steps.prep.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.prep.outputs.tag }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build and push Resolver image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: resolver/Dockerfile
+          push: true
+          tags: ${{ steps.meta-resolver.outputs.tags }}
+          labels: ${{ steps.meta-resolver.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.prep.outputs.tag }}
+
+      - name: Extract metadata for Sync image
+        id: meta-sync
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.prep.outputs.sync_image }}
+          tags: |
+            type=raw,value=${{ steps.prep.outputs.tag }}
+            type=semver,pattern={{version}},value=${{ steps.prep.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.prep.outputs.tag }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build and push Sync image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: sync/Dockerfile
+          push: true
+          tags: ${{ steps.meta-sync.outputs.tags }}
+          labels: ${{ steps.meta-sync.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.prep.outputs.tag }}
+
+      - name: Package standalone release bundle
+        run: |
+          ./scripts/package_release.sh "${{ steps.prep.outputs.tag }}"
+
+      - name: Upload release bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: adult-hub-standalone-v${{ steps.prep.outputs.tag }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          retention-days: 30
+
+      - name: Upload bundle to release assets
+        if: github.event_name == 'release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" dist/adult-hub-standalone*.tar.gz dist/adult-hub-standalone*.zip --clobber || true

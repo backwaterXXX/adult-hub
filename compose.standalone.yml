@@ -22,7 +22,7 @@ services:
       start_period: 10s
 
   migration:
-    image: ${SYNC_IMAGE:-adult-hub-sync:${APP_VERSION:-dev}}
+    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:${APP_VERSION:-0.4.14}}
     build:
       context: .
       dockerfile: sync/Dockerfile
@@ -65,7 +65,7 @@ services:
       - ${STANDALONE_MEDIA_DIR:-./standalone/media}:/media/adult:ro
 
   resolver:
-    image: ${RESOLVER_IMAGE:-adult-hub-resolver:${APP_VERSION:-dev}}
+    image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:${APP_VERSION:-0.4.14}}
     build:
       context: .
       dockerfile: resolver/Dockerfile
@@ -149,7 +149,7 @@ services:
       - PHASH_SERVER_IDLE_BYTES_PER_SECOND=${PHASH_SERVER_IDLE_BYTES_PER_SECOND:-10000000}
 
   sync:
-    image: ${SYNC_IMAGE:-adult-hub-sync:${APP_VERSION:-dev}}
+    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:${APP_VERSION:-0.4.14}}
     build:
       context: .
       dockerfile: sync/Dockerfile
@@ -225,7 +225,7 @@ services:
       - TELEGRAM_PHASH_TIMEOUT_SECONDS=${TELEGRAM_PHASH_TIMEOUT_SECONDS:-1200}
 
   backup:
-    image: ${SYNC_IMAGE:-adult-hub-sync:${APP_VERSION:-dev}}
+    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:${APP_VERSION:-0.4.14}}
     build:
       context: .
       dockerfile: sync/Dockerfile
@@ -255,6 +255,28 @@ services:
       - ${STANDALONE_DATA_DIR:-./standalone/data}:/data
       - ${STANDALONE_MEDIA_DIR:-./standalone/media}:/media/adult:ro
     command: ["python", "backup_scheduler.py"]
+
+  telegram-auth:
+    image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:${APP_VERSION:-0.4.14}}
+    build:
+      context: .
+      dockerfile: resolver/Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    profiles: ["tools"]
+    restart: "no"
+    stdin_open: true
+    tty: true
+    command: ["python3", "-m", "providers.telegram_auth", "auth"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
+      - TELEGRAM_SESSION_PATH=${TELEGRAM_SESSION_PATH:-/data/telegram.session}
+      - DATA_DIR=${DATA_DIR:-/data}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${STANDALONE_DATA_DIR:-./standalone/data}:/data
 
 volumes:
   postgres_data:
