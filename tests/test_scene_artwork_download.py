@@ -1,5 +1,6 @@
 """Tests for admin-triggered scene artwork download path selection."""
 
+import os
 import sys
 import logging
 import unittest
@@ -243,6 +244,15 @@ class ArtworkProviderBranchTests(PgTestCase):
 
 
 class ArtworkJobQueueTests(PgTestCase):
+    def setUp(self):
+        super().setUp()
+        self.env_patch = patch.dict(os.environ, {
+            "JELLYFIN_URL": os.getenv("JELLYFIN_URL") or "http://jellyfin.test:8096",
+            "JELLYFIN_API_KEY": os.getenv("JELLYFIN_API_KEY") or "test-jellyfin-key",
+        })
+        self.env_patch.start()
+        self.addCleanup(self.env_patch.stop)
+
     def test_generated_artwork_job_runs_and_records_jellyfin_result(self):
         import tempfile
         from common.job_queue import enqueue_job

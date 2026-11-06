@@ -277,6 +277,52 @@ class TestSourceRemoval(unittest.TestCase):
 
     @patch.object(source_removal, "_acquire_channel_removal_lock", return_value=None)
     @patch.object(source_removal, "_verify_channel_not_configured", return_value=None)
+    @patch.object(source_removal, "_remove_sync_history", return_value=(0, 0))
+    def test_regression_deleting_supergroup_cannot_delete_different_chat_id_catalog_or_media(
+        self, mock_history, mock_verify, mock_lock
+    ):
+        """Deleting channel -10012345 must not delete catalog entries or media for channel -12345."""
+        v_target = "telegram:-10012345:1"
+        v_other = "telegram:-12345:1"
+
+        target_strm = self.media_dir / "target" / "video_1.strm"
+        target_strm.parent.mkdir(parents=True, exist_ok=True)
+        target_strm.write_text("http://stream-target", encoding="utf-8")
+
+        other_strm = self.media_dir / "other" / "video_1.strm"
+        other_strm.parent.mkdir(parents=True, exist_ok=True)
+        other_strm.write_text("http://stream-other", encoding="utf-8")
+
+        data = {
+            "videos": {v_target, v_other},
+            "synced_files": [(v_target, "target/video_1.strm"), (v_other, "other/video_1.strm")],
+            "video_sources": [
+                (v_target, f"{v_target}:src", "telegram", "-10012345", 1),
+                (v_other, f"{v_other}:src", "telegram", "-12345", 1),
+            ],
+            "telegram_channel_state": ["-10012345", "-12345"],
+        }
+        conn = FakeConnection(data)
+        services = FakeServices()
+
+        res = remove_telegram_channel(
+            conn, self.media_dir, "-10012345", "job-reg", services, self._record_progress
+        )
+
+        self.assertEqual(res["videos_deleted"], 1)
+        self.assertFalse(target_strm.exists())
+        self.assertNotIn(v_target, conn.data["videos"])
+
+        # Crucial regression assertions: other channel's media and catalog MUST NOT be deleted
+        self.assertTrue(other_strm.exists(), "Deleting -10012345 must not delete -12345 media")
+        self.assertIn(v_other, conn.data["videos"], "Deleting -10012345 must not delete -12345 video")
+        self.assertEqual(len(conn.data["synced_files"]), 1)
+        self.assertEqual(conn.data["synced_files"][0], (v_other, "other/video_1.strm"))
+        self.assertTrue(any(row[0] == v_other and row[3] == "-12345" for row in conn.data["video_sources"]))
+        self.assertIn("-12345", conn.data["telegram_channel_state"])
+
+    @patch.object(source_removal, "_acquire_channel_removal_lock", return_value=None)
+    @patch.object(source_removal, "_verify_channel_not_configured", return_value=None)
     @patch.object(source_removal, "_remove_sync_history", return_value=(1, 2))
     def test_w1_w5_w7_deletes_synced_files_and_sidecars_and_returns_counts(
         self, mock_history, mock_verify, mock_lock

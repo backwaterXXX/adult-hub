@@ -36,6 +36,7 @@ def make_mock_docker(
     volume_exists=False,
     active_prod_project=False,
     sync_running=False,
+    resolver_running=False,
     migration_ok=True,
     build_ok=True,
     auth_check_ok=True,
@@ -47,6 +48,7 @@ def make_mock_docker(
     vol_resp = "exit 0" if volume_exists else "exit 1"
     version_resp = "echo 'Docker Compose version v2.29.2'" if compose_v2_ok else "exit 1"
     sync_resp = "echo 'sync_running_id'" if sync_running else "exit 0"
+    resolver_ps_resp = "echo 'resolver_running_id'" if resolver_running else "exit 0"
     resolver_json = '{"Health": "healthy", "State": "running"}' if resolver_healthy else '{"Health": "starting", "State": "running"}'
     build_resp = "exit 0" if build_ok else "echo 'Build failed' >&2; exit 1"
     migration_resp = "exit 0" if migration_ok else "echo 'Migration failed' >&2; exit 1"
@@ -95,7 +97,11 @@ case "$cmd" in
                 exit 0
             fi
             if [[ "$all_args" =~ "resolver" ]]; then
-                echo '{resolver_json}'
+                if [[ "$all_args" =~ "--format" ]]; then
+                    echo '{resolver_json}'
+                    exit 0
+                fi
+                {resolver_ps_resp}
                 exit 0
             fi
             echo '{{"Health": "healthy", "State": "running"}}'
@@ -301,6 +307,57 @@ class TestMaintenanceUpdateWorkflow(unittest.TestCase):
         self.assertIn("up migration", calls)
         # Resolver, sync, backup must NOT have been started after migration failed
         self.assertNotIn("up -d --no-build resolver sync backup", calls)
+        self.assertNotIn("up -d --no-build sync", calls)
+
+    def test_update_build_failure_restores_sync_if_was_running(self):
+        """When build fails before migrations, restore sync only if it was running before update."""
+        mock_docker = make_mock_docker(self.isolated_root, build_ok=False, sync_running=True)
+        self.init_standalone_env(mock_docker)
+
+        (self.isolated_root / "docker_calls.log").write_text("")
+
+        res = self.run_update(["--docker-bin", mock_docker, "--root-dir", str(self.isolated_root)])
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("Container image build failed", res.stderr)
+        self.assertIn("Restoring sync worker since build failed before migrations", res.stdout)
+
+        calls = (self.isolated_root / "docker_calls.log").read_text()
+        self.assertIn("stop -t 240 sync", calls)
+        self.assertIn("up -d --no-build sync", calls)
+
+    def test_update_build_failure_does_not_restore_sync_if_was_not_running(self):
+        """When build fails and sync was not running before update, sync is not started."""
+        mock_docker = make_mock_docker(self.isolated_root, build_ok=False, sync_running=False)
+        self.init_standalone_env(mock_docker)
+
+        (self.isolated_root / "docker_calls.log").write_text("")
+
+        res = self.run_update(["--docker-bin", mock_docker, "--root-dir", str(self.isolated_root)])
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("Container image build failed", res.stderr)
+        self.assertNotIn("Restoring sync worker", res.stdout)
+
+        calls = (self.isolated_root / "docker_calls.log").read_text()
+        self.assertNotIn("up -d --no-build sync", calls)
+
+    def test_update_stops_running_resolver_before_telegram_auth_check(self):
+        """Running resolver must be gracefully stopped before checking Telegram auth with one-off container."""
+        mock_docker = make_mock_docker(self.isolated_root, resolver_running=True)
+        self.init_standalone_env(mock_docker)
+
+        (self.isolated_root / "docker_calls.log").write_text("")
+
+        res = self.run_update(["--docker-bin", mock_docker, "--root-dir", str(self.isolated_root)])
+        self.assertEqual(res.returncode, 0, f"Update failed:\n{res.stderr}")
+        self.assertIn("Gracefully stopping running resolver before Telegram authorization check...", res.stdout)
+
+        calls = (self.isolated_root / "docker_calls.log").read_text()
+        self.assertIn("stop -t 30 resolver", calls)
+        stop_idx = calls.find("stop -t 30 resolver")
+        auth_idx = calls.find("telegram_auth check")
+        self.assertNotEqual(stop_idx, -1)
+        self.assertNotEqual(auth_idx, -1)
+        self.assertLess(stop_idx, auth_idx, "Resolver stop must precede telegram_auth check")
 
     def test_update_withholds_sync_and_backup_when_telegram_not_authorized(self):
         """When Telegram is not authorized, update starts resolver but withholds sync and backup."""

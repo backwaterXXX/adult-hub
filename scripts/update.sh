@@ -154,7 +154,9 @@ echo "==========================================================================
 # -----------------------------------------------------------------------------
 # The sync child answers SIGTERM between channels or stages; the runner waits up to
 # sync.shutdown_grace_seconds (180s). We grant 240s (-t 240) to match stop_grace_period: 4m.
+SYNC_WAS_RUNNING=0
 if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" ps --status running -q sync 2>/dev/null | grep -q .; then
+    SYNC_WAS_RUNNING=1
     echo "==> Gracefully stopping sync worker (waiting up to 4m for current channel to finish)..."
     if ! "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" stop -t 240 sync; then
         echo "[ERROR] Failed to stop sync worker gracefully." >&2
@@ -169,6 +171,10 @@ fi
 echo "==> Rebuilding application container images (version ${APP_VERSION})..."
 if ! "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" build resolver sync; then
     echo "[ERROR] Container image build failed." >&2
+    if [ "${SYNC_WAS_RUNNING}" -eq 1 ]; then
+        echo "==> Restoring sync worker since build failed before migrations..."
+        "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d --no-build sync || true
+    fi
     exit 1
 fi
 echo "[SUCCESS] Container images built successfully."
@@ -215,6 +221,16 @@ HOST_DATA_DIR="$(grep -E '^[[:space:]]*STANDALONE_DATA_DIR=' .env | cut -d= -f2-
 HOST_DATA_DIR="${HOST_DATA_DIR:-./standalone/data}"
 if [[ "${HOST_DATA_DIR}" != /* ]]; then
     HOST_DATA_DIR="${ROOT_DIR}/${HOST_DATA_DIR#./}"
+fi
+
+# Stop running resolver if active to prevent SQLite session database lock conflicts
+if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" ps --status running -q resolver 2>/dev/null | grep -q .; then
+    echo "==> Gracefully stopping running resolver before Telegram authorization check..."
+    if ! "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" stop -t 30 resolver; then
+        echo "[ERROR] Failed to stop resolver gracefully." >&2
+        exit 1
+    fi
+    echo "[SUCCESS] Resolver stopped cleanly."
 fi
 
 is_authed=0

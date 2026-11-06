@@ -484,6 +484,16 @@ if [ "${PRESERVING_EXISTING_ENV}" -eq 0 ]; then
         fi
     fi
 
+    # Refuse port collision when overrides or defaults request the same host port
+    if [ -n "${RESOLVER_PORT_OVERRIDE}" ] && [ -n "${JELLYFIN_PORT_OVERRIDE}" ] && [ "${RESOLVER_PORT_OVERRIDE}" -eq "${JELLYFIN_PORT_OVERRIDE}" ]; then
+        echo "[ERROR] Port collision: Resolver and Jellyfin overrides request the same host port (${RESOLVER_PORT_OVERRIDE}). Specify distinct ports for each service." >&2
+        exit 1
+    fi
+    if [ "${RESOLVER_PORT}" -eq "${JELLYFIN_PORT}" ]; then
+        echo "[ERROR] Port collision: Resolver and Jellyfin cannot both bind to host port ${RESOLVER_PORT}. Specify distinct ports for each service." >&2
+        exit 1
+    fi
+
     # Client-facing playback URL
     if [ "${RESOLVER_BIND_IP}" = "127.0.0.1" ]; then
         STANDALONE_RESOLVER_PUBLIC_URL="http://127.0.0.1:${RESOLVER_PORT}"

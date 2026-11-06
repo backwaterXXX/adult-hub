@@ -1,6 +1,7 @@
 """PostgreSQL integration checks for persistent performer proposal review."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -27,6 +28,12 @@ sync = load_flat_sync_module()
 class TestPerformerProposalIntegration(PgTestCase):
     def setUp(self):
         super().setUp()
+        self.env_patch = patch.dict(os.environ, {
+            "JELLYFIN_URL": os.getenv("JELLYFIN_URL") or "http://jellyfin.test:8096",
+            "JELLYFIN_API_KEY": os.getenv("JELLYFIN_API_KEY") or "test-jellyfin-key",
+        })
+        self.env_patch.start()
+        self.addCleanup(self.env_patch.stop)
         self.conn.execute(
             "INSERT INTO performer_catalog(id,source,source_id,name) VALUES (%s,'manual','p1','Canonical Name')",
             ("p1",),

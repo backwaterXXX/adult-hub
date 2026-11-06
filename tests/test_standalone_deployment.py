@@ -125,6 +125,15 @@ class TestStandaloneDeploymentDeclarations(unittest.TestCase):
             "Sync must use 'service_started' for Jellyfin in standalone so offline or slow Jellyfin does not block sync startup.",
         )
 
+    def test_resolver_url_for_strm_is_reachable_from_jellyfin_bridge_container(self):
+        """Resolver URL written to .strm in standalone must use Compose DNS reachable from Jellyfin bridge."""
+        sync_env = self.standalone_cfg["services"]["sync"].get("environment", [])
+        resolver_url_entry = next((e for e in sync_env if str(e).startswith("RESOLVER_PUBLIC_URL=")), None)
+        self.assertIsNotNone(resolver_url_entry, "RESOLVER_PUBLIC_URL must be defined for sync service")
+        # Must resolve to http://resolver:8090 by default, never 127.0.0.1 or host-only binding
+        self.assertIn("http://resolver:8090", resolver_url_entry)
+        self.assertNotIn("STANDALONE_RESOLVER_PUBLIC_URL", resolver_url_entry)
+
 
 class TestStandaloneComposeConfigValidation(unittest.TestCase):
     """Validates real docker compose config generation with isolated temporary env files."""
@@ -184,6 +193,9 @@ class TestStandaloneComposeConfigValidation(unittest.TestCase):
         self.assertEqual(db_env.get("POSTGRES_DB"), "adulthub")
         self.assertEqual(db_env.get("POSTGRES_USER"), "adulthub")
         self.assertTrue(db_env.get("POSTGRES_PASSWORD"))
+
+        sync_env = services["sync"].get("environment", {})
+        self.assertEqual(sync_env.get("RESOLVER_PUBLIC_URL"), "http://resolver:8090")
 
     def test_absent_jellyfin_api_key_compose_config_valid(self):
         """When STANDALONE_JELLYFIN_API_KEY is unset or empty, Compose config remains valid."""

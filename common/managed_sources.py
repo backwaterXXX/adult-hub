@@ -91,14 +91,12 @@ def canonical_channel_id(channel_id: str) -> str:
 
 def channel_aliases(channel_id: str) -> set[str]:
     clean = channel_id.strip()
-    canonical = canonical_channel_id(clean)
-    return {
-        channel_id,
-        clean,
-        canonical,
-        f"-{canonical}",
-        f"-100{canonical}",
-    }
+    values = {channel_id, clean}
+    if clean.startswith("-100"):
+        values.add(clean[4:])
+    else:
+        values.add("-100" + clean.lstrip("-"))
+    return values
 
 
 def channel_lock_path(channel_id: str, path: str | Path | None = None) -> Path:

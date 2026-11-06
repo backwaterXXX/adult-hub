@@ -33,6 +33,7 @@ data/
 jf-cache/
 jf-config/
 media/
+/standalone/cache/
 *.db
 *.db-shm
 *.db-wal

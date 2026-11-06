@@ -20,6 +20,8 @@ sys.path.insert(0, str(ROOT / "sync"))
 sys.path.insert(0, str(ROOT / "resolver"))
 
 # Isolate environment to prevent touching production config or /data
+_ORIG_CONFIG_PATH = os.environ.get("CONFIG_PATH")
+_ORIG_SYNC_ACTIVITY_LOG_PATH = os.environ.get("SYNC_ACTIVITY_LOG_PATH")
 _ISOLATED_DIR = tempfile.TemporaryDirectory()
 _ISOLATED_PATH = Path(_ISOLATED_DIR.name)
 _ISOLATED_CONFIG = _ISOLATED_PATH / "config.yaml"
@@ -28,6 +30,14 @@ os.environ["CONFIG_PATH"] = str(_ISOLATED_CONFIG)
 os.environ["SYNC_ACTIVITY_LOG_PATH"] = str(_ISOLATED_PATH / "sync_activity.log")
 
 def tearDownModule():
+    if _ORIG_CONFIG_PATH is not None:
+        os.environ["CONFIG_PATH"] = _ORIG_CONFIG_PATH
+    else:
+        os.environ.pop("CONFIG_PATH", None)
+    if _ORIG_SYNC_ACTIVITY_LOG_PATH is not None:
+        os.environ["SYNC_ACTIVITY_LOG_PATH"] = _ORIG_SYNC_ACTIVITY_LOG_PATH
+    else:
+        os.environ.pop("SYNC_ACTIVITY_LOG_PATH", None)
     _ISOLATED_DIR.cleanup()
 
 from common.config_loader import load_config, parse_and_validate_config
@@ -197,6 +207,11 @@ class TestJellyfinIntegrationOptionalAuth(unittest.TestCase):
 
     def test_performer_refresh_skips_jellyfin_when_credentials_absent(self):
         """_performer_refresh safely records jellyfin_refresh as skipped instead of failing."""
+        from tests.test_support import load_flat_sync_module
+        flat = load_flat_sync_module()
+        import sync
+        if not hasattr(sync, "stable_media_basename"):
+            sync.stable_media_basename = flat.stable_media_basename
         from duplicate_jobs import _performer_refresh
 
         conn = MagicMock()

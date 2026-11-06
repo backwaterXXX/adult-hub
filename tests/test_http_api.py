@@ -690,7 +690,7 @@ class TestResolverHttpApi(unittest.TestCase):
             self.assertEqual(get_job(TEST_URL, job_id)["payload"]["loser_ids"], [loser])
             with patch.object(sync, "DATA_DIR", root / "data"), \
                  patch.object(sync, "trigger_jellyfin_refresh", return_value=True) as refresh, \
-                 patch.dict("os.environ", {"DATABASE_URL": TEST_URL}):
+                 patch.dict("os.environ", {"DATABASE_URL": TEST_URL, "JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "test-key"}):
                 with db.connect(TEST_URL) as conn:
                     self.assertEqual(sync.process_video_duplicate_jobs(conn, media), 1)
             refresh.assert_called_once_with()
@@ -717,7 +717,7 @@ class TestResolverHttpApi(unittest.TestCase):
                 self.assertEqual(restore_wake.call_count, 1)
             with patch.object(sync, "DATA_DIR", root / "data"), \
                  patch.object(sync, "trigger_jellyfin_refresh", return_value=True), \
-                 patch.dict("os.environ", {"DATABASE_URL": TEST_URL}):
+                 patch.dict("os.environ", {"DATABASE_URL": TEST_URL, "JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "test-key"}):
                 with db.connect(TEST_URL) as conn:
                     self.assertEqual(sync.process_video_duplicate_jobs(conn, media), 1)
             with db.connect(TEST_URL) as conn:
@@ -811,7 +811,7 @@ class TestResolverHttpApi(unittest.TestCase):
                 self.assertEqual(wake.call_count, 1)
             with patch.object(sync, "DATA_DIR", root / "data"), \
                  patch.object(sync, "trigger_jellyfin_refresh", return_value=True) as refresh, \
-                 patch.dict("os.environ", {"DATABASE_URL": TEST_URL}):
+                 patch.dict("os.environ", {"DATABASE_URL": TEST_URL, "JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "test-key"}):
                 with db.connect(TEST_URL) as conn:
                     self.assertEqual(sync.process_video_duplicate_jobs(conn, media), 1)
             refresh.assert_called_once_with()

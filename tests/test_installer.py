@@ -677,6 +677,22 @@ class TestStandaloneInstaller(unittest.TestCase):
             sock1.close()
             sock2.close()
 
+    def test_same_port_override_collision_fails_with_actionable_error(self):
+        """When resolver and Jellyfin overrides request the same free host port, installer fails with clear actionable error."""
+        free_port = 9188
+        mock_docker = make_mock_docker(self.isolated_root)
+        res = self.run_installer([
+            "--non-interactive",
+            "--bind-mode", "loopback",
+            "--resolver-port", str(free_port),
+            "--jellyfin-port", str(free_port),
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("Port collision", res.stderr)
+        self.assertIn("Specify distinct ports", res.stderr)
+
     def test_interrupted_resume_with_existing_volume_and_valid_password(self):
         """When volume exists and .env already has POSTGRES_PASSWORD, setup resumes cleanly."""
         mock_docker = make_mock_docker(self.isolated_root, volume_exists=True)

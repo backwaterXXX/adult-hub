@@ -21,8 +21,12 @@ def _channel_ids(channel_id: str) -> set[str]:
         return channel_aliases(channel_id)
     except ImportError:
         clean = channel_id.strip()
-        canonical = clean[4:] if clean.startswith("-100") else clean.lstrip("-")
-        return {channel_id, clean, canonical, f"-{canonical}", f"-100{canonical}"}
+        values = {channel_id, clean}
+        if clean.startswith("-100"):
+            values.add(clean[4:])
+        else:
+            values.add("-100" + clean.lstrip("-"))
+        return values
 
 
 def _escape_like_prefix(prefix: str) -> str:
