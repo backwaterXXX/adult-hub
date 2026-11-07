@@ -15,30 +15,43 @@ import sys
 from pathlib import Path
 
 from fastapi import APIRouter, Request
-from common.app_version import __version__ as APP_VERSION
+from fastapi.responses import HTMLResponse, JSONResponse
+
 import admin_data
 import admin_security
-from fastapi.responses import HTMLResponse, JSONResponse
+from common.app_version import __version__ as APP_VERSION
+from common.config import (
+    DEFAULT_ADMIN_WORKER_CAPABILITIES_PATH,
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_ENABLE_ADMIN,
+    DEFAULT_PUBLIC_DOMAIN,
+    get_admin_public,
+    get_admin_write_token,
+    get_backup_dir,
+    get_cache_dir,
+    get_media_dir,
+    parse_bool,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 logger = logging.getLogger("admin")
 
-ENABLE_ADMIN = os.getenv("ENABLE_ADMIN", "true").lower() == "true"
-ADMIN_PUBLIC = os.getenv("ADMIN_PUBLIC", "false").lower() == "true"
-ADMIN_WRITE_TOKEN = os.getenv("ADMIN_WRITE_TOKEN", "")
+ENABLE_ADMIN = parse_bool(os.getenv("ENABLE_ADMIN"), DEFAULT_ENABLE_ADMIN, name="ENABLE_ADMIN")
+ADMIN_PUBLIC = get_admin_public()
+ADMIN_WRITE_TOKEN = get_admin_write_token()
 ADMIN_DUPLICATE_TOKEN = os.getenv("ADMIN_DUPLICATE_TOKEN", "")
-PUBLIC_DOMAIN = os.getenv("PUBLIC_DOMAIN", "media.example.org").strip().lower()
-HUB_DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None
-CACHE_DIR = Path(os.getenv("CACHE_DIR", "/cache"))
+PUBLIC_DOMAIN = (os.getenv("PUBLIC_DOMAIN") or DEFAULT_PUBLIC_DOMAIN).strip().lower()
+HUB_DB_URL = (os.getenv("DATABASE_URL") or os.getenv("STANDALONE_DATABASE_URL") or "").strip() or None
+CACHE_DIR = get_cache_dir()
 SYNC_STATUS_FILE = CACHE_DIR / "sync_status.json"
 WORKER_CAPABILITIES_FILE = Path(os.getenv(
-    "ADMIN_WORKER_CAPABILITIES_PATH", "/data/cache/worker-capabilities.json"))
+    "ADMIN_WORKER_CAPABILITIES_PATH", str(DEFAULT_ADMIN_WORKER_CAPABILITIES_PATH)))
 SYNC_TRIGGER_FILE = CACHE_DIR / "sync.trigger"
-CONFIG_PATH = Path(os.getenv("CONFIG_PATH", "/config/config.yaml"))
+CONFIG_PATH = Path(os.getenv("CONFIG_PATH", DEFAULT_CONFIG_PATH))
 SYNC_HISTORY_FILE = CACHE_DIR / "sync_history.json"
-BACKUP_DIR = Path(os.getenv("BACKUP_DIR", "/data/backups"))
+BACKUP_DIR = get_backup_dir()
 BACKUP_RESTORE_DATABASE_URL = os.getenv("BACKUP_RESTORE_DATABASE_URL", "").strip()
-MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "/media/adult"))
+MEDIA_DIR = get_media_dir()
 
 
 def _via_public_domain(request: Request) -> bool:
@@ -100,12 +113,23 @@ def _attention_summary() -> dict:
         return {}
 
 
-def _write_token() -> str:
-    return ADMIN_WRITE_TOKEN or ADMIN_DUPLICATE_TOKEN
+def _write_token() -> str | None:
+    for val in (ADMIN_WRITE_TOKEN, ADMIN_DUPLICATE_TOKEN):
+        if val is not None and str(val) != "" and not str(val).strip():
+            # Whitespace-only token must fail closed, never fail open.
+            return None
+    return (ADMIN_WRITE_TOKEN or "").strip() or (ADMIN_DUPLICATE_TOKEN or "").strip()
 
 
 def _capabilities() -> dict:
-    result = admin_security.capabilities(enabled=ENABLE_ADMIN, public=ADMIN_PUBLIC, token=_write_token())
+    token = _write_token()
+    result = admin_security.capabilities(
+        enabled=ENABLE_ADMIN,
+        public=ADMIN_PUBLIC,
+        token="" if token is None else token,
+    )
+    if token is None:
+        result.update(actions_enabled=False, read_only=True, read_only_reason="invalid_admin_token", token_required=True)
     try:
         from common.worker_capabilities import read_worker_capabilities
         worker = read_worker_capabilities(WORKER_CAPABILITIES_FILE)
@@ -128,12 +152,15 @@ def _capabilities() -> dict:
 
 
 def _write_denied(request: Request):
+    token = _write_token()
     capabilities = _capabilities()
+    if token is None:
+        return JSONResponse({"error": "Admin write token configuration is invalid.", **capabilities}, status_code=403)
     if not admin_security.write_authorized(
-            request, blocked=_admin_blocked(request), public=ADMIN_PUBLIC, token=_write_token()):
+            request, blocked=_admin_blocked(request), public=ADMIN_PUBLIC, token=token):
         if capabilities["read_only"]:
             message = "This panel is read-only."
-        elif _write_token():
+        elif token:
             message = "Authorization and matching Origin required."
         else:
             message = "Matching Origin required."

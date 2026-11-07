@@ -94,9 +94,8 @@ class TestReleasePackaging(unittest.TestCase):
     def test_distributable_compose_validation_with_fake_credentials(self):
         """Extracted bundle validates cleanly with real 'docker compose config' (no container starts)."""
         # Extract release tarball into isolated root
+        subprocess.run([str(PACKAGE_SCRIPT), "0.4.14"], check=True, cwd=str(ROOT))
         tar_path = ROOT / "dist" / "adult-hub-standalone-v0.4.14.tar.gz"
-        if not tar_path.exists():
-            subprocess.run([str(PACKAGE_SCRIPT), "0.4.14"], check=True, cwd=str(ROOT))
 
         with tarfile.open(tar_path, "r:gz") as tar:
             if hasattr(tarfile, "data_filter"):
@@ -147,7 +146,7 @@ TELEGRAM_SESSION_PATH=/data/telegram.session
         self.assertIn("jellyfin", services)
         self.assertIn("resolver", services)
         self.assertIn("sync", services)
-        self.assertIn("backup", services)
+        self.assertNotIn("backup", services)
         # Profiled service is excluded from default compose config (safeguard against unintended 'up -d' runs)
         self.assertNotIn("telegram-auth", services)
 

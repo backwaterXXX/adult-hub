@@ -184,8 +184,11 @@ def _route_get_source_settings(router, admin):
             from common.managed_sources import apply_overrides, read_overrides
 
             def read_base():
-                with Path(admin.CONFIG_PATH).open(encoding="utf-8") as stream:
-                    return yaml.safe_load(stream)
+                p = Path(admin.CONFIG_PATH)
+                if not p.is_file():
+                    return {}
+                with p.open(encoding="utf-8") as stream:
+                    return yaml.safe_load(stream) or {}
 
             base = await admin.asyncio.to_thread(read_base)
             if base is None:
@@ -222,7 +225,8 @@ async def _existing_channel_ids(admin, current):
     from common.managed_sources import apply_overrides
 
     def read_ids():
-        base = yaml.safe_load(Path(admin.CONFIG_PATH).read_text(encoding="utf-8")) or {}
+        p = Path(admin.CONFIG_PATH)
+        base = (yaml.safe_load(p.read_text(encoding="utf-8")) or {}) if p.is_file() else {}
         effective = apply_overrides(base, current)
         for source in effective.get("sources", []):
             if source.get("provider") == "telegram":
@@ -360,8 +364,11 @@ async def _configured_telegram_channel_ids(admin, current):
     from common.managed_sources import apply_overrides
 
     def read_base():
-        with Path(admin.CONFIG_PATH).open(encoding="utf-8") as stream:
-            return yaml.safe_load(stream)
+        p = Path(admin.CONFIG_PATH)
+        if not p.is_file():
+            return {}
+        with p.open(encoding="utf-8") as stream:
+            return yaml.safe_load(stream) or {}
 
     base = await admin.asyncio.to_thread(read_base) or {}
     effective = await admin.asyncio.to_thread(apply_overrides, base, current)

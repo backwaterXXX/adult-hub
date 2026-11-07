@@ -410,18 +410,24 @@ def parse_and_validate_config(data: Any) -> AppConfig:
     return AppConfig(sync=sync_cfg, sources=sources_map)
 
 
-def find_config_file(explicit_path: Optional[str] = None) -> Path:
+def find_config_file(explicit_path: Optional[str] = None, *, optional: bool = False) -> Optional[Path]:
+    default_paths = {Path("/config/config.yaml"), (Path.cwd() / "config.yaml").resolve()}
+
     if explicit_path:
         p = Path(explicit_path)
         if p.is_file():
             return p.resolve()
+        if optional and p.resolve() in default_paths:
+            return None
         raise ConfigError(f"Explicit configuration file '{explicit_path}' does not exist.")
 
     env_path = os.getenv("CONFIG_PATH")
-    if env_path:
-        p = Path(env_path)
+    if env_path and env_path.strip():
+        p = Path(env_path.strip())
         if p.is_file():
             return p.resolve()
+        if optional and p.resolve() in default_paths:
+            return None
         raise ConfigError(f"CONFIG_PATH '{env_path}' does not exist.")
 
     candidates = [
@@ -435,6 +441,9 @@ def find_config_file(explicit_path: Optional[str] = None) -> Path:
         if p.is_file():
             return p.resolve()
 
+    if optional:
+        return None
+
     tried = [str(c) for c in candidates]
     raise ConfigError(f"Configuration file 'config.yaml' not found. Tried paths: {tried}")
 
@@ -443,8 +452,10 @@ _CACHED_CONFIG: Optional[AppConfig] = None
 _CACHED_CONFIG_KEY: Optional[tuple] = None
 
 
-def _config_file_signature(path: Path) -> tuple | None:
+def _config_file_signature(path: Optional[Path]) -> tuple | None:
     """Return a cheap invalidation key for an atomically replaced config file."""
+    if path is None:
+        return ("__absent__", 0, 0, 0)
     try:
         stat = path.stat()
     except (FileNotFoundError, NotADirectoryError):
@@ -453,11 +464,35 @@ def _config_file_signature(path: Path) -> tuple | None:
     return (str(path.resolve()), stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
 
-def load_config(config_path: Optional[str] = None, force_reload: bool = False) -> AppConfig:
+def _read_config_data(file_path: Optional[Path]) -> dict:
+    if file_path is None:
+        return {}
+    try:
+        content = file_path.read_text(encoding="utf-8")
+        loaded = yaml.safe_load(content)
+        if loaded is None:
+            return {}
+        if not isinstance(loaded, dict):
+            raise ConfigError(f"Configuration file {file_path} root must be a YAML dictionary, got {type(loaded).__name__}.")
+        return loaded
+    except Exception as e:
+        if isinstance(e, ConfigError):
+            raise
+        raise ConfigError(f"Failed to read/parse YAML in {file_path}: {e}") from e
+
+
+def load_config(
+    config_path: Optional[str] = None,
+    force_reload: bool = False,
+    *,
+    allow_missing: bool = True,
+) -> AppConfig:
     global _CACHED_CONFIG, _CACHED_CONFIG_KEY
     from common.managed_sources import overrides_path
     overlay_path = overrides_path()
-    file_path = find_config_file(config_path)
+
+    file_path = find_config_file(config_path, optional=allow_missing)
+
     base_signature = _config_file_signature(file_path)
     overlay_signature = _config_file_signature(overlay_path)
     cacheable = base_signature is not None
@@ -467,15 +502,7 @@ def load_config(config_path: Optional[str] = None, force_reload: bool = False) -
         return _CACHED_CONFIG
 
     has_managed_overlay = overlay_signature is not None
-    try:
-        content = file_path.read_text(encoding="utf-8")
-        data = yaml.safe_load(content)
-        if data is None:
-            data = {}
-    except Exception as e:
-        if isinstance(e, ConfigError):
-            raise
-        raise ConfigError(f"Failed to read/parse YAML in {file_path}: {e}") from e
+    data = _read_config_data(file_path)
 
     revision = 0
     if has_managed_overlay:
@@ -486,11 +513,14 @@ def load_config(config_path: Optional[str] = None, force_reload: bool = False) -
     try:
         config = parse_and_validate_config(data)
     except ConfigError as err:
-        origin = f"{file_path} (with overlay {overlay_path})" if has_managed_overlay else str(file_path)
+        origin = f"{file_path} (with overlay {overlay_path})" if has_managed_overlay else str(file_path or "defaults")
         raise ConfigError(f"Invalid configuration in {origin}: {err}") from err
     config.managed_revision = revision
     if cacheable:
         _CACHED_CONFIG = config
         _CACHED_CONFIG_KEY = cache_key
-    logger.info(f"Loaded and validated configuration from {file_path}")
+    if file_path is not None:
+        logger.info(f"Loaded and validated configuration from {file_path}")
+    else:
+        logger.info("Loaded built-in configuration defaults (no config.yaml found)")
     return config

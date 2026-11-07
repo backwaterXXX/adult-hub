@@ -100,8 +100,10 @@ adult-hub/
    mkdir adult-hub && cd adult-hub
    curl -sSL https://github.com/backwaterXXX/adult-hub/releases/latest/download/adult-hub-standalone.tar.gz | tar -xz
    cp .env.example .env
-   cp config.example.yaml config.yaml
    ```
+
+   > [!NOTE]
+   > `config.yaml` is optional: you can add channels directly via the Admin UI, or copy `cp config.example.yaml config.yaml` if you prefer static configuration. For advanced overrides, see [CONFIGURATION.md](CONFIGURATION.md).
 
    Edit `.env` to configure:
    - `POSTGRES_PASSWORD`: A strong random password for the internal database.
@@ -133,7 +135,7 @@ adult-hub/
    docker compose up -d
    ```
 
-   Docker Compose starts PostgreSQL, executes schema migrations via an ephemeral `migration` container gated by `service_completed_successfully`, and brings up Jellyfin, the Resolver API, the Sync worker, and automated database backups.
+   Docker Compose starts PostgreSQL, executes schema migrations via an ephemeral `migration` container gated by `service_completed_successfully`, and brings up Jellyfin, the Resolver API, and the Sync worker (which also runs scheduled backups and queue processing).
 
 ### Interactive Telegram Authentication Service
 
@@ -172,7 +174,7 @@ Compose automatically downloads newer image versions, runs schema migrations via
 
 ## 3. Standalone Repository Installer (`make setup`)
 
-Standalone deployment via repository checkout bundles all services (PostgreSQL 17, Jellyfin container using image tag `jellyfin/jellyfin:12.4`, Resolver, Sync worker, and Backup scheduler). It requires no pre-existing database or external Docker network.
+Standalone deployment via repository checkout bundles all services (PostgreSQL 17, Jellyfin container using image tag `jellyfin/jellyfin:12.4`, Resolver, and Sync worker). It requires no pre-existing database or external Docker network.
 
 ### Overview and Directory Layout
 
@@ -225,7 +227,7 @@ The installer executes `scripts/setup.sh` and performs the following steps:
    - Prompts for your Telegram `API ID` and `API Hash` (from [my.telegram.org](https://my.telegram.org)).
    - Checks if resolver or sync containers are running to prevent SQLite session locking.
    - Runs `python3 -m providers.telegram_auth auth` in an interactive container. Enter your phone number (international format, e.g. `+1234567890`), login code received in Telegram, and 2FA password (if enabled).
-10. **Application Stack Startup**: Starts `resolver`, `sync`, and `backup` services once authorization succeeds. If authentication is postponed, core database and Jellyfin services remain running while resolver, sync, and backup remain withheld until authorization is completed.
+10. **Application Stack Startup**: Starts `resolver` and `sync` services once authorization succeeds. If authentication is postponed, core database and Jellyfin services remain running while resolver and sync remain withheld until authorization is completed.
 
 ### Setup Options, Prebuilt Consumption, and Source Build
 
@@ -360,7 +362,7 @@ make deploy
 What `make deploy` does:
 1. Reads `VERSION` from the repository root and exports it as `APP_VERSION`.
 2. Builds `resolver` and `sync` images tagged as `adult-hub-resolver:${APP_VERSION}` and `adult-hub-sync:${APP_VERSION}`.
-3. Restarts `resolver`, `sync`, and `backup` services using `--no-build`.
+3. Restarts `resolver` and `sync` services using `--no-build`.
 
 What `make deploy` does **not** do:
 - It does **not** run `git pull`.
@@ -409,8 +411,8 @@ The script executes the following automated sequence:
    - **Safety gate**: If migration fails, the update halts immediately; old application containers are **not** replaced, preventing data inconsistencies.
 5. **Telegram Authorization Verification**:
    - Verifies that the Telegram session remains valid.
-   - If valid, starts `resolver`, `sync`, and `backup` containers with `--no-build`.
-   - If authorization is missing or revoked, starts only `resolver` and withholds `sync` and `backup` until re-authenticated.
+   - If valid, starts `resolver` and `sync` containers with `--no-build`.
+   - If authorization is missing or revoked, starts only `resolver` and withholds `sync` until re-authenticated.
 6. **Readiness Probe**:
    - Polls the resolver readiness endpoint (`/admin/health/ready`) until healthy.
    - Displays a completion summary with endpoints.
@@ -464,12 +466,14 @@ Understanding where data is stored is critical for backups, disk sizing, and per
 
 ### Automated Scheduled Backups
 
-Both standalone and production compose configurations include a dedicated `backup` container running `backup_scheduler.py`.
+Scheduled backups execute through Adult-Hub's durable worker queue (`video_duplicate_jobs`, action `backup_create`) consumed by `adult-sync`. There is no standalone backup container or auxiliary background thread/daemon.
 
-- **Mechanism**: Executes a verified PostgreSQL snapshot using `pg_dump` in custom format, compressed with gzip (`adulthub-YYYYMMDD-HHMM.dump.gz`).
-- **Integrity**: Immediately verifies the archive by inspecting its table of contents and generates a companion `.sha256` checksum file.
-- **Schedule**: Governed by `BACKUP_DAILY_AT` (default `04:30` local time). It polls the system schedule and locks execution via `/data/cache/backup.lock` to avoid running concurrently with other backups.
-- **Retention**: Prunes snapshots older than `BACKUP_KEEP_DAYS` (default: 7 days).
+- **Mechanism**: The sync runner periodically checks due system schedules (`database-backup`) while waiting, during full sync passes (at safe checkpoints), and while the worker is active. When due, a `backup_create` job is atomically enqueued into the shared durable queue and claimed by the sync worker.
+- **Archive Integrity**: Backups produce a verified PostgreSQL snapshot using `pg_dump` custom format, verified via `pg_restore --list`, compressed with gzip (`adulthub-job-<id>.dump.gz` or `adulthub-YYYYMMDD-HHMM.dump.gz`), and secured with a companion `.sha256` checksum sidecar.
+- **Schedule & Slot Progression**: Governed by `BACKUP_DAILY_AT` (default `04:30 Europe/Warsaw`). The schedule slot only advances to the next day upon a successful backup. If a backup fails, the owed slot remains due with an automatic five-minute retry delay.
+- **Idempotency & Crash Recovery**: If a worker process is interrupted and restarted, retrying the same job verifies and reuses the existing archive if valid, avoiding redundant `pg_dump` invocations.
+- **Follow-up Stages**: When the `history-cleanup` stage is enabled in schedule settings, a durable `history_cleanup` job is automatically queued after a successful backup. A history cleanup failure is tracked in stage status and never causes another database dump.
+- **Retention**: Prunes archives older than `BACKUP_KEEP_DAYS` (default: 7 days), removing both `.dump.gz` files and their `.sha256` sidecars together across legacy timestamp and job-id naming conventions. Any individual prune error is logged as a warning without failing the backup.
 - **Location**: Snapshots are saved to `/data/backups` (`./standalone/data/backups/` in standalone, `./data/backups/` in production).
 
 ### Manual Database Snapshots
@@ -477,12 +481,22 @@ Both standalone and production compose configurations include a dedicated `backu
 You can trigger an immediate database snapshot at any time:
 
 ```sh
-# Via running backup container (recommended: includes pg_dump and database credentials)
+# Via running sync container (recommended: includes pg_dump and database credentials)
 # Standalone:
-docker compose -p adult-hub-standalone -f compose.standalone.yml exec backup python3 backup_db.py
+docker compose -p adult-hub-standalone -f compose.standalone.yml exec sync python3 backup_db.py
 
 # Production:
-docker compose exec backup python3 backup_db.py
+docker compose exec sync python3 backup_db.py
+
+# Via Admin System Schedules API / UI (queues a durable worker job):
+curl -X POST http://127.0.0.1:8090/admin/api/v2/system-schedules/database-backup/run \
+  -H "Origin: http://127.0.0.1:8090" \
+  -H "Authorization: Bearer $ADMIN_WRITE_TOKEN"
+
+# Via Backups API (independent snapshot):
+curl -X POST http://127.0.0.1:8090/admin/api/v2/backups/create \
+  -H "Origin: http://127.0.0.1:8090" \
+  -H "Authorization: Bearer $ADMIN_WRITE_TOKEN"
 
 # Direct host execution (requires pg_dump/pg_restore client binaries on host PATH and DATABASE_URL)
 python3 backup_db.py --db-url "$DATABASE_URL" --dest-dir ./standalone/data/backups --keep 7
@@ -510,6 +524,52 @@ python3 restore_db.py --latest
 
 > [!CAUTION]
 > Restoring a database drops and replaces existing catalog tables. Always stop `sync` (`docker compose stop sync`) before restoring to avoid concurrent write conflicts.
+
+### Cutover Runbook: Transition from Standalone Backup Container
+
+When upgrading an existing deployment to the queue-based backup architecture:
+
+> [!NOTE]
+> The commands below illustrate the standard `docker compose` stack (`docker-compose.yml`). For standalone repository deployments, pass `-p adult-hub-standalone -f compose.standalone.yml` (e.g., `docker compose -p adult-hub-standalone -f compose.standalone.yml stop -t 240 sync`).
+
+1. **Graceful Scheduler Drain (Pre-Cutover)**:
+   While still running the legacy Compose definition, signal the old standalone `backup` service and allow any active `pg_dump` operation to complete cleanly:
+   ```sh
+   docker compose stop -t 120 backup
+   ```
+2. **Remove Legacy Backup Container**:
+   Remove only the retired `backup` container prior to swapping Compose files. Do **not** use `docker compose down -v` or prune volumes:
+   ```sh
+   docker compose rm -f backup
+   ```
+3. **Graceful Sync Drain**:
+   Stop the `sync` service with sufficient shutdown grace period so in-flight tasks finish cleanly (matches the 4-minute `stop_grace_period`):
+   ```sh
+   docker compose stop -t 240 sync
+   ```
+4. **Update Code, Compose Configuration & Build**:
+   Swap or pull the updated code and Compose configuration, then build and validate images:
+   ```sh
+   docker compose build resolver sync
+   ```
+5. **Apply Database Migration & Start Services**:
+   Apply migrations (adds nullable `last_job_id` to `system_schedules`) and start updated services:
+   ```sh
+   docker compose up -d resolver sync
+   ```
+6. **Verify State & Recovery**:
+   - Inspect sync logs: `docker compose logs -f sync`
+   - Verify orphaned queued/processing schedule states from prior crashes are recovered.
+   - Verify schedule status in Admin UI (`/admin/schedules`) or via API (`GET /admin/api/v2/system-schedules`).
+   - Trigger a manual backup via Admin UI or API to verify end-to-end execution through the queue worker.
+   - Verify daily artwork generation dispatch is active in the sync logs.
+
+#### Rollback Outline
+If a rollback is required:
+1. Stop updated services: `docker compose stop -t 240 sync resolver`
+2. Restore previous Compose configuration or git commit (restoring the `backup` service definition).
+3. Bring up previous services: `docker compose up -d resolver sync backup`
+4. This sequencing ensures old and new backup schedulers never execute simultaneously.
 
 ---
 
@@ -566,17 +626,35 @@ When accessing Adult Hub from remote devices or outside your home network, use a
 
 ### Routing Requirements
 
-- Route `/admin*` and `/admin/play/*` requests to the **Resolver** service (`http://127.0.0.1:8090`).
-- Route all other requests (including root `/` and Jellyfin web app paths) to the **Jellyfin** service (`http://127.0.0.1:8096`).
+- **Stream Playback & Artwork**: Route `/admin/play/*` and `/admin/api/thumb*` to the **Resolver** service (`http://127.0.0.1:8090`). These endpoints are needed by remote companion players.
+- **Management Interface**: Restrict `/admin/*` access to trusted networks (LAN / VPN) or protect it with reverse proxy authentication. Do not publish `/admin/*` publicly without explicit access controls.
+- **Jellyfin App**: Route all other requests (including root `/` and Jellyfin web app paths) to the **Jellyfin** service (`http://127.0.0.1:8096`).
 - Ensure client-facing URLs in STRM files use HTTPS by setting `RESOLVER_PUBLIC_URL` in `.env` (e.g., `RESOLVER_PUBLIC_URL=https://hub.example.com`).
 
 ### Example Caddy Configuration
 
 ```caddy
 hub.example.com {
-    # Forward admin and stream resolution to Resolver
-    handle /admin* {
+    # Forward stream playback resolution and artwork to Resolver
+    handle /admin/play/* {
         reverse_proxy 127.0.0.1:8090
+    }
+    handle /admin/api/thumb* {
+        reverse_proxy 127.0.0.1:8090
+    }
+
+    # Restrict management interface to trusted local/VPN networks
+    @trusted_admin {
+        remote_ip 127.0.0.1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+        path /admin*
+    }
+    handle @trusted_admin {
+        reverse_proxy 127.0.0.1:8090
+    }
+
+    # Block public access to management interface
+    handle /admin* {
+        respond "Access Denied" 403
     }
 
     # Forward all other traffic to Jellyfin

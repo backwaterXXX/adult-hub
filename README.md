@@ -65,14 +65,16 @@ mkdir adult-hub && cd adult-hub
 curl -sSL https://github.com/backwaterXXX/adult-hub/releases/latest/download/adult-hub-standalone.tar.gz | tar -xz
 ```
 
-2. Copy configuration templates and add credentials:
+2. Create your `.env` configuration file:
 
 ```sh
 cp .env.example .env
-cp config.example.yaml config.yaml
 ```
 
 Edit `.env` to configure your passwords, tokens, and Telegram API credentials (`TELEGRAM_API_ID` and `TELEGRAM_API_HASH`).
+
+> [!NOTE]
+> `config.yaml` is optional. You can add and manage Telegram channels directly in the web Admin panel, or copy `cp config.example.yaml config.yaml` if you prefer static file configuration. For advanced overrides, see [CONFIGURATION.md](CONFIGURATION.md).
 
 3. Pull published images, authenticate Telegram interactively, and start the stack:
 
@@ -82,7 +84,7 @@ docker compose run --rm telegram-auth
 docker compose up -d
 ```
 
-`telegram-auth` prompts for your phone number, code, and optional 2FA password, and writes an authorized session token to `./data/telegram.session`. Startup automatically applies database migrations and brings up PostgreSQL, Jellyfin, Resolver, Sync, and Backup services.
+`telegram-auth` prompts for your phone number, code, and optional 2FA password, and writes an authorized session token to `./data/telegram.session`. Startup automatically applies database migrations and brings up PostgreSQL, Jellyfin, Resolver, and Sync services (with automated backups managed directly through the sync worker).
 
 To access the stack from other devices on your local network (LAN), set `RESOLVER_BIND_IP` and `JELLYFIN_BIND_IP` to your host's LAN IP, and set `STANDALONE_STREAM_PUBLIC_URL_TELEGRAM=http://<YOUR_LAN_IP>:8090` in `.env`.
 
@@ -116,28 +118,27 @@ docker compose up -d
 
 See [INSTALL.md](INSTALL.md) for installation options, existing PostgreSQL infrastructure, updates, backups, reverse proxies, and troubleshooting.
 
-## Admin Panel
+## Admin v2 (`/admin/`)
 
-The Admin interface is available at `/admin/` and `/admin/v2/`.
+The Admin interface is available at `/admin/` (and `/admin/v2/`). The `/admin/classic/` URL and all former Admin V1 API routes return 404.
 
 - **Home:** overview of the library and current activity.
 - **Library:** search videos, inspect availability, edit metadata with previews, review duplicates and metadata suggestions, and restore quarantined items.
-- **Sources:** manage Telegram channels, check access, inspect sync history, and request synchronization.
+- **Sources:** manage Telegram channels, check access, inspect sync history, and request synchronization. Channels can be managed here without maintaining a static `config.yaml`.
 - **Organize and Performers:** organize collections and review performer matches and duplicate suggestions. Hiding items retains their metadata, history, and undo; quarantine does not delete Telegram media.
 - **Tasks:** follow queued work and inspect results after reloads or worker restarts.
 - **System:** inspect service status, manage database backups, and request maintenance.
 - **Schedules:** review, enable, disable, and edit automation.
 
-Management actions use the configured admin write token and browser Origin checks. Keep the panel on a trusted network or configure access through a reverse proxy as described in [INSTALL.md](INSTALL.md). Classic Admin and former Admin V1 API routes are retired.
+Management actions use the configured admin write token (`ADMIN_WRITE_TOKEN`) and browser Origin checks. Keep the panel on a trusted network or configure access through a reverse proxy as described in [INSTALL.md](INSTALL.md). For detailed configuration hierarchy and advanced overrides, see [CONFIGURATION.md](CONFIGURATION.md).
 
 ## Architecture
 
 - **Resolver (`resolver/`):** serves the Admin UI, management API, artwork, and on-demand Telegram streams.
-- **Sync (`sync/`):** indexes channels, maintains PostgreSQL records, generates STRM/NFO files and artwork, and processes background work.
+- **Sync (`sync/`):** indexes channels, maintains PostgreSQL records, generates STRM/NFO files and artwork, schedules verified PostgreSQL snapshots, and processes background work.
 - **Shared code (`common/`):** configuration validation, database access, versioned migrations, durable task queue, and collection management.
 - **PostgreSQL:** stores the catalog and task queue.
 - **Jellyfin:** presents the generated media library; companion players provide additional playback clients.
-- **Backup service:** schedules verified PostgreSQL snapshots.
 
 Telegram is the only media source provider. The standalone installer creates the initial source configuration; use the Admin panel to add channels. Provider IDs and media filenames remain stable across metadata updates.
 

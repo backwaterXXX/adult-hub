@@ -11,6 +11,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    networks:
+      default:
+        aliases:
+          - postgres
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - postgres_data:/var/lib/postgresql/data
@@ -36,7 +40,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
-      - DATABASE_URL=${STANDALONE_DATABASE_URL:-postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}}
+      - DATABASE_URL=${DATABASE_URL:-${STANDALONE_DATABASE_URL:-postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}}}
       - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
     depends_on:
       database:
@@ -62,7 +66,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - jellyfin_config:/config
       - jellyfin_cache:/cache
-      - ${STANDALONE_MEDIA_DIR:-./standalone/media}:/media/adult:ro
+      - ${STANDALONE_MEDIA_DIR:-${MEDIA_DIR:-${MEDIA_PATH:-./standalone/media}}}:/media/adult:ro
 
   resolver:
     image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:${APP_VERSION:-0.4.14}}
@@ -90,7 +94,7 @@ services:
       - ${STANDALONE_CONFIG_PATH:-./standalone/config.yaml}:/config/config.yaml:ro
       - ${STANDALONE_CACHE_DIR:-./standalone/cache}:/cache
       - ${STANDALONE_DATA_DIR:-./standalone/data}:/data
-      - ${STANDALONE_MEDIA_DIR:-./standalone/media}:/media/adult
+      - ${STANDALONE_MEDIA_DIR:-${MEDIA_DIR:-${MEDIA_PATH:-./standalone/media}}}:/media/adult
     environment:
       - TZ=${TZ:-Europe/Warsaw}
       - PYTHONUNBUFFERED=1
@@ -99,7 +103,7 @@ services:
       - ADMIN_V2_MONITOR_BACKUPS=${ADMIN_V2_MONITOR_BACKUPS:-false}
       - RESOLVER_WATCHDOG_INTERVAL_SECONDS=${RESOLVER_WATCHDOG_INTERVAL_SECONDS:-10}
       - RESOLVER_WATCHDOG_TIMEOUT_SECONDS=${RESOLVER_WATCHDOG_TIMEOUT_SECONDS:-4}
-      - RESOLVER_WATCHDOG_FAILURES=${RESOLVER_WATCHDOG_FAILURES:-12}
+      - RESOLVER_WATCHDOG_FAILURES=${RESOLVER_WATCHDOG_FAILURES:-3}
       - RESOLVER_WATCHDOG_STARTUP_GRACE_SECONDS=${RESOLVER_WATCHDOG_STARTUP_GRACE_SECONDS:-45}
       - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
       - ADMIN_SOURCE_OVERRIDES_PATH=${ADMIN_SOURCE_OVERRIDES_PATH:-/data/admin-source-overrides.json}
@@ -107,16 +111,16 @@ services:
       - RESOLVER_CONCURRENCY_LIMIT=${RESOLVER_CONCURRENCY_LIMIT:-10}
       - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-1500}
       - MAX_CACHE_ENTRIES=${MAX_CACHE_ENTRIES:-2000}
-      - DATABASE_URL=${STANDALONE_DATABASE_URL:-postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}}
+      - DATABASE_URL=${DATABASE_URL:-${STANDALONE_DATABASE_URL:-postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}}}
       - BACKUP_DIR=/data/backups
       - BACKUP_DAILY_AT=${BACKUP_DAILY_AT:-04:30}
       - BACKUP_RESTORE_DATABASE_URL=${BACKUP_RESTORE_DATABASE_URL:-}
       - ENABLE_ADMIN=${ENABLE_ADMIN:-true}
-      - ADMIN_PUBLIC=${STANDALONE_ADMIN_PUBLIC:-false}
-      - ADMIN_WRITE_TOKEN=${ADMIN_WRITE_TOKEN:-}
+      - ADMIN_PUBLIC=${ADMIN_PUBLIC:-${STANDALONE_ADMIN_PUBLIC:-false}}
+      - ADMIN_WRITE_TOKEN=${ADMIN_WRITE_TOKEN:-${ADMIN_DUPLICATE_TOKEN:-}}
       - ADMIN_DUPLICATE_TOKEN=${ADMIN_DUPLICATE_TOKEN:-}
       - PUBLIC_DOMAIN=${PUBLIC_DOMAIN:-media.example.org}
-      - FORWARDED_ALLOW_IPS=${RESOLVER_TRUSTED_PROXY_IPS:-127.0.0.1,::1}
+      - FORWARDED_ALLOW_IPS=${FORWARDED_ALLOW_IPS:-${RESOLVER_TRUSTED_PROXY_IPS:-127.0.0.1,::1}}
       - MEDIA_DIR=/media/adult
       - LINKCHECK_LOG_PATH=/data/linkcheck.log
       - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
@@ -180,7 +184,7 @@ services:
       - ${STANDALONE_CONFIG_PATH:-./standalone/config.yaml}:/config/config.yaml:ro
       - ${STANDALONE_DATA_DIR:-./standalone/data}:/data
       - ${STANDALONE_CACHE_DIR:-./standalone/cache}:/cache
-      - ${STANDALONE_MEDIA_DIR:-./standalone/media}:/media/adult
+      - ${STANDALONE_MEDIA_DIR:-${MEDIA_DIR:-${MEDIA_PATH:-./standalone/media}}}:/media/adult
     environment:
       - TZ=${TZ:-Europe/Warsaw}
       - PYTHONUNBUFFERED=1
@@ -194,7 +198,7 @@ services:
       - STREAM_PUBLIC_URL_TELEGRAM=${STANDALONE_STREAM_PUBLIC_URL_TELEGRAM:-}
       - RESOLVER_API_URL=${RESOLVER_API_URL:-http://resolver:8090}
       - MEDIA_DIR=/media/adult
-      - DATABASE_URL=${STANDALONE_DATABASE_URL:-postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}}
+      - DATABASE_URL=${DATABASE_URL:-${STANDALONE_DATABASE_URL:-postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}}}
       - BACKUP_RESTORE_DATABASE_URL=${BACKUP_RESTORE_DATABASE_URL:-}
       - BACKUP_DIR=/data/backups
       - BACKUP_KEEP_DAYS=${BACKUP_KEEP_DAYS:-7}
@@ -223,38 +227,6 @@ services:
       - TELEGRAM_FINGERPRINT_USAGE_PATH=${TELEGRAM_FINGERPRINT_USAGE_PATH:-/data/cache/telegram-fingerprint-daily-usage.json}
       - TELEGRAM_PHASH_BYTE_BUDGET=${TELEGRAM_PHASH_BYTE_BUDGET:-268435456}
       - TELEGRAM_PHASH_TIMEOUT_SECONDS=${TELEGRAM_PHASH_TIMEOUT_SECONDS:-1200}
-
-  backup:
-    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:${APP_VERSION:-0.4.14}}
-    build:
-      context: .
-      dockerfile: sync/Dockerfile
-      args:
-        APP_VERSION: ${APP_VERSION:-dev}
-    restart: unless-stopped
-    mem_limit: 256m
-    depends_on:
-      database:
-        condition: service_healthy
-      migration:
-        condition: service_completed_successfully
-      resolver:
-        condition: service_healthy
-    environment:
-      - TZ=${TZ:-Europe/Warsaw}
-      - PYTHONUNBUFFERED=1
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - DATABASE_URL=${STANDALONE_DATABASE_URL:-postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}}
-      - BACKUP_DIR=/data/backups
-      - BACKUP_KEEP_DAYS=${BACKUP_KEEP_DAYS:-7}
-      - BACKUP_DAILY_AT=${BACKUP_DAILY_AT:-04:30}
-      - BACKUP_LOCK_PATH=/data/cache/backup.lock
-      - MEDIA_DIR=/media/adult
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - ${STANDALONE_DATA_DIR:-./standalone/data}:/data
-      - ${STANDALONE_MEDIA_DIR:-./standalone/media}:/media/adult:ro
-    command: ["python", "backup_scheduler.py"]
 
   telegram-auth:
     image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:${APP_VERSION:-0.4.14}}

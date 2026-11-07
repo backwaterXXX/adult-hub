@@ -3,6 +3,7 @@ import logging
 import os
 
 from common.duration import MIN_VIDEO_DURATION_SECONDS
+from pathlib import Path
 from typing import Any, List, Optional
 
 logger = logging.getLogger("providers.telegram")
@@ -31,8 +32,15 @@ def _get_api_hash() -> str:
 
 
 def _get_session_path() -> str:
-    return (os.getenv("TELEGRAM_SESSION_PATH") or "/data/telegram.session").strip() \
-        or "/data/telegram.session"
+    env_path = (os.getenv("TELEGRAM_SESSION_PATH") or "").strip()
+    if env_path:
+        actual_target = Path(env_path if env_path.endswith(".session") else f"{env_path}.session")
+        if actual_target == Path("/data/telegram.session") and not actual_target.is_file() and Path("/cache/telegram.session").is_file():
+            return "/cache/telegram.session"
+        return env_path
+    if Path("/cache/telegram.session").is_file():
+        return "/cache/telegram.session"
+    return "/data/telegram.session"
 
 
 def _get_config():

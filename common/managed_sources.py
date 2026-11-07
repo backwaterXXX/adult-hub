@@ -456,10 +456,14 @@ def preview_overrides(
     encoded = json.dumps(overrides, ensure_ascii=False, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > MAX_OVERLAY_BYTES:
         raise ConfigError("Managed source settings exceed the permitted size.")
-    try:
-        base = yaml.safe_load(Path(base_config_path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError):
-        raise ConfigError("Base source configuration could not be read.") from None
+    bp = Path(base_config_path) if base_config_path else None
+    if bp and bp.is_file():
+        try:
+            base = yaml.safe_load(bp.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError):
+            raise ConfigError("Base source configuration could not be read.") from None
+    else:
+        base = {}
     if base is None:
         base = {}
     before = _safe_sources(apply_overrides(base, current))
@@ -557,10 +561,14 @@ def update_overrides(
         _check_pending_audit(target, current, allow_compensation)
         candidate = validate_overlay({"revision": current["revision"] + 1, "overrides": patch})
         outbox_event = _audit_outbox_event(audit_event, candidate["revision"])
-        try:
-            base = yaml.safe_load(Path(base_config_path).read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, yaml.YAMLError):
-            raise ConfigError("Base source configuration could not be read.") from None
+        bp = Path(base_config_path) if base_config_path else None
+        if bp and bp.is_file():
+            try:
+                base = yaml.safe_load(bp.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, yaml.YAMLError):
+                raise ConfigError("Base source configuration could not be read.") from None
+        else:
+            base = {}
         if base is None:
             base = {}
         apply_overrides(base, candidate)

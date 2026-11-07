@@ -15,6 +15,7 @@ from psycopg.types.json import set_json_loads
 __all__ = [
     "Record", "Connection", "Cursor", "connect", "connection", "database_url",
     "table_exists", "table_names", "table_columns", "pg_backup", "pg_restore",
+    "prune_old_backups",
     "restore_test_target_available",
     "Error", "DatabaseError", "OperationalError", "IntegrityError",
     "ProgrammingError", "UndefinedTable",
@@ -299,18 +300,10 @@ class Record(tuple):
         return super().__contains__(key)
 
 
-def database_url(*, test: bool = False) -> str:
+def database_url(*, test: bool = False, allow_test_fallback: bool = False) -> str:
     """Return the configured PostgreSQL URL or raise a clear error."""
-    key = "TEST_DATABASE_URL" if test else "DATABASE_URL"
-    url = (os.getenv(key) or "").strip()
-    if not url and test and os.getenv("DATABASE_URL"):
-        return os.environ["DATABASE_URL"]
-    if not url:
-        raise RuntimeError(
-            f"{key} is not set. Configure PostgreSQL, e.g. "
-            "postgresql://adulthub:SECRET@postgres:5432/adulthub."
-        )
-    return url
+    from common.config import get_database_url
+    return get_database_url(test=test, allow_test_fallback=allow_test_fallback)
 
 
 def _wrap(row, columns: Sequence[str], row_factory):
@@ -485,6 +478,12 @@ def pg_backup(db_url: str | None = None, backup_dir=None, prefix: str = "adulthu
     """Compatibility wrapper; implementation lives in ``common.backup``."""
     from common.backup import pg_backup as backup
     return backup(db_url, backup_dir, prefix, job_id=job_id)
+
+
+def prune_old_backups(dest_dir, current_dest=None, keep_days: int | None = None) -> int:
+    """Compatibility wrapper; implementation lives in ``common.backup``."""
+    from common.backup import prune_old_backups as prune
+    return prune(dest_dir, current_dest, keep_days=keep_days)
 
 
 def pg_restore(dump_path: "object", db_url: str | None = None, *,

@@ -29,8 +29,8 @@ def capabilities(*, enabled: bool, public: bool, token: str) -> dict:
             "read_only_reason": reason, "token_required": bool(token)}
 
 
-def write_authorized(request, *, blocked: bool, public: bool, token: str) -> bool:
-    if blocked:
+def write_authorized(request, *, blocked: bool, public: bool, token: str | None) -> bool:
+    if blocked or token is None:
         return False
     try:
         origin = urlsplit(request.headers.get("origin", ""))

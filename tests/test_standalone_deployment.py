@@ -186,7 +186,7 @@ class TestStandaloneComposeConfigValidation(unittest.TestCase):
         self.assertIn("jellyfin", services)
         self.assertIn("resolver", services)
         self.assertIn("sync", services)
-        self.assertIn("backup", services)
+        self.assertNotIn("backup", services)
 
         # Verify environment values are substituted
         db_env = services["database"].get("environment", {})
