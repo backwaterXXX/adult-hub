@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import sync_orchestration
+if "sync" in sys.modules and hasattr(sys.modules["sync"], "__file__") and not hasattr(sys.modules["sync"], "__path__"):
+    sys.modules["sync"].__path__ = [str(Path(__file__).resolve().parents[1] / "sync")]
 from common.config_loader import AppConfig, SourceConfig, TelegramChannelConfig
 from sync_metrics import observe_sync_stage
 
@@ -190,6 +192,7 @@ class CoreDouble:
         self.RESOLVER_PUBLIC_URL = "http://public.example:8090"
         self.RETENTION_DAYS = 30
         self.SYNC_TELEGRAM = sync_telegram
+        self.is_telegram_authorized = lambda: True
         self.HIDE_DEAD_STREAMS = hide_dead_streams
         self.TELEGRAM_CHANNELS = list(telegram_channels)
         self.TELEGRAM_MAX_PAGES = telegram_max_pages
@@ -1152,6 +1155,143 @@ class TestTheCoreFacadeImport(unittest.TestCase):
             self.assertIs(module._core, facade)
             self.assertNotIn("sync.sync", sys.modules)
         self.assertNotIn("sync.sync_orchestration", sys.modules)
+
+
+class TestTelegramAuthorizationSyncGating(SyncPassHarness):
+    """Verify unauthorized Telegram channel scans are gated on all sync pass types."""
+
+    def test_unauthorized_sync_skips_scans_without_filter(self):
+        self.core.is_telegram_authorized = lambda: False
+        self.assertTrue(self.sync())
+        self.assertEqual(self.scanned_channels(), [])
+        self.assertTrue(self.core.logger.has("Telegram is not authorized yet", "info"))
+        # Verify non-Telegram maintenance continues: catalog sync ran
+        self.assertEqual(self.sink("sync_catalog_if_due").call_count, 1)
+
+    def test_unauthorized_sync_skips_scans_with_telegram_filter(self):
+        self.core.is_telegram_authorized = lambda: False
+        self.assertTrue(self.sync(source_filter="telegram"))
+        self.assertEqual(self.scanned_channels(), [])
+        self.assertTrue(self.core.logger.has("Telegram is not authorized yet", "info"))
+        self.assertEqual(self.sink("sync_catalog_if_due").call_count, 1)
+
+    def test_unauthorized_sync_skips_scans_in_backfill_mode(self):
+        self.core.is_telegram_authorized = lambda: False
+        self.assertTrue(self.sync(sync_mode="backfill"))
+        self.assertEqual(self.scanned_channels(), [])
+        self.assertTrue(self.core.logger.has("Telegram is not authorized yet", "info"))
+
+    def test_unauthorized_sync_skips_scans_when_auth_function_missing(self):
+        if hasattr(self.core, "is_telegram_authorized"):
+            delattr(self.core, "is_telegram_authorized")
+        self.assertTrue(self.sync())
+        self.assertEqual(self.scanned_channels(), [])
+        self.assertTrue(self.core.logger.has("Telegram is not authorized yet", "info"))
+        self.assertEqual(self.sink("sync_catalog_if_due").call_count, 1)
+
+    def test_unauthorized_sync_skips_scans_when_auth_function_not_callable(self):
+        self.core.is_telegram_authorized = "not_callable"
+        self.assertTrue(self.sync())
+        self.assertEqual(self.scanned_channels(), [])
+        self.assertTrue(self.core.logger.has("Telegram is not authorized yet", "info"))
+        self.assertEqual(self.sink("sync_catalog_if_due").call_count, 1)
+
+    def test_authorized_sync_runs_scans(self):
+        self.core.is_telegram_authorized = lambda: True
+        self.assertTrue(self.sync())
+        self.assertEqual(self.scanned_channels(), ["chan-one", "chan-two"])
+
+
+class TestIsTelegramAuthorizedFunction(unittest.TestCase):
+    """Verify sync.sync.is_telegram_authorized fails closed and checks resolver or fallback."""
+
+    def setUp(self):
+        # Access the sync facade without polluting sys.modules['sync.sync']
+        self.sync_mod = sync_orchestration._core
+
+    def test_resolver_returns_authorized_true(self):
+        class FakeResp:
+            status = 200
+            def read(self):
+                return b'{"authorized": true}'
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+
+        with patch.dict(os.environ, {"RESOLVER_API_URL": "http://resolver:8090"}), \
+             patch("urllib.request.urlopen", return_value=FakeResp()):
+            self.assertTrue(self.sync_mod.is_telegram_authorized())
+
+    def test_resolver_returns_authorized_false(self):
+        class FakeResp:
+            status = 200
+            def read(self):
+                return b'{"authorized": false}'
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+
+        with patch.dict(os.environ, {"RESOLVER_API_URL": "http://resolver:8090"}), \
+             patch("urllib.request.urlopen", return_value=FakeResp()):
+            self.assertFalse(self.sync_mod.is_telegram_authorized())
+
+    def test_resolver_error_with_unauthorized_session_file_present_fails_closed(self):
+        """When resolver fails, presence of a non-empty session file MUST NOT grant authorization."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".session") as f:
+            f.write(b"unauthorized_file_content")
+            f.flush()
+            with patch.dict(os.environ, {
+                "RESOLVER_API_URL": "http://resolver:8090",
+                "TELEGRAM_SESSION_PATH": f.name,
+            }), patch("urllib.request.urlopen", side_effect=OSError("Resolver down")):
+                # Must fail closed: file existence is not authorization
+                self.assertFalse(self.sync_mod.is_telegram_authorized())
+
+    def test_absent_config_fails_closed(self):
+        """When neither resolver URL nor credentials are configured, fail closed."""
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(self.sync_mod.is_telegram_authorized())
+
+    def test_defensible_fallback_when_resolver_absent_positive_auth(self):
+        """When resolver is absent but valid credentials and session exist, fallback verifies auth."""
+        import tempfile
+        from unittest.mock import AsyncMock
+        with tempfile.NamedTemporaryFile(suffix=".session") as f:
+            f.write(b"session_bytes")
+            f.flush()
+            fake_pkg = types.ModuleType("providers")
+            fake_session_mod = types.ModuleType("providers.telegram_session")
+            fake_session_mod.is_session_authorized = AsyncMock(return_value=True)
+            fake_pkg.telegram_session = fake_session_mod
+            with patch.dict(os.environ, {
+                "RESOLVER_API_URL": "",
+                "TELEGRAM_API_ID": "123456",
+                "TELEGRAM_API_HASH": "0123456789abcdef0123456789abcdef",
+                "TELEGRAM_SESSION_PATH": f.name,
+            }, clear=True), patch.dict(sys.modules, {"providers": fake_pkg, "providers.telegram_session": fake_session_mod}):
+                self.assertTrue(self.sync_mod.is_telegram_authorized())
+
+    def test_defensible_fallback_when_resolver_absent_unauthorized(self):
+        """When resolver is absent and fallback verification returns False, fail closed."""
+        import tempfile
+        from unittest.mock import AsyncMock
+        with tempfile.NamedTemporaryFile(suffix=".session") as f:
+            f.write(b"session_bytes")
+            f.flush()
+            fake_pkg = types.ModuleType("providers")
+            fake_session_mod = types.ModuleType("providers.telegram_session")
+            fake_session_mod.is_session_authorized = AsyncMock(return_value=False)
+            fake_pkg.telegram_session = fake_session_mod
+            with patch.dict(os.environ, {
+                "RESOLVER_API_URL": "",
+                "TELEGRAM_API_ID": "123456",
+                "TELEGRAM_API_HASH": "0123456789abcdef0123456789abcdef",
+                "TELEGRAM_SESSION_PATH": f.name,
+            }, clear=True), patch.dict(sys.modules, {"providers": fake_pkg, "providers.telegram_session": fake_session_mod}):
+                self.assertFalse(self.sync_mod.is_telegram_authorized())
 
 
 if __name__ == "__main__":

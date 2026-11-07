@@ -197,6 +197,20 @@ def _telegram_filter_state(source_filter: Optional[str]):
 def _run_telegram_scans(sp: _SyncPass) -> None:
     recorder = sp.recorder
     telegram_channel_filter, telegram_filter_enabled = _telegram_filter_state(sp.source_filter)
+    if _core.SYNC_TELEGRAM and telegram_filter_enabled and not sp.skip_telegram_channels:
+        tg_auth_fn = getattr(_core, "is_telegram_authorized", None)
+        is_authed = False
+        if callable(tg_auth_fn):
+            try:
+                is_authed = bool(tg_auth_fn())
+            except Exception:
+                is_authed = False
+        if not is_authed:
+            _core.logger.info(
+                "Telegram is not authorized yet. Safely disabling Telegram channel scans until login is completed in the Admin UI."
+            )
+            sp.skip_telegram_channels = True
+
     if _core.SYNC_TELEGRAM and telegram_filter_enabled and sp.skip_telegram_channels:
         _core.logger.info("Skipping Telegram channel scans by request; continuing full maintenance pass.")
     # Source scans and the availability sweep they feed are recorded stages: an

@@ -11,6 +11,12 @@
   const SOURCE_CHECK_URL = `${V2_API}/sources/check`;
   const HISTORY_URL = `${V2_API}/sources/sync-history?limit=50`;
   const TRIGGER_URL = `${V2_API}/maintenance/sync`;
+  const TELEGRAM_AUTH_STATUS_URL = `${V2_API}/telegram/auth/status`;
+  const TELEGRAM_AUTH_START_URL = `${V2_API}/telegram/auth/start`;
+  const TELEGRAM_AUTH_CODE_URL = `${V2_API}/telegram/auth/code`;
+  const TELEGRAM_AUTH_PASSWORD_URL = `${V2_API}/telegram/auth/password`;
+  const TELEGRAM_AUTH_RESEND_URL = `${V2_API}/telegram/auth/resend`;
+  const TELEGRAM_AUTH_CANCEL_URL = `${V2_API}/telegram/auth/cancel`;
   const SOURCE_PAGE_SIZE = 50;
   const $ = (selector, root = document) => root.querySelector(selector);
 
@@ -22,7 +28,7 @@
     filter: { q: '', status: '', sourceKey: '' },
     sort: { key: 'channel', direction: 'asc' },
     channelHistory: new Map(), historyTruncated: false, accessChecks: new Map(), accessFeedback: '',
-    detailItem: null, urlTimer: null, urlEditActive: false
+    detailItem: null, urlTimer: null, urlEditActive: false, telegramAuth: null
   };
 
   // Shared helpers live in admin-v2.js and are published through window.AdminV2.
@@ -1274,6 +1280,8 @@
       const sourcesPayload = sourcesResult.value;
       const settingsPayload = settingsResult.status === 'fulfilled' ? settingsResult.value : null;
       state.configAvailable = !(sourcesPayload && sourcesPayload.available === false);
+      state.telegramAuth = sourcesPayload?.telegram_auth || null;
+      renderTelegramAccountCard(state.telegramAuth);
       state.configRevision = Number.isInteger(sourcesPayload && sourcesPayload.managed_revision)
         ? sourcesPayload.managed_revision : null;
       state.settingsAvailable = Boolean(settingsPayload
@@ -1517,6 +1525,550 @@
     }
   }
 
+  let wizardWriteToken = '';
+
+  async function postTelegramAuth(url, payload) {
+    const capabilities = await window.AdminV2.getJson(`${V2_API}/capabilities`);
+    if (capabilities.read_only_reason === 'invalid_admin_token') {
+      throw new Error('Admin write token configuration is invalid.');
+    }
+    if (capabilities.read_only_reason === 'admin_disabled') {
+      throw new Error('Admin actions are disabled.');
+    }
+    const headers = new Headers({ 'Accept': 'application/json', 'Content-Type': 'application/json' });
+    if (capabilities.token_required === true) {
+      if (!wizardWriteToken) {
+        wizardWriteToken = (prompt('Enter the admin write token:') || '').trim();
+      }
+      if (!wizardWriteToken) throw new Error('An admin write token is required.');
+      headers.set('Authorization', `Bearer ${wizardWriteToken}`);
+    }
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload || {}),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 403 && capabilities.token_required === true) {
+        wizardWriteToken = '';
+      }
+      const err = new Error(result.error || `Request failed with status ${response.status}`);
+      err.status = response.status;
+      err.data = result;
+      err.flood_wait_seconds = result.flood_wait_seconds;
+      err.code = result.code;
+      throw err;
+    }
+    return result;
+  }
+
+  function renderTelegramAccountCard(authStatus) {
+    const card = $('#telegramAccountCard');
+    if (!card) return;
+    const intro = $('#telegramAccountIntro');
+    const button = $('#telegramLoginButton');
+    const banner = $('#telegramAccountBanner');
+
+    if (!authStatus) {
+      if (intro) intro.textContent = 'Checking Telegram connection status…';
+      if (button) { button.textContent = 'Log in with Telegram'; button.disabled = false; }
+      if (banner) banner.hidden = true;
+      return;
+    }
+
+    if (authStatus.status === 'authorized') {
+      if (intro) intro.textContent = 'Connected and authorized. Channels can be synchronized.';
+      if (button) {
+        button.textContent = 'Telegram Connected';
+        button.className = 'button button-quiet';
+        button.disabled = false;
+      }
+      if (banner) {
+        banner.className = 'state-banner state-success';
+        banner.textContent = 'Telegram session is active and verified.';
+        banner.hidden = false;
+      }
+    } else if (authStatus.status === 'unauthorized_session_present') {
+      if (intro) intro.textContent = 'Existing session file detected on server, but authorization check failed.';
+      if (button) {
+        button.textContent = 'Inspect Session Status';
+        button.className = 'button button-quiet';
+        button.disabled = false;
+      }
+      if (banner) {
+        banner.className = 'state-banner state-warning';
+        banner.textContent = 'An unauthorized session file was found on the server. To protect existing data, it will not be overwritten automatically.';
+        banner.hidden = false;
+      }
+    } else if (authStatus.status === 'session_file_present') {
+      if (intro) intro.textContent = 'Existing session file detected on server. Verification can be performed to confirm connection.';
+      if (button) {
+        button.textContent = 'Verify Session';
+        button.className = 'button button-primary';
+        button.disabled = false;
+      }
+      if (banner) {
+        banner.className = 'state-banner state-info';
+        banner.textContent = 'A session file was found on the server. Open wizard to verify connection.';
+        banner.hidden = false;
+      }
+    } else if (authStatus.status === 'unconfigured') {
+      if (intro) intro.textContent = 'TELEGRAM_API_ID and TELEGRAM_API_HASH are not set in the server environment (.env).';
+      if (button) {
+        button.textContent = 'Configuration Needed';
+        button.className = 'button button-quiet';
+        button.disabled = true;
+      }
+      if (banner) {
+        banner.className = 'state-banner state-warning';
+        banner.textContent = 'Set TELEGRAM_API_ID and TELEGRAM_API_HASH in your server environment to enable Telegram authentication.';
+        banner.hidden = false;
+      }
+    } else {
+      const inProgress = authStatus.status === 'in_progress';
+      if (intro) {
+        intro.textContent = inProgress
+          ? `Authentication in progress for ${authStatus.phone_mask || 'account'}…`
+          : 'Not connected. Connect your Telegram account to enable channel synchronization.';
+      }
+      if (button) {
+        button.textContent = inProgress ? 'Resume Login' : 'Log in with Telegram';
+        button.className = 'button button-primary';
+        button.disabled = false;
+      }
+      if (banner) {
+        banner.className = 'state-banner state-info';
+        banner.textContent = inProgress
+          ? 'A login challenge is currently active. Click Resume Login to complete verification.'
+          : 'Telegram authentication is required to synchronize channels. Click Log in with Telegram to start.';
+        banner.hidden = false;
+      }
+    }
+  }
+
+  let authCountdownTimer = null;
+
+  async function openTelegramAuthWizard(opener) {
+    const dialog = $('#telegramAuthDialog');
+    if (!dialog) return;
+    window.AdminV2.openDialog(dialog, opener || document.activeElement);
+    await refreshTelegramAuthWizard();
+  }
+
+  function closeTelegramAuthWizard() {
+    const dialog = $('#telegramAuthDialog');
+    if (!dialog) return;
+    if (authCountdownTimer) {
+      clearInterval(authCountdownTimer);
+      authCountdownTimer = null;
+    }
+    window.AdminV2.closeDialog(dialog);
+  }
+
+  function setWizardBanner(type, message) {
+    const banner = $('#telegramAuthBanner');
+    if (!banner) return;
+    if (!message) {
+      banner.hidden = true;
+      banner.textContent = '';
+      return;
+    }
+    banner.className = `state-banner state-${type}`;
+    banner.textContent = message;
+    banner.hidden = false;
+  }
+
+  async function refreshTelegramAuthWizard() {
+    setWizardBanner('', '');
+    const body = $('#telegramAuthBody');
+    if (!body) return;
+
+    body.replaceChildren(create('p', 'detail-note', 'Checking Telegram authorization status…'));
+
+    let statusPayload = null;
+    try {
+      statusPayload = await window.AdminV2.getJson(TELEGRAM_AUTH_STATUS_URL);
+    } catch (err) {
+      body.replaceChildren(create('p', 'detail-error', `Could not check Telegram status: ${scrub(err.message)}`));
+      return;
+    }
+
+    state.telegramAuth = statusPayload;
+    renderTelegramAccountCard(statusPayload);
+
+    if (statusPayload.status === 'authorized') {
+      renderWizardAuthorized(body);
+    } else if (statusPayload.status === 'unauthorized_session_present') {
+      renderWizardUnauthorizedPresent(body, statusPayload.message);
+    } else if (statusPayload.status === 'session_file_present') {
+      renderWizardSessionPresent(body, statusPayload.message);
+    } else if (statusPayload.status === 'unconfigured') {
+      renderWizardUnconfigured(body, statusPayload.message);
+    } else if (statusPayload.status === 'in_progress') {
+      if (statusPayload.login_state === 'password_needed') {
+        renderWizardPasswordStep(body);
+      } else {
+        renderWizardCodeStep(body, statusPayload.phone_mask, statusPayload.expires_in_seconds);
+      }
+    } else {
+      renderWizardPhoneStep(body);
+    }
+  }
+
+  function renderWizardAuthorized(body) {
+    const wrap = create('div', 'telegram-auth-view');
+    const msg = create('p', 'detail-note', '✓ Your Telegram account is already authorized and active. To protect existing data, re-authentication is not permitted.');
+    const actions = create('div', 'operation-dialog-actions');
+    const closeBtn = create('button', 'button button-primary', 'Close');
+    closeBtn.type = 'button';
+    closeBtn.addEventListener('click', closeTelegramAuthWizard);
+    actions.appendChild(closeBtn);
+    wrap.append(msg, actions);
+    body.replaceChildren(wrap);
+  }
+
+  function renderWizardUnauthorizedPresent(body, message) {
+    const wrap = create('div', 'telegram-auth-view');
+    const err = create('p', 'detail-error', message || 'Existing session file is present but unauthorized. Adult Hub will not overwrite it automatically. Please back up or remove the invalid file manually.');
+    const actions = create('div', 'operation-dialog-actions');
+    const closeBtn = create('button', 'button button-primary', 'Close');
+    closeBtn.type = 'button';
+    closeBtn.addEventListener('click', closeTelegramAuthWizard);
+    actions.appendChild(closeBtn);
+    wrap.append(err, actions);
+    body.replaceChildren(wrap);
+  }
+
+  function renderWizardSessionPresent(body, message) {
+    const wrap = create('div', 'telegram-auth-view');
+    const note = create('p', 'detail-note', message || 'An existing Telegram session file is present on the server. You can verify its authorization status without replacing or re-authenticating.');
+    const actions = create('div', 'operation-dialog-actions');
+    const cancelBtn = create('button', 'button button-quiet', 'Cancel');
+    cancelBtn.type = 'button';
+    cancelBtn.addEventListener('click', closeTelegramAuthWizard);
+
+    const verifyBtn = create('button', 'button button-primary', 'Verify session');
+    verifyBtn.type = 'button';
+    verifyBtn.addEventListener('click', async () => {
+      verifyBtn.disabled = true;
+      verifyBtn.textContent = 'Verifying…';
+      try {
+        const liveStatus = await window.AdminV2.getJson(`${TELEGRAM_AUTH_STATUS_URL}?check_live=true`);
+        state.telegramAuth = liveStatus;
+        renderTelegramAccountCard(liveStatus);
+        if (liveStatus.status === 'authorized') {
+          renderWizardAuthorized(body);
+        } else if (liveStatus.status === 'unauthorized_session_present') {
+          renderWizardUnauthorizedPresent(body, liveStatus.message);
+        } else {
+          setWizardBanner('warning', liveStatus.message || 'Session verification inconclusive.');
+          verifyBtn.disabled = false;
+          verifyBtn.textContent = 'Verify session';
+        }
+      } catch (err) {
+        setWizardBanner('error', err.message || 'Failed to verify session.');
+        verifyBtn.disabled = false;
+        verifyBtn.textContent = 'Verify session';
+      }
+    });
+
+    actions.append(cancelBtn, verifyBtn);
+    wrap.append(note, actions);
+    body.replaceChildren(wrap);
+  }
+
+  function renderWizardUnconfigured(body, message) {
+    const wrap = create('div', 'telegram-auth-view');
+    const err = create('p', 'detail-error', message || 'TELEGRAM_API_ID and TELEGRAM_API_HASH are not configured in the server environment.');
+    const actions = create('div', 'operation-dialog-actions');
+    const closeBtn = create('button', 'button button-primary', 'Close');
+    closeBtn.type = 'button';
+    closeBtn.addEventListener('click', closeTelegramAuthWizard);
+    actions.appendChild(closeBtn);
+    wrap.append(err, actions);
+    body.replaceChildren(wrap);
+  }
+
+  function createStepIndicator(activeStep, show2fa) {
+    const nav = create('div', 'telegram-auth-steps');
+    const step1 = create('div', `telegram-auth-step ${activeStep === 1 ? 'active' : activeStep > 1 ? 'done' : ''}`, '1. Phone number');
+    const step2 = create('div', `telegram-auth-step ${activeStep === 2 ? 'active' : activeStep > 2 ? 'done' : ''}`, '2. Verification code');
+    nav.append(step1, step2);
+    if (show2fa || activeStep === 3) {
+      const step3 = create('div', `telegram-auth-step ${activeStep === 3 ? 'active' : activeStep > 3 ? 'done' : ''}`, '3. 2FA Password');
+      nav.appendChild(step3);
+    }
+    return nav;
+  }
+
+  function renderWizardPhoneStep(body) {
+    const wrap = create('div', 'telegram-auth-view');
+    wrap.appendChild(createStepIndicator(1, false));
+
+    const note = create('p', 'detail-note', 'Enter your Telegram phone number with international country code (e.g. +48123456789). A verification code will be sent to your Telegram app or SMS.');
+    const form = create('form', 'telegram-auth-form');
+    form.id = 'tgPhoneForm';
+
+    const label = create('label');
+    label.setAttribute('for', 'tgPhoneInput');
+    label.textContent = 'Phone number';
+    const input = create('input');
+    input.id = 'tgPhoneInput';
+    input.type = 'tel';
+    input.placeholder = '+48123456789';
+    input.required = true;
+    input.autocomplete = 'tel';
+    label.appendChild(input);
+
+    const actions = create('div', 'operation-dialog-actions');
+    const cancelBtn = create('button', 'button button-quiet', 'Cancel');
+    cancelBtn.type = 'button';
+    cancelBtn.addEventListener('click', closeTelegramAuthWizard);
+
+    const submitBtn = create('button', 'button button-primary', 'Send verification code');
+    submitBtn.type = 'submit';
+
+    actions.append(cancelBtn, submitBtn);
+    form.append(label, actions);
+    wrap.append(note, form);
+    body.replaceChildren(wrap);
+
+    input.focus({ preventScroll: true });
+
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const phoneVal = input.value.trim();
+      if (!phoneVal.startsWith('+') || phoneVal.length < 8) {
+        setWizardBanner('error', 'Phone number must be in international format (e.g. +48123456789).');
+        return;
+      }
+      setWizardBanner('', '');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Sending code…';
+      try {
+        const result = await postTelegramAuth(TELEGRAM_AUTH_START_URL, { phone: phoneVal });
+        if (result.ok) {
+          if (result.state === 'authorized') {
+            renderWizardSuccess(body);
+          } else {
+            renderWizardCodeStep(body, result.phone_mask || phoneVal, result.expires_in_seconds || 600);
+          }
+        } else {
+          setWizardBanner('error', result.error || 'Failed to send verification code.');
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Send verification code';
+        }
+      } catch (err) {
+        setWizardBanner('error', err.message || 'Could not send verification code.');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Send verification code';
+      }
+    });
+  }
+
+  function renderWizardCodeStep(body, phoneMask, expiresIn) {
+    const wrap = create('div', 'telegram-auth-view');
+    wrap.appendChild(createStepIndicator(2, false));
+
+    const note = create('p', 'detail-note', `A verification code has been sent to ${phoneMask || 'your phone'}. Please enter the code below.`);
+    const form = create('form', 'telegram-auth-form');
+    form.id = 'tgCodeForm';
+
+    const label = create('label');
+    label.setAttribute('for', 'tgCodeInput');
+    label.textContent = 'Verification code';
+    const input = create('input');
+    input.id = 'tgCodeInput';
+    input.type = 'text';
+    input.placeholder = '12345';
+    input.required = true;
+    input.autocomplete = 'one-time-code';
+    input.inputMode = 'numeric';
+    label.appendChild(input);
+
+    const actions = create('div', 'operation-dialog-actions');
+    const cancelBtn = create('button', 'button button-quiet', 'Cancel');
+    cancelBtn.type = 'button';
+    cancelBtn.addEventListener('click', async () => {
+      try {
+        await postTelegramAuth(TELEGRAM_AUTH_CANCEL_URL, {});
+      } catch (e) {}
+      renderWizardPhoneStep(body);
+    });
+
+    const resendBtn = create('button', 'button button-quiet', 'Resend code');
+    resendBtn.type = 'button';
+    resendBtn.addEventListener('click', async () => {
+      resendBtn.disabled = true;
+      resendBtn.textContent = 'Resending…';
+      try {
+        const result = await postTelegramAuth(TELEGRAM_AUTH_RESEND_URL, {});
+        if (result.ok) {
+          setWizardBanner('info', result.message || 'Verification code resent.');
+          resendBtn.textContent = 'Code resent';
+          setTimeout(() => { resendBtn.disabled = false; resendBtn.textContent = 'Resend code'; }, 10000);
+        } else if (result.flood_wait_seconds) {
+          setWizardBanner('warning', result.error || `Please wait ${result.flood_wait_seconds}s before requesting a code.`);
+          startResendCountdown(resendBtn, result.flood_wait_seconds);
+        } else {
+          setWizardBanner('error', result.error || 'Could not resend code.');
+          resendBtn.disabled = false;
+          resendBtn.textContent = 'Resend code';
+        }
+      } catch (err) {
+        if (err.flood_wait_seconds) {
+          setWizardBanner('warning', err.message || `Please wait ${err.flood_wait_seconds}s before requesting a code.`);
+          startResendCountdown(resendBtn, err.flood_wait_seconds);
+        } else {
+          setWizardBanner('error', err.message || 'Could not resend code.');
+          resendBtn.disabled = false;
+          resendBtn.textContent = 'Resend code';
+        }
+      }
+    });
+
+    const submitBtn = create('button', 'button button-primary', 'Verify code');
+    submitBtn.type = 'submit';
+
+    actions.append(cancelBtn, resendBtn, submitBtn);
+    form.append(label, actions);
+    wrap.append(note, form);
+    body.replaceChildren(wrap);
+
+    input.focus({ preventScroll: true });
+
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const codeVal = input.value.trim();
+      if (!codeVal) return;
+      setWizardBanner('', '');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Verifying…';
+      try {
+        const result = await postTelegramAuth(TELEGRAM_AUTH_CODE_URL, { code: codeVal });
+        if (result.ok) {
+          if (result.state === 'password_needed') {
+            renderWizardPasswordStep(body);
+          } else if (result.state === 'authorized') {
+            renderWizardSuccess(body, result.sync_notified);
+          }
+        } else {
+          setWizardBanner('error', result.error || 'Verification code failed.');
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Verify code';
+        }
+      } catch (err) {
+        setWizardBanner('error', err.message || 'Verification failed.');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Verify code';
+      }
+    });
+  }
+
+  function startResendCountdown(button, seconds) {
+    if (authCountdownTimer) clearInterval(authCountdownTimer);
+    let remaining = Number(seconds) || 0;
+    button.disabled = true;
+    button.textContent = `Wait ${remaining}s`;
+    authCountdownTimer = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        clearInterval(authCountdownTimer);
+        authCountdownTimer = null;
+        button.disabled = false;
+        button.textContent = 'Resend code';
+      } else {
+        button.disabled = true;
+        button.textContent = `Wait ${remaining}s`;
+      }
+    }, 1000);
+  }
+
+  function renderWizardPasswordStep(body) {
+    const wrap = create('div', 'telegram-auth-view');
+    wrap.appendChild(createStepIndicator(3, true));
+
+    const note = create('p', 'detail-note', 'Two-Factor Authentication (2FA) is enabled on this account. Please enter your 2FA password to complete login.');
+    const form = create('form', 'telegram-auth-form');
+    form.id = 'tgPasswordForm';
+
+    const label = create('label');
+    label.setAttribute('for', 'tgPasswordInput');
+    label.textContent = '2FA Password';
+    const input = create('input');
+    input.id = 'tgPasswordInput';
+    input.type = 'password';
+    input.required = true;
+    input.autocomplete = 'current-password';
+    label.appendChild(input);
+
+    const actions = create('div', 'operation-dialog-actions');
+    const cancelBtn = create('button', 'button button-quiet', 'Cancel');
+    cancelBtn.type = 'button';
+    cancelBtn.addEventListener('click', async () => {
+      try {
+        await postTelegramAuth(TELEGRAM_AUTH_CANCEL_URL, {});
+      } catch (e) {}
+      renderWizardPhoneStep(body);
+    });
+
+    const submitBtn = create('button', 'button button-primary', 'Sign in');
+    submitBtn.type = 'submit';
+
+    actions.append(cancelBtn, submitBtn);
+    form.append(label, actions);
+    wrap.append(note, form);
+    body.replaceChildren(wrap);
+
+    input.focus({ preventScroll: true });
+
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const pwdVal = input.value;
+      if (!pwdVal) return;
+      setWizardBanner('', '');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Signing in…';
+      try {
+        const result = await postTelegramAuth(TELEGRAM_AUTH_PASSWORD_URL, { password: pwdVal });
+        if (result.ok && result.state === 'authorized') {
+          renderWizardSuccess(body, result.sync_notified);
+        } else {
+          setWizardBanner('error', result.error || '2FA authentication failed.');
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Sign in';
+        }
+      } catch (err) {
+        setWizardBanner('error', err.message || '2FA authentication failed.');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Sign in';
+      }
+    });
+  }
+
+  function renderWizardSuccess(body, syncNotified) {
+    if (authCountdownTimer) {
+      clearInterval(authCountdownTimer);
+      authCountdownTimer = null;
+    }
+    const wrap = create('div', 'telegram-auth-view');
+    const msg = syncNotified
+      ? '✓ Telegram authentication successful! Your session has been promoted and background sync has been notified.'
+      : '✓ Telegram authentication successful! Your session has been promoted and is ready for channel synchronization.';
+    const banner = create('div', 'state-banner state-success', msg);
+    const actions = create('div', 'operation-dialog-actions');
+    const doneBtn = create('button', 'button button-primary', 'Done');
+    doneBtn.type = 'button';
+    doneBtn.addEventListener('click', () => {
+      closeTelegramAuthWizard();
+      loadSources();
+    });
+    actions.appendChild(doneBtn);
+    wrap.append(banner, actions);
+    body.replaceChildren(wrap);
+  }
+
   function setupEvents() {
     const form = $('#sourcesFilters');
     form.addEventListener('submit', event => event.preventDefault());
@@ -1568,6 +2120,26 @@
       button.focus({ preventScroll: true });
     });
     window.addEventListener('popstate', restoreSourceStateFromHistory);
+    const telegramLoginBtn = $('#telegramLoginButton');
+    if (telegramLoginBtn) {
+      telegramLoginBtn.addEventListener('click', event => openTelegramAuthWizard(event.currentTarget));
+    }
+    const telegramAuthClose = $('#telegramAuthClose');
+    if (telegramAuthClose) {
+      telegramAuthClose.addEventListener('click', () => closeTelegramAuthWizard());
+    }
+    const telegramAuthDialog = $('#telegramAuthDialog');
+    if (telegramAuthDialog) {
+      telegramAuthDialog.addEventListener('cancel', event => {
+        event.preventDefault();
+        closeTelegramAuthWizard();
+      });
+      telegramAuthDialog.addEventListener('click', event => {
+        if (event.target === telegramAuthDialog) {
+          closeTelegramAuthWizard();
+        }
+      });
+    }
     $('#sourcesAddChannel').addEventListener('click', event => openAddChannel(event.currentTarget));
     $('#sourcesRows').addEventListener('click', event => {
       const detail = event.target.closest('[data-source-detail]');

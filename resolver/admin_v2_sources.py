@@ -147,12 +147,19 @@ def _route_list_sources(router, admin):
                 value = runs[0].get("managed_config_revision")
                 if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                     latest_revision = value
+            tg_auth = None
+            try:
+                from providers.telegram_login import get_telegram_login_manager
+                tg_auth = await get_telegram_login_manager().get_status(check_live=False)
+            except Exception as exc:
+                logger.debug("Could not fetch local Telegram auth status for sources list: %s", exc)
             return {"ok": True, **data,
                     "desired_revision": data.get("managed_revision", 0),
                     "applied_revision": latest_revision,
                     "applied_revision_available": (isinstance(history, dict)
                                                     and not history.get("error")
-                                                    and isinstance(history.get("runs"), list))}
+                                                    and isinstance(history.get("runs"), list)),
+                    "telegram_auth": tg_auth}
         except Exception:
             logger.warning("Request failed in list_sources", exc_info=True)
             return admin.JSONResponse({"error": "Could not load configured sources."}, status_code=500)

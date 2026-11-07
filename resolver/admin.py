@@ -227,6 +227,7 @@ import admin_v2_quality  # noqa: E402
 import admin_v2_phash  # noqa: E402
 import admin_v2_phash_jobs  # noqa: E402
 import admin_v2_tasks  # noqa: E402
+import admin_v2_telegram_auth  # noqa: E402
 
 _self = sys.modules[__name__]
 router.include_router(admin_library_v2.build_router(_self))
@@ -247,3 +248,4 @@ router.include_router(admin_v2_quality.build_router(_self))
 router.include_router(admin_v2_phash.build_router(_self))
 router.include_router(admin_v2_phash_jobs.build_router(_self))
 router.include_router(admin_v2_tasks.build_router(_self))
+router.include_router(admin_v2_telegram_auth.build_router(_self))

@@ -147,6 +147,24 @@ _client = None
 _client_lock = None
 
 
+async def reset_telegram_client() -> None:
+    """Reset the singleton Telethon client, safely disconnecting before releasing reference."""
+    global _client, _client_lock
+    old_client = _client
+    _client = None
+    _client_lock = None
+    if old_client is not None:
+        try:
+            if hasattr(old_client, "is_connected") and old_client.is_connected():
+                await asyncio.wait_for(old_client.disconnect(), timeout=5.0)
+            elif hasattr(old_client, "disconnect"):
+                res = old_client.disconnect()
+                if asyncio.iscoroutine(res):
+                    await asyncio.wait_for(res, timeout=5.0)
+        except Exception as exc:
+            logger.debug("Error disconnecting Telegram client during reset: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # Configuration (clean env reads; secrets never appear in logs)
 # ---------------------------------------------------------------------------

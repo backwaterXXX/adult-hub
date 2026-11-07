@@ -798,3 +798,17 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
 .source-run-details > div { padding-top: 10px; }
 #sourceHistoryPane { padding: 16px; }
 #sourceHistoryPane .operation-history-list { padding: 0; }
+
+/* Telegram Web Login Wizard and Account Status */
+.telegram-account-panel { margin-bottom: 20px; }
+.telegram-account-panel .panel-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.telegram-auth-steps { display: flex; gap: 8px; margin: 15px 0 20px; }
+.telegram-auth-step { flex: 1; padding: 8px 10px; border-radius: 8px; font-size: 12px; font-weight: 700; text-align: center; background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+.telegram-auth-step.active { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--accent-strong); border-color: var(--accent); }
+.telegram-auth-step.done { background: var(--surface-raised); color: var(--text); border-color: var(--border); }
+.telegram-auth-form { display: flex; flex-direction: column; gap: 14px; margin-top: 15px; }
+.telegram-auth-form label { display: flex; flex-direction: column; gap: 6px; font-weight: 700; font-size: 12px; color: var(--text); }
+.telegram-auth-form input { width: 100%; min-height: 42px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); font-size: 14px; }
+.telegram-auth-form input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.telegram-auth-status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; margin-top: 4px; }
+.telegram-auth-countdown { font-size: 12px; color: var(--muted); align-self: center; }

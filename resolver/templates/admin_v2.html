@@ -283,6 +283,19 @@
           <div id="sourcesView" hidden>
             <nav class="section-tabs" aria-label="Sources"><a href="#sources" data-sources-tab="channels">Channels</a><a href="#sources?tab=history" data-sources-tab="history">Sync history</a></nav>
             <div id="sourcesNotice" class="state-banner sources-notice" hidden role="status"></div>
+            <section class="panel telegram-account-panel" id="telegramAccountCard" aria-labelledby="telegramAccountHeading">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">TELEGRAM PROVIDER</p>
+                  <h2 id="telegramAccountHeading">Telegram Account</h2>
+                  <p class="page-intro" id="telegramAccountIntro">Checking Telegram connection status…</p>
+                </div>
+                <div class="account-actions">
+                  <button class="button button-primary" type="button" id="telegramLoginButton">Log in with Telegram</button>
+                </div>
+              </div>
+              <div id="telegramAccountBanner" class="state-banner" role="status" hidden></div>
+            </section>
             <section class="panel sources-panel" id="sourceChannelsPane">
               <form id="sourcesFilters" class="filter-bar sources-filter-bar">
                 <div class="filter-search"><label for="sourcesQuery">Search</label><div class="input-with-icon"><span aria-hidden="true">⌕</span><input id="sourcesQuery" type="search" name="q" placeholder="Channel, studio, or provider" autocomplete="off"></div></div>
@@ -317,6 +330,19 @@
                 <button type="button" class="drawer-close" data-source-detail-close aria-label="Close channel details">×</button>
                 <div id="sourceDetailContent"></div>
               </article>
+            </dialog>
+            <dialog class="operation-dialog telegram-auth-dialog" id="telegramAuthDialog" aria-labelledby="telegramAuthTitle">
+              <section class="operation-dialog-panel">
+                <button type="button" class="drawer-close" id="telegramAuthClose" aria-label="Close Telegram login wizard">×</button>
+                <div class="panel-heading">
+                  <div>
+                    <p class="eyebrow">TELEGRAM AUTHORIZATION</p>
+                    <h2 id="telegramAuthTitle">Telegram Login Wizard</h2>
+                  </div>
+                </div>
+                <div id="telegramAuthBanner" class="state-banner" role="status" hidden></div>
+                <div id="telegramAuthBody"></div>
+              </section>
             </dialog>
           </div>
         </section>

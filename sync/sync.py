@@ -222,6 +222,72 @@ def is_cleanup_allowed(video_id: str, provider: Optional[str] = None,
         config=CONFIG,
     )
 
+
+def _check_resolver_auth(resolver_url: str) -> Optional[bool]:
+    base_url = str(resolver_url).rstrip("/")
+    status_urls = [
+        f"{base_url}/admin/internal/telegram/auth/status",
+        f"{base_url}/admin/api/v2/telegram/auth/status",
+    ]
+    for status_url in status_urls:
+        try:
+            import urllib.request
+            req = urllib.request.Request(status_url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=30.0) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    if isinstance(data, dict) and ("authorized" in data or data.get("ok")):
+                        return bool(data.get("authorized"))
+        except Exception:
+            continue
+    return None
+
+
+def _check_local_session_auth() -> bool:
+    try:
+        session_path = os.getenv("TELEGRAM_SESSION_PATH", "/data/telegram.session")
+        if not session_path.endswith(".session"):
+            session_path = f"{session_path}.session"
+        if not os.path.isfile(session_path) or os.path.getsize(session_path) == 0:
+            return False
+
+        api_id_val = os.getenv("TELEGRAM_API_ID")
+        api_hash_val = os.getenv("TELEGRAM_API_HASH")
+        if not api_id_val or not api_hash_val:
+            return False
+
+        try:
+            api_id_int = int(str(api_id_val).strip())
+        except (ValueError, TypeError):
+            return False
+
+        try:
+            from providers.telegram_session import is_session_authorized
+        except ImportError:
+            try:
+                from providers.telegram_auth import is_session_authorized
+            except ImportError:
+                return False
+
+        import asyncio
+        return bool(asyncio.run(is_session_authorized(session_path, api_id_int, str(api_hash_val).strip())))
+    except Exception:
+        return False
+
+
+def is_telegram_authorized() -> bool:
+    """Check if Telegram authorization is established via Resolver API or local session check.
+
+    Fails closed: returns True ONLY when authorization is positively confirmed.
+    File existence alone is NOT authorization.
+    """
+    resolver_url = os.getenv("RESOLVER_API_URL")
+    if resolver_url:
+        authed = _check_resolver_auth(resolver_url)
+        if authed is not None:
+            return authed
+    return _check_local_session_auth()
+
 def resolve_media_path(stored_path: str, media_dir: Path) -> Path:
     return _resolve_media_path_impl(stored_path, media_dir)
 

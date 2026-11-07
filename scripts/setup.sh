@@ -792,7 +792,9 @@ with open(fpath, 'w', encoding='utf-8') as f:
         fi
         echo ""
         echo "[NOTICE] Telegram credentials (TELEGRAM_API_ID / TELEGRAM_API_HASH) are not configured."
-        echo "         Services 'resolver' and 'sync' are withheld until Telegram is authorized."
+        echo "==> Starting resolver and sync (Admin UI and Telegram Login Wizard available)..."
+        "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d resolver sync
+        SERVICES_STATUS="Core services running (Telegram pending login in Admin UI)"
     else
         # 3. Prevent concurrent session process access (Requirement 5)
         has_concurrent=0
@@ -836,12 +838,14 @@ with open(fpath, 'w', encoding='utf-8') as f:
                 echo "================================================================================" >&2
                 TG_AUTH_STATE="FAILED (Existing session file unauthorized; preserved)"
             elif [ "${NON_INTERACTIVE}" -eq 1 ]; then
-                # Non-interactive mode: cannot prompt for SMS/2FA
-                TG_AUTH_STATE="PENDING_INTERACTIVE_AUTH (Run 'make setup' interactively to authenticate)"
+                # Non-interactive mode: cannot prompt for SMS/2FA at CLI.
+                # Start resolver and sync so the Telegram Web Login Wizard is reachable in Admin UI.
+                TG_AUTH_STATE="PENDING_INTERACTIVE_AUTH (Telegram login available in Admin UI)"
                 echo ""
                 echo "[NOTICE] Telegram credentials are set, but interactive authentication is required."
-                echo "         Run 'make setup' interactively to complete login with SMS/2FA code."
-                echo "         Services 'resolver' and 'sync' are withheld until authorized."
+                echo "==> Starting resolver and sync (Telegram login available in Admin UI)..."
+                "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d resolver sync
+                SERVICES_STATUS="Core services running (Telegram login available in Admin UI)"
             else
                 # 5. Interactive first-run authentication
                 echo ""

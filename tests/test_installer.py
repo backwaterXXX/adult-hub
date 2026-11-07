@@ -405,13 +405,15 @@ class TestStandaloneInstaller(unittest.TestCase):
             "--root-dir", str(self.isolated_root),
         ])
         self.assertEqual(res2.returncode, 0)
-        self.assertIn("Telegram session authorized. Starting resolver, sync, and backup...", res2.stdout)
+        self.assertIn("Telegram session authorized. Starting resolver and sync...", res2.stdout)
         self.assertIn("Telegram Auth:  AUTHORIZED", res2.stdout)
         self.assertIn("Core Services:  All services up and running", res2.stdout)
 
-        # Verify docker compose up was called for resolver, sync, backup
+        # Verify docker compose up was called for resolver, sync
         docker_calls = (self.isolated_root / "docker_calls.log").read_text()
-        self.assertIn("up -d resolver sync backup", docker_calls)
+        lines = [line.strip() for line in docker_calls.splitlines()]
+        self.assertTrue(any(line.endswith("up -d resolver sync") for line in lines), f"Expected exact invocation 'up -d resolver sync' in calls:\n{docker_calls}")
+        self.assertFalse(any("backup" in line and "up -d" in line for line in lines), "Unexpected 'backup' service in compose up call")
 
     def test_setup_interactive_auth_success_updates_env_and_starts_services(self):
         """Interactive setup prompts for API ID/Hash, runs one-shot auth, and starts services."""
@@ -437,11 +439,13 @@ class TestStandaloneInstaller(unittest.TestCase):
         # Ensure auth container was called and services started
         docker_calls = (self.isolated_root / "docker_calls.log").read_text()
         self.assertIn("telegram_auth auth", docker_calls)
-        self.assertIn("up -d resolver sync backup", docker_calls)
+        lines = [line.strip() for line in docker_calls.splitlines()]
+        self.assertTrue(any(line.endswith("up -d resolver sync") for line in lines), f"Expected exact invocation 'up -d resolver sync' in calls:\n{docker_calls}")
+        self.assertFalse(any("backup" in line and "up -d" in line for line in lines), "Unexpected 'backup' service in compose up call")
         self.assertIn("Telegram Auth:  AUTHORIZED", res.stdout)
 
     def test_setup_auth_failure_withholds_services(self):
-        """When authentication fails or is cancelled, resolver, sync, and backup are withheld."""
+        """When authentication fails or is cancelled, resolver and sync are withheld."""
         mock_docker = make_mock_docker(self.isolated_root, auth_check_ok=False, auth_run_ok=False)
 
         # Setup with credentials in .env
@@ -470,11 +474,13 @@ class TestStandaloneInstaller(unittest.TestCase):
         )
         self.assertEqual(res2.returncode, 0)
         self.assertIn("Telegram authentication failed or was cancelled", res2.stderr)
-        self.assertIn("Services 'resolver', 'sync', and 'backup' remain withheld", res2.stderr)
+        self.assertIn("Services 'resolver' and 'sync' remain withheld", res2.stderr)
 
-        # Crucial: resolver, sync, backup must NOT be started
+        # Crucial: resolver, sync must NOT be started
         docker_calls = (self.isolated_root / "docker_calls.log").read_text()
-        self.assertNotIn("up -d resolver sync backup", docker_calls)
+        lines = [line.strip() for line in docker_calls.splitlines()]
+        self.assertFalse(any(line.endswith("up -d resolver sync") for line in lines), "Resolver and sync should not start on auth failure")
+        self.assertFalse(any("backup" in line and "up -d" in line for line in lines))
         self.assertIn("NOT_AUTHORIZED", res2.stdout)
 
     def test_setup_concurrent_session_process_blocks_auth(self):
@@ -545,10 +551,12 @@ class TestStandaloneInstaller(unittest.TestCase):
 
         docker_calls = (self.isolated_root / "docker_calls.log").read_text()
         self.assertNotIn("telegram_auth auth", docker_calls)
-        self.assertNotIn("up -d resolver sync backup", docker_calls)
+        lines = [line.strip() for line in docker_calls.splitlines()]
+        self.assertFalse(any(line.endswith("up -d resolver sync") for line in lines), "Services must not start when session is unauthorized")
+        self.assertFalse(any("backup" in line and "up -d" in line for line in lines))
 
-    def test_setup_non_interactive_without_session_withholds_services(self):
-        """Non-interactive setup with credentials but missing session informs user and withholds services."""
+    def test_setup_non_interactive_without_session_starts_services_and_gates_scans(self):
+        """Non-interactive setup with credentials but missing session informs user and starts services with scans gated."""
         mock_docker = make_mock_docker(self.isolated_root, auth_check_ok=False)
 
         res1 = self.run_installer([
@@ -577,7 +585,9 @@ class TestStandaloneInstaller(unittest.TestCase):
 
         docker_calls = (self.isolated_root / "docker_calls.log").read_text()
         self.assertNotIn("telegram_auth auth", docker_calls)
-        self.assertNotIn("up -d resolver sync backup", docker_calls)
+        lines = [line.strip() for line in docker_calls.splitlines()]
+        self.assertTrue(any(line.endswith("up -d resolver sync") for line in lines), "Services must start so Admin UI web wizard is reachable")
+        self.assertFalse(any("backup" in line and "up -d" in line for line in lines))
 
     def test_setup_status_flag(self):
         """--status flag displays summary without running services or mutating environment."""
