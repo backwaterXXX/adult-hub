@@ -39,7 +39,7 @@ async def _queue_run(admin, request: Request, schedule_id: str, *, system: bool)
             return admin.JSONResponse({"ok": False, "error": "Schedule not found."}, status_code=404)
         if result["outcome"] == "conflict":
             return admin.JSONResponse({"ok": False, "error": "A run is already queued or processing."}, status_code=409)
-        if not system:
+        if not system or schedule_id == "database-backup":
             admin._wake_worker("jobs")
         return admin.JSONResponse({"ok": True, **result}, status_code=202)
     except Exception:

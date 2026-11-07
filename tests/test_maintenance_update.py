@@ -289,7 +289,7 @@ class TestMaintenanceUpdateWorkflow(unittest.TestCase):
 
         calls = (self.isolated_root / "docker_calls.log").read_text()
         self.assertIn("up migration", calls)
-        self.assertIn("up -d --no-build resolver sync backup", calls)
+        self.assertIn("up -d --no-build resolver sync", calls)
 
     def test_update_migration_failure_aborts_without_replacing_services(self):
         """If database migration fails, update aborts and does NOT replace running services."""
@@ -305,8 +305,8 @@ class TestMaintenanceUpdateWorkflow(unittest.TestCase):
 
         calls = (self.isolated_root / "docker_calls.log").read_text()
         self.assertIn("up migration", calls)
-        # Resolver, sync, backup must NOT have been started after migration failed
-        self.assertNotIn("up -d --no-build resolver sync backup", calls)
+        # Resolver, sync must NOT have been started after migration failed
+        self.assertNotIn("up -d --no-build resolver sync", calls)
         self.assertNotIn("up -d --no-build sync", calls)
 
     def test_update_build_failure_restores_sync_if_was_running(self):
@@ -359,8 +359,8 @@ class TestMaintenanceUpdateWorkflow(unittest.TestCase):
         self.assertNotEqual(auth_idx, -1)
         self.assertLess(stop_idx, auth_idx, "Resolver stop must precede telegram_auth check")
 
-    def test_update_withholds_sync_and_backup_when_telegram_not_authorized(self):
-        """When Telegram is not authorized, update starts resolver but withholds sync and backup."""
+    def test_update_withholds_sync_when_telegram_not_authorized(self):
+        """When Telegram is not authorized, update starts resolver but withholds sync."""
         mock_docker = make_mock_docker(self.isolated_root, auth_check_ok=False)
         self.init_standalone_env(mock_docker)
 
@@ -368,11 +368,11 @@ class TestMaintenanceUpdateWorkflow(unittest.TestCase):
 
         res = self.run_update(["--docker-bin", mock_docker, "--root-dir", str(self.isolated_root)])
         self.assertEqual(res.returncode, 0, f"Update failed:\n{res.stderr}")
-        self.assertIn("Telegram session not authorized. Starting resolver (sync and backup remain withheld)", res.stdout)
+        self.assertIn("Telegram session not authorized. Starting resolver (sync remains withheld)", res.stdout)
 
         calls = (self.isolated_root / "docker_calls.log").read_text()
         self.assertIn("up -d --no-build resolver", calls)
-        self.assertNotIn("up -d --no-build resolver sync backup", calls)
+        self.assertNotIn("up -d --no-build resolver sync", calls)
 
     def test_update_preserves_env_config_media_backups_and_volumes(self):
         """Update must never alter configuration, secrets, media, backups, or named volumes."""

@@ -252,6 +252,7 @@ CREATE TABLE public.system_schedules (
     next_run_at timestamp with time zone,
     last_run_at timestamp with time zone,
     last_finished_at timestamp with time zone,
+    last_job_id text,
     last_result text,
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT system_schedules_id_check CHECK ((id = ANY (ARRAY['library-sync'::text, 'database-backup'::text, 'artwork-generation'::text]))),

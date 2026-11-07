@@ -281,7 +281,7 @@ def _build_issues(admin, now):
     collect_source_issues(admin, now, health, issues)
     db_available = collect_database_issues(admin, now, health, issues)
     collect_quality_issues(admin, now, health, issues, db_available)
-    monitor_backups = os.environ.get("ADMIN_V2_MONITOR_BACKUPS", "true").strip().lower() in {"1", "true", "yes", "on"}
+    monitor_backups = os.environ.get("ADMIN_V2_MONITOR_BACKUPS", "false").strip().lower() in {"1", "true", "yes", "on"}
     if monitor_backups:
         collect_backup_issues(admin, now, health, issues)
 

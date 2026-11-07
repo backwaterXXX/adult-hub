@@ -80,6 +80,9 @@ from common.migrations.m0063_source_removal_indexes import migration as source_r
 from common.migrations.m0064_video_duplicate_decisions_evidence import (
     migration as video_duplicate_decisions_evidence,
 )
+from common.migrations.m0065_system_schedules_last_job_id import (
+    migration as system_schedules_last_job_id,
+)
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -148,4 +151,5 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     artwork_generation_schedule,
     source_removal_indexes,
     video_duplicate_decisions_evidence,
+    system_schedules_last_job_id,
 )

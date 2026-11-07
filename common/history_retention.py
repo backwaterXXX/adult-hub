@@ -120,6 +120,10 @@ def prune_history(conn: db.Connection | None = None) -> dict[str, int]:
                     UPDATE admin_schedules s SET last_job_id=NULL
                     WHERE s.last_job_id IN (SELECT id FROM deleted)
                     RETURNING s.id
+                ), system_scheds AS (
+                    UPDATE system_schedules s SET last_job_id=NULL
+                    WHERE s.last_job_id IN (SELECT id FROM deleted)
+                    RETURNING s.id
                 )
                 SELECT count(*) FROM deleted
             """,

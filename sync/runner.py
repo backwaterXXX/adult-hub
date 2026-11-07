@@ -51,10 +51,11 @@ except Exception:  # pragma: no cover - older deployments may not have migration
 
 try:
     from common.system_schedules import (
-        claim_due_system_schedule, ensure_system_schedules, finish_system_schedule, list_system_schedules,
+        claim_due_system_schedule, dispatch_due_system_schedules, ensure_system_schedules,
+        finish_system_schedule, list_system_schedules, recover_system_schedules,
     )
 except Exception:  # pragma: no cover - older deployments may not have migrations yet
-    claim_due_system_schedule = ensure_system_schedules = finish_system_schedule = list_system_schedules = None
+    claim_due_system_schedule = dispatch_due_system_schedules = ensure_system_schedules = finish_system_schedule = list_system_schedules = recover_system_schedules = None
 
 try:
     from db_schema import init_db
@@ -214,6 +215,7 @@ def run_jobs_worker() -> int:
     """Run sync.py --jobs-only to process queued jobs without full sync."""
     global current_process
     LOGGER.info("[sync-daemon] On-demand jobs trigger detected, executing jobs-only worker...")
+    timers = _WaitTimers()
     try:
         proc = subprocess.Popen([sys.executable, "sync.py", "--jobs-only"])
         current_process = proc
@@ -221,6 +223,9 @@ def run_jobs_worker() -> int:
             if stop_event.is_set():
                 _stop_child(proc)
                 break
+            _dispatch_system_schedules_due(timers)
+            _dispatch_admin_schedules_due(timers)
+            _dispatch_artwork_schedule_due(timers)
             time.sleep(0.2)
         code = proc.returncode if proc.returncode is not None else 0
         if code != 0:
@@ -278,6 +283,60 @@ def _dispatch_admin_schedules_due(timers: _WaitTimers) -> bool:
     return worker_wake
 
 
+def _dispatch_system_schedules_due(timers: _WaitTimers) -> bool:
+    """Queue due system schedules (database-backup). True when any were queued."""
+    worker_wake = False
+    if dispatch_due_system_schedules and time.monotonic() >= timers.next_system_schedule_dispatch:
+        try:
+            worker_wake = dispatch_due_system_schedules(DB_URL) > 0
+        except Exception as e:
+            if time.monotonic() >= timers.next_system_schedule_error_log:
+                LOGGER.warning("[sync-daemon] Could not dispatch system schedules: %s", e)
+                timers.next_system_schedule_error_log = time.monotonic() + 60.0
+        timers.next_system_schedule_dispatch = time.monotonic() + 15.0
+    return worker_wake
+
+
+def _dispatch_artwork_batch() -> tuple[bool, int]:
+    try:
+        from pathlib import Path
+        try:
+            from artwork_schedule import queue_artwork_generation_batch
+        except ImportError:
+            from sync.artwork_schedule import queue_artwork_generation_batch
+        result = queue_artwork_generation_batch(DB_URL, Path(os.getenv("MEDIA_DIR", "/media/adult")))
+        queued = len(result.get("job_ids") or [])
+        LOGGER.info(
+            "[sync-daemon] Daily artwork generation queued %s job(s) from %s candidate(s).",
+            queued, result.get("candidates", 0),
+        )
+        return True, queued
+    except Exception as e:
+        LOGGER.warning("[sync-daemon] Daily artwork generation batch failed: %s", e)
+        return False, 0
+
+
+def _dispatch_artwork_schedule_due(timers: _WaitTimers) -> bool:
+    """Queue due artwork generation batch. True when any jobs were queued."""
+    if not (claim_due_system_schedule and finish_system_schedule):
+        return False
+    if time.monotonic() < timers.next_artwork_dispatch:
+        return False
+    worker_wake = False
+    try:
+        if claim_due_system_schedule(DB_URL, "artwork-generation"):
+            success, queued = _dispatch_artwork_batch()
+            finish_system_schedule(DB_URL, "artwork-generation", success=success)
+            timers.next_artwork_dispatch = time.monotonic() + (30.0 if success else 300.0)
+            return queued > 0
+    except Exception as e:
+        if time.monotonic() >= timers.next_artwork_error_log:
+            LOGGER.warning("[sync-daemon] Could not check artwork generation schedule: %s", e)
+            timers.next_artwork_error_log = time.monotonic() + 60.0
+    timers.next_artwork_dispatch = time.monotonic() + 30.0
+    return worker_wake
+
+
 def _read_pending_actions(timers: _WaitTimers):
     actions = set()
     if pending_actions:
@@ -328,7 +387,10 @@ def wait_with_trigger(duration: float, *, allow_schedule: bool = True):
     while not stop_event.is_set():
         if _poll_system_schedule(timers, allow_schedule):
             return False
-        worker_wake = _dispatch_admin_schedules_due(timers)
+        admin_wake = _dispatch_admin_schedules_due(timers)
+        system_wake = _dispatch_system_schedules_due(timers)
+        artwork_wake = _dispatch_artwork_schedule_due(timers)
+        worker_wake = admin_wake or system_wake or artwork_wake
         actions = _read_pending_actions(timers)
         if "sync" in actions:
             # A wake file may be missing or overwritten by another action.
@@ -379,10 +441,14 @@ def _stop_child(process, grace_seconds: float | None = None):
 
 def _wait_for_sync_child(process) -> bool:
     """Poll the sync child. True when a shutdown stopped it."""
+    timers = _WaitTimers()
     while process.poll() is None:
         if stop_event.is_set():
             _stop_child(process)
             return True
+        _dispatch_system_schedules_due(timers)
+        _dispatch_admin_schedules_due(timers)
+        _dispatch_artwork_schedule_due(timers)
         time.sleep(0.5)
     return False
 
@@ -585,7 +651,7 @@ def _initialize_runner_schedules() -> None:
     try:
         ensure_system_schedules(DB_URL, sync_daily_at=daily_at, sync_interval_minutes=interval // 60,
                                 backup_daily_at=os.getenv("BACKUP_DAILY_AT", "04:30"),
-                                include_artwork=False)
+                                include_artwork=True)
     except Exception as e:
         LOGGER.error("[sync-daemon] Could not initialize system cron settings: %s", e)
         raise RuntimeError("Could not initialize system cron settings.") from e
@@ -622,6 +688,24 @@ def _dispatch_admin_schedules_at_startup() -> None:
                 LOGGER.info("[sync-daemon] Queued %s due Admin schedule(s) before sync.", scheduled)
         except Exception as e:
             LOGGER.warning("[sync-daemon] Could not dispatch Admin schedules at startup: %s", e)
+
+
+def _dispatch_system_schedules_at_startup() -> None:
+    if dispatch_due_system_schedules:
+        try:
+            scheduled = dispatch_due_system_schedules(DB_URL)
+            if scheduled:
+                LOGGER.info("[sync-daemon] Queued %s due System schedule(s) before sync.", scheduled)
+        except Exception as e:
+            LOGGER.warning("[sync-daemon] Could not dispatch System schedules at startup: %s", e)
+
+
+def _recover_system_schedules_state() -> None:
+    if recover_system_schedules:
+        try:
+            recover_system_schedules(DB_URL)
+        except Exception as e:
+            LOGGER.warning("[sync-daemon] Could not recover system schedules: %s", e)
 
 
 def _wait_for_configured_schedule():
@@ -700,6 +784,7 @@ def _wait_after_failure(was_schedule_run: bool) -> None:
 def run_loop():
     _initialize_runner_schedules()
     _recover_sync_jobs()
+    _recover_system_schedules_state()
     first_run = True
     while not stop_event.is_set():
         # Durable on-demand requests take precedence over a scheduled run and are
@@ -710,6 +795,7 @@ def run_loop():
             break
 
         _dispatch_admin_schedules_at_startup()
+        _dispatch_system_schedules_at_startup()
 
         if ran_jobs:
             first_run = False

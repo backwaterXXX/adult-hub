@@ -46,6 +46,9 @@ from common.migrations.m0063_source_removal_indexes import (
 from common.migrations.m0064_video_duplicate_decisions_evidence import (
     current_migration as current_video_duplicate_decisions_evidence,
 )
+from common.migrations.m0065_system_schedules_last_job_id import (
+    current_migration as current_system_schedules_last_job_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +65,7 @@ CURRENT_MIGRATIONS: tuple[Migration, ...] = (
     current_split_phash_jobs, current_cron_schedules, current_metadata_proposal_retries,
     current_video_job_lease_token, current_schedule_stages, current_artwork_generation_schedule,
     current_source_removal_indexes, current_video_duplicate_decisions_evidence,
+    current_system_schedules_last_job_id,
 )
 MIGRATIONS: tuple[Migration, ...] = (baseline, *CURRENT_MIGRATIONS)
 

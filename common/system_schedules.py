@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import uuid
+
 from common import admin_schedules, db
 
 _RUN_LOCKS = {
@@ -92,23 +95,37 @@ def list_system_schedules(db_url) -> list[dict]:
     conn = db.connect(db_url)
     try:
         rows = conn.execute(
-            "SELECT id,name,cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,"
-            "enabled,revision,next_run_at,last_run_at,last_result,last_finished_at "
-            "FROM system_schedules ORDER BY id"
+            "SELECT s.id,s.name,s.cron_expression,s.legacy_interval_minutes,s.legacy_daily_at,s.needs_conversion,"
+            "s.enabled,s.revision,s.next_run_at,s.last_run_at,s.last_result,s.last_finished_at,s.last_job_id,"
+            "j.state,j.updated_at "
+            "FROM system_schedules s LEFT JOIN video_duplicate_jobs j ON j.id=s.last_job_id ORDER BY s.id"
         ).fetchall()
-        return [
-            {
+        result = []
+        for row in rows:
+            stored_result = row[10]
+            job_state = row[13] if row[13] in {"queued", "processing", "done", "failed", "cancelled"} else None
+            finished = row[14] if job_state in {"done", "failed", "cancelled"} else row[11]
+            if row[0] == "database-backup" and row[12]:
+                if job_state == "queued":
+                    effective_result = "queued"
+                elif job_state == "processing":
+                    effective_result = stored_result if stored_result in {"processing_manual", "processing"} else "processing"
+                else:
+                    effective_result = stored_result
+            else:
+                effective_result = stored_result
+            result.append({
                 "id": row[0], "name": row[1], "cron_expression": row[2],
                 "legacy_interval_minutes": row[3], "legacy_daily_at": row[4],
                 "needs_conversion": bool(row[5]), "enabled": bool(row[6]),
                 "revision": int(row[7]),
                 "next_run_at": admin_schedules._utc(row[8]).isoformat() if row[8] else None,
                 "last_run_at": admin_schedules._utc(row[9]).isoformat() if row[9] else None,
-                "last_result": row[10], "timezone": "Europe/Warsaw",
-                "last_finished_at": admin_schedules._utc(row[11]).isoformat() if row[11] else None,
-            }
-            for row in rows
-        ]
+                "last_result": effective_result, "timezone": "Europe/Warsaw",
+                "last_finished_at": admin_schedules._utc(finished).isoformat() if finished else None,
+                "last_job_id": row[12],
+            })
+        return result
     finally:
         conn.close()
 
@@ -184,6 +201,46 @@ def set_system_schedule(db_url, schedule_id: str, *, expression: str, enabled: b
         conn.close()
 
 
+def _request_backup_run(conn, instant) -> dict:
+    row = conn.execute(
+        "SELECT enabled,cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,"
+        "revision,next_run_at,last_result,last_job_id FROM system_schedules WHERE id='database-backup' FOR UPDATE"
+    ).fetchone()
+    if not row:
+        conn.rollback()
+        return {"outcome": "not_found"}
+    enabled, cron_expr, leg_int, leg_daily, needs_conv, revision, next_run_at, last_result, last_job_id = row
+    if last_job_id:
+        job = conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (last_job_id,)).fetchone()
+        if job and job[0] in {"queued", "processing"}:
+            conn.rollback()
+            return {"outcome": "conflict"}
+    if last_result in {"queued", "processing", "processing_manual"}:
+        conn.rollback()
+        return {"outcome": "conflict"}
+    slot_due = bool(enabled and next_run_at is not None and admin_schedules._utc(next_run_at) <= instant)
+    job_id = uuid.uuid4().hex
+    payload = {
+        "_system_schedule_id": "database-backup",
+        "_system_schedule_revision": int(revision),
+        "_manual": True,
+        "_slot_due": slot_due,
+    }
+    epoch = int(instant.timestamp())
+    conn.execute(
+        "INSERT INTO video_duplicate_jobs (id, action, state, payload, result, created_at, updated_at) "
+        "VALUES (%s, 'backup_create', 'queued', %s, NULL, %s, %s)",
+        (job_id, json.dumps(payload, ensure_ascii=False), epoch, epoch),
+    )
+    conn.execute(
+        "UPDATE system_schedules SET last_job_id=%s, last_run_at=%s, last_result='queued', updated_at=%s "
+        "WHERE id='database-backup'",
+        (job_id, instant.timestamp(), instant.timestamp()),
+    )
+    conn.commit()
+    return {"outcome": "queued", "job_id": job_id}
+
+
 def request_system_run(db_url, schedule_id: str, *, now=None) -> dict:
     """Request a run for the system worker, serialized with scheduled claims."""
     if schedule_id not in _NAMES:
@@ -192,6 +249,8 @@ def request_system_run(db_url, schedule_id: str, *, now=None) -> dict:
     conn = db.connect(db_url)
     try:
         conn.execute("BEGIN")
+        if schedule_id == "database-backup":
+            return _request_backup_run(conn, instant)
         locked = conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (_RUN_LOCKS[schedule_id],)).fetchone()[0]
         if not locked:
             conn.rollback()
@@ -285,5 +344,171 @@ def finish_system_schedule(db_url, schedule_id: str, *, success: bool, now=None,
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+BACKUP_RETRY_SECONDS = 300
+
+
+def dispatch_due_system_schedules(db_url, *, now=None) -> int:
+    """Atomically persist queued jobs for due system schedules and update state."""
+    instant = admin_schedules._utc(now)
+    conn = db.connect(db_url)
+    dispatched = 0
+    try:
+        conn.execute("BEGIN")
+        row = conn.execute(
+            "SELECT enabled,cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,"
+            "revision,next_run_at,last_result,last_finished_at,last_job_id "
+            "FROM system_schedules WHERE id='database-backup' FOR UPDATE SKIP LOCKED"
+        ).fetchone()
+        if row:
+            enabled, cron_expr, leg_int, leg_daily, needs_conv, revision, next_run_at, last_result, last_finished, last_job_id = row
+            active = False
+            if last_job_id:
+                job = conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (last_job_id,)).fetchone()
+                active = bool(job and job[0] in {"queued", "processing"})
+            is_manual = last_result in {"queued", "processing_manual"} and not active
+            slot_due = bool(enabled and next_run_at is not None and admin_schedules._utc(next_run_at) <= instant)
+            retry_delayed = False
+            if slot_due and not is_manual and last_result == "failed" and last_finished is not None:
+                if (instant - admin_schedules._utc(last_finished)).total_seconds() < BACKUP_RETRY_SECONDS:
+                    retry_delayed = True
+            if not active and (is_manual or (slot_due and not retry_delayed)):
+                job_id = uuid.uuid4().hex
+                payload = {
+                    "_system_schedule_id": "database-backup",
+                    "_system_schedule_revision": int(revision),
+                    "_manual": is_manual,
+                    "_slot_due": slot_due,
+                }
+                epoch = int(instant.timestamp())
+                conn.execute(
+                    "INSERT INTO video_duplicate_jobs (id, action, state, payload, result, created_at, updated_at) "
+                    "VALUES (%s, 'backup_create', 'queued', %s, NULL, %s, %s)",
+                    (job_id, json.dumps(payload, ensure_ascii=False), epoch, epoch),
+                )
+                conn.execute(
+                    "UPDATE system_schedules SET last_job_id=%s, last_run_at=%s, last_result='queued', updated_at=%s "
+                    "WHERE id='database-backup'",
+                    (job_id, instant.timestamp(), instant.timestamp()),
+                )
+                dispatched += 1
+        conn.commit()
+        return dispatched
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def record_system_schedule_job_start(conn, job_id: str, payload: dict, *, now=None) -> None:
+    schedule_id = payload.get("_system_schedule_id")
+    if not schedule_id or schedule_id != "database-backup":
+        return
+    instant = admin_schedules._utc(now)
+    manual = bool(payload.get("_manual"))
+    result = "processing_manual" if manual else "processing"
+    with conn:
+        conn.execute(
+            "UPDATE system_schedules SET last_result=%s, updated_at=%s "
+            "WHERE id=%s AND last_job_id=%s",
+            (result, instant.timestamp(), schedule_id, job_id),
+        )
+
+
+def finish_system_schedule_job(conn, job_id: str, payload: dict, *, success: bool, now=None) -> None:
+    schedule_id = payload.get("_system_schedule_id")
+    if not schedule_id or schedule_id != "database-backup":
+        return
+    instant = admin_schedules._utc(now)
+    revision = payload.get("_system_schedule_revision")
+    manual = bool(payload.get("_manual"))
+    slot_due = bool(payload.get("_slot_due"))
+    with conn:
+        row = conn.execute(
+            "SELECT cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,enabled,revision "
+            "FROM system_schedules WHERE id=%s FOR UPDATE",
+            (schedule_id,),
+        ).fetchone()
+        if not row:
+            return
+        cron_expr, leg_int, leg_daily, needs_conv, enabled, current_rev = row
+        result = "done" if success else "failed"
+        if success and enabled and int(current_rev) == revision and (not manual or slot_due):
+            upcoming = (admin_schedules.next_run("daily" if leg_daily else "interval", leg_int, leg_daily, after=instant)
+                        if needs_conv else admin_schedules.next_cron(cron_expr, after=instant))
+            conn.execute(
+                "UPDATE system_schedules SET last_result=%s, last_finished_at=%s, next_run_at=%s, updated_at=%s "
+                "WHERE id=%s AND last_job_id=%s",
+                (result, instant, upcoming, instant.timestamp(), schedule_id, job_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE system_schedules SET last_result=%s, last_finished_at=%s, updated_at=%s "
+                "WHERE id=%s AND last_job_id=%s",
+                (result, instant, instant.timestamp(), schedule_id, job_id),
+            )
+
+
+def maybe_enqueue_backup_history_cleanup(conn, payload: dict, *, now=None) -> bool:
+    schedule_id = payload.get("_system_schedule_id")
+    if not schedule_id or schedule_id != "database-backup":
+        return False
+    from common import schedule_stages
+    if not schedule_stages.stage_enabled(conn, "database-backup", "history-cleanup"):
+        return False
+    instant = admin_schedules._utc(now)
+    with conn:
+        active = conn.execute(
+            "SELECT 1 FROM video_duplicate_jobs WHERE action='history_cleanup' AND state IN ('queued', 'processing') LIMIT 1"
+        ).fetchone()
+        if active:
+            return False
+        job_id = uuid.uuid4().hex
+        epoch = int(instant.timestamp())
+        conn.execute(
+            "INSERT INTO video_duplicate_jobs (id, action, state, payload, result, created_at, updated_at) "
+            "VALUES (%s, 'history_cleanup', 'queued', '{}', NULL, %s, %s)",
+            (job_id, epoch, epoch),
+        )
+        conn.execute(
+            "INSERT INTO system_schedule_stages (schedule_id, id, last_result, last_run_at, updated_at)"
+            " VALUES ('database-backup', 'history-cleanup', 'queued', %s, %s)"
+            " ON CONFLICT(schedule_id, id) DO UPDATE SET last_result='queued', last_run_at=%s, updated_at=%s",
+            (instant.timestamp(), instant.timestamp(), instant.timestamp(), instant.timestamp()),
+        )
+        return True
+
+
+def recover_system_schedules(db_url, *, now=None) -> None:
+    """Recover old queued/processing rows left by previous services or crashes."""
+    instant = admin_schedules._utc(now)
+    conn = db.connect(db_url)
+    try:
+        with conn:
+            row = conn.execute(
+                "SELECT last_job_id, last_result FROM system_schedules WHERE id='database-backup' FOR UPDATE"
+            ).fetchone()
+            if row:
+                last_job_id, last_result = row
+                if last_job_id:
+                    job = conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (last_job_id,)).fetchone()
+                    if not job or job[0] not in {"queued", "processing"}:
+                        if last_result in {"processing", "processing_manual", "queued"}:
+                            conn.execute(
+                                "UPDATE system_schedules SET last_result='failed', updated_at=%s WHERE id='database-backup'",
+                                (instant.timestamp(),),
+                            )
+                else:
+                    if last_result in {"processing", "processing_manual"}:
+                        conn.execute(
+                            "UPDATE system_schedules SET last_result='failed', updated_at=%s WHERE id='database-backup'",
+                            (instant.timestamp(),),
+                        )
+    except Exception:
+        pass
     finally:
         conn.close()

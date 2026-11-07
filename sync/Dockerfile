@@ -31,7 +31,7 @@ LABEL org.opencontainers.image.version=${APP_VERSION}
 COPY VERSION /opt/adult-hub/VERSION
 COPY resolver/video_duplicates.py resolver/video_duplicate_scoring.py resolver/video_duplicate_merge_history.py ./
 
-COPY backup_db.py backup_scheduler.py restore_db.py ./
+COPY backup_db.py restore_db.py ./
 COPY tools/benchmark_catalog_search.py ./tools/benchmark_catalog_search.py
 COPY sync/ .
 

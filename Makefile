@@ -105,7 +105,7 @@ package-release:
 deploy:
 	@printf 'Deploying Adult Hub %s\n' '$(APP_VERSION)'
 	docker compose build resolver sync
-	docker compose up -d --no-build resolver sync backup
+	docker compose up -d --no-build resolver sync
 
 dev:
 	docker compose -f docker-compose.dev.yml -p adult-hub-dev up --build -d

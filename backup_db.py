@@ -5,9 +5,8 @@ verifies the dump by listing its table of contents, and prunes snapshots
 older than --keep days.
 
 Scheduling:
-    The ``backup`` compose service polls the saved Admin cron setting. Legacy
-    host cron calls to ``backup_scheduler.py --once`` remain safe: they run only
-    when the saved setting is due. ``--force`` runs an immediate backup.
+    Scheduled backups run as durable worker jobs consumed by adult-sync.
+    Direct CLI execution creates an immediate verified snapshot.
 
 Direct invocation requires ``DATABASE_URL`` (or --db-url) and the
 ``pg_dump``/``pg_restore`` client binaries on PATH.

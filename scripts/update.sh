@@ -242,13 +242,13 @@ fi
 "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d database jellyfin
 
 if [ "${is_authed}" -eq 1 ]; then
-    echo "==> Telegram session authorized. Updating and starting resolver, sync, and backup..."
-    if ! "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d --no-build resolver sync backup; then
+    echo "==> Telegram session authorized. Updating and starting resolver and sync..."
+    if ! "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d --no-build resolver sync; then
         echo "[ERROR] Failed to start updated application services." >&2
         exit 1
     fi
 else
-    echo "==> Telegram session not authorized. Starting resolver (sync and backup remain withheld)..."
+    echo "==> Telegram session not authorized. Starting resolver (sync remains withheld)..."
     if ! "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d --no-build resolver; then
         echo "[ERROR] Failed to start updated resolver service." >&2
         exit 1
@@ -285,9 +285,9 @@ echo "==========================================================================
 echo "Version:            ${APP_VERSION}"
 echo "Admin UI:           ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/"
 if [ "${is_authed}" -eq 1 ]; then
-    echo "Services:           resolver, sync, backup, database, jellyfin running"
+    echo "Services:           resolver, sync, database, jellyfin running"
 else
-    echo "Services:           database, jellyfin, resolver running (sync/backup withheld)"
+    echo "Services:           database, jellyfin, resolver running (sync withheld)"
     echo "Next Steps:         Run 'make setup' to authenticate Telegram"
 fi
 echo "================================================================================"

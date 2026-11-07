@@ -42,6 +42,9 @@ class _WaitTimers:
         self.next_schedule_error_log = 0.0
         self.next_system_schedule_check = 0.0
         self.next_system_schedule_error_log = 0.0
+        self.next_system_schedule_dispatch = 0.0
+        self.next_artwork_dispatch = 0.0
+        self.next_artwork_error_log = 0.0
 
 
 def _sync_child_args(source_filter, sync_mode):

@@ -84,17 +84,51 @@ def _dump_verified_archive(conninfo: str, pg_dump: str, pg_restore: str, env: di
 
 def _write_checksum_sidecar(dest) -> None:
     import hashlib
+    import uuid
     digest = hashlib.sha256()
     with dest.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             digest.update(chunk)
     checksum = dest.with_name(dest.name + ".sha256")
-    temporary = checksum.with_suffix(checksum.suffix + ".tmp")
+    temporary = checksum.with_name(f".{checksum.name}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(f"{digest.hexdigest()}  {dest.name}\n", encoding="ascii")
         os.replace(temporary, checksum)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def prune_old_backups(dest_dir, current_dest=None, keep_days: int | None = None) -> int:
+    """Retain BACKUP_KEEP_DAYS archives including legacy and job-id naming.
+
+    Removes companion .sha256 sidecars together with expired archives.
+    Per-file prune errors are logged as warnings so the backup remains successful.
+    """
+    import logging
+    import time as _time
+    from pathlib import Path as _Path
+
+    logger = logging.getLogger("common.backup")
+    if keep_days is None:
+        try:
+            keep_days = int(os.getenv("BACKUP_KEEP_DAYS", "7"))
+        except (ValueError, TypeError):
+            keep_days = 7
+    cutoff = _time.time() - max(keep_days, 1) * 86400
+    pruned = 0
+    dest_path = _Path(dest_dir)
+    cur_resolved = _Path(current_dest).resolve() if current_dest else None
+    for old in dest_path.glob("adulthub-*.dump.gz"):
+        try:
+            if cur_resolved and old.resolve() == cur_resolved:
+                continue
+            if old.stat().st_mtime < cutoff:
+                old.unlink()
+                old.with_name(old.name + ".sha256").unlink(missing_ok=True)
+                pruned += 1
+        except OSError as exc:
+            logger.warning("Prune warning for %s: %s", old.name, exc)
+    return pruned
 
 
 def pg_backup(db_url: str | None = None, backup_dir=None, prefix: str = "adulthub", *, job_id: str | None = None) -> "object":
@@ -116,6 +150,7 @@ def pg_backup(db_url: str | None = None, backup_dir=None, prefix: str = "adulthu
         raise RuntimeError("pg_restore not found on PATH")
 
     if job_id and dest.is_file() and _existing_job_backup_is_valid(dest, dest_dir, pg_restore):
+        prune_old_backups(dest_dir, dest)
         return dest
     conninfo = (db_url or "").strip() or database_url()
     pg_dump = shutil.which("pg_dump")
@@ -130,6 +165,7 @@ def pg_backup(db_url: str | None = None, backup_dir=None, prefix: str = "adulthu
         raw_tmp.unlink(missing_ok=True)
         gzip_tmp.unlink(missing_ok=True)
     _write_checksum_sidecar(dest)
+    prune_old_backups(dest_dir, dest)
     return dest
 
 

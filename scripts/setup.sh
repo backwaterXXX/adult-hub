@@ -792,7 +792,7 @@ with open(fpath, 'w', encoding='utf-8') as f:
         fi
         echo ""
         echo "[NOTICE] Telegram credentials (TELEGRAM_API_ID / TELEGRAM_API_HASH) are not configured."
-        echo "         Services 'resolver', 'sync', and 'backup' are withheld until Telegram is authorized."
+        echo "         Services 'resolver' and 'sync' are withheld until Telegram is authorized."
     else
         # 3. Prevent concurrent session process access (Requirement 5)
         has_concurrent=0
@@ -819,8 +819,8 @@ with open(fpath, 'w', encoding='utf-8') as f:
 
             if [ "${is_authed}" -eq 1 ]; then
                 TG_AUTH_STATE="AUTHORIZED"
-                echo "==> Telegram session authorized. Starting resolver, sync, and backup..."
-                "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d resolver sync backup
+                echo "==> Telegram session authorized. Starting resolver and sync..."
+                "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d resolver sync
                 SERVICES_STATUS="All services up and running"
             elif [ -f "${TG_SESSION_FILE}" ]; then
                 # Existing session file exists, but failed authorization!
@@ -841,7 +841,7 @@ with open(fpath, 'w', encoding='utf-8') as f:
                 echo ""
                 echo "[NOTICE] Telegram credentials are set, but interactive authentication is required."
                 echo "         Run 'make setup' interactively to complete login with SMS/2FA code."
-                echo "         Services 'resolver', 'sync', and 'backup' are withheld until authorized."
+                echo "         Services 'resolver' and 'sync' are withheld until authorized."
             else
                 # 5. Interactive first-run authentication
                 echo ""
@@ -857,14 +857,14 @@ with open(fpath, 'w', encoding='utf-8') as f:
 
                 if [ "${auth_ok}" -eq 1 ]; then
                     TG_AUTH_STATE="AUTHORIZED"
-                    echo "==> Telegram authentication completed successfully. Starting resolver, sync, and backup..."
-                    "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d resolver sync backup
+                    echo "==> Telegram authentication completed successfully. Starting resolver and sync..."
+                    "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d resolver sync
                     SERVICES_STATUS="All services up and running"
                 else
                     TG_AUTH_STATE="NOT_AUTHORIZED (Authentication failed or cancelled)"
                     echo "" >&2
                     echo "[ERROR] Telegram authentication failed or was cancelled." >&2
-                    echo "        Services 'resolver', 'sync', and 'backup' remain withheld." >&2
+                    echo "        Services 'resolver' and 'sync' remain withheld." >&2
                 fi
             fi
         fi

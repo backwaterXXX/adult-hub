@@ -214,6 +214,20 @@ def _record_job_failure(conn, job_id, action, exc, services) -> None:
     services.logger.warning('Duplicate operation %s failed: %s', job_id, exc)
 
 
+def _handle_system_schedule_start(conn: _core.db.Connection, job_id: str, action: str, payload: dict) -> None:
+    if action == 'backup_create' and payload.get('_system_schedule_id'):
+        from common.system_schedules import record_system_schedule_job_start
+        record_system_schedule_job_start(conn, job_id, payload)
+
+
+def _handle_system_schedule_finish(conn: _core.db.Connection, job_id: str, action: str, payload: dict, *, success: bool) -> None:
+    if action == 'backup_create' and payload.get('_system_schedule_id'):
+        from common.system_schedules import finish_system_schedule_job, maybe_enqueue_backup_history_cleanup
+        finish_system_schedule_job(conn, job_id, payload, success=success)
+        if success:
+            maybe_enqueue_backup_history_cleanup(conn, payload)
+
+
 def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _core.Path, services: _core.DuplicateJobServices, *, include_long_running: bool=False) -> int:
     """Run queued duplicate decisions in the sync process, with file quarantine and undo snapshots."""
     worker_actions = tuple((action for action in _core.WORKER_ACTIONS if include_long_running or action not in _core._LONG_RUNNING_WORKER_ACTIONS))
@@ -239,11 +253,13 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
         if payload is None:
             continue
         _core._record_job_progress(conn, job_id, 'starting')
+        _handle_system_schedule_start(conn, job_id, action, payload)
         quarantine_root = services.jobs_lock_root(conn, media_dir) / 'duplicate-quarantine'
         run = _JobRun()
         early_result = _committed_result_without_rerun(conn, job_id, action, payload, services)
         if early_result is not None:
             _core._finish_job(conn, job_id, early_result)
+            _handle_system_schedule_finish(conn, job_id, action, payload, success=True)
             completed += 1
             continue
         heartbeat_stop = _core.threading.Event()
@@ -252,6 +268,7 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
         try:
             result = _execute_action(conn, job_id, action, payload, media_dir, services, quarantine_root, now, run)
             _core._finish_job(conn, job_id, result)
+            _handle_system_schedule_finish(conn, job_id, action, payload, success=True)
             if action == 'consistency_audit' and result.get('library_inventory_status') == 'complete' and payload.get('auto_repair'):
                 _queue_audit_auto_repairs(conn, job_id, services)
             completed += 1
@@ -268,6 +285,7 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
             if not run.catalog_committed and action != 'orphan_file_operation':
                 _compensate_moves(run.moved, services)
             _record_job_failure(conn, job_id, action, exc, services)
+            _handle_system_schedule_finish(conn, job_id, action, payload, success=False)
         finally:
             heartbeat_stop.set()
             heartbeat.join(timeout=2)
