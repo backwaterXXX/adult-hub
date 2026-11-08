@@ -644,22 +644,25 @@ class TelegramProvider(BaseProvider):
 
         chosen_account = await self._resolve_download_account(affinity_account, channel_ref)
 
-        def _record_flood(exc: BaseException) -> bool:
+        first_chunk = True
+        t_start = time.monotonic()
+        from .telegram_router import get_telegram_router
+        router = get_telegram_router()
+
+        def _handle_stream_exc(exc: BaseException) -> bool:
             seconds = getattr(exc, "seconds", None)
-            if "floodwait" in type(exc).__name__.casefold() or seconds is not None:
-                from .telegram_router import get_telegram_router
-                wait_sec = int(seconds) if seconds else 30
-                get_telegram_router().record_flood_wait(chosen_account, wait_sec)
-                return True
-            return False
+            is_flood = "floodwait" in type(exc).__name__.casefold() or seconds is not None
+            if not getattr(exc, "_router_handled", False):
+                router.handle_request_exception(chosen_account, str(channel_ref), exc)
+            return is_flood
 
         def _on_retry(exc: BaseException, _attempt: int) -> None:
             if type(exc).__name__ in {"FileReferenceExpiredError", "FileReferenceInvalidError"}:
                 _evict_cached_message(channel_ref, int(message_id))
-            _record_flood(exc)
+            _handle_stream_exc(exc)
 
         def _retryable(exc: BaseException) -> bool:
-            if _record_flood(exc):
+            if _handle_stream_exc(exc):
                 return False
             return is_retryable(exc)
 
@@ -667,6 +670,11 @@ class TelegramProvider(BaseProvider):
                 lambda: self._download_range_once(ref, offset, length, affinity_account=chosen_account),
                 on_retry=_on_retry,
                 retryable=_retryable):
+            if first_chunk:
+                first_chunk = False
+                ttff_ms = (time.monotonic() - t_start) * 1000.0
+                router.record_buffer_init_latency(chosen_account, ttff_ms)
+            router.record_bytes(chosen_account, len(chunk))
             yield chunk
 
     async def _download_range_once(
@@ -741,6 +749,7 @@ class TelegramProvider(BaseProvider):
                 total=int(total),
                 fetch=_fetch,
                 job_key=_account_id,
+                account_id=_account_id,
             ):
                 yield chunk
 

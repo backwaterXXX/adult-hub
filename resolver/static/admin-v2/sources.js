@@ -1730,10 +1730,41 @@
 
       const body = create('div', 'telegram-account-card-body');
       if (acc.phone_mask) {
-        body.appendChild(create('span', '', `Phone: ${acc.phone_mask}`));
+        body.appendChild(create('span', 'telegram-stat', `Phone: ${acc.phone_mask}`));
       }
-      const accessibleCount = (acc.channels || []).filter(c => c.access_status === 'accessible').length;
-      body.appendChild(create('span', '', `Verified Channels: ${accessibleCount}`));
+      const channelSummary = acc.channel_summary || {};
+      const accessibleCount = channelSummary.accessible ?? (acc.channels || []).filter(c => c.access_status === 'accessible').length;
+      const inaccessibleCount = channelSummary.inaccessible ?? (acc.channels || []).filter(c => c.access_status === 'no_access' || c.access_status === 'inaccessible').length;
+      let channelText = `Verified Channels: ${accessibleCount}`;
+      if (inaccessibleCount > 0) {
+        channelText += ` (${inaccessibleCount} inaccessible)`;
+      }
+      body.appendChild(create('span', 'telegram-stat', channelText));
+
+      const metrics = acc.metrics || {};
+      const activeOps = metrics.active_ops || 0;
+      body.appendChild(create('span', 'telegram-stat', `Active: ${activeOps} ${activeOps === 1 ? 'stream' : 'streams'}`));
+
+      const bytesTransferred = metrics.bytes_transferred || 0;
+      const formatBytes = window.AdminV2?.formatBytes || ((b) => `${(b / (1024 * 1024)).toFixed(1)} MB`);
+      body.appendChild(create('span', 'telegram-stat', `Transferred: ${formatBytes(bytesTransferred)}`));
+
+      if (typeof metrics.throughput_mb_s === 'number' && metrics.throughput_mb_s > 0) {
+        body.appendChild(create('span', 'telegram-stat', `Throughput: ${metrics.throughput_mb_s} MB/s`));
+      }
+      if (typeof metrics.buffer_init_latency_ms === 'number' && metrics.buffer_init_latency_ms > 0) {
+        body.appendChild(create('span', 'telegram-stat', `TTFB: ${Math.round(metrics.buffer_init_latency_ms)} ms`));
+      }
+
+      const errorsCount = metrics.errors_count || 0;
+      const floodCount = metrics.flood_wait_count || 0;
+      if (errorsCount > 0 || floodCount > 0) {
+        const errText = floodCount > 0
+          ? `Errors: ${errorsCount} (${floodCount} FloodWait)`
+          : `Errors: ${errorsCount}`;
+        const errSpan = create('span', 'telegram-stat telegram-stat-warning', errText);
+        body.appendChild(errSpan);
+      }
 
       const actions = create('div', 'telegram-account-card-actions');
 

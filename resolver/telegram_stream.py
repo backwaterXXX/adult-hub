@@ -49,6 +49,7 @@ class _Job:
         "fetch_task",
         "reserved_bytes",
         "started",
+        "account_id",
     )
 
     def __init__(
@@ -60,6 +61,7 @@ class _Job:
         fetch_fn: Callable[[int, int], Awaitable[bytes]],
         priority: int,
         cache_key: Optional[str] = None,
+        account_id: Optional[str] = None,
     ):
         self.key: str = key
         self.cache_key: str = cache_key or key
@@ -78,6 +80,7 @@ class _Job:
         self.fetch_task: Optional[asyncio.Task] = None
         self.reserved_bytes: int = 0
         self.started: bool = False
+        self.account_id: Optional[str] = account_id
 
     @staticmethod
     def _consume_future_exception(fut: asyncio.Future) -> None:
@@ -122,6 +125,7 @@ class ParallelTelegramStreamManager:
         read_ahead_bytes: int = 33554432,
         max_cache_bytes: int = 134217728,
         cache_ttl_seconds: float = 120,
+        account_workers: Optional[int] = None,
     ):
         if workers <= 0:
             raise ValueError(f"workers must be > 0, got {workers}")
@@ -137,9 +141,14 @@ class ParallelTelegramStreamManager:
             )
         if cache_ttl_seconds <= 0:
             raise ValueError(f"cache_ttl_seconds must be > 0, got {cache_ttl_seconds}")
+        if account_workers is not None and account_workers <= 0:
+            raise ValueError(f"account_workers must be > 0, got {account_workers}")
 
         self.workers: int = min(workers, global_workers)
         self.global_workers: int = global_workers
+        self.account_workers: Optional[int] = (
+            min(account_workers, global_workers) if account_workers is not None else None
+        )
         self.block_size: int = block_size
         self.max_cache_bytes: int = max_cache_bytes
         # Cap read ahead to cache budget
@@ -155,6 +164,7 @@ class ParallelTelegramStreamManager:
 
         self._jobs: Dict[Tuple[str, int], _Job] = {}
         self._running_jobs_by_key: Dict[str, int] = defaultdict(int)
+        self._running_jobs_by_account: Dict[str, int] = defaultdict(int)
         self._active_workers: int = 0
         self._worker_tasks: Set[asyncio.Task] = set()
         self._closed: bool = False
@@ -197,6 +207,11 @@ class ParallelTelegramStreamManager:
                 break
             can_run = any(
                 self._running_jobs_by_key[j.key] < self.workers
+                and (
+                    self.account_workers is None
+                    or not j.account_id
+                    or self._running_jobs_by_account[j.account_id] < self.account_workers
+                )
                 for j in unstarted
             )
             if not can_run:
@@ -216,15 +231,22 @@ class ParallelTelegramStreamManager:
                         if not j.started
                         and len(j.consumers) > 0
                         and self._running_jobs_by_key[j.key] < self.workers
+                        and (
+                            self.account_workers is None
+                            or not j.account_id
+                            or self._running_jobs_by_account[j.account_id] < self.account_workers
+                        )
                     ]
                     if not candidates:
                         # No runnable unstarted jobs
                         break
 
-                    # Demand (0) first, then fewer active jobs for fairness, then created_at
+                    # Demand (0) first, then fewer active jobs by account for fairness,
+                    # then fewer active jobs by stream, then created_at
                     candidates.sort(
                         key=lambda j: (
                             j.priority,
+                            self._running_jobs_by_account[j.account_id] if j.account_id else 0,
                             self._running_jobs_by_key[j.key],
                             j.created_at,
                         )
@@ -243,6 +265,8 @@ class ParallelTelegramStreamManager:
                             cand.reserved_bytes = needed
                             cand.started = True
                             self._running_jobs_by_key[cand.key] += 1
+                            if cand.account_id:
+                                self._running_jobs_by_account[cand.account_id] += 1
                             job_to_run = cand
                             break
 
@@ -286,12 +310,18 @@ class ParallelTelegramStreamManager:
                 self._maybe_start_workers()
 
     def _release_job_locked(self, job: _Job) -> None:
-        self._running_jobs_by_key[job.key] -= 1
-        if self._running_jobs_by_key[job.key] <= 0:
-            self._running_jobs_by_key.pop(job.key, None)
+        if job.key in self._running_jobs_by_key:
+            self._running_jobs_by_key[job.key] -= 1
+            if self._running_jobs_by_key[job.key] <= 0:
+                self._running_jobs_by_key.pop(job.key, None)
+
+        if job.account_id and job.account_id in self._running_jobs_by_account:
+            self._running_jobs_by_account[job.account_id] -= 1
+            if self._running_jobs_by_account[job.account_id] <= 0:
+                self._running_jobs_by_account.pop(job.account_id, None)
 
         if job.reserved_bytes > 0:
-            self._reserved_inflight_bytes -= job.reserved_bytes
+            self._reserved_inflight_bytes = max(0, self._reserved_inflight_bytes - job.reserved_bytes)
             job.reserved_bytes = 0
 
         self._jobs.pop((job.key, job.block_index), None)
@@ -345,6 +375,7 @@ class ParallelTelegramStreamManager:
         total: int,
         fetch: Callable[[int, int], Awaitable[bytes]],
         job_key: Optional[str] = None,
+        account_id: Optional[str] = None,
     ) -> AsyncIterator[bytes]:
         """Stream byte range with bounded parallel fetching and prefetching."""
         if self._closed:
@@ -353,6 +384,7 @@ class ParallelTelegramStreamManager:
         if offset >= total or length == 0:
             return
 
+        effective_account_id = account_id or job_key
         effective_job_key = f"{key}::{job_key}" if job_key else key
 
         start_offset = offset
@@ -376,7 +408,7 @@ class ParallelTelegramStreamManager:
 
                 entry, job = await self._acquire_block(
                     key, effective_job_key, cur_blk, total, fetch, consumer_token, registered_jobs,
-                    last_block, read_ahead_blocks,
+                    last_block, read_ahead_blocks, account_id=effective_account_id,
                 )
                 current_pinned = entry
 
@@ -425,6 +457,7 @@ class ParallelTelegramStreamManager:
         registered_jobs: Dict[Tuple[str, int], _Job],
         last_block: int,
         read_ahead_blocks: int,
+        account_id: Optional[str] = None,
     ) -> Tuple[_CacheEntry, Optional[_Job]]:
         """Pin the cache entry for one block, waiting for its fetch if needed."""
         cache_key = (key, cur_blk)
@@ -442,12 +475,13 @@ class ParallelTelegramStreamManager:
                 if entry is None:
                     job = self._attach_demand_locked(
                         key, job_key, cur_blk, total, fetch, consumer_token, registered_jobs,
+                        account_id=account_id,
                     )
 
                 # 2. Prefetch blocks ahead within window
                 self._schedule_prefetch_locked(
                     key, job_key, cur_blk, last_block, read_ahead_blocks, total, fetch,
-                    consumer_token, registered_jobs, now,
+                    consumer_token, registered_jobs, now, account_id=account_id,
                 )
 
                 self._maybe_start_workers()
@@ -490,6 +524,7 @@ class ParallelTelegramStreamManager:
         fetch: Callable[[int, int], Awaitable[bytes]],
         consumer_token: object,
         registered_jobs: Dict[Tuple[str, int], _Job],
+        account_id: Optional[str] = None,
     ) -> _Job:
         """Attach the reader to an existing job or create a demand job for the block."""
         job_map_key = (job_key, cur_blk)
@@ -504,7 +539,10 @@ class ParallelTelegramStreamManager:
             if job.priority > 0:
                 job.priority = 0  # Promote to demand
         else:
-            job = _Job(job_key, cur_blk, blk_off, blk_len, fetch, priority=0, cache_key=key)
+            job = _Job(
+                job_key, cur_blk, blk_off, blk_len, fetch, priority=0,
+                cache_key=key, account_id=account_id,
+            )
             job.consumers.add(consumer_token)
             job.demand_consumers.add(consumer_token)
             self._jobs[job_map_key] = job
@@ -523,11 +561,13 @@ class ParallelTelegramStreamManager:
         consumer_token: object,
         registered_jobs: Dict[Tuple[str, int], _Job],
         now: float,
+        account_id: Optional[str] = None,
     ) -> None:
         prefetch_end = min(last_block + 1, cur_blk + 1 + read_ahead_blocks)
         for ahead_blk in range(cur_blk + 1, prefetch_end):
             self._schedule_prefetch_block_locked(
                 key, job_key, ahead_blk, total, fetch, consumer_token, registered_jobs, now,
+                account_id=account_id,
             )
 
     def _schedule_prefetch_block_locked(
@@ -540,6 +580,7 @@ class ParallelTelegramStreamManager:
         consumer_token: object,
         registered_jobs: Dict[Tuple[str, int], _Job],
         now: float,
+        account_id: Optional[str] = None,
     ) -> None:
         ahead_key = (key, ahead_blk)
         cached_entry = self._cache.get(ahead_key)
@@ -558,7 +599,8 @@ class ParallelTelegramStreamManager:
             registered_jobs[ahead_job_key] = existing_job
         else:
             new_job = _Job(
-                job_key, ahead_blk, blk_off, blk_len, fetch, priority=1, cache_key=key
+                job_key, ahead_blk, blk_off, blk_len, fetch, priority=1,
+                cache_key=key, account_id=account_id,
             )
             new_job.consumers.add(consumer_token)
             self._jobs[ahead_job_key] = new_job
@@ -594,6 +636,21 @@ class ParallelTelegramStreamManager:
             elif not j.future.done() and j.fetch_task and not j.fetch_task.done():
                 j.fetch_task.cancel()
 
+    @staticmethod
+    async def _wait_for_workers(tasks_to_wait: list[asyncio.Task]) -> None:
+        if not tasks_to_wait:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks_to_wait, return_exceptions=True),
+                timeout=5.0,
+            )
+        except asyncio.TimeoutError:
+            for t in tasks_to_wait:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks_to_wait, return_exceptions=True)
+
     async def close(self) -> None:
         """Close manager, cancelling in-flight work and clearing cache."""
         async with self._lock:
@@ -607,15 +664,24 @@ class ParallelTelegramStreamManager:
                     job.fetch_task.cancel()
                 if not job.future.done():
                     job.future.cancel()
+            self._mem_cond.notify_all()
+            tasks_to_wait = list(self._worker_tasks)
+
+        await self._wait_for_workers(tasks_to_wait)
+
+        async with self._lock:
+            for job in list(self._jobs.values()):
+                if not job.future.done():
+                    job.future.cancel()
             self._jobs.clear()
             self._cache.clear()
             self._current_cache_bytes = 0
             self._reserved_inflight_bytes = 0
-            self._mem_cond.notify_all()
-
-        if self._worker_tasks:
-            await asyncio.gather(*list(self._worker_tasks), return_exceptions=True)
+            self._running_jobs_by_key.clear()
+            self._running_jobs_by_account.clear()
+            self._active_workers = 0
             self._worker_tasks.clear()
+            self._mem_cond.notify_all()
 
     # Clear extension points for metrics
     def on_cache_hit(self, key: str, block_index: int) -> None:

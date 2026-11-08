@@ -149,28 +149,161 @@ When an operation needs a client for `channel_id`:
 
 ---
 
-## 7. Streaming Workload & Parallelism Policy
+## 7. Streaming Workload & Parallelism Policy (Milestone D)
 
-### Cross-Account Chunk Downloading Policy
-- **Decision**: Cross-account streaming maintains account affinity for in-flight requests while sharing verified canonical blocks.
-- **Rationale**:
-  1. Telethon file parts must be fetched using stable message documents and file references. In-flight fetch jobs are account-affine to eliminate session thrashing, while the shared canonical byte cache deduplicates verified data blocks across accounts without redundant downloads or RAM budget leaks.
-  2. Single-account bounded parallel downloading (`ParallelTelegramStreamManager`) delivers multi-worker chunk prefetching when `TELEGRAM_PARALLEL_STREAM_ENABLED=true`; live MTProto multi-account network throughput remains unmeasured and unverified in production.
-  3. Account-level affinity eliminates chunk boundary mismatches and guarantees deterministic, truthful HTTP range delivery.
+### HTTP Range Integrity & Account Affinity
+- **Range Truthfulness**: Standard HTTP 206 Partial Content delivery with exact `Content-Range: bytes START-END/TOTAL` and `Content-Length`. Empty ranges or invalid bounds produce truthful 416 Range Not Satisfiable headers.
+- **Account Affinity**: For any in-flight streaming request, the assigned account client is pinned for the lifetime of the stream (`job_key=_account_id`). If an account encounters a network drop or cooldown mid-stream after HTTP headers have been transmitted, the connection aborts truthfully to allow player seek/reconnect; mid-stream account switching is strictly prohibited to prevent chunk boundary corruption and session thrashing.
+- **Cross-Account Chunk Downloading Policy**:
+  - **Decision**: Deferred / disabled by default. Cross-account striped downloading across multiple Telethon sessions introduces severe MTProto session switching overhead, file reference desynchronization, and DC hop latency with no verified throughput benefit.
+  - **Shared Canonical RAM Cache**: Streams downloading the same document share verified canonical blocks (`key=tg:{channel}:{msg}:{doc_id}:{total}`) in RAM. In-flight jobs are isolated per account (`job_key=_account_id`) to preserve session stability and authorization boundaries without cross-account failure propagation. Because in-flight blocks remain account-scoped, if multiple accounts concurrently request the same uncached block, each account performs its own upstream fetch (no cross-account in-flight dedup). However, once a verified block completes, it is stored in the shared canonical RAM cache, where subsequent reads across all accounts reuse the completed block directly from cache without upstream fetches.
+
+### Bounded Concurrency, Priority & Backpressure
+1. **Bounded Concurrency**:
+   - `workers`: Max concurrent fetch workers per stream (default: 3, configured via `TELEGRAM_DOWNLOAD_WORKERS`).
+   - `global_workers`: Max concurrent fetch workers across all streams (default: 6, configured via `TELEGRAM_DOWNLOAD_GLOBAL_WORKERS`).
+   - `account_workers`: Optional cap on concurrent fetch workers per Telegram account (configured via `TELEGRAM_DOWNLOAD_ACCOUNT_WORKERS`).
+   - `max_leases_per_account`: Router concurrency limit for simultaneous operations per account (default: 20, configured via `TELEGRAM_MAX_CONCURRENT_LEASES_PER_ACCOUNT`; must be a positive integer, non-positive values fall back safely to 20 with a logged warning).
+2. **Playback Priority**:
+   - Priority 0 (**Demand**): Blocks currently needed for active playback.
+   - Priority 1 (**Prefetch**): Blocks pre-fetched ahead within read-ahead window.
+   - Candidate scheduling strictly prioritizes Demand blocks over Prefetch blocks, followed by least-loaded accounts for fairness across accounts and streams.
+3. **Backpressure & Cancellation**:
+   - When in-flight and cached blocks reach `max_cache_bytes` (default: 128MB), worker fetching pauses on an asyncio condition variable until downstream consumer yields and unpins blocks.
+   - Client disconnects or playback cancellations immediately cancel in-flight upstream fetch tasks and reclaim reserved memory.
 
 ---
 
-## 8. Benchmarking Methodology, Results & Limitations
+## 8. In-Memory Operational Metrics & Admin UI Status (Milestone E)
 
-### Methodology
-- The test harness simulates concurrent multi-account playback and history synchronization under varying concurrency levels using synthetic mock clients.
-- Verification checks:
-  1. Routing fairness: validated lease distribution balance across available eligible accounts under synthetic load.
-  2. Stream affinity: verified that active streaming and continuations remain pinned to the selected account without cross-account switching mid-operation.
-  3. Cooldown isolation: verified that accounts in synthetic `FloodWaitError` receive zero new leases while cooling down and affinity requests for them are strictly refused.
-  4. Bounded recheck policy: accounts marked with access errors undergo a bounded recheck policy (`TELEGRAM_CHANNEL_RECHECK_SECONDS`, default 1 hour) or manual `/api/v2/telegram/accounts/{id}/test` revalidation, preventing permanent lockouts while avoiding repeated private channel polling.
-  5. Cursor preservation: verified that channel cursor and watermark remain preserved across channel access revocation without deleting catalog items.
+### Bounded In-Memory Operational Metrics
+To avoid PostgreSQL write amplification and database lock contention on high-frequency streaming events, operational metrics are tracked strictly in memory inside `TelegramAccountRouter`:
 
-### Limitations & Unverified Items
-- All timing and throughput figures reported by the benchmark harness are purely synthetic execution timings measured against mocked MTProto delays.
-- Live MTProto multi-account streaming performance and bandwidth saturation across real Telegram data centers remain unverified, as automated multi-account verification requires multiple physical SIMs and real phone accounts that cannot be provisioned in headless automated environments.
+| Metric | Type | Scope | Description |
+| :--- | :--- | :--- | :--- |
+| `active_ops` | Integer gauge | Per account | Current active streaming and sync leases. |
+| `bytes_transferred` | Integer counter | Per account | Total bytes delivered through this account. |
+| `errors_count` | Integer counter | Per account | Total network, access, and protocol errors handled. |
+| `flood_wait_count` | Integer counter | Per account | Total FloodWait events encountered. |
+| `cooldown_seconds` | Integer gauge | Per account | Remaining cooldown seconds (0 when healthy). |
+| `throughput_mb_s` | Float gauge | Per account | Sliding 60-second window throughput (compacted to <= 100 entries). |
+| `buffer_init_latency_ms` | Float gauge | Per account | Arithmetic mean of the last 20 TTFB / initial buffer latency samples in ms. |
+| `last_error` | Object (redacted)| Per account | Redacted error type and sanitized summary (tokens, paths, and phones stripped). |
+
+### Channel Access Tracking & Secrecy
+- **Channel Access Mapping**: `telegram_account_channels` maintains access status (`accessible`, `inaccessible`, `no_access`, `flood_wait`, `temporary_error`, `unknown`) per account.
+- **Admin UI Cards**: The Sources Admin UI displays per-account cards showing connected status, phone mask, verified channels count, inaccessible channels count, active streams, transferred bytes, throughput, TTFB latency, and cooldown timers.
+- **Public Secrecy Protection**:
+  - Admin endpoints (`/api/v2/telegram/*`) enforce local/admin authentication (`_admin_blocked`) returning HTTP 403 to unauthenticated or external traffic.
+  - Public `/health`, `/metrics`, and streaming proxy responses never disclose internal account IDs, session file paths, phone numbers, or private channel credentials.
+
+---
+
+## 9. Upgrade, Rollback & Data Preservation Procedures
+
+### Single-Account Backward Compatibility
+- Baseline single-account setups continue to function without modification.
+- On first startup with multi-account code, if `telegram_accounts` is empty, `TelegramAccountStore` automatically registers the existing session file at `TELEGRAM_SESSION_PATH` as the `default` account. No re-login is required.
+
+### Database Migration Safety
+- Table migration `m0066_telegram_accounts.py` (legacy v66, chain v18) creates `telegram_accounts` and `telegram_account_channels` idempotently.
+- No high-frequency operational metrics or streaming counters are written to PostgreSQL.
+- **Media IDs & Cursor Preservation**:
+  - Cursors in `telegram_channel_state` (`latest_cursor`, `backfill_cursor`, `latest_watermark`) are invariant and shared.
+  - Video IDs (`telegram:{channel_id}:{message_id}:{file_unique_id}`) and catalog entries are never altered, removed, or duplicated when accounts are added or removed.
+
+### Safe Rollback Instructions
+If rolling back to a single-account release:
+1. Ensure the primary account's `.session` file is present at `TELEGRAM_SESSION_PATH` (defaults to `/data/telegram.session`).
+2. Stop the application services (`docker compose down`).
+3. Deploy the previous container image.
+4. The legacy release reads `TELEGRAM_SESSION_PATH` directly; the tables `telegram_accounts` and `telegram_account_channels` remain benignly in PostgreSQL schema without interfering with single-account operations. Catalog entries, `.strm` files, and sync cursors remain 100% intact.
+
+---
+
+## 10. Benchmarking Methodology, Results & Limitations
+
+### Reproducible Benchmark Harness
+Run the deterministic synthetic benchmark suite using the provided CLI tool:
+
+```bash
+# Run both Scenario 1 (Independent Concurrent Streams) and Scenario 2 (Same-Video Shared Cache)
+.venv/bin/python3 scripts/benchmark_telegram_multi_account.py --accounts 3 --streams 12 --chunks 5
+
+# Test FloodWait cooldown handling and lease exclusion
+.venv/bin/python3 scripts/benchmark_telegram_multi_account.py --simulate-floodwait
+
+# Run specific scenarios
+.venv/bin/python3 scripts/benchmark_telegram_multi_account.py --scenario independent
+.venv/bin/python3 scripts/benchmark_telegram_multi_account.py --scenario shared
+```
+
+### Redacted Sample Benchmark Output
+
+```json
+{
+  "admin_auth_status": "Blocked: No authenticated Admin browser or session is available in this computer environment.",
+  "real_account_comparisons_run": false,
+  "live_performance_note": "Synthetic benchmark timings only; live MTProto network performance unverified. No real Telegram network requests were made.",
+  "independent_streams_scenario": {
+    "num_accounts": 3,
+    "num_streams": 12,
+    "chunks_per_stream": 5,
+    "simulate_floodwait": false,
+    "synthetic_elapsed_seconds": 0.086,
+    "cpu_process_seconds": 0.0144,
+    "memory_peak_rss_mb": 128.74,
+    "synthetic_transferred_mb": 60.0,
+    "synthetic_throughput_mb_s": 695.52,
+    "synthetic_avg_ttff_ms": 18.73,
+    "synthetic_min_ttff_ms": 16.61,
+    "synthetic_max_ttff_ms": 20.9,
+    "synthetic_avg_initial_buffer_ms": 18.73,
+    "synthetic_avg_stream_latency_seconds": 0.082,
+    "synthetic_affinity_violations_count": 0,
+    "synthetic_errors_count": 0,
+    "synthetic_per_account_chunks": {
+      "sim_acc_1": 20,
+      "sim_acc_2": 20,
+      "sim_acc_3": 20
+    },
+    "synthetic_distribution_fairness_verified": true,
+    "synthetic_floodwait_cooldown_honored": true,
+    "synthetic_cooling_leases_during_cooldown_count": 0,
+    "synthetic_cooling_accounts_received_no_leases": true
+  },
+  "same_video_shared_cache_scenario": {
+    "num_readers": 4,
+    "blocks_per_reader": 10,
+    "block_size_bytes": 524288,
+    "total_file_size_bytes": 5242880,
+    "synthetic_elapsed_seconds": 0.071,
+    "cpu_process_seconds": 0.0055,
+    "upstream_fetch_calls": 20,
+    "upstream_bytes_fetched": 10485760,
+    "total_delivered_bytes": 20971520,
+    "total_delivered_mb": 20.0,
+    "delivered_to_upstream_bytes_ratio": 2.0,
+    "synthetic_throughput_mb_s": 281.85,
+    "first_reader_upstream_ttff_ms": 16.02,
+    "subsequent_reader_cache_ttff_avg_ms": 20.03,
+    "cache_peak_bytes": 2621440,
+    "cache_current_bytes": 2621440,
+    "cache_max_bytes": 2621440,
+    "cache_bounded": true
+  }
+}
+```
+
+### Tested vs. Unverified Status
+1. **Verified in Automated Suites**:
+   - Strict stream account affinity (0 cross-account violations under concurrency).
+   - Least-loaded lease balancing and fairness across available accounts.
+   - Immediate FloodWait cooldown isolation and affinity refusal during wait periods.
+   - Demand playback block prioritization over prefetch blocks.
+   - Shared canonical completed-block cache reuse (measuring delivered bytes vs upstream fetched bytes ratio; in-flight requests remain account-isolated).
+   - Upstream fetch backpressure when RAM cache budget is saturated.
+   - Client disconnection cancellation propagating to in-flight fetch tasks.
+   - Bounded in-memory operational metrics and Admin UI status reporting.
+2. **Explicitly Unverified in This Session**:
+   - **Real Telegram Account Network Measurements**: The current computer session has no authenticated Admin browser session. Live MTProto streaming performance, real multi-account saturation, and physical SIM-backed flood thresholds were not measured against live Telegram servers. All metrics reported above are synthetic execution benchmarks measured against mocked MTProto network delays.

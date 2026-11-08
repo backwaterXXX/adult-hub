@@ -205,6 +205,12 @@ async def _handle_list_accounts(admin: Any, manager: Any, request: Request) -> A
             effective_status = "disabled"
 
         phone_mask = acc.phone_mask or live_status.get("phone_mask", "")
+        metrics = router.get_account_metrics(acc.account_id)
+        acc_channels = access_by_account.get(acc.account_id, [])
+        accessible_count = sum(1 for c in acc_channels if c.get("access_status") == "accessible")
+        inaccessible_count = sum(1 for c in acc_channels if c.get("access_status") in ("inaccessible", "no_access"))
+        flood_count = sum(1 for c in acc_channels if c.get("access_status") == "flood_wait")
+
         account_list.append({
             "account_id": acc.account_id,
             "label": acc.label,
@@ -215,7 +221,14 @@ async def _handle_list_accounts(admin: Any, manager: Any, request: Request) -> A
             "cooldown_seconds": cooldown_remaining,
             "has_session_file": bool(live_status.get("has_session_file", False)),
             "api_configured": bool(live_status.get("api_configured", True)),
-            "channels": access_by_account.get(acc.account_id, []),
+            "metrics": metrics,
+            "channel_summary": {
+                "accessible": accessible_count,
+                "inaccessible": inaccessible_count,
+                "flood_wait": flood_count,
+                "total": len(acc_channels),
+            },
+            "channels": acc_channels,
             "created_at": acc.created_at.isoformat() if acc.created_at else None,
             "updated_at": acc.updated_at.isoformat() if acc.updated_at else None,
         })

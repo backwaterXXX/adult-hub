@@ -33,6 +33,26 @@ def _get_stream_manager_config() -> dict:
         except ValueError:
             return default
 
+    raw_acc_workers = (os.getenv("TELEGRAM_DOWNLOAD_ACCOUNT_WORKERS") or "").strip()
+    account_workers: Optional[int] = None
+    if raw_acc_workers:
+        try:
+            val = int(raw_acc_workers)
+            if val <= 0:
+                logger.warning(
+                    "Invalid TELEGRAM_DOWNLOAD_ACCOUNT_WORKERS=%r; must be a positive integer. Normalizing to None.",
+                    raw_acc_workers,
+                )
+                account_workers = None
+            else:
+                account_workers = val
+        except ValueError:
+            logger.warning(
+                "Invalid TELEGRAM_DOWNLOAD_ACCOUNT_WORKERS=%r; must be an integer. Normalizing to None.",
+                raw_acc_workers,
+            )
+            account_workers = None
+
     return {
         "workers": _int_env("TELEGRAM_DOWNLOAD_WORKERS", 3),
         "global_workers": _int_env("TELEGRAM_DOWNLOAD_GLOBAL_WORKERS", 6),
@@ -40,6 +60,7 @@ def _get_stream_manager_config() -> dict:
         "read_ahead_bytes": _int_env("TELEGRAM_READ_AHEAD_BYTES", 33554432),
         "max_cache_bytes": _int_env("TELEGRAM_STREAM_CACHE_BYTES", 134217728),
         "cache_ttl_seconds": _float_env("TELEGRAM_STREAM_CACHE_TTL_SECONDS", 120.0),
+        "account_workers": account_workers,
     }
 
 
