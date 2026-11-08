@@ -49,27 +49,35 @@ async def _probe_total_size(services: TelegramProxyServices, prov, ref: str) -> 
             res = await res
         return int(res) if res is not None else None
     except Exception as fs_error:
-        # A silent downgrade would turn every client seek into a whole-file
-        # transfer without telling anyone; fail loudly instead.
         _LOGGER.warning(
-            "Telegram file_size lookup failed for %s: %s", ref, fs_error)
-        raise HTTPException(status_code=503, detail="Telegram file size lookup failed") from fs_error
+            "Telegram file_size lookup failed for %s: %s (serving range with unknown total size)",
+            ref, fs_error)
+        return None
 
 
-def _range_headers(offset: int, length: Optional[int], total: int) -> dict:
+def _range_headers(offset: int, length: Optional[int], total: Optional[int]) -> dict:
     """Return 206 headers for a satisfiable range, or raise 416."""
-    end = (offset + length - 1) if length is not None else (total - 1)
-    if end >= total:
-        end = total - 1
-    if end < offset:
-        raise HTTPException(status_code=416, detail="Range not satisfiable",
-                            headers={"Content-Range": f"bytes */{total}"})
-    return {
-        "Content-Range": f"bytes {offset}-{end}/{total}",
+    headers = {
         "Accept-Ranges": "bytes",
-        "Content-Length": str(end - offset + 1),
         "Content-Type": "application/octet-stream",
     }
+    if total is not None:
+        end = (offset + length - 1) if length is not None else (total - 1)
+        if end >= total:
+            end = total - 1
+        if end < offset:
+            raise HTTPException(status_code=416, detail="Range not satisfiable",
+                                headers={"Content-Range": f"bytes */{total}"})
+        headers["Content-Range"] = f"bytes {offset}-{end}/{total}"
+        headers["Content-Length"] = str(end - offset + 1)
+    else:
+        if length is not None:
+            end = offset + length - 1
+            headers["Content-Range"] = f"bytes {offset}-{end}/*"
+            headers["Content-Length"] = str(length)
+        else:
+            headers["Content-Range"] = f"bytes {offset}-/*"
+    return headers
 
 
 def _head_response(total: Optional[int]) -> Response:
@@ -205,14 +213,10 @@ async def proxy_telegram_response(
     rng = services.parse_range_request(rng_raw, total)
     offset = rng[0] if rng else 0
     length = rng[1] if rng else None
-    # If a client asks for a range but the provider cannot tell us the total
-    # size, a partial response cannot be described truthfully. Stream the
-    # whole resource from byte zero and return 200 in that case.
-    if rng is not None and total is None:
-        offset, length = 0, None
+
     is_head = (request.method or "GET").upper() == "HEAD"
     partial_headers = None
-    if rng is not None and total is not None:
+    if rng is not None:
         partial_headers = _range_headers(offset, length, total)
         if is_head:
             # Same truthful headers/status as GET without creating or

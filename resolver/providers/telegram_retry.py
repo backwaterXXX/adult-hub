@@ -40,7 +40,9 @@ def is_retryable(exc: BaseException) -> bool:
         return True
     if type(exc).__name__ in _RETRYABLE_TYPE_NAMES:
         return True
-    return type(exc).__name__ == "FloodWaitError" and _flood_seconds(exc) is not None
+    if "floodwait" in type(exc).__name__.casefold() or _flood_seconds(exc) is not None:
+        return True
+    return False
 
 
 def _flood_seconds(exc: BaseException) -> Optional[float]:
@@ -51,14 +53,14 @@ def _flood_seconds(exc: BaseException) -> Optional[float]:
 
 
 def retry_delay(exc: BaseException, attempt: int) -> float:
-    flood = _flood_seconds(exc) if type(exc).__name__ == "FloodWaitError" else None
+    flood = _flood_seconds(exc)
     if flood is not None:
         return flood
     return min(BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), MAX_BACKOFF_SECONDS)
 
 
 def _gives_up(exc: BaseException, delay: float) -> bool:
-    flood = _flood_seconds(exc) if type(exc).__name__ == "FloodWaitError" else None
+    flood = _flood_seconds(exc)
     return flood is not None and flood > MAX_FLOOD_WAIT_SECONDS
 
 
@@ -86,10 +88,10 @@ async def retry_stream(factory: Callable[[], "object"], *,
             logger.warning(
                 "Telegram download attempt %d failed (%s: %s); retrying in %.1fs",
                 attempt, type(exc).__name__, exc, delay)
-            total_wait += delay
-            await asyncio.sleep(delay)
             if on_retry is not None:
                 on_retry(exc, attempt)
+            total_wait += delay
+            await asyncio.sleep(delay)
 
 
 async def retry_call(func: Callable[[], Awaitable], *,
@@ -112,7 +114,7 @@ async def retry_call(func: Callable[[], Awaitable], *,
             logger.warning(
                 "Telegram fetch attempt %d failed (%s: %s); retrying in %.1fs",
                 attempt, type(exc).__name__, exc, delay)
-            total_wait += delay
-            await asyncio.sleep(delay)
             if on_retry is not None:
                 on_retry(exc, attempt)
+            total_wait += delay
+            await asyncio.sleep(delay)

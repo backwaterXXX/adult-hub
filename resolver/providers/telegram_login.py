@@ -884,6 +884,25 @@ class TelegramLoginManager:
             await self._safe_disconnect(challenge.client)
 
             _promote_pending_session(challenge.pending_path, challenge.target_path)
+
+            # Persist authorized account to storage without overwriting existing label or disabling state
+            try:
+                from .telegram_account_store import upsert_account
+                upsert_account(
+                    challenge.account_id,
+                    phone_mask=challenge.phone_mask,
+                    session_file=challenge.target_path,
+                )
+            except Exception as store_err:
+                logger.error("Could not persist authorized account to store: %s", store_err)
+                if os.path.isfile(challenge.target_path):
+                    try:
+                        os.remove(challenge.target_path)
+                    except OSError:
+                        pass
+                self._cached_auth.pop(challenge.account_id, None)
+                raise RuntimeError(f"Failed to persist authorized account to database: {store_err}") from store_err
+
             challenge.state = "authorized"
             self._cached_auth[challenge.account_id] = True
             self._clear_account_limits(challenge.account_id)
@@ -891,14 +910,20 @@ class TelegramLoginManager:
             async with self._manager_lock:
                 self._challenges.pop(challenge.account_id, None)
 
-            # Reset singleton provider client in resolver so it discovers the new session
+            # Reset only the target account client in the router pool
             try:
-                from .telegram import reset_telegram_client
-                res = reset_telegram_client()
-                if asyncio.iscoroutine(res):
-                    await res
+                from .telegram_router import get_telegram_router
+                await get_telegram_router().reset_account_client(challenge.account_id)
             except Exception:
                 pass
+            if challenge.account_id == "default":
+                try:
+                    from .telegram import reset_telegram_client
+                    res = reset_telegram_client("default")
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception:
+                    pass
 
 
 # Singleton instance for resolver process

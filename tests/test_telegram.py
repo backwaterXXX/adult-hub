@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 import os
 import sys
 import tempfile
@@ -305,7 +306,12 @@ class TestTelegramProvider(unittest.TestCase):
         entity = object()
         client.get_entity = AsyncMock(return_value=entity)
         client.get_messages = AsyncMock(return_value=[])
-        with patch.object(tg_module, "_require_client", AsyncMock(return_value=client)), \
+
+        @asynccontextmanager
+        async def fake_lease(channel_ref=None, affinity_account=None):
+            yield ("default", client)
+
+        with patch.object(tg_module, "_CLIENT_LEASE_SEAM", fake_lease), \
              patch.object(tg_module, "_entity_ref", return_value=-1001234567890):
             asyncio.run(provider.check_configured_channel_access("-1001234567890"))
         client.get_entity.assert_awaited_once_with(-1001234567890)
@@ -352,7 +358,12 @@ class TestTelegramProvider(unittest.TestCase):
             message="",
             media=types.SimpleNamespace(id=777, size=987654),
         )
-        with patch.object(tg_module, "_require_client", AsyncMock(return_value=object())), \
+
+        @asynccontextmanager
+        async def fake_lease(channel_ref=None, affinity_account=None):
+            yield ("default", object())
+
+        with patch.object(tg_module, "_CLIENT_LEASE_SEAM", fake_lease), \
              patch.object(tg_module, "_get_cached_message", AsyncMock(return_value=message)):
             size = asyncio.run(provider.file_size("-1001234567890:42:777"))
         self.assertEqual(size, 987654)

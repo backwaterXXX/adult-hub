@@ -36,6 +36,7 @@ class _CacheEntry:
 class _Job:
     __slots__ = (
         "key",
+        "cache_key",
         "block_index",
         "offset",
         "length",
@@ -58,8 +59,10 @@ class _Job:
         length: int,
         fetch_fn: Callable[[int, int], Awaitable[bytes]],
         priority: int,
+        cache_key: Optional[str] = None,
     ):
         self.key: str = key
+        self.cache_key: str = cache_key or key
         self.block_index: int = block_index
         self.offset: int = offset
         self.length: int = length
@@ -294,19 +297,32 @@ class ParallelTelegramStreamManager:
         self._jobs.pop((job.key, job.block_index), None)
 
     def _store_fetched_block_locked(self, job: _Job, data: bytes, start_time: float) -> None:
-        actual_size = len(data)
-        expires_at = time.monotonic() + self.cache_ttl_seconds
-        entry = _CacheEntry(data=data, expires_at=expires_at)
-        # Pinned for all awaiting demand readers so other workers cannot evict
-        entry.pinned_count = len(job.demand_consumers)
-        self._cache[(job.key, job.block_index)] = entry
-        self._current_cache_bytes += actual_size
-        self.on_block_fetched(
-            job.key,
-            job.block_index,
-            actual_size,
-            time.monotonic() - start_time,
-        )
+        cache_key = (job.cache_key, job.block_index)
+        now = time.monotonic()
+        expires_at = now + self.cache_ttl_seconds
+        existing = self._cache.get(cache_key)
+
+        if existing is not None:
+            # Account-specific job completed a block already verified and cached.
+            # Preserve existing canonical bytes, add demand pins for awaiting readers,
+            # and refresh TTL without double-counting RAM budget.
+            existing.pinned_count += len(job.demand_consumers)
+            existing.expires_at = max(existing.expires_at, expires_at)
+            self._cache.move_to_end(cache_key)
+        else:
+            actual_size = len(data)
+            entry = _CacheEntry(data=data, expires_at=expires_at)
+            # Pinned for all awaiting demand readers so other workers cannot evict
+            entry.pinned_count = len(job.demand_consumers)
+            self._cache[cache_key] = entry
+            self._current_cache_bytes += actual_size
+            self.on_block_fetched(
+                job.cache_key,
+                job.block_index,
+                actual_size,
+                now - start_time,
+            )
+
         if not job.future.done():
             # Signal only; the bytes live exclusively in the cache
             # entry (pinned for demand readers above).
@@ -328,6 +344,7 @@ class ParallelTelegramStreamManager:
         length: Optional[int],
         total: int,
         fetch: Callable[[int, int], Awaitable[bytes]],
+        job_key: Optional[str] = None,
     ) -> AsyncIterator[bytes]:
         """Stream byte range with bounded parallel fetching and prefetching."""
         if self._closed:
@@ -335,6 +352,8 @@ class ParallelTelegramStreamManager:
         _validate_stream_request(key, offset, length, total)
         if offset >= total or length == 0:
             return
+
+        effective_job_key = f"{key}::{job_key}" if job_key else key
 
         start_offset = offset
         end_offset = total if length is None else min(total, offset + length)
@@ -355,9 +374,8 @@ class ParallelTelegramStreamManager:
                 if self._closed:
                     raise RuntimeError("ParallelTelegramStreamManager is closed")
 
-                cache_key = (key, cur_blk)
                 entry, job = await self._acquire_block(
-                    key, cur_blk, total, fetch, consumer_token, registered_jobs,
+                    key, effective_job_key, cur_blk, total, fetch, consumer_token, registered_jobs,
                     last_block, read_ahead_blocks,
                 )
                 current_pinned = entry
@@ -367,7 +385,7 @@ class ParallelTelegramStreamManager:
                     if job is not None:
                         job.consumers.discard(consumer_token)
                         job.demand_consumers.discard(consumer_token)
-                    registered_jobs.pop(cache_key, None)
+                    registered_jobs.pop((effective_job_key, cur_blk), None)
 
                 # Slice chunk
                 blk_start = cur_blk * B
@@ -399,6 +417,7 @@ class ParallelTelegramStreamManager:
     async def _acquire_block(
         self,
         key: str,
+        job_key: str,
         cur_blk: int,
         total: int,
         fetch: Callable[[int, int], Awaitable[bytes]],
@@ -422,12 +441,12 @@ class ParallelTelegramStreamManager:
                 entry = self._attach_cached_locked(key, cache_key, cur_blk, now)
                 if entry is None:
                     job = self._attach_demand_locked(
-                        key, cur_blk, total, fetch, consumer_token, registered_jobs,
+                        key, job_key, cur_blk, total, fetch, consumer_token, registered_jobs,
                     )
 
                 # 2. Prefetch blocks ahead within window
                 self._schedule_prefetch_locked(
-                    key, cur_blk, last_block, read_ahead_blocks, total, fetch,
+                    key, job_key, cur_blk, last_block, read_ahead_blocks, total, fetch,
                     consumer_token, registered_jobs, now,
                 )
 
@@ -465,6 +484,7 @@ class ParallelTelegramStreamManager:
     def _attach_demand_locked(
         self,
         key: str,
+        job_key: str,
         cur_blk: int,
         total: int,
         fetch: Callable[[int, int], Awaitable[bytes]],
@@ -472,28 +492,29 @@ class ParallelTelegramStreamManager:
         registered_jobs: Dict[Tuple[str, int], _Job],
     ) -> _Job:
         """Attach the reader to an existing job or create a demand job for the block."""
-        cache_key = (key, cur_blk)
+        job_map_key = (job_key, cur_blk)
         self.on_cache_miss(key, cur_blk)
         blk_off = cur_blk * self.block_size
         blk_len = min(self.block_size, total - blk_off)
-        job = self._jobs.get(cache_key)
+        job = self._jobs.get(job_map_key)
         if job is not None:
             job.consumers.add(consumer_token)
             job.demand_consumers.add(consumer_token)
-            registered_jobs[cache_key] = job
+            registered_jobs[job_map_key] = job
             if job.priority > 0:
                 job.priority = 0  # Promote to demand
         else:
-            job = _Job(key, cur_blk, blk_off, blk_len, fetch, priority=0)
+            job = _Job(job_key, cur_blk, blk_off, blk_len, fetch, priority=0, cache_key=key)
             job.consumers.add(consumer_token)
             job.demand_consumers.add(consumer_token)
-            self._jobs[cache_key] = job
-            registered_jobs[cache_key] = job
+            self._jobs[job_map_key] = job
+            registered_jobs[job_map_key] = job
         return job
 
     def _schedule_prefetch_locked(
         self,
         key: str,
+        job_key: str,
         cur_blk: int,
         last_block: int,
         read_ahead_blocks: int,
@@ -506,12 +527,13 @@ class ParallelTelegramStreamManager:
         prefetch_end = min(last_block + 1, cur_blk + 1 + read_ahead_blocks)
         for ahead_blk in range(cur_blk + 1, prefetch_end):
             self._schedule_prefetch_block_locked(
-                key, ahead_blk, total, fetch, consumer_token, registered_jobs, now,
+                key, job_key, ahead_blk, total, fetch, consumer_token, registered_jobs, now,
             )
 
     def _schedule_prefetch_block_locked(
         self,
         key: str,
+        job_key: str,
         ahead_blk: int,
         total: int,
         fetch: Callable[[int, int], Awaitable[bytes]],
@@ -529,17 +551,18 @@ class ParallelTelegramStreamManager:
         if blk_len <= 0:
             return
 
-        existing_job = self._jobs.get(ahead_key)
+        ahead_job_key = (job_key, ahead_blk)
+        existing_job = self._jobs.get(ahead_job_key)
         if existing_job is not None:
             existing_job.consumers.add(consumer_token)
-            registered_jobs[ahead_key] = existing_job
+            registered_jobs[ahead_job_key] = existing_job
         else:
             new_job = _Job(
-                key, ahead_blk, blk_off, blk_len, fetch, priority=1
+                job_key, ahead_blk, blk_off, blk_len, fetch, priority=1, cache_key=key
             )
             new_job.consumers.add(consumer_token)
-            self._jobs[ahead_key] = new_job
-            registered_jobs[ahead_key] = new_job
+            self._jobs[ahead_job_key] = new_job
+            registered_jobs[ahead_job_key] = new_job
             self.on_prefetch_scheduled(key, ahead_blk)
 
     async def _release_registered_jobs(
@@ -559,7 +582,7 @@ class ParallelTelegramStreamManager:
         j.consumers.discard(consumer_token)
         j.demand_consumers.discard(consumer_token)
         if was_demand and j.future.done() and not j.future.cancelled() and j.future.exception() is None:
-            cached = self._cache.get((j.key, j.block_index))
+            cached = self._cache.get((j.cache_key, j.block_index))
             if cached is not None and cached.pinned_count > 0:
                 cached.pinned_count -= 1
 

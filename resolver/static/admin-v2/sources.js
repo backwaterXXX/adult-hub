@@ -17,6 +17,8 @@
   const TELEGRAM_AUTH_PASSWORD_URL = `${V2_API}/telegram/auth/password`;
   const TELEGRAM_AUTH_RESEND_URL = `${V2_API}/telegram/auth/resend`;
   const TELEGRAM_AUTH_CANCEL_URL = `${V2_API}/telegram/auth/cancel`;
+  const TELEGRAM_ACCOUNTS_URL = `${V2_API}/telegram/accounts`;
+  const TELEGRAM_CHANNELS_ACCESS_URL = `${V2_API}/telegram/channels/access`;
   const SOURCE_PAGE_SIZE = 50;
   const $ = (selector, root = document) => root.querySelector(selector);
 
@@ -28,7 +30,8 @@
     filter: { q: '', status: '', sourceKey: '' },
     sort: { key: 'channel', direction: 'asc' },
     channelHistory: new Map(), historyTruncated: false, accessChecks: new Map(), accessFeedback: '',
-    detailItem: null, urlTimer: null, urlEditActive: false, telegramAuth: null
+    detailItem: null, urlTimer: null, urlEditActive: false, telegramAuth: null,
+    activeAuthAccountId: 'default'
   };
 
   // Shared helpers live in admin-v2.js and are published through window.AdminV2.
@@ -1527,7 +1530,7 @@
 
   let wizardWriteToken = '';
 
-  async function postTelegramAuth(url, payload) {
+  async function requestTelegramAuth(url, payload, method = 'POST') {
     const capabilities = await window.AdminV2.getJson(`${V2_API}/capabilities`);
     if (capabilities.read_only_reason === 'invalid_admin_token') {
       throw new Error('Admin write token configuration is invalid.');
@@ -1543,10 +1546,14 @@
       if (!wizardWriteToken) throw new Error('An admin write token is required.');
       headers.set('Authorization', `Bearer ${wizardWriteToken}`);
     }
+    const bodyPayload = { ...(payload || {}) };
+    if (!bodyPayload.account_id && state.activeAuthAccountId) {
+      bodyPayload.account_id = state.activeAuthAccountId;
+    }
     const response = await fetch(url, {
-      method: 'POST',
+      method,
       headers,
-      body: JSON.stringify(payload || {}),
+      body: method === 'GET' ? undefined : JSON.stringify(bodyPayload),
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -1563,97 +1570,170 @@
     return result;
   }
 
-  function renderTelegramAccountCard(authStatus) {
+  function postTelegramAuth(url, payload) {
+    return requestTelegramAuth(url, payload, 'POST');
+  }
+
+  async function renderTelegramAccountCard(authStatus) {
     const card = $('#telegramAccountCard');
     if (!card) return;
     const intro = $('#telegramAccountIntro');
-    const button = $('#telegramLoginButton');
+    const container = $('#telegramAccountsContainer');
     const banner = $('#telegramAccountBanner');
 
-    if (!authStatus) {
-      if (intro) intro.textContent = 'Checking Telegram connection status…';
-      if (button) { button.textContent = 'Log in with Telegram'; button.disabled = false; }
-      if (banner) banner.hidden = true;
+    let accountsPayload = null;
+    try {
+      accountsPayload = await window.AdminV2.getJson(TELEGRAM_ACCOUNTS_URL);
+    } catch (e) {
+      // Offline fallback
+    }
+    const accounts = Array.isArray(accountsPayload?.accounts) ? accountsPayload.accounts : [];
+
+    if (intro) {
+      intro.textContent = accounts.length
+        ? `Configured Telegram user accounts: ${accounts.length}. Multi-account routing balances stream and history requests automatically.`
+        : 'Connect Telegram user accounts to enable channel synchronization and streaming.';
+    }
+
+    if (!container) return;
+
+    if (!accounts.length) {
+      const emptyNote = create('p', 'detail-note', 'No Telegram accounts configured yet. Click "Add Telegram account" to authenticate your first account.');
+      container.replaceChildren(emptyNote);
       return;
     }
 
-    if (authStatus.status === 'authorized') {
-      if (intro) intro.textContent = 'Connected and authorized. Channels can be synchronized.';
-      if (button) {
-        button.textContent = 'Telegram Connected';
-        button.className = 'button button-quiet';
-        button.disabled = false;
+    const listWrap = create('div', 'telegram-accounts-wrap');
+    for (const acc of accounts) {
+      const accCard = create('div', 'telegram-account-card');
+      const header = create('div', 'telegram-account-card-header');
+      const titleWrap = create('div');
+      const title = create('h3', '', acc.label || acc.account_id);
+      if (acc.label && acc.label !== acc.account_id) {
+        title.appendChild(create('span', 'detail-kicker', ` (${acc.account_id})`));
       }
-      if (banner) {
-        banner.className = 'state-banner state-success';
-        banner.textContent = 'Telegram session is active and verified.';
-        banner.hidden = false;
+      titleWrap.appendChild(title);
+
+      const badge = create('span', 'telegram-badge');
+      if (acc.status === 'cooling_down') {
+        badge.className += ' telegram-badge-warning';
+        badge.textContent = `Cooldown (${acc.cooldown_seconds}s)`;
+      } else if (acc.status === 'authorized') {
+        badge.className += ' telegram-badge-success';
+        badge.textContent = 'Connected';
+      } else if (acc.status === 'disabled') {
+        badge.className += ' telegram-badge-muted';
+        badge.textContent = 'Disabled';
+      } else if (acc.status === 'unauthorized_session_present') {
+        badge.className += ' telegram-badge-warning';
+        badge.textContent = 'Session unverified';
+      } else if (acc.status === 'in_progress') {
+        badge.className += ' telegram-badge-warning';
+        badge.textContent = 'In progress';
+      } else {
+        badge.className += ' telegram-badge-muted';
+        badge.textContent = 'Not connected';
       }
-    } else if (authStatus.status === 'unauthorized_session_present') {
-      if (intro) intro.textContent = 'Existing session file detected on server, but authorization check failed.';
-      if (button) {
-        button.textContent = 'Inspect Session Status';
-        button.className = 'button button-quiet';
-        button.disabled = false;
+      header.append(titleWrap, badge);
+
+      const body = create('div', 'telegram-account-card-body');
+      if (acc.phone_mask) {
+        body.appendChild(create('span', '', `Phone: ${acc.phone_mask}`));
       }
-      if (banner) {
-        banner.className = 'state-banner state-warning';
-        banner.textContent = 'An unauthorized session file was found on the server. To protect existing data, it will not be overwritten automatically.';
-        banner.hidden = false;
+      const accessibleCount = (acc.channels || []).filter(c => c.access_status === 'accessible').length;
+      body.appendChild(create('span', '', `Verified Channels: ${accessibleCount}`));
+
+      const actions = create('div', 'telegram-account-card-actions');
+
+      if (!acc.authorized) {
+        const loginBtn = create('button', 'button button-primary', acc.has_session_file ? 'Verify session' : 'Log in');
+        loginBtn.type = 'button';
+        loginBtn.addEventListener('click', () => openTelegramAuthWizard(loginBtn, acc.account_id));
+        actions.appendChild(loginBtn);
+      } else {
+        const testBtn = create('button', 'button button-quiet', 'Test access');
+        testBtn.type = 'button';
+        testBtn.addEventListener('click', async () => {
+          testBtn.disabled = true;
+          testBtn.textContent = 'Testing…';
+          try {
+            const res = await postTelegramAuth(`${TELEGRAM_ACCOUNTS_URL}/${encodeURIComponent(acc.account_id)}/test`, {});
+            if (res.ok && res.authorized) {
+              setNotice('success', `Account ${acc.label || acc.account_id} verified. Accessible channels: ${Object.values(res.channels || {}).filter(s => s === 'accessible').length}`);
+            } else {
+              setNotice('warning', `Account check returned status: ${res.status}`);
+            }
+            await renderTelegramAccountCard();
+          } catch (err) {
+            setNotice('error', `Test failed: ${err.message}`);
+          } finally {
+            testBtn.disabled = false;
+            testBtn.textContent = 'Test access';
+          }
+        });
+        actions.appendChild(testBtn);
       }
-    } else if (authStatus.status === 'session_file_present') {
-      if (intro) intro.textContent = 'Existing session file detected on server. Verification can be performed to confirm connection.';
-      if (button) {
-        button.textContent = 'Verify Session';
-        button.className = 'button button-primary';
-        button.disabled = false;
-      }
-      if (banner) {
-        banner.className = 'state-banner state-info';
-        banner.textContent = 'A session file was found on the server. Open wizard to verify connection.';
-        banner.hidden = false;
-      }
-    } else if (authStatus.status === 'unconfigured') {
-      if (intro) intro.textContent = 'TELEGRAM_API_ID and TELEGRAM_API_HASH are not set in the server environment (.env).';
-      if (button) {
-        button.textContent = 'Configuration Needed';
-        button.className = 'button button-quiet';
-        button.disabled = true;
-      }
-      if (banner) {
-        banner.className = 'state-banner state-warning';
-        banner.textContent = 'Set TELEGRAM_API_ID and TELEGRAM_API_HASH in your server environment to enable Telegram authentication.';
-        banner.hidden = false;
-      }
-    } else {
-      const inProgress = authStatus.status === 'in_progress';
-      if (intro) {
-        intro.textContent = inProgress
-          ? `Authentication in progress for ${authStatus.phone_mask || 'account'}…`
-          : 'Not connected. Connect your Telegram account to enable channel synchronization.';
-      }
-      if (button) {
-        button.textContent = inProgress ? 'Resume Login' : 'Log in with Telegram';
-        button.className = 'button button-primary';
-        button.disabled = false;
-      }
-      if (banner) {
-        banner.className = 'state-banner state-info';
-        banner.textContent = inProgress
-          ? 'A login challenge is currently active. Click Resume Login to complete verification.'
-          : 'Telegram authentication is required to synchronize channels. Click Log in with Telegram to start.';
-        banner.hidden = false;
-      }
+
+      const renameBtn = create('button', 'button button-quiet', 'Rename');
+      renameBtn.type = 'button';
+      renameBtn.addEventListener('click', async () => {
+        const newLabel = prompt('Enter new label for this account:', acc.label || acc.account_id);
+        if (newLabel !== null && newLabel.trim()) {
+          try {
+            await requestTelegramAuth(`${TELEGRAM_ACCOUNTS_URL}/${encodeURIComponent(acc.account_id)}`, { label: newLabel.trim() }, 'PATCH');
+            setNotice('success', 'Account renamed.');
+            await renderTelegramAccountCard();
+          } catch (err) {
+            setNotice('error', `Rename failed: ${err.message}`);
+          }
+        }
+      });
+      actions.appendChild(renameBtn);
+
+      const toggleBtn = create('button', 'button button-quiet', acc.enabled ? 'Disable' : 'Enable');
+      toggleBtn.type = 'button';
+      toggleBtn.addEventListener('click', async () => {
+        try {
+          await requestTelegramAuth(`${TELEGRAM_ACCOUNTS_URL}/${encodeURIComponent(acc.account_id)}`, { enabled: !acc.enabled }, 'PATCH');
+          setNotice('success', `Account ${acc.enabled ? 'disabled' : 'enabled'}.`);
+          await renderTelegramAccountCard();
+        } catch (err) {
+          setNotice('error', `Toggle failed: ${err.message}`);
+        }
+      });
+      actions.appendChild(toggleBtn);
+
+      const deleteBtn = create('button', 'button button-quiet', 'Remove');
+      deleteBtn.type = 'button';
+      deleteBtn.addEventListener('click', async () => {
+        if (confirm(`Are you sure you want to remove account "${acc.label || acc.account_id}"? Its local session file will be removed. Channels and media files will NOT be deleted.`)) {
+          try {
+            await requestTelegramAuth(`${TELEGRAM_ACCOUNTS_URL}/${encodeURIComponent(acc.account_id)}?confirm=true`, {}, 'DELETE');
+            setNotice('success', `Account ${acc.label || acc.account_id} removed.`);
+            await renderTelegramAccountCard();
+          } catch (err) {
+            setNotice('error', `Removal failed: ${err.message}`);
+          }
+        }
+      });
+      actions.appendChild(deleteBtn);
+
+      accCard.append(header, body, actions);
+      listWrap.appendChild(accCard);
     }
+    container.replaceChildren(listWrap);
   }
 
   let authCountdownTimer = null;
 
-  async function openTelegramAuthWizard(opener) {
+  async function openTelegramAuthWizard(opener, accountId = 'default') {
+    state.activeAuthAccountId = accountId || 'default';
     const dialog = $('#telegramAuthDialog');
     if (!dialog) return;
+    const title = $('#telegramAuthTitle');
+    if (title) title.textContent = `Telegram Login: ${state.activeAuthAccountId}`;
     window.AdminV2.openDialog(dialog, opener || document.activeElement);
-    await refreshTelegramAuthWizard();
+    await refreshTelegramAuthWizard(state.activeAuthAccountId);
   }
 
   function closeTelegramAuthWizard() {
@@ -1664,6 +1744,7 @@
       authCountdownTimer = null;
     }
     window.AdminV2.closeDialog(dialog);
+    renderTelegramAccountCard();
   }
 
   function setWizardBanner(type, message) {
@@ -1679,23 +1760,24 @@
     banner.hidden = false;
   }
 
-  async function refreshTelegramAuthWizard() {
+  async function refreshTelegramAuthWizard(accountId) {
+    const target = accountId || state.activeAuthAccountId || 'default';
+    state.activeAuthAccountId = target;
     setWizardBanner('', '');
     const body = $('#telegramAuthBody');
     if (!body) return;
 
-    body.replaceChildren(create('p', 'detail-note', 'Checking Telegram authorization status…'));
+    body.replaceChildren(create('p', 'detail-note', `Checking Telegram authorization status for ${target}…`));
 
     let statusPayload = null;
     try {
-      statusPayload = await window.AdminV2.getJson(TELEGRAM_AUTH_STATUS_URL);
+      statusPayload = await window.AdminV2.getJson(`${TELEGRAM_AUTH_STATUS_URL}?account_id=${encodeURIComponent(target)}&check_live=false`);
     } catch (err) {
       body.replaceChildren(create('p', 'detail-error', `Could not check Telegram status: ${scrub(err.message)}`));
       return;
     }
 
     state.telegramAuth = statusPayload;
-    renderTelegramAccountCard(statusPayload);
 
     if (statusPayload.status === 'authorized') {
       renderWizardAuthorized(body);
@@ -2122,7 +2204,31 @@
     window.addEventListener('popstate', restoreSourceStateFromHistory);
     const telegramLoginBtn = $('#telegramLoginButton');
     if (telegramLoginBtn) {
-      telegramLoginBtn.addEventListener('click', event => openTelegramAuthWizard(event.currentTarget));
+      telegramLoginBtn.addEventListener('click', async event => {
+        let defaultId = 'worker_2';
+        try {
+          const list = await window.AdminV2.getJson(TELEGRAM_ACCOUNTS_URL);
+          if (!list?.accounts?.length) {
+            defaultId = 'default';
+          } else {
+            defaultId = `account_${list.accounts.length + 1}`;
+          }
+        } catch (e) {}
+        const accId = prompt('Enter a unique identifier for the new Telegram account (e.g. worker_2):', defaultId);
+        if (!accId || !accId.trim()) return;
+        const normalizedId = accId.trim();
+        const label = prompt('Enter a label for this account:', normalizedId) || normalizedId;
+        try {
+          await postTelegramAuth(TELEGRAM_ACCOUNTS_URL, { account_id: normalizedId, label: label.trim() });
+          await openTelegramAuthWizard(event.currentTarget, normalizedId);
+        } catch (err) {
+          setNotice('error', `Could not create account: ${err.message}`);
+        }
+      });
+    }
+    const accountsRefreshBtn = $('#telegramAccountsRefreshBtn');
+    if (accountsRefreshBtn) {
+      accountsRefreshBtn.addEventListener('click', () => renderTelegramAccountCard());
     }
     const telegramAuthClose = $('#telegramAuthClose');
     if (telegramAuthClose) {

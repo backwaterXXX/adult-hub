@@ -402,6 +402,7 @@ class TestMigrationsEngine(PgTestCase):
             (63, "0063_source_removal_indexes"),
             (64, "0064_video_duplicate_decisions_evidence"),
             (65, "0065_system_schedules_last_job_id"),
+            (66, "0066_telegram_accounts"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):

@@ -1,5 +1,6 @@
 """Preview failures must not hold Jellyfin's metadata queue indefinitely."""
 import asyncio
+from contextlib import asynccontextmanager
 import os
 import sys
 import tempfile
@@ -44,7 +45,12 @@ class TestTelegramThumbnails(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(media=SimpleNamespace(document=document), photo=None)
         client = SimpleNamespace(download_media=AsyncMock(return_value=b"\xff\xd8preview"))
         provider = telegram.TelegramProvider()
-        with patch.object(telegram, "_require_client", AsyncMock(return_value=client)), \
+
+        @asynccontextmanager
+        async def fake_lease(channel_ref=None, affinity_account=None):
+            yield ("default", client)
+
+        with patch.object(telegram, "_CLIENT_LEASE_SEAM", fake_lease), \
              patch.object(telegram, "_get_cached_message", AsyncMock(return_value=message)):
             first, second = await asyncio.gather(
                 provider.download_thumb("-1001:42:unique"),
@@ -61,13 +67,18 @@ class TestTelegramThumbnails(unittest.IsolatedAsyncioTestCase):
             finally:
                 cancelled.set()
         provider = telegram.TelegramProvider()
+
+        @asynccontextmanager
+        async def fake_lease(channel_ref=None, affinity_account=None):
+            await connect()
+            yield ("default", SimpleNamespace())
+
         with patch.object(telegram, "THUMB_TIMEOUT_SECONDS", 0.01), \
-             patch.object(telegram, "_require_client", AsyncMock(side_effect=connect)) as require:
+             patch.object(telegram, "_CLIENT_LEASE_SEAM", fake_lease):
             with self.assertRaises(asyncio.TimeoutError):
                 await provider.download_thumb("-1001:42:unique")
             self.assertTrue(cancelled.is_set())
             self.assertIsNone(await provider.download_thumb("-1001:42:unique"))
-            require.assert_awaited_once()
             self.assertFalse(provider._thumb_tasks)
 
     async def test_disconnected_waiter_does_not_cancel_other_preview_callers(self):

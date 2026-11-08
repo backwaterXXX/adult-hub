@@ -823,6 +823,18 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
 .telegram-auth-status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; margin-top: 4px; }
 .telegram-auth-countdown { font-size: 12px; color: var(--muted); align-self: center; }
 
+.telegram-accounts-wrap { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+.telegram-account-card { padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
+.telegram-account-card-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.telegram-account-card-header h3 { margin: 0; font-size: 14px; font-weight: 700; color: var(--text); }
+.telegram-account-card-body { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: var(--muted); }
+.telegram-account-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.telegram-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 700; }
+.telegram-badge-success { background: color-mix(in srgb, #10b981 18%, var(--surface)); color: #059669; border: 1px solid #10b981; }
+.telegram-badge-warning { background: color-mix(in srgb, #f59e0b 18%, var(--surface)); color: #d97706; border: 1px solid #f59e0b; }
+.telegram-badge-error { background: color-mix(in srgb, #ef4444 18%, var(--surface)); color: #dc2626; border: 1px solid #ef4444; }
+.telegram-badge-muted { background: var(--surface-raised); color: var(--muted); border: 1px solid var(--border); }
+
 @media (max-width: 600px) {
   .telegram-account-panel { padding: 16px; margin-bottom: 16px; }
   .telegram-account-panel .panel-heading { flex-direction: column; align-items: stretch; gap: 12px; }

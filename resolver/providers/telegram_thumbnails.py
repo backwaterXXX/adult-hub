@@ -91,22 +91,26 @@ async def _download_thumb_uncached_impl(provider, ref: str) -> Optional[bytes]:
     if not tg.is_channel_authorized(channel_ref):
         tg.logger.warning("Telegram thumb rejected for unauthorized channel: %r", channel_ref)
         return None
-    client = await tg._require_client()
     try:
-        message = await tg._get_cached_message(client, channel_ref, int(message_id))
+        async with tg._acquire_client_lease(channel_ref) as (_account_id, client):
+            try:
+                message = await tg._get_cached_message(client, channel_ref, int(message_id))
+            except Exception:
+                logger.debug("Ignored exception in _download_thumb_uncached_impl", exc_info=True)
+                return None
+            if message is None:
+                return None
+            try:
+                candidates = _thumb_candidates(message, unique_id)
+            except Exception:
+                logger.debug("Ignored exception in _download_thumb_uncached_impl", exc_info=True)
+                return None
+            if candidates is None:
+                return None
+            return await _first_valid_thumb(client, candidates)
     except Exception:
-        logger.debug("Ignored exception in _download_thumb_uncached_impl", exc_info=True)
+        logger.debug("Ignored exception in _download_thumb_uncached_impl lease", exc_info=True)
         return None
-    if message is None:
-        return None
-    try:
-        candidates = _thumb_candidates(message, unique_id)
-    except Exception:
-        logger.debug("Ignored exception in _download_thumb_uncached_impl", exc_info=True)
-        return None
-    if candidates is None:
-        return None
-    return await _first_valid_thumb(client, candidates)
 
 
 async def _first_valid_thumb(client, candidates) -> Optional[bytes]:

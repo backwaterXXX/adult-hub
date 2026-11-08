@@ -287,14 +287,16 @@
               <div class="panel-heading">
                 <div>
                   <p class="eyebrow">TELEGRAM PROVIDER</p>
-                  <h2 id="telegramAccountHeading">Telegram Account</h2>
-                  <p class="page-intro" id="telegramAccountIntro">Checking Telegram connection status…</p>
+                  <h2 id="telegramAccountHeading">Telegram Accounts</h2>
+                  <p class="page-intro" id="telegramAccountIntro">Manage connected MTProto user accounts and channel access routing.</p>
                 </div>
                 <div class="account-actions">
-                  <button class="button button-primary" type="button" id="telegramLoginButton">Log in with Telegram</button>
+                  <button class="button button-quiet" type="button" id="telegramAccountsRefreshBtn">Refresh</button>
+                  <button class="button button-primary" type="button" id="telegramLoginButton">Add Telegram account</button>
                 </div>
               </div>
               <div id="telegramAccountBanner" class="state-banner" role="status" hidden></div>
+              <div id="telegramAccountsContainer" class="telegram-accounts-wrap"></div>
             </section>
             <section class="panel sources-panel" id="sourceChannelsPane">
               <form id="sourcesFilters" class="filter-bar sources-filter-bar">
@@ -342,6 +344,19 @@
                 </div>
                 <div id="telegramAuthBanner" class="state-banner" role="status" hidden></div>
                 <div id="telegramAuthBody"></div>
+              </section>
+            </dialog>
+            <dialog class="operation-dialog" id="telegramAccountActionDialog" aria-labelledby="telegramAccountActionTitle">
+              <section class="operation-dialog-panel">
+                <button type="button" class="drawer-close" id="telegramAccountActionClose" aria-label="Close dialog">×</button>
+                <div class="panel-heading">
+                  <div>
+                    <p class="eyebrow">ACCOUNT MANAGEMENT</p>
+                    <h2 id="telegramAccountActionTitle">Telegram Account Action</h2>
+                  </div>
+                </div>
+                <div id="telegramAccountActionBanner" class="state-banner" role="status" hidden></div>
+                <div id="telegramAccountActionBody"></div>
               </section>
             </dialog>
           </div>

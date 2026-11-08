@@ -116,6 +116,7 @@ class TestTelegramLoginManagerLifecycle(unittest.IsolatedAsyncioTestCase):
                 "TELEGRAM_SESSION_PATH": self.session_path,
                 "TELEGRAM_API_ID": "123456",
                 "TELEGRAM_API_HASH": "0123456789abcdef0123456789abcdef",
+                "TELEGRAM_ACCOUNT_STORE_MEMORY_ONLY": "1",
             },
         )
         self.env_patcher.start()
@@ -789,10 +790,10 @@ class TestTelegramWebAuthApi(unittest.TestCase):
         self.assertEqual(res_get_trav.status_code, 400)
         self.assertEqual(res_get_trav.json()["code"], "invalid_account_id")
 
-        # Unsupported account (non-default) -> 400 unsupported_account
+        # Valid non-default account is supported in multi-account
         res_get_other = self.client.get("/api/v2/telegram/auth/status?account_id=secondary")
-        self.assertEqual(res_get_other.status_code, 400)
-        self.assertEqual(res_get_other.json()["code"], "unsupported_account")
+        self.assertEqual(res_get_other.status_code, 200)
+        self.assertEqual(res_get_other.json()["account_id"], "secondary")
 
         # Traversal in POST start -> 400 invalid_account_id
         res_post_trav = self.client.post(
@@ -803,14 +804,20 @@ class TestTelegramWebAuthApi(unittest.TestCase):
         self.assertEqual(res_post_trav.status_code, 400)
         self.assertEqual(res_post_trav.json()["code"], "invalid_account_id")
 
-        # Unsupported account in POST start -> 400 unsupported_account
-        res_post_other = self.client.post(
-            "/api/v2/telegram/auth/start",
-            json={"phone": "+48123456789", "account_id": "other_account"},
-            headers=headers,
-        )
-        self.assertEqual(res_post_other.status_code, 400)
-        self.assertEqual(res_post_other.json()["code"], "unsupported_account")
+        # Valid non-default account in POST start is accepted
+        with patch.object(
+            admin_v2_telegram_auth.get_telegram_login_manager(),
+            "start_login",
+            new_callable=AsyncMock,
+        ) as mock_start:
+            mock_start.return_value = {"ok": True, "state": "code_requested", "phone_mask": "+48 123 *** 789"}
+            res_post_other = self.client.post(
+                "/api/v2/telegram/auth/start",
+                json={"phone": "+48123456789", "account_id": "other_account"},
+                headers=headers,
+            )
+            self.assertEqual(res_post_other.status_code, 200)
+            self.assertTrue(res_post_other.json()["ok"])
 
     def test_invalid_phone_in_start_endpoint_returns_400(self):
         headers = {"Origin": "http://testserver"}
@@ -911,3 +918,49 @@ class TestSourcesListIntegration(unittest.TestCase):
             res = client.get("/api/v2/sources/list")
             self.assertEqual(res.status_code, 200)
             mock_mtproto.assert_not_called()
+
+
+class TestTelegramLoginDbPersistenceFailure(unittest.IsolatedAsyncioTestCase):
+    async def test_authorization_db_failure_does_not_report_success_or_leak_session(self):
+        """Finding 2: Transient DB failure during login authorization persistence must not
+
+        silently report login success or leave promoted session files behind.
+        """
+        mgr = TelegramLoginManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target_path = os.path.join(tmpdir, "telegram.test_persist.session")
+            pending_path = os.path.join(tmpdir, ".telegram.test_persist.pending.session")
+            with open(pending_path, "wb") as f:
+                f.write(b"pending_sqlite_session_data")
+
+            mock_client = AsyncMock()
+            mock_client.sign_in = AsyncMock()
+            mock_client.is_user_authorized = AsyncMock(return_value=True)
+            mock_client.disconnect = AsyncMock()
+
+            challenge = ActiveLoginChallenge(
+                account_id="test_persist",
+                phone="+48123456789",
+                phone_code_hash="hash123",
+                client=mock_client,
+                pending_path=pending_path,
+                target_path=target_path,
+            )
+            mgr._challenges["test_persist"] = challenge
+
+            # Simulate transient DB failure when persisting account to store
+            with patch("resolver.providers.telegram_account_store.upsert_account",
+                       side_effect=RuntimeError("Database connection lost")):
+                res = await mgr.submit_code("12345", account_id="test_persist")
+
+                # Must NOT report login success!
+                self.assertFalse(res.get("ok", False))
+                self.assertNotEqual(res.get("state"), "authorized")
+                self.assertEqual(res.get("code"), "verification_error")
+
+                # Must NOT leave authorized target session file on disk!
+                self.assertFalse(os.path.isfile(target_path))
+
+                # Must NOT be in cached auth!
+                self.assertNotIn("test_persist", mgr._cached_auth)

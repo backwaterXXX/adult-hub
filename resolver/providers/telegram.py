@@ -46,11 +46,12 @@ Ref format (stable, built by extract_file_ref):
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 import logging
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, List, Optional, Tuple
+from typing import Any, AsyncIterator, Callable, List, Optional, Tuple
 
 from .base import BaseProvider, CategoryItem, VideoItem
 from .telegram_metadata import (
@@ -120,7 +121,7 @@ from .telegram_session import (
     interactive_login,  # noqa: F401 - compatibility export
     is_session_authorized,  # noqa: F401 - compatibility export
     login as _login_impl,
-    require_client as _require_client_impl,
+    require_client as _require_client_impl,  # noqa: F401 - compatibility export
     validate_api_credentials,  # noqa: F401 - compatibility export
     validate_phone_number,  # noqa: F401 - compatibility export
 )
@@ -147,9 +148,17 @@ _client = None
 _client_lock = None
 
 
-async def reset_telegram_client() -> None:
-    """Reset the singleton Telethon client, safely disconnecting before releasing reference."""
+async def reset_telegram_client(account_id: Optional[str] = None) -> None:
+    """Reset Telethon client reference safely, scoping to account_id when specified."""
     global _client, _client_lock
+    if account_id and account_id != "default":
+        try:
+            from .telegram_router import get_telegram_router
+            await get_telegram_router().reset_account_client(account_id)
+        except Exception as exc:
+            logger.debug("Error resetting telegram router client for %s: %s", account_id, exc)
+        return
+
     old_client = _client
     _client = None
     _client_lock = None
@@ -259,18 +268,36 @@ def _parse_ref(ref: str) -> Tuple[str, int, str]:
 
 
 async def _require_client():
-    """Singleton klienta Telethon (connect; sesja musi byc juz zalogowana)."""
-    global _client, _client_lock
-    state = {"client": _client, "lock": _client_lock}
-    try:
-        return await _require_client_impl(
-            state,
-            api_id_fn=_get_api_id,
-            api_hash_fn=_get_api_hash,
-            session_path_fn=_get_session_path,
-        )
-    finally:
-        _client, _client_lock = state["client"], state["lock"]
+    """Singleton klienta Telethon managed by router pool to prevent duplicate sessions."""
+    from .telegram_router import get_telegram_router
+    return await get_telegram_router().get_client_for_account("default")
+
+
+_ORIGINAL_REQUIRE_CLIENT = _require_client
+
+# Explicit injectable test seam for testing account router lease behavior
+_CLIENT_LEASE_SEAM: Optional[Callable[..., Any]] = None
+
+
+@asynccontextmanager
+async def _acquire_client_lease(
+    channel_ref: Optional[str] = None, affinity_account: Optional[str] = None
+) -> AsyncIterator[Tuple[str, Any]]:
+    """Acquire a client lease via TelegramAccountRouter without duplicate session fallback."""
+    if _CLIENT_LEASE_SEAM is not None:
+        async with _CLIENT_LEASE_SEAM(channel_ref=channel_ref, affinity_account=affinity_account) as res:
+            yield res
+        return
+
+    from .telegram_router import get_telegram_router
+
+    router = get_telegram_router()
+    if channel_ref:
+        async with router.channel_lease(str(channel_ref), affinity_account=affinity_account) as (aid, client):
+            yield (aid, client)
+    else:
+        async with router.client_lease(affinity_account=affinity_account) as (aid, client):
+            yield (aid, client)
 
 
 async def _channel_title(client, channel_ref, entity=None) -> str:
@@ -355,39 +382,57 @@ class TelegramProvider(BaseProvider):
         return is_channel_authorized(channel_ref)
 
     async def check_configured_channel_access(self, channel_ref: Any) -> None:
-        """Check read access with the existing session using one message metadata item.
+        """Check read access with an eligible session using one message metadata item.
 
         This deliberately performs no history iteration or media fetch. The admin
         route validates the ID against config first, including disabled channels.
         """
-        client = await _require_client()
-        entity = await client.get_entity(_entity_ref(channel_ref))
-        await client.get_messages(entity, limit=1)
+        async with _acquire_client_lease(str(channel_ref)) as (_account_id, client):
+            entity = await client.get_entity(_entity_ref(channel_ref))
+            await client.get_messages(entity, limit=1)
 
     async def check_message_metadata(self, channel_ref: str, message_id: int,
                                     unique_id: str) -> str:
         """Check one exact message using metadata only; never fetch media bytes."""
         if not is_channel_authorized(channel_ref):
             raise ValueError(f"Channel not authorized: {channel_ref!r}")
-        client = await _require_client()
-        message = await _get_cached_message(client, channel_ref, int(message_id))
-        if message is None:
-            return "missing"
-        media = getattr(message, "media", None) or getattr(message, "document", None)
-        if media is None:
-            return "mismatch"
-        target_doc = find_variant_document(media, str(unique_id))
-        return "available" if target_doc is not None else "mismatch"
+        async with _acquire_client_lease(channel_ref) as (_account_id, client):
+            message = await _get_cached_message(client, channel_ref, int(message_id))
+            if message is None:
+                return "missing"
+            media = getattr(message, "media", None) or getattr(message, "document", None)
+            if media is None:
+                return "mismatch"
+            target_doc = find_variant_document(media, str(unique_id))
+            return "available" if target_doc is not None else "mismatch"
 
     async def get_categories(self) -> List[CategoryItem]:
         channels = _get_channels()
         if not channels:
             return []
-        client = await _require_client()
         categories: List[CategoryItem] = []
+        cfg = _get_config()
         for channel_ref in channels:
-            title = await _channel_title(client, channel_ref)
-            categories.append(channel_to_category(channel_ref, title))
+            if not is_channel_authorized(channel_ref):
+                logger.debug("Skipping unauthorized channel %s in get_categories", channel_ref)
+                continue
+            try:
+                async with _acquire_client_lease(channel_ref) as (_account_id, client):
+                    title = await _channel_title(client, channel_ref)
+                    categories.append(channel_to_category(channel_ref, title))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                exc_type = type(exc).__name__
+                logger.warning(
+                    "Failed to fetch title for channel %s (%s: %s), using fallback",
+                    channel_ref,
+                    exc_type,
+                    exc,
+                )
+                ch_cfg = cfg.get_telegram_channel(channel_ref) if cfg else None
+                fallback_title = ch_cfg.title if (ch_cfg and ch_cfg.title) else (ch_cfg.studio if (ch_cfg and hasattr(ch_cfg, "studio") and ch_cfg.studio) else str(channel_ref))
+                categories.append(channel_to_category(channel_ref, fallback_title))
         return categories
 
     async def get_browse_videos(self, section: str = "latest",
@@ -407,63 +452,63 @@ class TelegramProvider(BaseProvider):
                                   limit: Optional[int] = None) -> List[VideoItem]:
         if not is_channel_authorized(category_id):
             raise ValueError(f"Channel not authorized: {category_id!r}")
-        client = await _require_client()
-        entity = await client.get_entity(_entity_ref(category_id))
-        title = await _channel_title(client, category_id, entity)
-        cfg = _get_config()
-        ch_cfg = cfg.get_telegram_channel(category_id) if cfg else None
+        async with _acquire_client_lease(category_id) as (_account_id, client):
+            entity = await client.get_entity(_entity_ref(category_id))
+            title = await _channel_title(client, category_id, entity)
+            cfg = _get_config()
+            ch_cfg = cfg.get_telegram_channel(category_id) if cfg else None
 
-        effective_min_dur = min_duration
-        if effective_min_dur is None and ch_cfg:
-            effective_min_dur = ch_cfg.min_duration_seconds
-        if effective_min_dur is None:
-            effective_min_dur = _get_min_duration()
+            effective_min_dur = min_duration
+            if effective_min_dur is None and ch_cfg:
+                effective_min_dur = ch_cfg.min_duration_seconds
+            if effective_min_dur is None:
+                effective_min_dur = _get_min_duration()
 
-        messages = await _fetch_history(
-            client, entity, page=page, max_pages=1,
-            offset_id=offset_id, limit=limit
-        )
-        videos: List[VideoItem] = []
-        kp, am, prepared_catalog = await asyncio.to_thread(_load_performer_snapshot)
-        for msg in messages:
-            item = message_to_video(
-                _message_to_dict(msg, category_id), title,
-                known_performers=kp, aliases=am,
-                prepared_catalog=prepared_catalog,
+            messages = await _fetch_history(
+                client, entity, page=page, max_pages=1,
+                offset_id=offset_id, limit=limit
             )
-            if (item is not None and passes_duration_filter(item.duration, min_duration=effective_min_dur)
-                    and passes_tag_filter(item, ch_cfg)):
-                videos.append(item)
-        return videos
+            videos: List[VideoItem] = []
+            kp, am, prepared_catalog = await asyncio.to_thread(_load_performer_snapshot)
+            for msg in messages:
+                item = message_to_video(
+                    _message_to_dict(msg, category_id), title,
+                    known_performers=kp, aliases=am,
+                    prepared_catalog=prepared_catalog,
+                )
+                if (item is not None and passes_duration_filter(item.duration, min_duration=effective_min_dur)
+                        and passes_tag_filter(item, ch_cfg)):
+                    videos.append(item)
+            return videos
 
     async def get_history_batch(self, category_id: str, *, offset_id: Optional[int] = None,
                                 limit: int = 100) -> dict:
         """Return an unfiltered message cursor alongside videos passing channel filters."""
         if not is_channel_authorized(category_id):
             raise ValueError(f"Channel not authorized: {category_id!r}")
-        client = await _require_client()
-        entity = await client.get_entity(_entity_ref(category_id))
-        title = await _channel_title(client, category_id, entity)
-        cfg = _get_config()
-        ch_cfg = cfg.get_telegram_channel(category_id) if cfg else None
-        messages = await _fetch_history(client, entity, offset_id=offset_id, limit=limit)
-        videos = []
-        kp, am, prepared_catalog = await asyncio.to_thread(_load_performer_snapshot)
-        for msg in messages:
-            item = message_to_video(
-                _message_to_dict(msg, category_id), title,
-                known_performers=kp, aliases=am,
-                prepared_catalog=prepared_catalog,
-            )
-            if (item and passes_duration_filter(item.duration,
-                    min_duration=ch_cfg.min_duration_seconds if ch_cfg else _get_min_duration())
-                    and passes_tag_filter(item, ch_cfg)):
-                videos.append(item)
-        videos = [item.__dict__ for item in videos]
-        cursor = min((int(msg.id) for msg in messages), default=None)
-        head = max((int(msg.id) for msg in messages), default=None)
-        return {"videos": videos, "next_offset_id": cursor, "highest_id": head,
-                "message_count": len(messages), "has_more": len(messages) >= limit}
+        async with _acquire_client_lease(category_id) as (_account_id, client):
+            entity = await client.get_entity(_entity_ref(category_id))
+            title = await _channel_title(client, category_id, entity)
+            cfg = _get_config()
+            ch_cfg = cfg.get_telegram_channel(category_id) if cfg else None
+            messages = await _fetch_history(client, entity, offset_id=offset_id, limit=limit)
+            videos = []
+            kp, am, prepared_catalog = await asyncio.to_thread(_load_performer_snapshot)
+            for msg in messages:
+                item = message_to_video(
+                    _message_to_dict(msg, category_id), title,
+                    known_performers=kp, aliases=am,
+                    prepared_catalog=prepared_catalog,
+                )
+                if (item and passes_duration_filter(item.duration,
+                        min_duration=ch_cfg.min_duration_seconds if ch_cfg else _get_min_duration())
+                        and passes_tag_filter(item, ch_cfg)):
+                    videos.append(item)
+            videos = [item.__dict__ for item in videos]
+            cursor = min((int(msg.id) for msg in messages), default=None)
+            head = max((int(msg.id) for msg in messages), default=None)
+            return {"videos": videos, "next_offset_id": cursor, "highest_id": head,
+                    "message_count": len(messages), "has_more": len(messages) >= limit}
 
     async def search(self, query: str, page: int = 1) -> List[VideoItem]:
         needle = (query or "").strip().lower()
@@ -475,32 +520,36 @@ class TelegramProvider(BaseProvider):
                 "Telegram provider is not configured: set TELEGRAM_CHANNELS "
                 "env var (comma-separated channel identifiers)."
             )
-        client = await _require_client()
         matched: List[VideoItem] = []
         known_performers, aliases, prepared_catalog = await asyncio.to_thread(_load_performer_snapshot)
         for channel_ref in channels:
             try:
-                entity = await client.get_entity(_entity_ref(channel_ref))
+                async with _acquire_client_lease(channel_ref) as (_account_id, client):
+                    try:
+                        entity = await client.get_entity(_entity_ref(channel_ref))
+                    except Exception:
+                        logger.warning("Telegram channel unreachable, skipping")
+                        continue
+                    title = await _channel_title(client, channel_ref, entity)
+                    try:
+                        messages = await client.get_messages(
+                            entity, limit=SEARCH_HISTORY_LIMIT)
+                    except Exception:
+                        logger.warning("Telegram history fetch failed, skipping")
+                        continue
+                    for msg in messages or []:
+                        data = _message_to_dict(msg, channel_ref)
+                        if needle not in (data.get("caption") or "").lower():
+                            continue
+                        item = message_to_video(
+                            data, title, known_performers=known_performers,
+                            aliases=aliases, prepared_catalog=prepared_catalog
+                        )
+                        if item is not None and passes_duration_filter(item.duration):
+                            matched.append(item)
             except Exception:
-                logger.warning("Telegram channel unreachable, skipping")
+                logger.warning("Could not acquire client for channel %s in search, skipping", channel_ref)
                 continue
-            title = await _channel_title(client, channel_ref, entity)
-            try:
-                messages = await client.get_messages(
-                    entity, limit=SEARCH_HISTORY_LIMIT)
-            except Exception:
-                logger.warning("Telegram history fetch failed, skipping")
-                continue
-            for msg in messages or []:
-                data = _message_to_dict(msg, channel_ref)
-                if needle not in (data.get("caption") or "").lower():
-                    continue
-                item = message_to_video(
-                    data, title, known_performers=known_performers,
-                    aliases=aliases, prepared_catalog=prepared_catalog
-                )
-                if item is not None and passes_duration_filter(item.duration):
-                    matched.append(item)
         page = max(1, int(page or 1))
         start = (page - 1) * PAGE_SIZE
         return matched[start:start + PAGE_SIZE]
@@ -510,23 +559,23 @@ class TelegramProvider(BaseProvider):
         channel_ref, message_id, unique_id = _parse_ref(ref)
         if not is_channel_authorized(channel_ref):
             raise ValueError(f"Channel not authorized: {channel_ref!r}")
-        client = await _require_client()
-        message = await _get_cached_message(client, channel_ref, int(message_id))
-        if message is None:
-            raise ValueError(f"Telegram message not found for ref {ref!r}")
-        media = getattr(message, "media", None) or getattr(message, "document", None)
-        if media is None:
-            raise ValueError(f"Telegram message has no media for ref {ref!r}")
-        doc = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
-        if doc is None:
-            raise ValueError(f"Telegram message has no video document for ref {ref!r}")
-        target_doc = find_variant_document(media, str(unique_id))
-        if target_doc is None:
-            raise ValueError(f"Telegram media id mismatch: expected {unique_id!r}")
-        ignore_alts = await should_ignore_alt_documents(client)
-        variants_data = extract_message_variants(message, ignore_alt_documents=ignore_alts)
-        variants_data["video_id"] = f"telegram:{ref}"
-        return variants_data
+        async with _acquire_client_lease(channel_ref) as (_account_id, client):
+            message = await _get_cached_message(client, channel_ref, int(message_id), account_id=_account_id)
+            if message is None:
+                raise ValueError(f"Telegram message not found for ref {ref!r}")
+            media = getattr(message, "media", None) or getattr(message, "document", None)
+            if media is None:
+                raise ValueError(f"Telegram message has no media for ref {ref!r}")
+            doc = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
+            if doc is None:
+                raise ValueError(f"Telegram message has no video document for ref {ref!r}")
+            target_doc = find_variant_document(media, str(unique_id))
+            if target_doc is None:
+                raise ValueError(f"Telegram media id mismatch: expected {unique_id!r}")
+            ignore_alts = await should_ignore_alt_documents(client)
+            variants_data = extract_message_variants(message, ignore_alt_documents=ignore_alts)
+            variants_data["video_id"] = f"telegram:{ref}"
+            return variants_data
 
     async def resolve_stream(self, provider_video_id: str, variant: Optional[str] = None) -> str:
         """Zwraca marker tg:// - odtwarzanie idzie przez proxy resolvera.
@@ -546,112 +595,163 @@ class TelegramProvider(BaseProvider):
             return f"tg://{provider_video_id}"
 
         # Resolve selected variant
-        client = await _require_client()
-        message = await _get_cached_message(client, channel_ref, int(message_id))
-        if message is None:
-            raise ValueError(f"Telegram message not found for ref {provider_video_id!r}")
-        media = getattr(message, "media", None) or getattr(message, "document", None)
-        if media is None:
-            raise ValueError(f"Telegram message has no media for ref {provider_video_id!r}")
+        async with _acquire_client_lease(channel_ref) as (_account_id, client):
+            message = await _get_cached_message(client, channel_ref, int(message_id), account_id=_account_id)
+            if message is None:
+                raise ValueError(f"Telegram message not found for ref {provider_video_id!r}")
+            media = getattr(message, "media", None) or getattr(message, "document", None)
+            if media is None:
+                raise ValueError(f"Telegram message has no media for ref {provider_video_id!r}")
 
-        ignore_alts = await should_ignore_alt_documents(client)
-        if ignore_alts:
-            raise ValueError(f"Variant '{chosen}' not found (alt_documents disabled)")
+            ignore_alts = await should_ignore_alt_documents(client)
+            if ignore_alts:
+                raise ValueError(f"Variant '{chosen}' not found (alt_documents disabled)")
 
-        target_doc = find_variant_document(media, chosen)
-        if target_doc is None:
-            raise ValueError(f"Variant '{chosen}' not found")
-        target_id = getattr(target_doc, "id", None)
-        if target_id is None:
-            raise ValueError(f"Variant '{chosen}' has no document id")
+            target_doc = find_variant_document(media, chosen)
+            if target_doc is None:
+                raise ValueError(f"Variant '{chosen}' not found")
+            target_id = getattr(target_doc, "id", None)
+            if target_id is None:
+                raise ValueError(f"Variant '{chosen}' has no document id")
 
-        return f"tg://{channel_ref}:{message_id}:{target_id}"
+            return f"tg://{channel_ref}:{message_id}:{target_id}"
 
-    async def download_range(self, ref: str, offset: int, length: Optional[int]):
+    async def _resolve_download_account(self, affinity_account: Optional[str], channel_ref: str) -> str:
+        if affinity_account:
+            return affinity_account
+        if _CLIENT_LEASE_SEAM is not None:
+            return "default"
+        from .telegram_router import get_telegram_router
+        router = get_telegram_router()
+        return await router.select_eligible_account(channel_ref)
+
+    async def download_range(
+        self,
+        ref: str,
+        offset: int,
+        length: Optional[int],
+        affinity_account: Optional[str] = None,
+    ):
         """Proxy byte stream with bounded retries that never start before delivery.
 
         The whole range is retried only while zero bytes have been yielded; once
         the client has received bytes, failures propagate so HTTP stays truthful.
+        Maintains strict account affinity across attempts without switching accounts.
         """
+        channel_ref, message_id, _uid = _parse_ref(ref)
+        if not is_channel_authorized(channel_ref):
+            raise ValueError(f"Channel not authorized: {channel_ref!r}")
+
+        chosen_account = await self._resolve_download_account(affinity_account, channel_ref)
+
+        def _record_flood(exc: BaseException) -> bool:
+            seconds = getattr(exc, "seconds", None)
+            if "floodwait" in type(exc).__name__.casefold() or seconds is not None:
+                from .telegram_router import get_telegram_router
+                wait_sec = int(seconds) if seconds else 30
+                get_telegram_router().record_flood_wait(chosen_account, wait_sec)
+                return True
+            return False
+
         def _on_retry(exc: BaseException, _attempt: int) -> None:
             if type(exc).__name__ in {"FileReferenceExpiredError", "FileReferenceInvalidError"}:
-                channel_ref, message_id, _uid = _parse_ref(ref)
                 _evict_cached_message(channel_ref, int(message_id))
+            _record_flood(exc)
+
+        def _retryable(exc: BaseException) -> bool:
+            if _record_flood(exc):
+                return False
+            return is_retryable(exc)
 
         async for chunk in retry_stream(
-                lambda: self._download_range_once(ref, offset, length),
-                on_retry=_on_retry):
+                lambda: self._download_range_once(ref, offset, length, affinity_account=chosen_account),
+                on_retry=_on_retry,
+                retryable=_retryable):
             yield chunk
 
-    async def _download_range_once(self, ref: str, offset: int, length: Optional[int]):
+    async def _download_range_once(
+        self,
+        ref: str,
+        offset: int,
+        length: Optional[int],
+        affinity_account: Optional[str] = None,
+    ):
         """Async generator bajtow pliku dla proxy.
 
         Validates ref/channel/document id BEFORE cache.
         Obtains total from document metadata.
         Falls back to sequential for unknown size or small probes (<=128KiB).
         Uses bounded parallel streaming when TELEGRAM_PARALLEL_STREAM_ENABLED is true.
+        Maintains lease and account affinity for the entire duration of the stream.
         """
         channel_ref, message_id, unique_id = _parse_ref(ref)
         if not is_channel_authorized(channel_ref):
             raise ValueError(f"Channel not authorized: {channel_ref!r}")
-        client = await _require_client()
-        message = await _get_cached_message(client, channel_ref, int(message_id))
-        if message is None:
-            raise ValueError(f"Telegram message not found for ref {ref!r}")
-        media = getattr(message, "media", None) or getattr(message, "document", None)
-        if media is None:
-            raise ValueError(f"Telegram message has no media for ref {ref!r}")
-        target_doc = find_variant_document(media, str(unique_id))
-        if target_doc is None:
-            raise ValueError(f"Telegram media id mismatch: expected {unique_id!r}, not found in original or alt_documents")
+        async with _acquire_client_lease(channel_ref, affinity_account=affinity_account) as (_account_id, client):
+            message = await _get_cached_message(client, channel_ref, int(message_id), account_id=_account_id)
+            if message is None:
+                raise ValueError(f"Telegram message not found for ref {ref!r}")
+            media = getattr(message, "media", None) or getattr(message, "document", None)
+            if media is None:
+                raise ValueError(f"Telegram message has no media for ref {ref!r}")
+            target_doc = find_variant_document(media, str(unique_id))
+            if target_doc is None:
+                raise ValueError(f"Telegram media id mismatch: expected {unique_id!r}, not found in original or alt_documents")
 
-        # Obtain total from document metadata
-        total = getattr(target_doc, "size", None)
-        if total is None:
-            msg_dict = _message_to_dict(message, channel_ref)
-            total = _size_of(msg_dict)
+            # Obtain total from document metadata
+            total = getattr(target_doc, "size", None)
+            if total is None:
+                msg_dict = _message_to_dict(message, channel_ref)
+                total = _size_of(msg_dict)
 
-        doc_orig = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
-        download_target = media if (target_doc == doc_orig and media is not None) else target_doc
+            doc_orig = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
+            download_target = media if (target_doc == doc_orig and media is not None) else target_doc
 
-        # Small probes <= 128KiB stay sequential (no large prefetch)
-        is_small_probe = (length is not None and length <= 131072)
-        use_parallel = (
-            _is_parallel_stream_enabled()
-            and total is not None
-            and total > 0
-            and not is_small_probe
-        )
-
-        if not use_parallel:
-            async for chunk in _download_sequential(client, download_target, offset=offset or 0, length=length):
-                yield chunk
-            return
-
-        manager = _get_global_stream_manager()
-
-        async def _fetch(blk_offset: int, blk_length: int) -> bytes:
-            # A block is fully downloaded before delivery, so retrying it is safe.
-            # File-reference errors need a fresh message and cannot be fixed here.
-            return await retry_call(
-                lambda: _download_block(client, download_target, blk_offset, blk_length),
-                retryable=lambda exc: is_retryable(exc) and type(exc).__name__ not in {
-                    "FileReferenceExpiredError", "FileReferenceInvalidError"},
+            # Small probes <= 128KiB stay sequential (no large prefetch)
+            is_small_probe = (length is not None and length <= 131072)
+            use_parallel = (
+                _is_parallel_stream_enabled()
+                and total is not None
+                and total > 0
+                and not is_small_probe
             )
 
-        cache_key = f"{ref}:{int(total)}"
-        async for chunk in manager.stream(
-            key=cache_key,
-            offset=offset or 0,
-            length=length,
-            total=int(total),
-            fetch=_fetch,
-        ):
-            yield chunk
+            if not use_parallel:
+                async for chunk in _download_sequential(client, download_target, offset=offset or 0, length=length):
+                    yield chunk
+                return
+
+            manager = _get_global_stream_manager()
+
+            async def _fetch(blk_offset: int, blk_length: int) -> bytes:
+                # A block is fully downloaded before delivery, so retrying it is safe.
+                # File-reference errors need a fresh message and cannot be fixed here.
+                return await retry_call(
+                    lambda: _download_block(client, download_target, blk_offset, blk_length),
+                    retryable=lambda exc: is_retryable(exc) and type(exc).__name__ not in {
+                        "FileReferenceExpiredError", "FileReferenceInvalidError"},
+                )
+
+            target_doc_id = getattr(target_doc, "id", None) or unique_id
+            canonical_cache_key = f"tg:{channel_ref}:{message_id}:{target_doc_id}:{int(total)}"
+            async for chunk in manager.stream(
+                key=canonical_cache_key,
+                offset=offset or 0,
+                length=length,
+                total=int(total),
+                fetch=_fetch,
+                job_key=_account_id,
+            ):
+                yield chunk
 
     async def close(self):
-        """Close provider resources including shared parallel stream manager."""
+        """Close provider resources including shared parallel stream manager and router pool."""
         await _close_global_stream_manager()
+        try:
+            from .telegram_router import reset_telegram_router
+            await reset_telegram_router()
+        except Exception:
+            pass
 
     async def file_size(self, ref: str) -> Optional[int]:
         """Rozmiar pliku z metadanych wiadomosci albo None, gdy nieznany."""
@@ -662,19 +762,19 @@ class TelegramProvider(BaseProvider):
             return None
         if not is_channel_authorized(channel_ref):
             return None
-        client = await _require_client()
         try:
-            message = await retry_call(
-                lambda: _get_cached_message(client, channel_ref, int(message_id)),
-                retryable=lambda exc: is_retryable(exc)
-                or "database is locked" in str(exc).casefold(),
-            )
+            async with _acquire_client_lease(channel_ref) as (_account_id, client):
+                message = await retry_call(
+                    lambda: _get_cached_message(client, channel_ref, int(message_id), account_id=_account_id),
+                    retryable=lambda exc: is_retryable(exc)
+                    or "database is locked" in str(exc).casefold(),
+                )
+                if message is None:
+                    return None
+                return _variant_size(message, channel_ref, str(unique_id))
         except Exception:
             logger.debug("Ignored exception in file_size", exc_info=True)
             return None
-        if message is None:
-            return None
-        return _variant_size(message, channel_ref, str(unique_id))
 
     async def download_thumb(self, ref: str) -> Optional[bytes]:
         return await _download_thumb_impl(self, ref)

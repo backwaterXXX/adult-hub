@@ -860,6 +860,146 @@ class TestTelegramHeadAndRange(unittest.IsolatedAsyncioTestCase):
         ctype = dict(resp.headers).get("content-type", "")
         self.assertNotIn("multipart", ctype.lower())
 
+    async def test_range_with_unknown_file_size_preserves_206_and_offset(self):
+        """Round 2 Finding 10: Range requests with unknown file size must preserve 206,
+
+        Content-Range bytes start-end/*, Content-Length, and exact requested offset
+        instead of downgrading to 200 and restarting from byte 0.
+        """
+        _require_resolver(self)
+        payload = bytes((i * 3 + 7) % 256 for i in range(20_000))
+        prov = FakeRefProvider(payload, size=None)  # unknown file size
+        from unittest.mock import patch
+        with patch.object(resolver_app, "get_provider", return_value=prov):
+            resp = await resolver_app._proxy_telegram_response(
+                _fake_request("GET", "bytes=500-999"), "tg://ref")
+
+        # Must be 206 Partial Content, NEVER downgraded to 200
+        self.assertEqual(resp.status_code, 206)
+        headers = dict(resp.headers)
+        self.assertEqual(headers.get("content-range"), "bytes 500-999/*")
+        self.assertEqual(headers.get("content-length"), "500")
+
+        # Must request exact partial range from provider, NEVER restart from 0
+        self.assertEqual(prov.download_calls, [("ref", 500, 500)])
+        body = await response_body(resp)
+        self.assertEqual(body, payload[500:1000])
+
+    async def test_range_with_file_size_error_preserves_206_and_offset(self):
+        """Round 2 Finding 10: file_size exceptions must not fail with 503 or restart
+
+        from byte zero; Range semantics (206, exact offset, Content-Range) are preserved.
+        """
+        _require_resolver(self)
+        payload = bytes((i * 5 + 13) % 256 for i in range(20_000))
+
+        class ErrorSizeProvider(FakeRefProvider):
+            async def file_size(self, ref):
+                raise RuntimeError("Temporary Telegram metadata failure")
+
+        prov = ErrorSizeProvider(payload)
+        from unittest.mock import patch
+        with patch.object(resolver_app, "get_provider", return_value=prov):
+            resp = await resolver_app._proxy_telegram_response(
+                _fake_request("GET", "bytes=1000-1499"), "tg://ref")
+
+        self.assertEqual(resp.status_code, 206)
+        headers = dict(resp.headers)
+        self.assertEqual(headers.get("content-range"), "bytes 1000-1499/*")
+        self.assertEqual(headers.get("content-length"), "500")
+        self.assertEqual(prov.download_calls, [("ref", 1000, 500)])
+        body = await response_body(resp)
+        self.assertEqual(body, payload[1000:1500])
+
+
+class TestCrossAccountBlockDeduplication(unittest.IsolatedAsyncioTestCase):
+    async def test_two_account_jobs_one_canonical_block(self):
+        """Finding 1: Two account-specific fetch jobs completing the same canonical block
+
+        must preserve existing canonical bytes, avoid double-counting cache bytes,
+        maintain pins, and deliver identical bytes to both readers.
+        """
+        _require_stream(self)
+        mgr = ParallelTelegramStreamManager(
+            workers=2,
+            global_workers=4,
+            block_size=1024,
+            read_ahead_bytes=0,
+            max_cache_bytes=1048576,
+        )
+
+        acc1_barrier = asyncio.Event()
+        acc2_barrier = asyncio.Event()
+
+        canonical_payload = b"X" * 1024
+        acc2_payload = b"Y" * 1024  # Alternative payload for testing preservation
+
+        async def fetch_acc1(offset: int, length: int) -> bytes:
+            await acc1_barrier.wait()
+            return canonical_payload
+
+        async def fetch_acc2(offset: int, length: int) -> bytes:
+            await acc2_barrier.wait()
+            return acc2_payload
+
+        canonical_key = "tg:test_chan:10:doc1:1024"
+
+        # Start two concurrent reader streams for the same canonical block under different accounts
+        async def reader1():
+            chunks = []
+            async for c in mgr.stream(
+                key=canonical_key,
+                offset=0,
+                length=1024,
+                total=1024,
+                fetch=fetch_acc1,
+                job_key="acc_1",
+            ):
+                chunks.append(c)
+            return b"".join(chunks)
+
+        async def reader2():
+            chunks = []
+            async for c in mgr.stream(
+                key=canonical_key,
+                offset=0,
+                length=1024,
+                total=1024,
+                fetch=fetch_acc2,
+                job_key="acc_2",
+            ):
+                chunks.append(c)
+            return b"".join(chunks)
+
+        t1 = asyncio.create_task(reader1())
+        t2 = asyncio.create_task(reader2())
+
+        # Allow workers to spawn and wait on barrier
+        await asyncio.sleep(0.02)
+
+        # Release acc1 first so its canonical payload is cached
+        acc1_barrier.set()
+        await asyncio.sleep(0.02)
+
+        # Release acc2 second: its completion must detect the existing canonical block
+        acc2_barrier.set()
+
+        res1, res2 = await asyncio.gather(t1, t2)
+
+        # Both readers MUST receive identical canonical bytes
+        self.assertEqual(res1, canonical_payload)
+        self.assertEqual(res2, canonical_payload)
+
+        # Exact cache byte count (1024 bytes once, no double counting)
+        self.assertEqual(mgr._current_cache_bytes, 1024)
+
+        # Exact one payload entry in the cache
+        self.assertEqual(len(mgr._cache), 1)
+        self.assertIn((canonical_key, 0), mgr._cache)
+        self.assertEqual(mgr._cache[(canonical_key, 0)].data, canonical_payload)
+
+        await mgr.close()
+
 
 if __name__ == "__main__":
     unittest.main()

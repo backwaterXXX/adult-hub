@@ -16,6 +16,7 @@ Verifies:
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 import os
 import sys
 import unittest
@@ -257,6 +258,14 @@ class TestTelegramProviderVariantsIntegration(unittest.TestCase):
     """Integration tests for TelegramProvider methods with variant support."""
 
     def setUp(self):
+        @asynccontextmanager
+        async def fake_lease(channel_ref=None, affinity_account=None):
+            yield ("default", MagicMock())
+
+        patcher_seam = patch("providers.telegram._CLIENT_LEASE_SEAM", fake_lease)
+        patcher_seam.start()
+        self.addCleanup(patcher_seam.stop)
+
         self.prov = TelegramProvider()
         self.channel_id = "-1001"
         self.patcher = patch("providers.telegram.is_channel_authorized", return_value=True)
@@ -355,6 +364,14 @@ class TestHttpVariantsEndpoints(unittest.TestCase):
     """Test HTTP API endpoints for /play/{video_id}/variants and /play/{video_id}/stream."""
 
     def setUp(self):
+        @asynccontextmanager
+        async def fake_lease(channel_ref=None, affinity_account=None):
+            yield ("default", MagicMock())
+
+        patcher_seam = patch("providers.telegram._CLIENT_LEASE_SEAM", fake_lease)
+        patcher_seam.start()
+        self.addCleanup(patcher_seam.stop)
+
         self.client = TestClient(resolver_app.app)
         self.channel_id = "-1001"
         self.patcher = patch("providers.telegram.is_channel_authorized", return_value=True)
