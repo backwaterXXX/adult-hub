@@ -73,6 +73,15 @@ def is_memory_only_mode() -> bool:
     return _MEMORY_ONLY_MODE or os.getenv("TELEGRAM_ACCOUNT_STORE_MEMORY_ONLY", "").lower() in ("1", "true", "yes")
 
 
+def _normalize_datetime(value: Any) -> Optional[datetime]:
+    """Normalize None, datetime, or int/float epoch seconds to UTC datetime or None."""
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return datetime.fromtimestamp(value, timezone.utc)
+    return None
+
+
 def _is_db_available() -> bool:
     if is_memory_only_mode():
         return False
@@ -97,8 +106,8 @@ def list_accounts(conn=None) -> List[TelegramAccountRecord]:
                 phone_mask=r[2] or "",
                 enabled=bool(r[3]),
                 session_file=r[4] or "",
-                created_at=r[5],
-                updated_at=r[6],
+                created_at=_normalize_datetime(r[5]),
+                updated_at=_normalize_datetime(r[6]),
             )
             for r in rows
         ]
@@ -149,8 +158,8 @@ def get_account(account_id: str, conn=None) -> Optional[TelegramAccountRecord]:
             phone_mask=row[2] or "",
             enabled=bool(row[3]),
             session_file=row[4] or "",
-            created_at=row[5],
-            updated_at=row[6],
+            created_at=_normalize_datetime(row[5]),
+            updated_at=_normalize_datetime(row[6]),
         )
 
     try:
@@ -221,7 +230,7 @@ def create_account(
             "VALUES (%s, %s, '', %s, %s, %s, %s) "
             "ON CONFLICT (account_id) DO NOTHING "
             "RETURNING account_id",
-            (valid_id, effective_label, enabled, session_file, now, now),
+            (valid_id, effective_label, enabled, session_file, now.timestamp(), now.timestamp()),
         )
         row = cursor.fetchone()
         return bool(row)
@@ -328,7 +337,7 @@ def upsert_account(
     )
 
     def _execute(c):
-        c.execute(sql, (valid_id, eff_label, eff_phone, eff_enabled, session_file, now, now))
+        c.execute(sql, (valid_id, eff_label, eff_phone, eff_enabled, session_file, now.timestamp(), now.timestamp()))
 
     try:
         if conn is not None:
@@ -378,7 +387,7 @@ def _execute_update_account(
     conn=None,
 ) -> bool:
     updates = ["updated_at = %s"]
-    params: list[Any] = [now]
+    params: list[Any] = [now.timestamp()]
     for col, val in [("label", label), ("enabled", enabled), ("phone_mask", phone_mask)]:
         if val is not None:
             updates.append(f"{col} = %s")
@@ -558,7 +567,7 @@ def list_channel_access(
                 account_id=r[0],
                 channel_id=r[1],
                 access_status=r[2] or "unknown",
-                last_checked_at=r[3],
+                last_checked_at=_normalize_datetime(r[3]),
                 error_detail=r[4] or "",
             )
             for r in rows
