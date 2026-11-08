@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, List, Optional
+from typing import Any, Iterator, List, Optional
 
 from common import db
 from .telegram_account import DEFAULT_ACCOUNT_ID, TelegramAccountContext, validate_account_id
@@ -90,6 +91,18 @@ def _is_db_available() -> bool:
             return db.table_exists(conn, "telegram_accounts")
     except Exception:
         return False
+
+
+@contextmanager
+def _write_connection(connect_timeout: int = 3) -> Iterator[Any]:
+    """Context manager for internally opened write transactions.
+
+    Enters the yielded Connection so __exit__ commits on success or
+    rolls back on exception, while db.connection closes it in all cases.
+    """
+    with db.connection(connect_timeout=connect_timeout) as conn:
+        with conn:
+            yield conn
 
 
 def list_accounts(conn=None) -> List[TelegramAccountRecord]:
@@ -239,7 +252,7 @@ def create_account(
         if conn is not None:
             inserted = _execute(conn)
         else:
-            with db.connection(connect_timeout=3) as c:
+            with _write_connection(connect_timeout=3) as c:
                 inserted = _execute(c)
     except Exception as exc:
         logger.error("Database create_account failed for %s: %s", valid_id, exc)
@@ -343,7 +356,7 @@ def upsert_account(
         if conn is not None:
             _execute(conn)
         else:
-            with db.connection(connect_timeout=3) as c:
+            with _write_connection(connect_timeout=3) as c:
                 _execute(c)
     except Exception as exc:
         logger.error("Database upsert_account failed for %s: %s", valid_id, exc)
@@ -386,6 +399,12 @@ def _execute_update_account(
     now: datetime,
     conn=None,
 ) -> bool:
+    """Execute UPDATE query for an account.
+
+    Exceptions raised during execution or during _write_connection exit/commit
+    propagate directly to the caller (update_account), which catches, logs, and
+    re-raises them so no in-memory cache or caller state is modified on DB failure.
+    """
     updates = ["updated_at = %s"]
     params: list[Any] = [now.timestamp()]
     for col, val in [("label", label), ("enabled", enabled), ("phone_mask", phone_mask)]:
@@ -401,7 +420,7 @@ def _execute_update_account(
 
     if conn is not None:
         return _execute(conn)
-    with db.connection(connect_timeout=3) as c:
+    with _write_connection(connect_timeout=3) as c:
         return _execute(c)
 
 
@@ -490,6 +509,12 @@ def _delete_account_from_memory(valid_id: str) -> Optional[TelegramAccountRecord
 
 
 def _execute_delete_account(valid_id: str, conn=None) -> bool:
+    """Execute DELETE query for an account.
+
+    Exceptions raised during execution or during _write_connection exit/commit
+    propagate directly to the caller (delete_account), which catches, logs, and
+    re-raises them so neither memory cache nor on-disk session files are removed on DB failure.
+    """
     def _execute(c):
         cursor = c.execute(
             "DELETE FROM public.telegram_accounts WHERE account_id = %s RETURNING account_id",
@@ -499,7 +524,7 @@ def _execute_delete_account(valid_id: str, conn=None) -> bool:
 
     if conn is not None:
         return _execute(conn)
-    with db.connection(connect_timeout=3) as c:
+    with _write_connection(connect_timeout=3) as c:
         return _execute(c)
 
 
@@ -649,7 +674,7 @@ def set_channel_access(
         if conn is not None:
             _execute(conn)
         else:
-            with db.connection(connect_timeout=3) as c:
+            with _write_connection(connect_timeout=3) as c:
                 _execute(c)
     except Exception as exc:
         logger.debug("Database set_channel_access failed for (%s, %s): %s", valid_id, clean_channel, exc)
