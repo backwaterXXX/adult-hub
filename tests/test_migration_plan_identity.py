@@ -19,7 +19,7 @@ class MigrationPlanIdentityTests(unittest.TestCase):
                    record(11, '0011_video_metadata_overrides')]
         pending = _migration_plan(applied)
         self.assertEqual(pending[0].name, '0012_video_availability_checks')
-        self.assertEqual(pending[-1].name, '0064_video_duplicate_decisions_evidence')
+        self.assertEqual(pending[-1].name, '0065_system_schedules_last_job_id')
 
 
 if __name__ == '__main__':

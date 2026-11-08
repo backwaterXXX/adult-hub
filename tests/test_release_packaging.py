@@ -10,6 +10,7 @@ Verifies:
 7. Correct client-facing stream URL defaults and Jellyfin container DNS resolution.
 """
 
+import os
 import shutil
 import subprocess
 import tarfile
@@ -130,12 +131,15 @@ TELEGRAM_SESSION_PATH=/data/telegram.session
         # Copy config
         shutil.copy(self.isolated_root / "config.example.yaml", self.isolated_root / "config.yaml")
 
+        compose_env = {k: v for k, v in os.environ.items() if k != "CONFIG_PATH"}
+
         # Run real docker compose config
         res = subprocess.run(
             ["docker", "compose", "--env-file", str(env_file), "-f", str(self.isolated_root / "docker-compose.yml"), "config"],
             capture_output=True,
             text=True,
             timeout=15,
+            env=compose_env,
         )
         self.assertEqual(res.returncode, 0, f"Compose validation failed:\n{res.stderr}")
 
@@ -156,6 +160,7 @@ TELEGRAM_SESSION_PATH=/data/telegram.session
             capture_output=True,
             text=True,
             timeout=15,
+            env=compose_env,
         )
         self.assertEqual(profile_res.returncode, 0)
         profile_services = yaml.safe_load(profile_res.stdout).get("services", {})

@@ -142,7 +142,10 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
         self.assertTrue(health["available"]["quality_audit"])
 
     def test_missing_stale_fresh_and_unavailable_backup_states_are_distinct(self):
-        with patch.dict("os.environ", {"ADMIN_V2_BACKUP_WARNING_SECONDS": "3600"}):
+        with patch.dict("os.environ", {
+            "ADMIN_V2_BACKUP_WARNING_SECONDS": "3600",
+            "ADMIN_V2_MONITOR_BACKUPS": "true",
+        }):
             missing, missing_health = admin_v2_issues._build_issues(make_admin(backup={
                 "inventory_available": True, "available": False, "latest": None,
             }), NOW)

@@ -13,7 +13,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import sync_orchestration
+from test_support import flat_sync_binding, load_flat_sync_module
+
+with flat_sync_binding():
+    import sync_orchestration
+sync_orchestration._core = load_flat_sync_module()
 if "sync" in sys.modules and hasattr(sys.modules["sync"], "__file__") and not hasattr(sys.modules["sync"], "__path__"):
     sys.modules["sync"].__path__ = [str(Path(__file__).resolve().parents[1] / "sync")]
 from common.config_loader import AppConfig, SourceConfig, TelegramChannelConfig

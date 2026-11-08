@@ -288,6 +288,11 @@ class TestResolverHttpApi(unittest.TestCase):
         ("POST", "/admin/api/v2/library/videos/{video_id}/generate-artwork"),
         ("POST", "/admin/api/v2/library/videos/{video_id}/download-artwork"),
         ("POST", "/admin/api/v2/library/videos/{video_id}/generate-phash"),
+        ("POST", "/admin/api/v2/telegram/auth/start"),
+        ("POST", "/admin/api/v2/telegram/auth/code"),
+        ("POST", "/admin/api/v2/telegram/auth/password"),
+        ("POST", "/admin/api/v2/telegram/auth/cancel"),
+        ("POST", "/admin/api/v2/telegram/auth/resend"),
     )
     CLIENT_INTEGRATION_MUTATIONS = {
         ("POST", "/admin/api/v2/video-phash/frames"),

@@ -93,9 +93,12 @@ class TestStreamModes(unittest.TestCase):
 
     def test_write_stream_file_modes(self):
         import tempfile
+        sentinel = object()
         old = sync_module.RESOLVER_PUBLIC_URL
+        old_tg = getattr(sync_module, "STREAM_PUBLIC_URL_TELEGRAM", sentinel)
         try:
             sync_module.RESOLVER_PUBLIC_URL = "http://h:8090"
+            sync_module.STREAM_PUBLIC_URL_TELEGRAM = "http://h:8090"
             with tempfile.TemporaryDirectory() as d:
                 p1 = Path(d) / "a.strm"
                 sync_module.write_stream_file(p1, "telegram:1")
@@ -105,6 +108,11 @@ class TestStreamModes(unittest.TestCase):
                 self.assertEqual(p2.read_text(), "http://h:8090/admin/play/unknownxyz:1/stream\n")
         finally:
             sync_module.RESOLVER_PUBLIC_URL = old
+            if old_tg is sentinel:
+                if hasattr(sync_module, "STREAM_PUBLIC_URL_TELEGRAM"):
+                    delattr(sync_module, "STREAM_PUBLIC_URL_TELEGRAM")
+            else:
+                sync_module.STREAM_PUBLIC_URL_TELEGRAM = old_tg
 
 
 class TestUnsupportedEmbedHiding(PgTestCase):

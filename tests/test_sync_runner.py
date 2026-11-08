@@ -274,6 +274,8 @@ class RunnerHarness(unittest.TestCase):
         module.claim_due_system_schedule = lambda *_args, **_kwargs: False
         module.finish_system_schedule = lambda *_args, **_kwargs: None
         module.list_system_schedules = lambda *_args: [{"id": "library-sync", "enabled": True, "next_run_at": "2026-01-01T03:30:00+00:00", "timezone": "Europe/Warsaw"}]
+        module.dispatch_due_schedules = lambda *_args, **_kwargs: 0
+        module.dispatch_due_system_schedules = lambda *_args, **_kwargs: 0
         module.time = FakeClock()
         module.stop_event.clear()
         return module

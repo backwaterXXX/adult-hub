@@ -401,6 +401,7 @@ class TestMigrationsEngine(PgTestCase):
             (62, "0062_artwork_generation_schedule"),
             (63, "0063_source_removal_indexes"),
             (64, "0064_video_duplicate_decisions_evidence"),
+            (65, "0065_system_schedules_last_job_id"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):
