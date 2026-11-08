@@ -19,6 +19,16 @@
   const TELEGRAM_AUTH_CANCEL_URL = `${V2_API}/telegram/auth/cancel`;
   const TELEGRAM_ACCOUNTS_URL = `${V2_API}/telegram/accounts`;
   const TELEGRAM_CHANNELS_ACCESS_URL = `${V2_API}/telegram/channels/access`;
+  const TELEGRAM_ACCOUNT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+
+  function isValidTelegramAccountId(id) {
+    if (typeof id !== 'string') return false;
+    const trimmed = id.trim();
+    if (!trimmed) return false;
+    if (trimmed.includes('/') || trimmed.includes('\\') || trimmed.includes('..') || trimmed.includes('\0')) return false;
+    return TELEGRAM_ACCOUNT_ID_PATTERN.test(trimmed);
+  }
+
   const SOURCE_PAGE_SIZE = 50;
   const $ = (selector, root = document) => root.querySelector(selector);
 
@@ -31,7 +41,8 @@
     sort: { key: 'channel', direction: 'asc' },
     channelHistory: new Map(), historyTruncated: false, accessChecks: new Map(), accessFeedback: '',
     detailItem: null, urlTimer: null, urlEditActive: false, telegramAuth: null,
-    activeAuthAccountId: 'default'
+    activeAuthAccountId: 'default', activeWizardMode: null, addAccountDraft: null,
+    addAccountPending: false, addAccountToken: null, wizardSeq: 0
   };
 
   // Shared helpers live in admin-v2.js and are published through window.AdminV2.
@@ -1648,12 +1659,22 @@
       if (!acc.authorized) {
         const loginBtn = create('button', 'button button-primary', acc.has_session_file ? 'Verify session' : 'Log in');
         loginBtn.type = 'button';
-        loginBtn.addEventListener('click', () => openTelegramAuthWizard(loginBtn, acc.account_id));
+        loginBtn.addEventListener('click', () => {
+          if (!isValidTelegramAccountId(acc.account_id)) {
+            setNotice('error', 'Invalid account ID.');
+            return;
+          }
+          return openTelegramAuthWizard(loginBtn, acc.account_id);
+        });
         actions.appendChild(loginBtn);
       } else {
         const testBtn = create('button', 'button button-quiet', 'Test access');
         testBtn.type = 'button';
         testBtn.addEventListener('click', async () => {
+          if (!isValidTelegramAccountId(acc.account_id)) {
+            setNotice('error', 'Invalid account ID.');
+            return;
+          }
           testBtn.disabled = true;
           testBtn.textContent = 'Testing…';
           try {
@@ -1677,6 +1698,10 @@
       const renameBtn = create('button', 'button button-quiet', 'Rename');
       renameBtn.type = 'button';
       renameBtn.addEventListener('click', async () => {
+        if (!isValidTelegramAccountId(acc.account_id)) {
+          setNotice('error', 'Invalid account ID.');
+          return;
+        }
         const newLabel = prompt('Enter new label for this account:', acc.label || acc.account_id);
         if (newLabel !== null && newLabel.trim()) {
           try {
@@ -1693,6 +1718,10 @@
       const toggleBtn = create('button', 'button button-quiet', acc.enabled ? 'Disable' : 'Enable');
       toggleBtn.type = 'button';
       toggleBtn.addEventListener('click', async () => {
+        if (!isValidTelegramAccountId(acc.account_id)) {
+          setNotice('error', 'Invalid account ID.');
+          return;
+        }
         try {
           await requestTelegramAuth(`${TELEGRAM_ACCOUNTS_URL}/${encodeURIComponent(acc.account_id)}`, { enabled: !acc.enabled }, 'PATCH');
           setNotice('success', `Account ${acc.enabled ? 'disabled' : 'enabled'}.`);
@@ -1706,6 +1735,10 @@
       const deleteBtn = create('button', 'button button-quiet', 'Remove');
       deleteBtn.type = 'button';
       deleteBtn.addEventListener('click', async () => {
+        if (!isValidTelegramAccountId(acc.account_id)) {
+          setNotice('error', 'Invalid account ID.');
+          return;
+        }
         if (confirm(`Are you sure you want to remove account "${acc.label || acc.account_id}"? Its local session file will be removed. Channels and media files will NOT be deleted.`)) {
           try {
             await requestTelegramAuth(`${TELEGRAM_ACCOUNTS_URL}/${encodeURIComponent(acc.account_id)}?confirm=true`, {}, 'DELETE');
@@ -1726,14 +1759,214 @@
 
   let authCountdownTimer = null;
 
+  async function openTelegramAddAccountWizard(opener) {
+    const dialog = $('#telegramAuthDialog');
+    if (!dialog) return;
+    state.activeWizardMode = 'add_account';
+    state.addAccountDraft = null;
+    const sequence = ++state.wizardSeq;
+    const title = $('#telegramAuthTitle');
+    if (title) title.textContent = 'Add Telegram Account';
+    setWizardBanner('', '');
+    const body = $('#telegramAuthBody');
+    if (body) {
+      body.replaceChildren(create('p', 'detail-note', 'Preparing account setup…'));
+    }
+    window.AdminV2.openDialog(dialog, opener || document.activeElement);
+
+    let defaultId = 'worker_2';
+    try {
+      const list = await window.AdminV2.getJson(TELEGRAM_ACCOUNTS_URL);
+      if (!list?.accounts?.length) {
+        defaultId = 'default';
+      } else {
+        defaultId = `account_${list.accounts.length + 1}`;
+      }
+    } catch (e) {}
+
+    if (sequence !== state.wizardSeq || state.activeWizardMode !== 'add_account') return;
+    renderWizardAddAccountStep(defaultId, opener);
+  }
+
+  function renderWizardAddAccountStep(defaultId, opener) {
+    const body = $('#telegramAuthBody');
+    if (!body) return;
+    setWizardBanner('', '');
+
+    const wrap = create('div', 'telegram-auth-view');
+    const note = create('p', 'detail-note', 'Configure a new Telegram account identifier and display label before starting login authorization.');
+    const form = create('form', 'telegram-auth-form');
+    form.id = 'tgAddAccountForm';
+    form.noValidate = true;
+
+    const inlineError = create('p', 'detail-error');
+    inlineError.id = 'tgAddAccountError';
+    inlineError.setAttribute('role', 'alert');
+    inlineError.hidden = true;
+
+    const idLabel = create('label');
+    idLabel.setAttribute('for', 'tgAccountIdInput');
+    idLabel.textContent = 'Account ID';
+    const idInput = create('input');
+    idInput.id = 'tgAccountIdInput';
+    idInput.name = 'account_id';
+    idInput.type = 'text';
+    idInput.placeholder = 'e.g. worker_2';
+    idInput.setAttribute('aria-required', 'true');
+    idInput.autocomplete = 'off';
+    idInput.value = state.addAccountDraft?.account_id ?? (defaultId || '');
+    idLabel.appendChild(idInput);
+
+    const labelLabel = create('label');
+    labelLabel.setAttribute('for', 'tgAccountLabelInput');
+    labelLabel.textContent = 'Label';
+    const labelInput = create('input');
+    labelInput.id = 'tgAccountLabelInput';
+    labelInput.name = 'label';
+    labelInput.type = 'text';
+    labelInput.placeholder = 'e.g. Worker 2';
+    labelInput.autocomplete = 'off';
+    labelInput.value = state.addAccountDraft?.label ?? (defaultId || '');
+    labelLabel.appendChild(labelInput);
+
+    const clearError = () => {
+      if (!inlineError.hidden) {
+        inlineError.hidden = true;
+        inlineError.textContent = '';
+      }
+      idInput.removeAttribute('aria-invalid');
+      idInput.removeAttribute('aria-describedby');
+    };
+
+    const setInputError = (errorMsg) => {
+      inlineError.textContent = errorMsg;
+      inlineError.hidden = false;
+      idInput.setAttribute('aria-invalid', 'true');
+      idInput.setAttribute('aria-describedby', 'tgAddAccountError');
+      idInput.focus({ preventScroll: true });
+    };
+
+    idInput.addEventListener('input', () => {
+      clearError();
+      state.addAccountDraft = state.addAccountDraft || {};
+      state.addAccountDraft.account_id = idInput.value;
+    });
+
+    labelInput.addEventListener('input', () => {
+      clearError();
+      state.addAccountDraft = state.addAccountDraft || {};
+      state.addAccountDraft.label = labelInput.value;
+    });
+
+    const actions = create('div', 'operation-dialog-actions');
+    const cancelBtn = create('button', 'button button-quiet', 'Cancel');
+    cancelBtn.type = 'button';
+    cancelBtn.id = 'tgAddAccountCancel';
+    cancelBtn.addEventListener('click', () => closeTelegramAuthWizard());
+
+    const continueBtn = create('button', 'button button-primary', state.addAccountPending ? 'Continuing…' : 'Continue');
+    continueBtn.type = 'submit';
+    continueBtn.id = 'tgAddAccountContinue';
+    if (state.addAccountPending) {
+      continueBtn.setAttribute('aria-disabled', 'true');
+    }
+
+    actions.append(cancelBtn, continueBtn);
+    form.append(inlineError, idLabel, labelLabel, actions);
+    wrap.append(note, form);
+    body.replaceChildren(wrap);
+
+    idInput.focus({ preventScroll: true });
+    if (typeof idInput.select === 'function') {
+      idInput.select();
+    }
+
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (state.addAccountPending) return;
+
+      const rawId = idInput.value;
+      const normalizedId = rawId ? rawId.trim() : '';
+
+      if (!normalizedId) {
+        setInputError('Account ID is required.');
+        return;
+      }
+
+      if (!isValidTelegramAccountId(normalizedId)) {
+        setInputError('Account ID must contain only alphanumeric characters, underscores, and hyphens (1-64 characters).');
+        return;
+      }
+
+      const rawLabel = labelInput.value;
+      const normalizedLabel = (rawLabel && rawLabel.trim()) ? rawLabel.trim() : normalizedId;
+
+      clearError();
+      setWizardBanner('', '');
+
+      state.addAccountPending = true;
+      const requestToken = Symbol('addAccount');
+      state.addAccountToken = requestToken;
+      continueBtn.setAttribute('aria-disabled', 'true');
+      continueBtn.textContent = 'Continuing…';
+
+      const sequence = ++state.wizardSeq;
+      const dialog = $('#telegramAuthDialog');
+
+      try {
+        await postTelegramAuth(TELEGRAM_ACCOUNTS_URL, { account_id: normalizedId, label: normalizedLabel });
+      } catch (err) {
+        if (sequence !== state.wizardSeq || state.activeWizardMode !== 'add_account' || !dialog?.open) {
+          setNotice('error', `Could not create account "${normalizedId}": ${err.message}`);
+          renderTelegramAccountCard();
+          return;
+        }
+        setInputError(`Could not create account: ${err.message}`);
+        continueBtn.removeAttribute('aria-disabled');
+        continueBtn.textContent = 'Continue';
+        return;
+      } finally {
+        if (state.addAccountToken === requestToken) {
+          state.addAccountPending = false;
+          state.addAccountToken = null;
+          const currentContinueBtn = $('#tgAddAccountContinue');
+          if (currentContinueBtn && currentContinueBtn.getAttribute('aria-disabled') === 'true') {
+            currentContinueBtn.removeAttribute('aria-disabled');
+            currentContinueBtn.textContent = 'Continue';
+          }
+        }
+      }
+
+      state.addAccountDraft = null;
+
+      if (sequence !== state.wizardSeq || state.activeWizardMode !== 'add_account' || !dialog?.open) {
+        setNotice('info', `Account "${normalizedId}" was created. Click "Log in" to authenticate.`);
+        renderTelegramAccountCard();
+        return;
+      }
+
+      try {
+        await openTelegramAuthWizard(opener, normalizedId);
+      } catch (err) {
+        setWizardBanner('error', `Account created, but could not start login wizard: ${err.message}`);
+      }
+    });
+  }
+
   async function openTelegramAuthWizard(opener, accountId = 'default') {
-    state.activeAuthAccountId = accountId || 'default';
+    const rawTarget = typeof accountId === 'string' ? accountId.trim() : '';
+    const validTarget = isValidTelegramAccountId(rawTarget) ? rawTarget : 'default';
+    state.activeAuthAccountId = validTarget;
+    state.activeWizardMode = 'auth';
+    state.addAccountDraft = null;
     const dialog = $('#telegramAuthDialog');
     if (!dialog) return;
     const title = $('#telegramAuthTitle');
     if (title) title.textContent = `Telegram Login: ${state.activeAuthAccountId}`;
+    setWizardBanner('', '');
+    const sequence = ++state.wizardSeq;
     window.AdminV2.openDialog(dialog, opener || document.activeElement);
-    await refreshTelegramAuthWizard(state.activeAuthAccountId);
+    await refreshTelegramAuthWizard(state.activeAuthAccountId, sequence);
   }
 
   function closeTelegramAuthWizard() {
@@ -1743,6 +1976,9 @@
       clearInterval(authCountdownTimer);
       authCountdownTimer = null;
     }
+    state.activeWizardMode = null;
+    state.addAccountDraft = null;
+    state.wizardSeq = (state.wizardSeq || 0) + 1;
     window.AdminV2.closeDialog(dialog);
     renderTelegramAccountCard();
   }
@@ -1760,12 +1996,15 @@
     banner.hidden = false;
   }
 
-  async function refreshTelegramAuthWizard(accountId) {
-    const target = accountId || state.activeAuthAccountId || 'default';
+  async function refreshTelegramAuthWizard(accountId, sequence) {
+    const rawTarget = typeof accountId === 'string' ? accountId.trim() : '';
+    const target = isValidTelegramAccountId(rawTarget) ? rawTarget : (isValidTelegramAccountId(state.activeAuthAccountId) ? state.activeAuthAccountId : 'default');
     state.activeAuthAccountId = target;
     setWizardBanner('', '');
     const body = $('#telegramAuthBody');
     if (!body) return;
+
+    const seq = sequence !== undefined ? sequence : ++state.wizardSeq;
 
     body.replaceChildren(create('p', 'detail-note', `Checking Telegram authorization status for ${target}…`));
 
@@ -1773,9 +2012,12 @@
     try {
       statusPayload = await window.AdminV2.getJson(`${TELEGRAM_AUTH_STATUS_URL}?account_id=${encodeURIComponent(target)}&check_live=false`);
     } catch (err) {
+      if (seq !== state.wizardSeq || state.activeWizardMode !== 'auth') return;
       body.replaceChildren(create('p', 'detail-error', `Could not check Telegram status: ${scrub(err.message)}`));
       return;
     }
+
+    if (seq !== state.wizardSeq || state.activeWizardMode !== 'auth') return;
 
     state.telegramAuth = statusPayload;
 
@@ -1833,10 +2075,15 @@
     const verifyBtn = create('button', 'button button-primary', 'Verify session');
     verifyBtn.type = 'button';
     verifyBtn.addEventListener('click', async () => {
+      const expectedSeq = state.wizardSeq;
+      const target = isValidTelegramAccountId(state.activeAuthAccountId) ? state.activeAuthAccountId : 'default';
       verifyBtn.disabled = true;
       verifyBtn.textContent = 'Verifying…';
       try {
-        const liveStatus = await window.AdminV2.getJson(`${TELEGRAM_AUTH_STATUS_URL}?check_live=true`);
+        const liveStatus = await window.AdminV2.getJson(`${TELEGRAM_AUTH_STATUS_URL}?account_id=${encodeURIComponent(target)}&check_live=true`);
+        if (expectedSeq !== state.wizardSeq || state.activeWizardMode !== 'auth' || state.activeAuthAccountId !== target) {
+          return;
+        }
         state.telegramAuth = liveStatus;
         renderTelegramAccountCard(liveStatus);
         if (liveStatus.status === 'authorized') {
@@ -1849,6 +2096,9 @@
           verifyBtn.textContent = 'Verify session';
         }
       } catch (err) {
+        if (expectedSeq !== state.wizardSeq || state.activeWizardMode !== 'auth' || state.activeAuthAccountId !== target) {
+          return;
+        }
         setWizardBanner('error', err.message || 'Failed to verify session.');
         verifyBtn.disabled = false;
         verifyBtn.textContent = 'Verify session';
@@ -2204,26 +2454,8 @@
     window.addEventListener('popstate', restoreSourceStateFromHistory);
     const telegramLoginBtn = $('#telegramLoginButton');
     if (telegramLoginBtn) {
-      telegramLoginBtn.addEventListener('click', async event => {
-        let defaultId = 'worker_2';
-        try {
-          const list = await window.AdminV2.getJson(TELEGRAM_ACCOUNTS_URL);
-          if (!list?.accounts?.length) {
-            defaultId = 'default';
-          } else {
-            defaultId = `account_${list.accounts.length + 1}`;
-          }
-        } catch (e) {}
-        const accId = prompt('Enter a unique identifier for the new Telegram account (e.g. worker_2):', defaultId);
-        if (!accId || !accId.trim()) return;
-        const normalizedId = accId.trim();
-        const label = prompt('Enter a label for this account:', normalizedId) || normalizedId;
-        try {
-          await postTelegramAuth(TELEGRAM_ACCOUNTS_URL, { account_id: normalizedId, label: label.trim() });
-          await openTelegramAuthWizard(event.currentTarget, normalizedId);
-        } catch (err) {
-          setNotice('error', `Could not create account: ${err.message}`);
-        }
+      telegramLoginBtn.addEventListener('click', event => {
+        return openTelegramAddAccountWizard(event.currentTarget);
       });
     }
     const accountsRefreshBtn = $('#telegramAccountsRefreshBtn');
