@@ -800,15 +800,41 @@ h2 { margin-bottom: 0; font-size: 17px; letter-spacing: -.4px; }
 #sourceHistoryPane .operation-history-list { padding: 0; }
 
 /* Telegram Web Login Wizard and Account Status */
-.telegram-account-panel { margin-bottom: 20px; }
-.telegram-account-panel .panel-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
-.telegram-auth-steps { display: flex; gap: 8px; margin: 15px 0 20px; }
-.telegram-auth-step { flex: 1; padding: 8px 10px; border-radius: 8px; font-size: 12px; font-weight: 700; text-align: center; background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+.telegram-account-panel { padding: 20px; margin-bottom: 20px; }
+.telegram-account-panel .panel-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 0; }
+.telegram-account-panel .panel-heading h2 { margin-bottom: 4px; }
+.telegram-account-panel .account-actions { display: flex; align-items: center; flex-shrink: 0; }
+.telegram-account-panel .state-banner { margin: 16px 0 0; }
+
+.telegram-auth-dialog .operation-dialog-panel { padding: 20px; }
+.telegram-auth-dialog .panel-heading { margin-bottom: 16px; }
+.telegram-auth-dialog .panel-heading h2 { margin: 0 35px 0 0; }
+.telegram-auth-dialog .state-banner { margin: 0 0 16px; }
+.telegram-auth-steps { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+.telegram-auth-step { flex: 1 1 0; min-width: 0; padding: 8px 10px; border-radius: 8px; font-size: 12px; font-weight: 700; text-align: center; background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
 .telegram-auth-step.active { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--accent-strong); border-color: var(--accent); }
 .telegram-auth-step.done { background: var(--surface-raised); color: var(--text); border-color: var(--border); }
-.telegram-auth-form { display: flex; flex-direction: column; gap: 14px; margin-top: 15px; }
+.telegram-auth-form { display: flex; flex-direction: column; gap: 14px; margin-top: 0; }
 .telegram-auth-form label { display: flex; flex-direction: column; gap: 6px; font-weight: 700; font-size: 12px; color: var(--text); }
-.telegram-auth-form input { width: 100%; min-height: 42px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); font-size: 14px; }
+.telegram-auth-form input { width: 100%; min-height: 42px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); font: inherit; font-size: 14px; font-weight: 400; }
 .telegram-auth-form input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.telegram-auth-dialog .operation-dialog-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.telegram-auth-dialog .telegram-auth-form > .operation-dialog-actions { margin-top: 2px; }
 .telegram-auth-status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; margin-top: 4px; }
 .telegram-auth-countdown { font-size: 12px; color: var(--muted); align-self: center; }
+
+@media (max-width: 600px) {
+  .telegram-account-panel { padding: 16px; margin-bottom: 16px; }
+  .telegram-account-panel .panel-heading { flex-direction: column; align-items: stretch; gap: 12px; }
+  .telegram-account-panel .account-actions { width: 100%; }
+  .telegram-account-panel .account-actions .button { width: 100%; }
+  .telegram-account-panel .state-banner { margin-top: 14px; }
+
+  .telegram-auth-dialog .operation-dialog-panel { padding: 20px 16px; }
+  .telegram-auth-dialog .panel-heading h2 { font-size: 17px; margin-right: 32px; }
+  .telegram-auth-steps { gap: 6px; margin-bottom: 14px; }
+  .telegram-auth-step { flex: 1 1 calc(50% - 6px); padding: 7px 8px; font-size: 11px; }
+  .telegram-auth-step:last-child:nth-child(odd) { flex: 1 1 100%; }
+  .telegram-auth-dialog .operation-dialog-actions { gap: 8px; }
+  .telegram-auth-dialog .operation-dialog-actions .button { flex: 1 1 auto; }
+}
