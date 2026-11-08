@@ -42,7 +42,8 @@
     channelHistory: new Map(), historyTruncated: false, accessChecks: new Map(), accessFeedback: '',
     detailItem: null, urlTimer: null, urlEditActive: false, telegramAuth: null,
     activeAuthAccountId: 'default', activeWizardMode: null, addAccountDraft: null,
-    addAccountPending: false, addAccountToken: null, wizardSeq: 0
+    addAccountPending: false, addAccountToken: null, wizardSeq: 0,
+    accountActionToken: null, activeAccountActionId: null
   };
 
   // Shared helpers live in admin-v2.js and are published through window.AdminV2.
@@ -1517,6 +1518,10 @@
       state.abort?.abort();
       const dialog = $('#sourceDetailDialog');
       if (dialog?.open) closeSourceDetail(false);
+      const tgAuthDialog = $('#telegramAuthDialog');
+      if (tgAuthDialog?.open) closeTelegramAuthWizard();
+      const tgActionDialog = $('#telegramAccountActionDialog');
+      if (tgActionDialog?.open) closeTelegramAccountActionDialog();
     }
     state.activeTab = tab;
     const channels = $('#sourceChannelsPane'), history = $('#sourceHistoryPane');
@@ -1540,6 +1545,78 @@
   }
 
   let wizardWriteToken = '';
+
+  function extractErrorMessage(err, fallback = '') {
+    const visited = new Set();
+    function resolve(value) {
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        return (trimmed && trimmed !== '[object Object]') ? trimmed : '';
+      }
+      if (!value || typeof value !== 'object' || visited.has(value)) {
+        return '';
+      }
+      visited.add(value);
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          const nested = resolve(item);
+          if (nested) return nested;
+        }
+        return '';
+      }
+      if (value.error !== undefined && value.error !== null) {
+        if (typeof value.error === 'string') {
+          const trimmed = value.error.trim();
+          if (trimmed && trimmed !== '[object Object]') return trimmed;
+        } else if (typeof value.error === 'object') {
+          const nested = resolve(value.error);
+          if (nested) return nested;
+        }
+      }
+      if (typeof value.message === 'string') {
+        const trimmed = value.message.trim();
+        if (trimmed && trimmed !== '[object Object]') return trimmed;
+      }
+      if (typeof value.detail === 'string') {
+        const trimmed = value.detail.trim();
+        if (trimmed && trimmed !== '[object Object]') return trimmed;
+      } else if (typeof value.detail === 'object' && value.detail !== null) {
+        const nested = resolve(value.detail);
+        if (nested) return nested;
+      }
+      if (typeof value.msg === 'string') {
+        const trimmed = value.msg.trim();
+        if (trimmed && trimmed !== '[object Object]') return trimmed;
+      }
+      if (typeof value.description === 'string') {
+        const trimmed = value.description.trim();
+        if (trimmed && trimmed !== '[object Object]') return trimmed;
+      }
+      if (typeof value.reason === 'string') {
+        const trimmed = value.reason.trim();
+        if (trimmed && trimmed !== '[object Object]') return trimmed;
+      }
+      if (typeof value.title === 'string') {
+        const trimmed = value.title.trim();
+        if (trimmed && trimmed !== '[object Object]') return trimmed;
+      }
+      if (typeof value.data === 'object' && value.data !== null) {
+        const nested = resolve(value.data);
+        if (nested) return nested;
+      }
+      if (typeof value.cause === 'object' && value.cause !== null) {
+        const nested = resolve(value.cause);
+        if (nested) return nested;
+      }
+      return '';
+    }
+    const extracted = resolve(err);
+    const resolvedFallback = (typeof fallback === 'string' && fallback.trim() !== '[object Object]')
+      ? fallback.trim()
+      : (resolve(fallback) || '');
+    const resultMsg = extracted || resolvedFallback;
+    return (resultMsg && resultMsg !== '[object Object]') ? resultMsg : '';
+  }
 
   async function requestTelegramAuth(url, payload, method = 'POST') {
     const capabilities = await window.AdminV2.getJson(`${V2_API}/capabilities`);
@@ -1571,11 +1648,15 @@
       if (response.status === 403 && capabilities.token_required === true) {
         wizardWriteToken = '';
       }
-      const err = new Error(result.error || `Request failed with status ${response.status}`);
+      const floodWait = result.flood_wait_seconds || (result.error && typeof result.error === 'object' ? result.error.flood_wait_seconds : undefined);
+      const fallback = floodWait
+        ? `Please wait ${floodWait}s before requesting a code.`
+        : `Request failed with status ${response.status}`;
+      const err = new Error(extractErrorMessage(result, fallback));
       err.status = response.status;
       err.data = result;
-      err.flood_wait_seconds = result.flood_wait_seconds;
-      err.code = result.code;
+      err.flood_wait_seconds = floodWait;
+      err.code = result.code || (result.error && typeof result.error === 'object' ? result.error.code : undefined);
       throw err;
     }
     return result;
@@ -1734,20 +1815,12 @@
 
       const deleteBtn = create('button', 'button button-quiet', 'Remove');
       deleteBtn.type = 'button';
-      deleteBtn.addEventListener('click', async () => {
+      deleteBtn.addEventListener('click', () => {
         if (!isValidTelegramAccountId(acc.account_id)) {
           setNotice('error', 'Invalid account ID.');
           return;
         }
-        if (confirm(`Are you sure you want to remove account "${acc.label || acc.account_id}"? Its local session file will be removed. Channels and media files will NOT be deleted.`)) {
-          try {
-            await requestTelegramAuth(`${TELEGRAM_ACCOUNTS_URL}/${encodeURIComponent(acc.account_id)}?confirm=true`, {}, 'DELETE');
-            setNotice('success', `Account ${acc.label || acc.account_id} removed.`);
-            await renderTelegramAccountCard();
-          } catch (err) {
-            setNotice('error', `Removal failed: ${err.message}`);
-          }
-        }
+        openTelegramAccountRemovalDialog(acc, deleteBtn);
       });
       actions.appendChild(deleteBtn);
 
@@ -1986,14 +2059,131 @@
   function setWizardBanner(type, message) {
     const banner = $('#telegramAuthBanner');
     if (!banner) return;
-    if (!message) {
+    const text = extractErrorMessage(message, typeof message === 'string' ? message : '');
+    if (!text || text === '[object Object]') {
       banner.hidden = true;
       banner.textContent = '';
       return;
     }
     banner.className = `state-banner state-${type}`;
-    banner.textContent = message;
+    banner.textContent = text;
     banner.hidden = false;
+  }
+
+  function setAccountActionBanner(type, message) {
+    const banner = $('#telegramAccountActionBanner');
+    if (!banner) return;
+    const text = extractErrorMessage(message, typeof message === 'string' ? message : '');
+    if (!text || text === '[object Object]') {
+      banner.hidden = true;
+      banner.textContent = '';
+      return;
+    }
+    banner.className = `state-banner state-${type}`;
+    banner.textContent = text;
+    banner.hidden = false;
+  }
+
+  function openTelegramAccountRemovalDialog(acc, opener) {
+    if (!isValidTelegramAccountId(acc?.account_id)) {
+      setNotice('error', 'Invalid account ID.');
+      return;
+    }
+    const dialog = $('#telegramAccountActionDialog');
+    if (!dialog) return;
+
+    const actionToken = Symbol('accountRemoval');
+    state.accountActionToken = actionToken;
+    state.activeAccountActionId = acc.account_id;
+
+    const title = $('#telegramAccountActionTitle');
+    if (title) title.textContent = 'Remove Telegram Account';
+    setAccountActionBanner('', '');
+
+    const body = $('#telegramAccountActionBody');
+    if (!body) return;
+
+    const wrap = create('div', 'telegram-account-action-view');
+    const labelText = acc.label && acc.label !== acc.account_id
+      ? `account “${acc.label}” (${acc.account_id})`
+      : `account “${acc.account_id}”`;
+    const note = create('p', 'detail-note',
+      `Are you sure you want to remove ${labelText}? Its local session file will be removed. Channels and media files will NOT be deleted.`
+    );
+
+    const actions = create('div', 'operation-dialog-actions');
+    const cancelBtn = create('button', 'button button-quiet', 'Cancel');
+    cancelBtn.type = 'button';
+    cancelBtn.id = 'telegramAccountActionCancel';
+    cancelBtn.addEventListener('click', () => closeTelegramAccountActionDialog());
+
+    const removeBtn = create('button', 'button button-primary', 'Remove');
+    removeBtn.type = 'button';
+    removeBtn.id = 'telegramAccountActionConfirm';
+
+    removeBtn.addEventListener('click', async () => {
+      if (removeBtn.disabled) return;
+      removeBtn.disabled = true;
+      removeBtn.textContent = 'Removing…';
+      cancelBtn.disabled = true;
+      setAccountActionBanner('', '');
+
+      const requestToken = actionToken;
+      const targetId = acc.account_id;
+      const targetLabel = acc.label || acc.account_id;
+
+      try {
+        await requestTelegramAuth(`${TELEGRAM_ACCOUNTS_URL}/${encodeURIComponent(targetId)}?confirm=true`, {}, 'DELETE');
+        const isCurrentDialog = (state.accountActionToken === requestToken && state.activeAccountActionId === targetId && dialog?.open);
+        if (isCurrentDialog) {
+          closeTelegramAccountActionDialog(false);
+        }
+        setNotice('success', `Account ${targetLabel} removed.`);
+        await renderTelegramAccountCard();
+        const extantAccountsControl = $('#telegramLoginButton') || $('#telegramAccountsRefreshBtn') || $('#telegramAccountHeading');
+        if (extantAccountsControl) {
+          const active = document.activeElement;
+          if (isCurrentDialog || !active || !active.isConnected || active === document.body) {
+            const tag = (extantAccountsControl.tagName || '').toUpperCase();
+            if (!['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA'].includes(tag) && extantAccountsControl.getAttribute('tabindex') === null) {
+              extantAccountsControl.setAttribute('tabindex', '-1');
+            }
+            if (typeof extantAccountsControl.focus === 'function') {
+              extantAccountsControl.focus({ preventScroll: true });
+            }
+          }
+        }
+      } catch (err) {
+        const isCurrentDialog = (state.accountActionToken === requestToken && state.activeAccountActionId === targetId && dialog?.open);
+        if (isCurrentDialog) {
+          removeBtn.disabled = false;
+          removeBtn.textContent = 'Remove';
+          cancelBtn.disabled = false;
+          setAccountActionBanner('error', extractErrorMessage(err, `Removal failed: ${err.message}`));
+        } else {
+          setNotice('error', extractErrorMessage(err, `Could not remove account "${targetLabel}": ${err.message}`));
+          await renderTelegramAccountCard();
+        }
+      }
+    });
+
+    actions.append(cancelBtn, removeBtn);
+    wrap.append(note, actions);
+    body.replaceChildren(wrap);
+
+    window.AdminV2.openDialog(dialog, opener || document.activeElement);
+    cancelBtn.focus({ preventScroll: true });
+  }
+
+  function closeTelegramAccountActionDialog(restoreFocus = true) {
+    const dialog = $('#telegramAccountActionDialog');
+    if (!dialog) return;
+    setAccountActionBanner('', '');
+    const body = $('#telegramAccountActionBody');
+    if (body) body.replaceChildren();
+    state.activeAccountActionId = null;
+    state.accountActionToken = null;
+    window.AdminV2.closeDialog(dialog, restoreFocus);
   }
 
   async function refreshTelegramAuthWizard(accountId, sequence) {
@@ -2187,12 +2377,16 @@
             renderWizardCodeStep(body, result.phone_mask || phoneVal, result.expires_in_seconds || 600);
           }
         } else {
-          setWizardBanner('error', result.error || 'Failed to send verification code.');
+          setWizardBanner('error', extractErrorMessage(result, 'Failed to send verification code.'));
           submitBtn.disabled = false;
           submitBtn.textContent = 'Send verification code';
         }
       } catch (err) {
-        setWizardBanner('error', err.message || 'Could not send verification code.');
+        if (err.flood_wait_seconds) {
+          setWizardBanner('warning', extractErrorMessage(err, `Please wait ${err.flood_wait_seconds}s before requesting a code.`));
+        } else {
+          setWizardBanner('error', extractErrorMessage(err, 'Could not send verification code.'));
+        }
         submitBtn.disabled = false;
         submitBtn.textContent = 'Send verification code';
       }
@@ -2236,24 +2430,25 @@
       resendBtn.textContent = 'Resending…';
       try {
         const result = await postTelegramAuth(TELEGRAM_AUTH_RESEND_URL, {});
+        const floodWait = result.flood_wait_seconds || (result.error && typeof result.error === 'object' ? result.error.flood_wait_seconds : undefined);
         if (result.ok) {
           setWizardBanner('info', result.message || 'Verification code resent.');
           resendBtn.textContent = 'Code resent';
           setTimeout(() => { resendBtn.disabled = false; resendBtn.textContent = 'Resend code'; }, 10000);
-        } else if (result.flood_wait_seconds) {
-          setWizardBanner('warning', result.error || `Please wait ${result.flood_wait_seconds}s before requesting a code.`);
-          startResendCountdown(resendBtn, result.flood_wait_seconds);
+        } else if (floodWait) {
+          setWizardBanner('warning', extractErrorMessage(result, `Please wait ${floodWait}s before requesting a code.`));
+          startResendCountdown(resendBtn, floodWait);
         } else {
-          setWizardBanner('error', result.error || 'Could not resend code.');
+          setWizardBanner('error', extractErrorMessage(result, 'Could not resend code.'));
           resendBtn.disabled = false;
           resendBtn.textContent = 'Resend code';
         }
       } catch (err) {
         if (err.flood_wait_seconds) {
-          setWizardBanner('warning', err.message || `Please wait ${err.flood_wait_seconds}s before requesting a code.`);
+          setWizardBanner('warning', extractErrorMessage(err, `Please wait ${err.flood_wait_seconds}s before requesting a code.`));
           startResendCountdown(resendBtn, err.flood_wait_seconds);
         } else {
-          setWizardBanner('error', err.message || 'Could not resend code.');
+          setWizardBanner('error', extractErrorMessage(err, 'Could not resend code.'));
           resendBtn.disabled = false;
           resendBtn.textContent = 'Resend code';
         }
@@ -2284,14 +2479,18 @@
             renderWizardPasswordStep(body);
           } else if (result.state === 'authorized') {
             renderWizardSuccess(body, result.sync_notified);
+          } else {
+            setWizardBanner('error', extractErrorMessage(result, 'Verification code failed.'));
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Verify code';
           }
         } else {
-          setWizardBanner('error', result.error || 'Verification code failed.');
+          setWizardBanner('error', extractErrorMessage(result, 'Verification code failed.'));
           submitBtn.disabled = false;
           submitBtn.textContent = 'Verify code';
         }
       } catch (err) {
-        setWizardBanner('error', err.message || 'Verification failed.');
+        setWizardBanner('error', extractErrorMessage(err, 'Verification failed.'));
         submitBtn.disabled = false;
         submitBtn.textContent = 'Verify code';
       }
@@ -2367,12 +2566,12 @@
         if (result.ok && result.state === 'authorized') {
           renderWizardSuccess(body, result.sync_notified);
         } else {
-          setWizardBanner('error', result.error || '2FA authentication failed.');
+          setWizardBanner('error', extractErrorMessage(result, '2FA authentication failed.'));
           submitBtn.disabled = false;
           submitBtn.textContent = 'Sign in';
         }
       } catch (err) {
-        setWizardBanner('error', err.message || '2FA authentication failed.');
+        setWizardBanner('error', extractErrorMessage(err, '2FA authentication failed.'));
         submitBtn.disabled = false;
         submitBtn.textContent = 'Sign in';
       }
@@ -2475,6 +2674,22 @@
       telegramAuthDialog.addEventListener('click', event => {
         if (event.target === telegramAuthDialog) {
           closeTelegramAuthWizard();
+        }
+      });
+    }
+    const telegramAccountActionClose = $('#telegramAccountActionClose');
+    if (telegramAccountActionClose) {
+      telegramAccountActionClose.addEventListener('click', () => closeTelegramAccountActionDialog());
+    }
+    const telegramAccountActionDialog = $('#telegramAccountActionDialog');
+    if (telegramAccountActionDialog) {
+      telegramAccountActionDialog.addEventListener('cancel', event => {
+        event.preventDefault();
+        closeTelegramAccountActionDialog();
+      });
+      telegramAccountActionDialog.addEventListener('click', event => {
+        if (event.target === telegramAccountActionDialog) {
+          closeTelegramAccountActionDialog();
         }
       });
     }
