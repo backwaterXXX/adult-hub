@@ -86,6 +86,9 @@ from common.migrations.m0065_system_schedules_last_job_id import (
 from common.migrations.m0066_telegram_accounts import (
     migration as telegram_accounts,
 )
+from common.migrations.m0067_scene_fingerprints_schedule import (
+    migration as scene_fingerprints_schedule,
+)
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -156,4 +159,5 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     video_duplicate_decisions_evidence,
     system_schedules_last_job_id,
     telegram_accounts,
+    scene_fingerprints_schedule,
 )

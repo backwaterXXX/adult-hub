@@ -16,9 +16,9 @@ else:
 
 def _telegram_oshash_batch_limit() -> int:
     try:
-        return max(1, min(500, int(_core.os.environ.get("TELEGRAM_OSHASH_BACKFILL_PER_RUN", "200"))))
+        return max(1, min(1000, int(_core.os.environ.get("TELEGRAM_OSHASH_BACKFILL_PER_RUN", "500"))))
     except (TypeError, ValueError):
-        return 200
+        return 500
 
 
 _TELEGRAM_CHANNEL_LABEL = "Telegram"
@@ -48,9 +48,9 @@ def _fetch_missing_oshash_rows(conn: Any, limit: int):
                WHERE v.provider='telegram' AND f.video_id IS NULL
                  AND (a.entity_key IS NULL OR a.outcome <> 'error'
                       OR a.next_attempt_at <= CURRENT_TIMESTAMP)
-               ORDER BY a.last_attempt_at ASC NULLS FIRST,v.first_seen ASC NULLS LAST,v.id ASC
+               ORDER BY a.last_attempt_at ASC NULLS FIRST,v.first_seen DESC NULLS LAST,v.id DESC
                LIMIT %s""",
-            (max(1, min(500, int(limit))),),
+            (max(1, min(1000, int(limit))),),
         ).fetchall()
     except Exception as exc:
         _core.logger.warning("Telegram OSHASH backfill query failed (%s)", type(exc).__name__)
@@ -130,7 +130,7 @@ def _fetch_telegram_fingerprint_rows(conn: Any, video_ids: Optional[List[str]], 
              ON a.entity_type='video' AND a.entity_key=v.id AND a.source=%s
            WHERE v.provider='telegram' AND v.id LIKE %s
              AND (a.entity_key IS NULL OR a.next_attempt_at <= CURRENT_TIMESTAMP)
-           ORDER BY a.last_attempt_at ASC NULLS FIRST,v.first_seen ASC,v.id ASC
+           ORDER BY a.last_attempt_at ASC NULLS FIRST,v.first_seen DESC,v.id DESC
            LIMIT %s""",
         (attempt_source, channel_pattern, max(1, int(limit))),
     ).fetchall()

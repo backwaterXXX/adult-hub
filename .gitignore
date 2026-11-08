@@ -2,8 +2,7 @@
 .env
 config.yaml
 docker-compose.override.yml
-# Documentation and local audit artifacts are kept outside the public repository.
-/docs/
+# Local planning artifacts are kept outside the public repository.
 plans/
 
 # Local tool directories, credentials, and IDE configurations

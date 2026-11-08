@@ -11,6 +11,7 @@ _RUN_LOCKS = {
     "library-sync": 0x41485501,
     "database-backup": 0x41485502,
     "artwork-generation": 0x41485503,
+    "scene-fingerprints": 0x41485504,
 }
 _ACTIVE_RUNS = {}
 
@@ -18,6 +19,12 @@ _NAMES = {
     "library-sync": "Library sync",
     "database-backup": "System database backup",
     "artwork-generation": "Daily artwork generation",
+    "scene-fingerprints": "Scene fingerprints",
+}
+
+_JOB_SYSTEM_SCHEDULES = {
+    "database-backup": ("backup_create", {}),
+    "scene-fingerprints": ("scene_backfill", {"limit": 500}),
 }
 
 
@@ -55,7 +62,8 @@ def _defaults(daily_at, interval_minutes):
 
 def ensure_system_schedules(db_url, *, sync_daily_at=None, sync_interval_minutes=60,
                             backup_daily_at="04:30", artwork_daily_at="06:00",
-                            include_sync=True, include_artwork=True) -> None:
+                            fingerprints_daily_at=None, fingerprints_interval_minutes=60,
+                            include_sync=True, include_artwork=True, include_fingerprints=True) -> None:
     """Seed effective defaults once; later config changes never overwrite Admin edits."""
     sync_cron, legacy_interval, legacy_daily = _defaults(sync_daily_at, sync_interval_minutes)
     if backup_daily_at:
@@ -63,6 +71,7 @@ def ensure_system_schedules(db_url, *, sync_daily_at=None, sync_interval_minutes
     else:
         backup_cron, backup_interval, backup_legacy_daily = _defaults(None, 60)
     artwork_cron, artwork_interval, artwork_legacy_daily = _defaults(artwork_daily_at, None)
+    fingerprints_cron, fingerprints_interval, fingerprints_legacy_daily = _defaults(fingerprints_daily_at, fingerprints_interval_minutes)
     values = []
     if include_sync:
         values.append(("library-sync", _NAMES["library-sync"], sync_cron, legacy_interval, legacy_daily))
@@ -70,6 +79,9 @@ def ensure_system_schedules(db_url, *, sync_daily_at=None, sync_interval_minutes
     if include_artwork:
         values.append(("artwork-generation", _NAMES["artwork-generation"], artwork_cron,
                        artwork_interval, artwork_legacy_daily))
+    if include_fingerprints:
+        values.append(("scene-fingerprints", _NAMES["scene-fingerprints"], fingerprints_cron,
+                       fingerprints_interval, fingerprints_legacy_daily))
     conn = db.connect(db_url)
     try:
         with conn:
@@ -241,6 +253,47 @@ def _request_backup_run(conn, instant) -> dict:
     return {"outcome": "queued", "job_id": job_id}
 
 
+def _request_fingerprints_run(conn, instant) -> dict:
+    row = conn.execute(
+        "SELECT enabled,cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,"
+        "revision,next_run_at,last_result,last_job_id FROM system_schedules WHERE id='scene-fingerprints' FOR UPDATE"
+    ).fetchone()
+    if not row:
+        conn.rollback()
+        return {"outcome": "not_found"}
+    enabled, cron_expr, leg_int, leg_daily, needs_conv, revision, next_run_at, last_result, last_job_id = row
+    if last_job_id:
+        job = conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (last_job_id,)).fetchone()
+        if job and job[0] in {"queued", "processing"}:
+            conn.rollback()
+            return {"outcome": "conflict"}
+    if last_result in {"queued", "processing", "processing_manual"}:
+        conn.rollback()
+        return {"outcome": "conflict"}
+    slot_due = bool(enabled and next_run_at is not None and admin_schedules._utc(next_run_at) <= instant)
+    job_id = uuid.uuid4().hex
+    payload = {
+        "_system_schedule_id": "scene-fingerprints",
+        "_system_schedule_revision": int(revision),
+        "_manual": True,
+        "_slot_due": slot_due,
+        "limit": 500,
+    }
+    epoch = int(instant.timestamp())
+    conn.execute(
+        "INSERT INTO video_duplicate_jobs (id, action, state, payload, result, created_at, updated_at) "
+        "VALUES (%s, 'scene_backfill', 'queued', %s, NULL, %s, %s)",
+        (job_id, json.dumps(payload, ensure_ascii=False), epoch, epoch),
+    )
+    conn.execute(
+        "UPDATE system_schedules SET last_job_id=%s, last_run_at=%s, last_result='queued', updated_at=%s "
+        "WHERE id='scene-fingerprints'",
+        (job_id, instant.timestamp(), instant.timestamp()),
+    )
+    conn.commit()
+    return {"outcome": "queued", "job_id": job_id}
+
+
 def request_system_run(db_url, schedule_id: str, *, now=None) -> dict:
     """Request a run for the system worker, serialized with scheduled claims."""
     if schedule_id not in _NAMES:
@@ -251,6 +304,8 @@ def request_system_run(db_url, schedule_id: str, *, now=None) -> dict:
         conn.execute("BEGIN")
         if schedule_id == "database-backup":
             return _request_backup_run(conn, instant)
+        if schedule_id == "scene-fingerprints":
+            return _request_fingerprints_run(conn, instant)
         locked = conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (_RUN_LOCKS[schedule_id],)).fetchone()[0]
         if not locked:
             conn.rollback()
@@ -395,6 +450,46 @@ def dispatch_due_system_schedules(db_url, *, now=None) -> int:
                     (job_id, instant.timestamp(), instant.timestamp()),
                 )
                 dispatched += 1
+
+        fp_row = conn.execute(
+            "SELECT s.enabled,s.cron_expression,s.legacy_interval_minutes,s.legacy_daily_at,s.needs_conversion,"
+            "s.revision,s.next_run_at,s.last_result,s.last_finished_at,s.last_job_id "
+            "FROM system_schedules s WHERE s.id='scene-fingerprints' FOR UPDATE SKIP LOCKED"
+        ).fetchone()
+        if fp_row:
+            enabled, cron_expr, leg_int, leg_daily, needs_conv, revision, next_run_at, last_result, last_finished, last_job_id = fp_row
+            active = False
+            if last_job_id:
+                job = conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (last_job_id,)).fetchone()
+                active = bool(job and job[0] in {"queued", "processing"})
+            is_manual = last_result in {"queued", "processing_manual"} and not active
+            slot_due = bool(enabled and next_run_at is not None and admin_schedules._utc(next_run_at) <= instant)
+            retry_delayed = False
+            if slot_due and not is_manual and last_result == "failed" and last_finished is not None:
+                if (instant - admin_schedules._utc(last_finished)).total_seconds() < BACKUP_RETRY_SECONDS:
+                    retry_delayed = True
+            if not active and (is_manual or (slot_due and not retry_delayed)):
+                job_id = uuid.uuid4().hex
+                payload = {
+                    "limit": 500,
+                    "_system_schedule_id": "scene-fingerprints",
+                    "_system_schedule_revision": int(revision),
+                    "_manual": is_manual,
+                    "_slot_due": slot_due,
+                }
+                epoch = int(instant.timestamp())
+                conn.execute(
+                    "INSERT INTO video_duplicate_jobs (id, action, state, payload, result, created_at, updated_at) "
+                    "VALUES (%s, 'scene_backfill', 'queued', %s, NULL, %s, %s)",
+                    (job_id, json.dumps(payload, ensure_ascii=False), epoch, epoch),
+                )
+                conn.execute(
+                    "UPDATE system_schedules SET last_job_id=%s, last_run_at=%s, last_result='queued', updated_at=%s "
+                    "WHERE id='scene-fingerprints'",
+                    (job_id, instant.timestamp(), instant.timestamp()),
+                )
+                dispatched += 1
+
         conn.commit()
         return dispatched
     except Exception:
@@ -406,7 +501,7 @@ def dispatch_due_system_schedules(db_url, *, now=None) -> int:
 
 def record_system_schedule_job_start(conn, job_id: str, payload: dict, *, now=None) -> None:
     schedule_id = payload.get("_system_schedule_id")
-    if not schedule_id or schedule_id != "database-backup":
+    if not schedule_id or schedule_id not in _JOB_SYSTEM_SCHEDULES:
         return
     instant = admin_schedules._utc(now)
     manual = bool(payload.get("_manual"))
@@ -421,7 +516,7 @@ def record_system_schedule_job_start(conn, job_id: str, payload: dict, *, now=No
 
 def finish_system_schedule_job(conn, job_id: str, payload: dict, *, success: bool, now=None) -> None:
     schedule_id = payload.get("_system_schedule_id")
-    if not schedule_id or schedule_id != "database-backup":
+    if not schedule_id or schedule_id not in _JOB_SYSTEM_SCHEDULES:
         return
     instant = admin_schedules._utc(now)
     revision = payload.get("_system_schedule_revision")

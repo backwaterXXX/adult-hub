@@ -27,7 +27,7 @@ Adult Hub reads configuration from multiple layers, prioritizing operator runtim
 ### Precedence Guarantees:
 1. **Dynamic Sources Win**: When a Telegram channel is added, edited, or removed via the Admin panel, the change is written to `/data/admin-source-overrides.json`. This override always takes precedence over any channel in `config.yaml`.
 2. **Startup Safety**: Container startup **never overwrites** Admin UI values.
-3. **Schedule Persistence**: System schedules (`database-backup`, `library-sync`, `artwork-generation`) are seeded into the `system_schedules` database table on initial boot using `ON CONFLICT DO NOTHING`. Once initialized, schedules edited in the Admin UI (`/admin/schedules`) persist across container restarts and are not reset by environment variables.
+3. **Schedule Persistence**: System schedules (`database-backup`, `library-sync`, `artwork-generation`, `scene-fingerprints`) are seeded into the `system_schedules` database table on initial boot using `ON CONFLICT DO NOTHING`. Once initialized, schedules edited in the Admin UI (`/admin/schedules`) persist across container restarts and are not reset by environment variables.
 4. **Database Connection Precedence**: `DATABASE_URL` is the canonical connection string for PostgreSQL 17. If unset, it falls back to `STANDALONE_DATABASE_URL`, and in standalone mode defaults to `postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}`. Inside standalone Docker networks, the database container hostname is `database` (aliased as `postgres` for backward compatibility).
 5. **Optional `config.yaml`**: `config.yaml` is completely optional. If absent, Adult Hub boots with default sync schedules and sources loaded directly from the Admin overlay. An unset or default container path (`/config/config.yaml`) is tolerated on fresh installs; an explicitly configured missing custom path will fail fast with an actionable error.
 6. **Environment Scoping**: Secrets (`DATABASE_URL`, `ADMIN_WRITE_TOKEN`, `TELEGRAM_API_HASH`, etc.) are scoped to the specific container that requires them.
@@ -66,7 +66,7 @@ Configure these settings in `.env` or Compose only when tuning specific performa
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `TELEGRAM_FINGERPRINTS_ENABLED` | `true` | Enable automated OSHASH and pHash fingerprinting for metadata matching. |
-| `TELEGRAM_OSHASH_BACKFILL_PER_RUN` | `200` | Maximum unhashed videos probed with OSHASH per sync run. |
+| `TELEGRAM_OSHASH_BACKFILL_PER_RUN` | `500` | Maximum unhashed videos probed with OSHASH per sync run. |
 | `TELEGRAM_PHASH_ENABLED` | `true` | Fallback to visual pHash when OSHASH yields no duration match. |
 | `TELEGRAM_PHASH_BYTE_BUDGET` | `268435456` | Byte limit for remote sample extraction when computing pHash (256 MB). |
 | `TELEGRAM_PHASH_TIMEOUT_SECONDS` | `1200` | Timeout per pHash calculation task (20 minutes). |
