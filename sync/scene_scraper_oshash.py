@@ -161,7 +161,10 @@ def _oshash_checksum(size: int, head: bytes, tail: bytes) -> int:
 
 def telegram_oshash(video_id: str, *, http_client: Optional[Any] = None) -> TelegramOshashResult:
     """Calculate Stash-compatible OSHASH from two bounded Telegram byte ranges."""
-    if not isinstance(video_id, str) or not re.fullmatch(r"telegram:-?\d+:\d+:\d+", video_id):
+    if not isinstance(video_id, str) or not video_id.startswith("telegram:"):
+        raise ValueError("OSHASH requires a Telegram video identifier")
+    parts = video_id[len("telegram:"):].rsplit(":", 2)
+    if len(parts) != 3 or not parts[0] or not (parts[1].isascii() and parts[1].isdigit()) or not parts[2]:
         raise ValueError("OSHASH requires a Telegram video identifier")
     client = http_client or _core.httpx
     if client is None:
