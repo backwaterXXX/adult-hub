@@ -23,8 +23,20 @@ _NAMES = {
 }
 
 _JOB_SYSTEM_SCHEDULES = {
-    "database-backup": ("backup_create", {}),
-    "scene-fingerprints": ("scene_backfill", {"limit": 500}),
+    "database-backup": (
+        "backup_create",
+        {},
+        "SELECT enabled,cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,"
+        "revision,next_run_at,last_result,last_finished_at,last_job_id "
+        "FROM system_schedules WHERE id=%s FOR UPDATE SKIP LOCKED",
+    ),
+    "scene-fingerprints": (
+        "scene_backfill",
+        {"limit": 500},
+        "SELECT s.enabled,s.cron_expression,s.legacy_interval_minutes,s.legacy_daily_at,"
+        "s.needs_conversion,s.revision,s.next_run_at,s.last_result,s.last_finished_at,s.last_job_id "
+        "FROM system_schedules s WHERE s.id=%s FOR UPDATE SKIP LOCKED",
+    ),
 }
 
 
@@ -406,6 +418,58 @@ def finish_system_schedule(db_url, schedule_id: str, *, success: bool, now=None,
 BACKUP_RETRY_SECONDS = 300
 
 
+def _is_job_active(conn, last_job_id: str | None) -> bool:
+    if not last_job_id:
+        return False
+    job = conn.execute(
+        "SELECT state FROM video_duplicate_jobs WHERE id=%s", (last_job_id,)
+    ).fetchone()
+    return bool(job and job[0] in {"queued", "processing"})
+
+
+def _is_retry_delayed(last_result: str | None, last_finished, instant) -> bool:
+    if last_result != "failed" or last_finished is None:
+        return False
+    return (instant - admin_schedules._utc(last_finished)).total_seconds() < BACKUP_RETRY_SECONDS
+
+
+def _dispatch_system_schedule(conn, schedule_id: str, action: str, extra_payload: dict,
+                              query: str, instant) -> bool:
+    row = conn.execute(query, (schedule_id,)).fetchone()
+    if not row:
+        return False
+    (enabled, _cron, _int, _daily, _conv, revision,
+     next_run_at, last_result, last_finished, last_job_id) = row
+    if _is_job_active(conn, last_job_id):
+        return False
+    is_manual = last_result in {"queued", "processing_manual"}
+    slot_due = bool(enabled and next_run_at is not None
+                    and admin_schedules._utc(next_run_at) <= instant)
+    if not is_manual:
+        if not slot_due or _is_retry_delayed(last_result, last_finished, instant):
+            return False
+    job_id = uuid.uuid4().hex
+    payload = {
+        **extra_payload,
+        "_system_schedule_id": schedule_id,
+        "_system_schedule_revision": int(revision),
+        "_manual": is_manual,
+        "_slot_due": slot_due,
+    }
+    epoch = int(instant.timestamp())
+    conn.execute(
+        "INSERT INTO video_duplicate_jobs (id, action, state, payload, result, created_at, updated_at) "
+        "VALUES (%s, %s, 'queued', %s, NULL, %s, %s)",
+        (job_id, action, json.dumps(payload, ensure_ascii=False), epoch, epoch),
+    )
+    conn.execute(
+        "UPDATE system_schedules SET last_job_id=%s, last_run_at=%s, last_result='queued', updated_at=%s "
+        "WHERE id=%s",
+        (job_id, instant.timestamp(), instant.timestamp(), schedule_id),
+    )
+    return True
+
+
 def dispatch_due_system_schedules(db_url, *, now=None) -> int:
     """Atomically persist queued jobs for due system schedules and update state."""
     instant = admin_schedules._utc(now)
@@ -413,83 +477,9 @@ def dispatch_due_system_schedules(db_url, *, now=None) -> int:
     dispatched = 0
     try:
         conn.execute("BEGIN")
-        row = conn.execute(
-            "SELECT enabled,cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,"
-            "revision,next_run_at,last_result,last_finished_at,last_job_id "
-            "FROM system_schedules WHERE id='database-backup' FOR UPDATE SKIP LOCKED"
-        ).fetchone()
-        if row:
-            enabled, cron_expr, leg_int, leg_daily, needs_conv, revision, next_run_at, last_result, last_finished, last_job_id = row
-            active = False
-            if last_job_id:
-                job = conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (last_job_id,)).fetchone()
-                active = bool(job and job[0] in {"queued", "processing"})
-            is_manual = last_result in {"queued", "processing_manual"} and not active
-            slot_due = bool(enabled and next_run_at is not None and admin_schedules._utc(next_run_at) <= instant)
-            retry_delayed = False
-            if slot_due and not is_manual and last_result == "failed" and last_finished is not None:
-                if (instant - admin_schedules._utc(last_finished)).total_seconds() < BACKUP_RETRY_SECONDS:
-                    retry_delayed = True
-            if not active and (is_manual or (slot_due and not retry_delayed)):
-                job_id = uuid.uuid4().hex
-                payload = {
-                    "_system_schedule_id": "database-backup",
-                    "_system_schedule_revision": int(revision),
-                    "_manual": is_manual,
-                    "_slot_due": slot_due,
-                }
-                epoch = int(instant.timestamp())
-                conn.execute(
-                    "INSERT INTO video_duplicate_jobs (id, action, state, payload, result, created_at, updated_at) "
-                    "VALUES (%s, 'backup_create', 'queued', %s, NULL, %s, %s)",
-                    (job_id, json.dumps(payload, ensure_ascii=False), epoch, epoch),
-                )
-                conn.execute(
-                    "UPDATE system_schedules SET last_job_id=%s, last_run_at=%s, last_result='queued', updated_at=%s "
-                    "WHERE id='database-backup'",
-                    (job_id, instant.timestamp(), instant.timestamp()),
-                )
+        for schedule_id, (action, extra_payload, query) in _JOB_SYSTEM_SCHEDULES.items():
+            if _dispatch_system_schedule(conn, schedule_id, action, extra_payload, query, instant):
                 dispatched += 1
-
-        fp_row = conn.execute(
-            "SELECT s.enabled,s.cron_expression,s.legacy_interval_minutes,s.legacy_daily_at,s.needs_conversion,"
-            "s.revision,s.next_run_at,s.last_result,s.last_finished_at,s.last_job_id "
-            "FROM system_schedules s WHERE s.id='scene-fingerprints' FOR UPDATE SKIP LOCKED"
-        ).fetchone()
-        if fp_row:
-            enabled, cron_expr, leg_int, leg_daily, needs_conv, revision, next_run_at, last_result, last_finished, last_job_id = fp_row
-            active = False
-            if last_job_id:
-                job = conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (last_job_id,)).fetchone()
-                active = bool(job and job[0] in {"queued", "processing"})
-            is_manual = last_result in {"queued", "processing_manual"} and not active
-            slot_due = bool(enabled and next_run_at is not None and admin_schedules._utc(next_run_at) <= instant)
-            retry_delayed = False
-            if slot_due and not is_manual and last_result == "failed" and last_finished is not None:
-                if (instant - admin_schedules._utc(last_finished)).total_seconds() < BACKUP_RETRY_SECONDS:
-                    retry_delayed = True
-            if not active and (is_manual or (slot_due and not retry_delayed)):
-                job_id = uuid.uuid4().hex
-                payload = {
-                    "limit": 500,
-                    "_system_schedule_id": "scene-fingerprints",
-                    "_system_schedule_revision": int(revision),
-                    "_manual": is_manual,
-                    "_slot_due": slot_due,
-                }
-                epoch = int(instant.timestamp())
-                conn.execute(
-                    "INSERT INTO video_duplicate_jobs (id, action, state, payload, result, created_at, updated_at) "
-                    "VALUES (%s, 'scene_backfill', 'queued', %s, NULL, %s, %s)",
-                    (job_id, json.dumps(payload, ensure_ascii=False), epoch, epoch),
-                )
-                conn.execute(
-                    "UPDATE system_schedules SET last_job_id=%s, last_run_at=%s, last_result='queued', updated_at=%s "
-                    "WHERE id='scene-fingerprints'",
-                    (job_id, instant.timestamp(), instant.timestamp()),
-                )
-                dispatched += 1
-
         conn.commit()
         return dispatched
     except Exception:
