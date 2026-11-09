@@ -200,7 +200,12 @@ TELEGRAM_SESSION_PATH=/data/telegram.session
 
         # Missing POSTGRES_PASSWORD
         env_missing_pw = self.isolated_root / ".env_missing"
-        env_missing_pw.write_text("POSTGRES_DB=adulthub\nPOSTGRES_USER=adulthub\n")
+        env_missing_pw.write_text(
+            "POSTGRES_DB=adulthub\n"
+            "POSTGRES_USER=adulthub\n"
+            "TELEGRAM_API_ID=123456\n"
+            "TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef\n"
+        )
 
         res = subprocess.run(
             ["docker", "compose", "--env-file", str(env_missing_pw), "-f", str(compose_file), "config"],

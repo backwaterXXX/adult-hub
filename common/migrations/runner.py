@@ -145,6 +145,8 @@ APPLICATION_TABLES: tuple[str, ...] = (
     "video_duplicate_jobs",
     "video_duplicate_decisions",
     "video_duplicate_dismissals",
+    "telegram_accounts",
+    "telegram_account_channels",
     "telegram_channel_state",
     "performer_aliases",
     "performer_bios",

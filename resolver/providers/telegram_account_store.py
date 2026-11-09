@@ -107,6 +107,24 @@ def _write_connection(connect_timeout: int = 3) -> Iterator[Any]:
 
 def list_accounts(conn=None) -> List[TelegramAccountRecord]:
     """List all configured Telegram accounts, auto-discovering legacy session if empty."""
+    if is_memory_only_mode() and conn is None:
+        accounts = sorted(_MEMORY_ACCOUNTS.values(), key=lambda a: a.account_id)
+        if not accounts:
+            ctx = TelegramAccountContext(DEFAULT_ACCOUNT_ID)
+            session_path = ctx.get_session_path()
+            if os.path.isfile(session_path) and os.path.getsize(session_path) > 0:
+                logger.info("Auto-registering legacy default Telegram session from disk: %s", session_path)
+                default_acc = upsert_account(
+                    account_id=DEFAULT_ACCOUNT_ID,
+                    label="Default Account",
+                    phone_mask="",
+                    enabled=True,
+                    session_file=session_path,
+                    conn=conn,
+                )
+                return [default_acc]
+        return accounts
+
     def _execute(c):
         rows = c.execute(
             "SELECT account_id, label, phone_mask, enabled, session_file, created_at, updated_at "
@@ -134,7 +152,7 @@ def list_accounts(conn=None) -> List[TelegramAccountRecord]:
                 accounts = _execute(c)
     except Exception as exc:
         logger.debug("Database query for telegram_accounts failed (falling back to memory): %s", exc)
-        accounts = list(_MEMORY_ACCOUNTS.values())
+        accounts = sorted(_MEMORY_ACCOUNTS.values(), key=lambda a: a.account_id)
 
     if not accounts:
         # Check if legacy default session file exists on disk
@@ -155,8 +173,27 @@ def list_accounts(conn=None) -> List[TelegramAccountRecord]:
     return accounts
 
 
+def _get_memory_account(valid_id: str) -> Optional[TelegramAccountRecord]:
+    if valid_id in _MEMORY_ACCOUNTS:
+        return _MEMORY_ACCOUNTS[valid_id]
+    if valid_id == DEFAULT_ACCOUNT_ID:
+        ctx = TelegramAccountContext(DEFAULT_ACCOUNT_ID)
+        path = ctx.get_session_path()
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            return TelegramAccountRecord(
+                account_id=DEFAULT_ACCOUNT_ID,
+                label="Default Account",
+                enabled=True,
+                session_file=path,
+            )
+    return None
+
+
 def get_account(account_id: str, conn=None) -> Optional[TelegramAccountRecord]:
     valid_id = validate_account_id(account_id)
+    if is_memory_only_mode() and conn is None:
+        return _get_memory_account(valid_id)
+
     def _execute(c):
         row = c.execute(
             "SELECT account_id, label, phone_mask, enabled, session_file, created_at, updated_at "
@@ -182,19 +219,7 @@ def get_account(account_id: str, conn=None) -> Optional[TelegramAccountRecord]:
             return _execute(c)
     except Exception as exc:
         logger.debug("Database get_account for %s failed (falling back to memory): %s", valid_id, exc)
-        if valid_id in _MEMORY_ACCOUNTS:
-            return _MEMORY_ACCOUNTS[valid_id]
-        if valid_id == DEFAULT_ACCOUNT_ID:
-            ctx = TelegramAccountContext(DEFAULT_ACCOUNT_ID)
-            path = ctx.get_session_path()
-            if os.path.isfile(path) and os.path.getsize(path) > 0:
-                return TelegramAccountRecord(
-                    account_id=DEFAULT_ACCOUNT_ID,
-                    label="Default Account",
-                    enabled=True,
-                    session_file=path,
-                )
-        return None
+        return _get_memory_account(valid_id)
 
 
 def create_account(
@@ -240,7 +265,7 @@ def create_account(
         cursor = c.execute(
             "INSERT INTO public.telegram_accounts "
             "(account_id, label, phone_mask, enabled, session_file, created_at, updated_at) "
-            "VALUES (%s, %s, '', %s, %s, %s, %s) "
+            "VALUES (%s, %s, '', %s, %s, to_timestamp(%s), to_timestamp(%s)) "
             "ON CONFLICT (account_id) DO NOTHING "
             "RETURNING account_id",
             (valid_id, effective_label, enabled, session_file, now.timestamp(), now.timestamp()),
@@ -345,7 +370,7 @@ def upsert_account(
     sql = (
         "INSERT INTO public.telegram_accounts "
         "(account_id, label, phone_mask, enabled, session_file, created_at, updated_at) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+        "VALUES (%s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s)) "
         "ON CONFLICT (account_id) DO UPDATE SET " + clause
     )
 
@@ -405,7 +430,7 @@ def _execute_update_account(
     propagate directly to the caller (update_account), which catches, logs, and
     re-raises them so no in-memory cache or caller state is modified on DB failure.
     """
-    updates = ["updated_at = %s"]
+    updates = ["updated_at = to_timestamp(%s)"]
     params: list[Any] = [now.timestamp()]
     for col, val in [("label", label), ("enabled", enabled), ("phone_mask", phone_mask)]:
         if val is not None:
@@ -566,11 +591,26 @@ def delete_account(account_id: str, conn=None) -> bool:
     return True
 
 
+def _list_memory_channel_access(
+    account_id: Optional[str],
+    channel_id: Optional[str],
+) -> List[TelegramChannelAccessRecord]:
+    results = []
+    for (a_id, c_id), rec in _MEMORY_CHANNEL_ACCESS.items():
+        if (account_id is None or a_id == account_id) and (channel_id is None or c_id == channel_id):
+            results.append(rec)
+    results.sort(key=lambda r: (r.channel_id, r.account_id))
+    return results
+
+
 def list_channel_access(
     account_id: Optional[str] = None,
     channel_id: Optional[str] = None,
     conn=None,
 ) -> List[TelegramChannelAccessRecord]:
+    if is_memory_only_mode() and conn is None:
+        return _list_memory_channel_access(account_id, channel_id)
+
     def _execute(c):
         conditions = []
         params = []
@@ -605,11 +645,7 @@ def list_channel_access(
             return _execute(c)
     except Exception as exc:
         logger.debug("Database list_channel_access failed: %s", exc)
-        results = []
-        for (a_id, c_id), rec in _MEMORY_CHANNEL_ACCESS.items():
-            if (account_id is None or a_id == account_id) and (channel_id is None or c_id == channel_id):
-                results.append(rec)
-        return results
+        return _list_memory_channel_access(account_id, channel_id)
 
 
 def get_channel_access_status(account_id: str, channel_id: str) -> str:
@@ -658,6 +694,9 @@ def set_channel_access(
     )
     _MEMORY_CHANNEL_ACCESS[(valid_id, clean_channel)] = rec
 
+    if is_memory_only_mode() and conn is None:
+        return
+
     def _execute(c):
         c.execute(
             "INSERT INTO public.telegram_account_channels "
@@ -680,9 +719,23 @@ def set_channel_access(
         logger.debug("Database set_channel_access failed for (%s, %s): %s", valid_id, clean_channel, exc)
 
 
+def _get_memory_accessible_accounts(clean_channel: str) -> List[str]:
+    accessible = []
+    for (a_id, c_id), rec in _MEMORY_CHANNEL_ACCESS.items():
+        if c_id == clean_channel and rec.access_status == "accessible":
+            acc = _MEMORY_ACCOUNTS.get(a_id)
+            if acc and acc.enabled:
+                accessible.append(a_id)
+    accessible.sort()
+    return accessible
+
+
 def get_accessible_accounts_for_channel(channel_id: str, conn=None) -> List[str]:
     """Return account IDs with verified 'accessible' status for channel_id."""
     clean_channel = str(channel_id).strip()
+    if is_memory_only_mode() and conn is None:
+        return _get_memory_accessible_accounts(clean_channel)
+
     def _execute(c):
         rows = c.execute(
             "SELECT a.account_id FROM public.telegram_accounts a "
@@ -700,10 +753,4 @@ def get_accessible_accounts_for_channel(channel_id: str, conn=None) -> List[str]
             return _execute(c)
     except Exception as exc:
         logger.debug("Database query for accessible accounts failed: %s", exc)
-        accessible = []
-        for (a_id, c_id), rec in _MEMORY_CHANNEL_ACCESS.items():
-            if c_id == clean_channel and rec.access_status == "accessible":
-                acc = _MEMORY_ACCOUNTS.get(a_id)
-                if acc and acc.enabled:
-                    accessible.append(a_id)
-        return accessible
+        return _get_memory_accessible_accounts(clean_channel)

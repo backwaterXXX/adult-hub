@@ -139,7 +139,7 @@ class TestResolver(PgTestCase):
 
         class Request:
             method = "GET"
-            headers = {"range": "bytes=100-199"}
+            headers = {"range": "bytes=-100"}
 
         provider = Provider()
         with patch.object(resolver_app, "get_provider", return_value=provider):

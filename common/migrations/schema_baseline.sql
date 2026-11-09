@@ -414,6 +414,24 @@ CREATE TABLE public.synced_files (
     created_at timestamp with time zone
 );
 
+CREATE TABLE public.telegram_accounts (
+    account_id text NOT NULL,
+    label text DEFAULT ''::text NOT NULL,
+    phone_mask text DEFAULT ''::text NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    session_file text NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+CREATE TABLE public.telegram_account_channels (
+    account_id text NOT NULL,
+    channel_id text NOT NULL,
+    access_status text DEFAULT 'unknown'::text NOT NULL,
+    last_checked_at timestamp with time zone,
+    error_detail text DEFAULT ''::text NOT NULL
+);
+
 CREATE TABLE public.telegram_channel_state (
     channel_id text NOT NULL,
     last_min_duration integer,
@@ -864,6 +882,12 @@ ALTER TABLE ONLY public.stream_cache
 ALTER TABLE ONLY public.synced_files
     ADD CONSTRAINT synced_files_pkey PRIMARY KEY (file_path);
 
+ALTER TABLE ONLY public.telegram_accounts
+    ADD CONSTRAINT telegram_accounts_pkey PRIMARY KEY (account_id);
+
+ALTER TABLE ONLY public.telegram_account_channels
+    ADD CONSTRAINT telegram_account_channels_pkey PRIMARY KEY (account_id, channel_id);
+
 ALTER TABLE ONLY public.telegram_channel_state
     ADD CONSTRAINT telegram_channel_state_pkey PRIMARY KEY (channel_id);
 
@@ -996,6 +1020,8 @@ CREATE INDEX idx_sf_video_id ON public.synced_files USING btree (video_id);
 CREATE INDEX idx_stream_cache_expire ON public.stream_cache USING btree (expire_at);
 
 CREATE INDEX idx_stream_cache_lru ON public.stream_cache USING btree (last_accessed);
+
+CREATE INDEX idx_telegram_account_channels_lookup ON public.telegram_account_channels USING btree (channel_id, access_status);
 
 CREATE INDEX idx_telegram_performer_proposals_status ON public.telegram_performer_proposals USING btree (status, created_at);
 
@@ -1141,3 +1167,7 @@ ALTER TABLE ONLY public.video_visual_jobs
 
 ALTER TABLE ONLY public.video_visual_signatures
     ADD CONSTRAINT video_visual_signatures_video_id_fkey FOREIGN KEY (video_id) REFERENCES public.videos(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.telegram_account_channels
+    ADD CONSTRAINT telegram_account_channels_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.telegram_accounts(account_id) ON DELETE CASCADE;
+

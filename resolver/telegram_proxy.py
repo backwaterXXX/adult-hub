@@ -39,7 +39,9 @@ def _resolve_provider(services: TelegramProxyServices, ref: str):
     return prov
 
 
-async def _probe_total_size(services: TelegramProxyServices, prov, ref: str) -> Optional[int]:
+async def _probe_total_size(
+    services: TelegramProxyServices, prov, ref: str, *, required: bool = False
+) -> Optional[int]:
     fs = getattr(prov, "file_size", None)
     if not callable(fs):
         return None
@@ -48,10 +50,12 @@ async def _probe_total_size(services: TelegramProxyServices, prov, ref: str) -> 
         if services.inspect.isawaitable(res):
             res = await res
         return int(res) if res is not None else None
+    except HTTPException:
+        raise
     except Exception as fs_error:
-        _LOGGER.warning(
-            "Telegram file_size lookup failed for %s: %s (serving range with unknown total size)",
-            ref, fs_error)
+        _LOGGER.warning("Telegram file_size lookup failed for %s: %s", ref, fs_error)
+        if required:
+            raise HTTPException(status_code=503, detail=f"Telegram size lookup failed: {fs_error}")
         return None
 
 
@@ -209,7 +213,8 @@ async def proxy_telegram_response(
         raise HTTPException(status_code=400, detail="Invalid telegram reference")
     prov = _resolve_provider(services, ref)
     rng_raw = request.headers.get("range")
-    total = await _probe_total_size(services, prov, ref)
+    # File-size probe is only required when the client requests a range; normal playback streams safely without it.
+    total = await _probe_total_size(services, prov, ref, required=bool(rng_raw))
     rng = services.parse_range_request(rng_raw, total)
     offset = rng[0] if rng else 0
     length = rng[1] if rng else None

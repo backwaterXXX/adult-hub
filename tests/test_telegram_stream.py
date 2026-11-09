@@ -885,11 +885,8 @@ class TestTelegramHeadAndRange(unittest.IsolatedAsyncioTestCase):
         body = await response_body(resp)
         self.assertEqual(body, payload[500:1000])
 
-    async def test_range_with_file_size_error_preserves_206_and_offset(self):
-        """Round 2 Finding 10: file_size exceptions must not fail with 503 or restart
-
-        from byte zero; Range semantics (206, exact offset, Content-Range) are preserved.
-        """
+    async def test_range_with_file_size_error_fails_loudly_with_503(self):
+        """Range requests requiring file size must fail loudly with 503 when size probe fails."""
         _require_resolver(self)
         payload = bytes((i * 5 + 13) % 256 for i in range(20_000))
 
@@ -899,17 +896,53 @@ class TestTelegramHeadAndRange(unittest.IsolatedAsyncioTestCase):
 
         prov = ErrorSizeProvider(payload)
         from unittest.mock import patch
+        from fastapi import HTTPException
+        with patch.object(resolver_app, "get_provider", return_value=prov):
+            with self.assertRaises(HTTPException) as cm:
+                await resolver_app._proxy_telegram_response(
+                    _fake_request("GET", "bytes=1000-1499"), "tg://ref")
+
+        self.assertEqual(cm.exception.status_code, 503)
+        self.assertEqual(prov.download_calls, [])
+
+    async def test_normal_get_without_range_proceeds_when_file_size_fails(self):
+        """Normal full GET requests stream successfully even when file_size probe fails."""
+        _require_resolver(self)
+        payload = bytes((i * 5 + 13) % 256 for i in range(10_000))
+
+        class ErrorSizeProvider(FakeRefProvider):
+            async def file_size(self, ref):
+                raise RuntimeError("Temporary Telegram metadata failure")
+
+        prov = ErrorSizeProvider(payload)
+        from unittest.mock import patch
         with patch.object(resolver_app, "get_provider", return_value=prov):
             resp = await resolver_app._proxy_telegram_response(
-                _fake_request("GET", "bytes=1000-1499"), "tg://ref")
+                _fake_request("GET", None), "tg://ref")
 
-        self.assertEqual(resp.status_code, 206)
-        headers = dict(resp.headers)
-        self.assertEqual(headers.get("content-range"), "bytes 1000-1499/*")
-        self.assertEqual(headers.get("content-length"), "500")
-        self.assertEqual(prov.download_calls, [("ref", 1000, 500)])
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(prov.download_calls, [("ref", 0, None)])
         body = await response_body(resp)
-        self.assertEqual(body, payload[1000:1500])
+        self.assertEqual(body, payload)
+
+    async def test_normal_head_without_range_proceeds_when_file_size_fails(self):
+        """Normal full HEAD requests succeed with 200 even when file_size probe fails."""
+        _require_resolver(self)
+        payload = bytes((i * 5 + 13) % 256 for i in range(10_000))
+
+        class ErrorSizeProvider(FakeRefProvider):
+            async def file_size(self, ref):
+                raise RuntimeError("Temporary Telegram metadata failure")
+
+        prov = ErrorSizeProvider(payload)
+        from unittest.mock import patch
+        with patch.object(resolver_app, "get_provider", return_value=prov):
+            resp = await resolver_app._proxy_telegram_response(
+                _fake_request("HEAD", None), "tg://ref")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(prov.download_calls, [])
+        self.assertNotIn("content-length", dict(resp.headers))
 
 
 class TestCrossAccountBlockDeduplication(unittest.IsolatedAsyncioTestCase):

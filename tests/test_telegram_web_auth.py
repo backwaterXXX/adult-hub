@@ -937,6 +937,7 @@ class TestTelegramLoginDbPersistenceFailure(unittest.IsolatedAsyncioTestCase):
             mock_client = AsyncMock()
             mock_client.sign_in = AsyncMock()
             mock_client.is_user_authorized = AsyncMock(return_value=True)
+            mock_client.is_connected = MagicMock(return_value=False)
             mock_client.disconnect = AsyncMock()
 
             challenge = ActiveLoginChallenge(
@@ -950,7 +951,7 @@ class TestTelegramLoginDbPersistenceFailure(unittest.IsolatedAsyncioTestCase):
             mgr._challenges["test_persist"] = challenge
 
             # Simulate transient DB failure when persisting account to store
-            with patch("resolver.providers.telegram_account_store.upsert_account",
+            with patch("providers.telegram_account_store.upsert_account",
                        side_effect=RuntimeError("Database connection lost")):
                 res = await mgr.submit_code("12345", account_id="test_persist")
 

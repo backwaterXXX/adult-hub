@@ -243,7 +243,7 @@ class TestResolverHttpApi(unittest.TestCase):
         with patch.object(resolver_app, "get_provider", return_value=FakeTelegram()):
             response = self.request(
                 "GET", "/admin/play/telegram:fake-id/stream",
-                headers={"Range": "bytes=100-199"},
+                headers={"Range": "bytes=-100"},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -293,6 +293,10 @@ class TestResolverHttpApi(unittest.TestCase):
         ("POST", "/admin/api/v2/telegram/auth/password"),
         ("POST", "/admin/api/v2/telegram/auth/cancel"),
         ("POST", "/admin/api/v2/telegram/auth/resend"),
+        ("POST", "/admin/api/v2/telegram/accounts"),
+        ("PATCH", "/admin/api/v2/telegram/accounts/{account_id}"),
+        ("DELETE", "/admin/api/v2/telegram/accounts/{account_id}"),
+        ("POST", "/admin/api/v2/telegram/accounts/{account_id}/test"),
     )
     CLIENT_INTEGRATION_MUTATIONS = {
         ("POST", "/admin/api/v2/video-phash/frames"),
@@ -323,7 +327,11 @@ class TestResolverHttpApi(unittest.TestCase):
         with self.admin_config():
             for method, path in self.MUTATIONS:
                 with self.subTest(path=path):
-                    request_path = path.replace("{proposal_id}", "1").replace("{video_id}", "telegram:123")
+                    request_path = (
+                        path.replace("{proposal_id}", "1")
+                        .replace("{video_id}", "telegram:123")
+                        .replace("{account_id}", "test_acc")
+                    )
                     response = self.request(method, request_path, base_url="http://localhost",
                                             content=b"invalid json",
                                             headers={"Origin": "http://localhost"})
@@ -333,7 +341,11 @@ class TestResolverHttpApi(unittest.TestCase):
         with self.admin_config(token="", public=True):
             for method, path in self.MUTATIONS:
                 with self.subTest(path=path):
-                    request_path = path.replace("{proposal_id}", "1").replace("{video_id}", "telegram:123")
+                    request_path = (
+                        path.replace("{proposal_id}", "1")
+                        .replace("{video_id}", "telegram:123")
+                        .replace("{account_id}", "test_acc")
+                    )
                     response = self.request(method, request_path, base_url="https://media.example.org")
                     self.assertEqual(response.status_code, 403, response.text)
 
