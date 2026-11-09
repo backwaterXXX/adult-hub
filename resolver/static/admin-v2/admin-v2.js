@@ -840,9 +840,28 @@
     setText(label, status.label);
     element.setAttribute('aria-label', `${status.label}. Open System.`);
   }
+  function renderActiveTasksChip(payload) {
+    const element = $('#activeTasks');
+    if (!element) return;
+    const taskState = window.AdminV2HeaderStatus.activeTasks(payload !== undefined ? payload : state.services.activeTasks);
+    const label = $('span:last-child', element);
+    if (element.dataset.state === taskState.state && label && label.textContent === taskState.label) return;
+    element.dataset.state = taskState.state;
+    element.title = taskState.state === 'ready'
+      ? `${taskState.count} active ${taskState.count === 1 ? 'task' : 'tasks'} currently running or queued.`
+      : taskState.state === 'checking'
+        ? 'Active task status is still loading.'
+        : 'Active tasks could not be verified.';
+    setText(label, taskState.label);
+    const taskLabel = taskState.label.endsWith('…') ? taskState.label.slice(0, -1) : taskState.label;
+    element.setAttribute('aria-label', `${taskLabel}. Open Tasks.`);
+  }
   function updateServices(patch) {
     state.services = { ...state.services, checking: false, ...patch };
     renderServiceChip();
+    if (patch && Object.prototype.hasOwnProperty.call(patch, 'activeTasks')) {
+      renderActiveTasksChip(state.services.activeTasks);
+    }
   }
   function renderWriteAccessNotice(capabilities, error) {
     const notice = $('#writeAccessNotice');

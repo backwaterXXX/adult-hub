@@ -58,8 +58,9 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .topbar-actions > a:hover { border-color: var(--border-strong); color: var(--text); }
 .topbar-actions > a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .service-status { display: inline-flex; align-items: center; gap: 7px; min-height: 29px; padding: 0 11px; border: 1px solid var(--border); border-radius: 99px; color: var(--muted); background: var(--surface); font-size: 10px; font-weight: 700; white-space: nowrap; }
+.service-status.active-tasks { flex-shrink: 0; }
 .service-status .state-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--subtle); }
-.service-status[data-state="ok"] .state-dot { background: var(--mint); }
+.service-status[data-state="ok"] .state-dot, .service-status[data-state="ready"] .state-dot { background: var(--mint); }
 .service-status[data-state="checking"] .state-dot, .service-status[data-state="partial"] .state-dot { background: var(--accent); }
 .service-status[data-state="attention"] .state-dot { background: var(--warning); }
 .service-status[data-state="error"] .state-dot { background: var(--danger); }

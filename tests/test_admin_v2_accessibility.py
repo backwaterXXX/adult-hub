@@ -315,6 +315,31 @@ class TestAdminV2TemplateAccessibility(unittest.TestCase):
                       " && label.textContent === status.label) return;", script)
         self.assertNotIn("label.textContent === message", script)
 
+    def test_active_tasks_topbar_link_is_accessible_and_independent(self):
+        source = TEMPLATE.read_text(encoding="utf-8")
+        self.assertRegex(
+            source,
+            r'<a class="service-status active-tasks" id="activeTasks" href="#jobs\?tab=tasks"[^>]*data-state="checking"'
+            r'[^>]*aria-label="Checking tasks\. Open Tasks\."',
+        )
+        self.assertNotRegex(
+            source,
+            r'<a [^>]*id="activeTasks"[^>]*aria-live',
+        )
+        self.assertNotRegex(
+            source,
+            r'<a [^>]*id="activeTasks"[^>]*aria-atomic',
+        )
+        self.assertNotRegex(
+            source,
+            r'aria-label="[^"]*…\.',
+            "Accessible labels must not double punctuation with an ellipsis before a period",
+        )
+        script = (STATIC_DIR / "admin-v2.js").read_text(encoding="utf-8")
+        self.assertIn("function renderActiveTasksChip(payload)", script)
+        self.assertIn("$('#activeTasks')", script)
+        self.assertIn("renderActiveTasksChip(state.services.activeTasks);", script)
+
     def test_shared_operation_dialog_is_outside_hidden_route_views(self):
         audit = _DialogPlacementAudit()
         audit.feed(TEMPLATE.read_text(encoding="utf-8"))

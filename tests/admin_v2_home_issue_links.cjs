@@ -65,10 +65,15 @@ assert.doesNotMatch(routerSource, /commandPalette|open-palette|command-palette/,
 
 const topbar = html.slice(html.indexOf('<header class="topbar">'), html.indexOf('</header>'));
 assert.deepEqual([...topbar.matchAll(/\bid="([^"]+)"/g)].map(([, id]) => id),
-  ['menuButton', 'crumbCurrent', 'serviceStatus', 'themeToggle'],
-  'The header keeps the title, one aggregate service control, and the theme toggle only');
+  ['menuButton', 'crumbCurrent', 'serviceStatus', 'activeTasks', 'themeToggle'],
+  'The header keeps navigation, service state, active tasks indicator, and theme toggle');
 assert.match(topbar, /<a class="service-status" id="serviceStatus" href="#system"/,
   'The aggregate service control leads to System');
+assert.match(topbar, /<a class="service-status active-tasks" id="activeTasks" href="#jobs\?tab=tasks"[^>]*data-state="checking"[^>]*aria-label="Checking tasks\. Open Tasks\."/,
+  'The active tasks control leads to #jobs?tab=tasks with accessible markup');
+assert.doesNotMatch(topbar, /aria-label="[^"]*…\./, 'The active tasks control does not double punctuation in its aria-label');
+assert.doesNotMatch(topbar, /id="activeTasks"[^>]*aria-live/, 'The active tasks control does not use aria-live');
+assert.doesNotMatch(topbar, /id="activeTasks"[^>]*aria-atomic/, 'The active tasks control does not use aria-atomic');
 assert.doesNotMatch(html, /id="connectionState"/, 'The removed per-source connection chip must not return');
 
 assert.match(html, /id="issueCount"[^>]*role="status"[^>]*aria-atomic="true"/,
@@ -134,6 +139,18 @@ Object.defineProperty(chipLabel, 'textContent', {
   set: value => { chipLabelWrites += 1; chipLabelText = String(value); },
 });
 serviceChip.queryResults.set('span:last-child', chipLabel);
+
+const activeTasksChip = elements.get('activeTasks');
+activeTasksChip.dataset.state = 'checking';
+activeTasksChip.setAttribute('aria-label', 'Checking tasks. Open Tasks.');
+const tasksLabel = new Element('span');
+let tasksLabelText = 'Checking tasks…';
+let tasksLabelWrites = 0;
+Object.defineProperty(tasksLabel, 'textContent', {
+  get: () => tasksLabelText,
+  set: value => { tasksLabelWrites += 1; tasksLabelText = String(value); },
+});
+activeTasksChip.queryResults.set('span:last-child', tasksLabel);
 const views = [...html.matchAll(/<section\b[^>]*class="[^"]*view[^\"]*"[^>]*data-view="([^"]+)"/g)]
   .map(([, route]) => { const element = new Element('section'); element.dataset.view = route; return element; });
 const navLinks = [...html.matchAll(/<a\b[^>]*data-route="([^"]+)"/g)]
@@ -267,6 +284,7 @@ let failCapabilities = false;
 let failStatus = false;
 let failQualitySummary = false;
 let failJellyfinStatus = false;
+let failJobs = false;
 let writableCapabilities = false;
 let issueFeedIncomplete = false;
 let failIssueFeed = false;
@@ -275,6 +293,7 @@ const syncFixture = {
   available: true, running: false, freshness: 'fresh', last_success: true, history_available: true,
   last_run: { started_at: '2026-10-14T09:40:00+00:00', ended_at: '2026-10-14T10:00:00+00:00', success: true },
 };
+let activeJobsFixture = { ok: true, jobs: [], total: 0, active_total: 4, data: { available: true } };
 async function fetch(url) {
   calls.push(String(url));
   if (failCapabilities && String(url).endsWith('/capabilities')) return { ok: false, status: 503, json: async () => ({ detail: 'unavailable' }) };
@@ -327,7 +346,10 @@ async function fetch(url) {
       data: { available: true, stale: false, incomplete: false },
     };
   }
-  else if (String(url).includes('/jobs?state=active')) payload = { ok: true, jobs: [], total: 0, active_total: 4, data: { available: true } };
+  else if (String(url).includes('/jobs?state=active')) {
+    if (failJobs) return { ok: false, status: 503, json: async () => ({ detail: 'unavailable' }) };
+    payload = activeJobsFixture;
+  }
   else throw new Error(`Unexpected request: ${url}`);
   return { ok: true, status: 200, json: async () => payload };
 }
@@ -545,9 +567,13 @@ const context = {
   assert.equal(calls.some(url => url.includes('/status/jellyfin')), false,
     'Overview must not load the Jellyfin probe for its tiles');
 
-  // Header: one aggregate service control that never looks healthy when unverified.
+  // Header: one aggregate service control that never looks healthy when unverified,
+  // and an independent active tasks link whose count is not obscured by service status.
   assert.equal(serviceChip.dataset.state, 'attention', 'a read-only panel reads as needing attention');
   assert.equal(chipLabelText, 'Attention needed');
+  assert.equal(activeTasksChip.dataset.state, 'ready', 'active tasks is ready independently of service attention');
+  assert.equal(tasksLabelText, 'Active tasks: 4', 'active tasks count remains visible when sync/access needs attention');
+  assert.match(activeTasksChip.getAttribute('aria-label'), /Active tasks: 4\. Open Tasks\./, 'active tasks has an accessible label');
   assert.match(serviceChip.title, /Writes are disabled by the current admin configuration\./,
     'the aggregate control names the reason it needs attention');
   assert.match(serviceChip.getAttribute('aria-label'), /Attention needed\. Open System\./,
@@ -571,13 +597,66 @@ const context = {
   writableCapabilities = true;
   await refresh();
   assert.equal(serviceChip.dataset.state, 'ok', 'verified writable access with current data reads as healthy');
-  assert.equal(chipLabelText, 'All services available · 4 active tasks', 'the healthy state summarizes active work');
+  assert.equal(chipLabelText, 'All services available', 'the aggregate health chip does not duplicate the task count');
+  assert.equal(tasksLabelText, 'Active tasks: 4', 'the separate active tasks control displays the active task count');
   assert.equal(elements.get('writeAccessNotice').hidden, true, 'enabled writes need no warning');
   const chipWritesBeforeRestore = chipLabelWrites;
   writableCapabilities = false;
   await refresh();
   assert.equal(serviceChip.dataset.state, 'attention', 'a restored read-only state is reported again');
   assert.equal(chipLabelWrites, chipWritesBeforeRestore + 1, 'an unchanged service state is not re-announced on every refresh');
+
+  // Active tasks starts checking when document is hidden and loadHeaderStatus returns early
+  document.hidden = true;
+  activeTasksChip.dataset.state = 'checking';
+  tasksLabelText = 'Checking tasks…';
+  activeTasksChip.setAttribute('aria-label', 'Checking tasks. Open Tasks.');
+  const chipWritesHidden = tasksLabelWrites;
+  // Triggering refresh or intervals while hidden does not change chip to unavailable
+  await refresh();
+  assert.equal(activeTasksChip.dataset.state, 'checking', 'chip remains checking when page is hidden');
+  assert.equal(tasksLabelText, 'Checking tasks…');
+  assert.equal(activeTasksChip.getAttribute('aria-label'), 'Checking tasks. Open Tasks.', 'accessible label avoids doubled punctuation while checking');
+  assert.equal(tasksLabelWrites, chipWritesHidden);
+
+  // Unhiding triggers visibilitychange and transitions from checking to count
+  document.hidden = false;
+  activeJobsFixture = { ok: true, jobs: [], total: 0, active_total: 4, data: { available: true } };
+  documentListeners.get('visibilitychange')();
+  await flush();
+  assert.equal(activeTasksChip.dataset.state, 'ready', 'transitions from checking to count on unhide');
+  assert.equal(tasksLabelText, 'Active tasks: 4');
+
+  // Active tasks independently updates when payload changes, including zero and unavailable
+  const tasksWritesBefore = tasksLabelWrites;
+  activeJobsFixture = { ok: true, jobs: [], total: 0, active_total: 0, data: { available: true } };
+  documentListeners.get('visibilitychange')();
+  await flush();
+  assert.equal(activeTasksChip.dataset.state, 'ready');
+  assert.equal(tasksLabelText, 'Active tasks: 0', 'active tasks updates to exact zero count');
+  assert.equal(tasksLabelWrites, tasksWritesBefore + 1);
+
+  activeJobsFixture = { ok: false, data: { available: false } };
+  documentListeners.get('visibilitychange')();
+  await flush();
+  assert.equal(activeTasksChip.dataset.state, 'unknown');
+  assert.equal(tasksLabelText, 'Active tasks unavailable', 'active tasks updates to unavailable when API reports unavailable');
+
+  // Network failure / rejected request transitions from checking to unavailable
+  activeTasksChip.dataset.state = 'checking';
+  tasksLabelText = 'Checking tasks…';
+  failJobs = true;
+  documentListeners.get('visibilitychange')();
+  await flush();
+  assert.equal(activeTasksChip.dataset.state, 'unknown', 'transitions from checking to unavailable on network failure');
+  assert.equal(tasksLabelText, 'Active tasks unavailable');
+  failJobs = false;
+
+  // Restore fixture
+  activeJobsFixture = { ok: true, jobs: [], total: 0, active_total: 4, data: { available: true } };
+  documentListeners.get('visibilitychange')();
+  await flush();
+  assert.equal(tasksLabelText, 'Active tasks: 4');
 
   failStatus = true;
   await refresh();

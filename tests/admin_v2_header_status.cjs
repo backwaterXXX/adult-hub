@@ -17,6 +17,15 @@ assert.equal(status.access({ actions_enabled: true, token_required: true }).labe
 assert.equal(status.access({ actions_enabled: false }).label, 'Read-only');
 assert.match(status.access({ actions_enabled: false, read_only_reason: 'worker_unavailable' }).title, /worker is unavailable/);
 
+assert.deepEqual({ ...status.activeTasks(undefined) }, {
+  state: 'checking', label: 'Checking tasks…', count: null
+});
+assert.deepEqual({ ...status.activeTasks({ checking: true }) }, {
+  state: 'checking', label: 'Checking tasks…', count: null
+});
+assert.deepEqual({ ...status.activeTasks(null) }, {
+  state: 'unknown', label: 'Active tasks unavailable', count: null
+});
 assert.deepEqual({ ...status.activeTasks({ data: { available: true }, active_total: 0 }) }, {
   state: 'ready', label: 'Active tasks: 0', count: 0
 });
@@ -59,6 +68,60 @@ assert.match(status.serviceStatus({ ...healthy, connection: true, sync: { availa
 assert.equal(status.serviceStatus({
   ...healthy, connection: true, sync: { available: true, freshness: 'fresh', last_success: false },
 }).state, 'attention', 'a failed synchronization reads as attention, not as success');
-assert.equal(status.serviceStatus({ ...healthy, connection: true }).label, 'All services available · 2 active tasks');
+assert.equal(status.serviceStatus({ ...healthy, connection: true }).label, 'All services available',
+  'aggregate service status does not duplicate the task count');
+
+// Healthy access + healthy sync + activeTasks undefined/checking must not report ok
+const healthyAccessSyncUndefinedTasks = {
+  connection: true,
+  capabilities: { actions_enabled: true },
+  sync: { available: true, freshness: 'fresh', last_success: true },
+  activeTasks: undefined,
+};
+const undefinedTaskServiceStatus = status.serviceStatus(healthyAccessSyncUndefinedTasks);
+assert.notEqual(undefinedTaskServiceStatus.state, 'ok', 'active tasks undefined must prevent ok status');
+assert.equal(undefinedTaskServiceStatus.state, 'checking');
+assert.equal(undefinedTaskServiceStatus.label, 'Checking services…');
+
+const healthyAccessSyncCheckingTasks = {
+  ...healthyAccessSyncUndefinedTasks,
+  activeTasks: { checking: true },
+};
+const checkingTaskServiceStatus = status.serviceStatus(healthyAccessSyncCheckingTasks);
+assert.notEqual(checkingTaskServiceStatus.state, 'ok', 'active tasks checking must prevent ok status');
+assert.equal(checkingTaskServiceStatus.state, 'checking');
+assert.equal(checkingTaskServiceStatus.label, 'Checking services…');
+
+// Attention needed from failed sync must not hide whether tasks are active
+const failedSyncWithTasks = {
+  ...healthy,
+  connection: true,
+  sync: { available: true, freshness: 'fresh', last_success: false },
+  activeTasks: { data: { available: true }, active_total: 5 },
+};
+assert.equal(status.serviceStatus(failedSyncWithTasks).label, 'Attention needed');
+assert.equal(status.serviceStatus(failedSyncWithTasks).state, 'attention');
+assert.equal(status.activeTasks(failedSyncWithTasks.activeTasks).label, 'Active tasks: 5',
+  'active task count remains readable when aggregate status needs attention');
+
+const failedSyncZeroTasks = {
+  ...healthy,
+  connection: true,
+  sync: { available: true, freshness: 'fresh', last_success: false },
+  activeTasks: { data: { available: true }, active_total: 0 },
+};
+assert.equal(status.serviceStatus(failedSyncZeroTasks).label, 'Attention needed');
+assert.equal(status.activeTasks(failedSyncZeroTasks.activeTasks).label, 'Active tasks: 0',
+  'exact zero task count is preserved when sync needs attention');
+
+const failedSyncUnavailableTasks = {
+  ...healthy,
+  connection: true,
+  sync: { available: true, freshness: 'fresh', last_success: false },
+  activeTasks: { data: { available: false } },
+};
+assert.equal(status.serviceStatus(failedSyncUnavailableTasks).label, 'Attention needed');
+assert.equal(status.activeTasks(failedSyncUnavailableTasks.activeTasks).label, 'Active tasks unavailable',
+  'task unavailability is preserved when sync needs attention');
 
 console.log('PASS: Admin v2 header access modes, task counts, and the aggregate service state distinguish writable, token, read-only, zero, unavailable, and unverified states');

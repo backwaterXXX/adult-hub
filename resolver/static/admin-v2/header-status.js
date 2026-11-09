@@ -21,6 +21,9 @@
   }
 
   function activeTasks(payload) {
+    if (payload === undefined || (payload && payload.checking === true)) {
+      return { state: 'checking', label: 'Checking tasks…', count: null };
+    }
     const count = payload && payload.active_total;
     if (!payload || !payload.data || payload.data.available !== true
         || !Number.isSafeInteger(count) || count < 0) {
@@ -90,12 +93,14 @@
     if (attention.length) {
       return { state: 'attention', label: 'Attention needed', title: attention.map(item => item.title).join(' ') };
     }
+    if (details.some(item => item.state === 'checking')) {
+      return { state: 'checking', label: 'Checking services…', title: 'Service status is still loading.' };
+    }
     if (details.some(item => item.state === 'unknown')) {
       const missing = details.filter(item => item.state === 'unknown').map(item => item.label);
       return { state: 'partial', label: 'Partial status', title: `${missing.join(', ')} could not be verified.` };
     }
-    const running = taskState.count ? ` · ${taskState.count} active ${taskState.count === 1 ? 'task' : 'tasks'}` : '';
-    return { state: 'ok', label: `All services available${running}`, title: details.map(item => item.label).join(' · ') };
+    return { state: 'ok', label: 'All services available', title: details.map(item => item.label).join(' · ') };
   }
 
   window.AdminV2HeaderStatus = Object.freeze({ access, activeTasks, syncStatusText, syncFreshness, serviceStatus });
