@@ -53,6 +53,17 @@ def get_pending_session_file_path(session_path: str) -> str:
     return os.path.join(dirname, f".{basename}.pending.session")
 
 
+_SQLITE_HEADER = b"SQLite format 3\x00"
+
+
+def _has_sqlite_header(path: str) -> bool:
+    try:
+        with open(path, "rb") as stream:
+            return stream.read(len(_SQLITE_HEADER)) == _SQLITE_HEADER
+    except OSError:
+        return False
+
+
 async def is_session_authorized(session_path: str, api_id: Any, api_hash: Any) -> bool:
     """Check if the given session file exists and is authorized."""
     actual_path = get_sqlite_session_file_path(session_path)
@@ -70,6 +81,12 @@ async def is_session_authorized(session_path: str, api_id: Any, api_hash: Any) -
             "Telethon is not installed. Add 'telethon>=1.36' to "
             "resolver/requirements.txt and install it first."
         ) from exc
+
+    if not _has_sqlite_header(actual_path):
+        # Telethon opens the file in its constructor. A corrupt file makes that constructor fail
+        # after it has already opened a SQLite handle that nothing can close, so reject it here.
+        # Callers see an exception, as they did before, and keep their cached-authorization rules.
+        raise ValueError("Telegram session file is not a SQLite database.")
 
     client = TelegramClient(actual_path, api_id_int, api_hash_str)
     try:

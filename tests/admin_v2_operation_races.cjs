@@ -78,7 +78,7 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
     create: (_tag, _className, text) => { const node = new Element(); if (text != null) node.textContent = String(text); return node; },
     announce: message => announcements.push(message),
     renderOperationPreview: plan => { state.renderedPlan = plan; },
-    renderDuplicateCandidates: payload => { state.renderedDuplicates = payload; },
+    renderDuplicateCandidates: () => { state.renderedDuplicates = state.duplicateScans[state.duplicateScans.length - 1]; },
     renderIssues: payload => { state.renderedIssues = payload; },
     issueFeedUrl: offset => `/admin/api/v2/issues?limit=50&offset=${offset || 0}`,
     readIssueFiltersFromUrl() {},

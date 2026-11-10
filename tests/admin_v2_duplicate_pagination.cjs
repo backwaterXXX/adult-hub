@@ -64,11 +64,11 @@ const context = vm.createContext({
     state.renderedPreviewContext = previewContext;
   },
   openDialog(dialog) { dialog.open = true; },
-  renderDuplicateCandidates(payload) {
+  renderDuplicateCandidates() {
     rendered.push({
       offset: state.duplicateOffset,
       ids: state.duplicateItems.map(pair => pair.id),
-      total: payload.total,
+      total: state.duplicateTotal,
     });
   },
   fetch: async url => {

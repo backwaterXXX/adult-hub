@@ -75,6 +75,9 @@ from resolver.providers.telegram_session import (
 )
 from resolver.providers.telegram_auth import main as cli_main
 
+# Fake session contents that pass the SQLite header check before Telethon is mocked.
+SQLITE_FIXTURE = b"SQLite format 3\x00"
+
 
 class TestTelegramValidation(unittest.TestCase):
     def test_validate_api_credentials_valid(self):
@@ -168,22 +171,21 @@ class TestTelegramSessionAuth(unittest.TestCase):
         self.assertFalse(res)
         self.assertFalse(self.session_path.exists())
 
-    def test_is_session_authorized_corrupt_file_returns_false_and_disconnects(self):
-        """Corrupt session file fails gracefully and ensures client disconnect."""
+    def test_is_session_authorized_corrupt_file_raises_before_any_client_is_opened(self):
+        """A file without the SQLite header is rejected before Telethon opens it, so no SQLite
+        handle can be left behind. Callers already treat the exception as not authorized."""
         self.session_path.write_bytes(b"corrupt sqlite header")
-        mock_client = AsyncMock()
-        mock_client.connect.side_effect = Exception("SQLite file is corrupt")
-        self.telethon_mod.TelegramClient = MagicMock(return_value=mock_client)
+        self.telethon_mod.TelegramClient = MagicMock()
 
         with patch.dict(sys.modules, {"telethon": self.telethon_mod, "telethon.errors": self.errors_mod}):
-            res = asyncio.run(is_session_authorized(str(self.session_path), 123456, "abcdef0123456789abcdef0123456789"))
+            with self.assertRaises(ValueError):
+                asyncio.run(is_session_authorized(str(self.session_path), 123456, "abcdef0123456789abcdef0123456789"))
 
-        self.assertFalse(res)
-        mock_client.disconnect.assert_awaited_once()
+        self.telethon_mod.TelegramClient.assert_not_called()
 
     def test_is_session_authorized_valid_authorized_session(self):
         """Valid session returns True and disconnects client."""
-        self.session_path.write_bytes(b"valid_session_bytes")
+        self.session_path.write_bytes(SQLITE_FIXTURE + b"valid_session_bytes")
         mock_client = AsyncMock()
         mock_client.is_user_authorized.return_value = True
         self.telethon_mod.TelegramClient = MagicMock(return_value=mock_client)
@@ -197,7 +199,7 @@ class TestTelegramSessionAuth(unittest.TestCase):
 
     def test_interactive_login_already_authorized_skips_login(self):
         """Existing authorized target session returns already_authorized without prompting."""
-        self.session_path.write_bytes(b"existing_authorized_bytes")
+        self.session_path.write_bytes(SQLITE_FIXTURE + b"existing_authorized_bytes")
         mock_client = AsyncMock()
         mock_client.is_user_authorized.return_value = True
         self.telethon_mod.TelegramClient = MagicMock(return_value=mock_client)
@@ -217,11 +219,11 @@ class TestTelegramSessionAuth(unittest.TestCase):
         self.assertEqual(res, "already_authorized")
         prompt_mock.assert_not_called()
         # Pre-existing bytes preserved
-        self.assertEqual(self.session_path.read_bytes(), b"existing_authorized_bytes")
+        self.assertEqual(self.session_path.read_bytes(), SQLITE_FIXTURE + b"existing_authorized_bytes")
 
     def test_protection_of_pre_existing_session_bytes(self):
         """Target session file is protected: unauthorized/corrupt existing session is never overwritten."""
-        original_bytes = b"pre_existing_unauthorized_database_bytes"
+        original_bytes = SQLITE_FIXTURE + b"pre_existing_unauthorized_database_bytes"
         self.session_path.write_bytes(original_bytes)
 
         mock_client = AsyncMock()
@@ -246,7 +248,7 @@ class TestTelegramSessionAuth(unittest.TestCase):
     def test_pending_authorized_session_reuse(self):
         """If a pending session was already authorized, reuse and promote it without re-auth."""
         pending_path = Path(get_pending_session_file_path(str(self.session_path)))
-        pending_path.write_bytes(b"pending_authorized_session")
+        pending_path.write_bytes(SQLITE_FIXTURE + b"pending_authorized_session")
 
         mock_client = AsyncMock()
         mock_client.is_user_authorized.return_value = True
@@ -266,7 +268,7 @@ class TestTelegramSessionAuth(unittest.TestCase):
         self.assertEqual(res, "authorized")
         prompt_mock.assert_not_called()
         self.assertTrue(self.session_path.exists())
-        self.assertEqual(self.session_path.read_bytes(), b"pending_authorized_session")
+        self.assertEqual(self.session_path.read_bytes(), SQLITE_FIXTURE + b"pending_authorized_session")
         self.assertFalse(pending_path.exists())
 
     def test_first_login_code_success_promotes_with_mode_0600(self):
@@ -282,7 +284,7 @@ class TestTelegramSessionAuth(unittest.TestCase):
 
         def fake_sign_in(*args, **kwargs):
             # Simulate SQLite file creation upon sign in
-            pending_path.write_bytes(b"newly_authenticated_session")
+            pending_path.write_bytes(SQLITE_FIXTURE + b"newly_authenticated_session")
             return AsyncMock()
 
         mock_client.sign_in.side_effect = fake_sign_in
@@ -321,7 +323,7 @@ class TestTelegramSessionAuth(unittest.TestCase):
 
         # Target session promoted with 0600 mode
         self.assertTrue(self.session_path.exists())
-        self.assertEqual(self.session_path.read_bytes(), b"newly_authenticated_session")
+        self.assertEqual(self.session_path.read_bytes(), SQLITE_FIXTURE + b"newly_authenticated_session")
         self.assertFalse(pending_path.exists())
         file_mode = stat.S_IMODE(self.session_path.stat().st_mode)
         self.assertEqual(file_mode, 0o600)
@@ -348,7 +350,7 @@ class TestTelegramSessionAuth(unittest.TestCase):
             sign_in_calls.append(kwargs.get("code"))
             if len(sign_in_calls) == 1:
                 raise self.errors_mod.PhoneCodeInvalidError("Wrong code")
-            pending_path.write_bytes(b"session_after_retry")
+            pending_path.write_bytes(SQLITE_FIXTURE + b"session_after_retry")
 
         mock_client.sign_in.side_effect = fake_sign_in
         self.telethon_mod.TelegramClient = MagicMock(return_value=mock_client)
@@ -373,7 +375,7 @@ class TestTelegramSessionAuth(unittest.TestCase):
         self.assertEqual(res, "authorized")
         self.assertEqual(sign_in_calls, ["00000", "99999"])
         self.assertTrue(self.session_path.exists())
-        self.assertEqual(self.session_path.read_bytes(), b"session_after_retry")
+        self.assertEqual(self.session_path.read_bytes(), SQLITE_FIXTURE + b"session_after_retry")
         mock_client.disconnect.assert_awaited_once()
 
     def test_expired_code_resend_and_retry(self):
@@ -395,7 +397,7 @@ class TestTelegramSessionAuth(unittest.TestCase):
             sign_in_kwargs.append(kwargs.copy())
             if len(sign_in_kwargs) == 1:
                 raise self.errors_mod.PhoneCodeExpiredError("Code expired")
-            pending_path.write_bytes(b"session_after_resend")
+            pending_path.write_bytes(SQLITE_FIXTURE + b"session_after_resend")
 
         mock_client.sign_in.side_effect = fake_sign_in
         self.telethon_mod.TelegramClient = MagicMock(return_value=mock_client)
@@ -438,7 +440,7 @@ class TestTelegramSessionAuth(unittest.TestCase):
             if "code" in kwargs:
                 raise self.errors_mod.SessionPasswordNeededError("2FA required")
             if kwargs.get("password") == "my2fasecret":
-                pending_path.write_bytes(b"session_after_2fa")
+                pending_path.write_bytes(SQLITE_FIXTURE + b"session_after_2fa")
                 return
             raise self.errors_mod.PasswordHashInvalidError("Wrong 2FA")
 
@@ -467,7 +469,7 @@ class TestTelegramSessionAuth(unittest.TestCase):
         self.assertEqual(res, "authorized")
         self.assertEqual(len(pwd_prompts), 1)
         self.assertTrue(self.session_path.exists())
-        self.assertEqual(self.session_path.read_bytes(), b"session_after_2fa")
+        self.assertEqual(self.session_path.read_bytes(), SQLITE_FIXTURE + b"session_after_2fa")
 
     def test_invalid_2fa_retry_path(self):
         """Invalid 2FA password allows retry; subsequent valid 2FA succeeds."""
@@ -489,7 +491,7 @@ class TestTelegramSessionAuth(unittest.TestCase):
             pwd_calls.append(pwd)
             if pwd == "wrong_pwd":
                 raise self.errors_mod.PasswordHashInvalidError("Bad password")
-            pending_path.write_bytes(b"session_2fa_ok")
+            pending_path.write_bytes(SQLITE_FIXTURE + b"session_2fa_ok")
 
         mock_client.sign_in.side_effect = fake_sign_in
         self.telethon_mod.TelegramClient = MagicMock(return_value=mock_client)
@@ -519,7 +521,7 @@ class TestTelegramSessionAuth(unittest.TestCase):
     def test_disconnect_and_cleanup_on_failure(self):
         """Failure to authenticate cleans up pending file, preserves target, and disconnects client."""
         pending_path = Path(get_pending_session_file_path(str(self.session_path)))
-        pending_path.write_bytes(b"temporary_garbage")
+        pending_path.write_bytes(SQLITE_FIXTURE + b"temporary_garbage")
 
         mock_sent_code = MagicMock()
         mock_sent_code.phone_code_hash = "hash_fail"

@@ -32,7 +32,7 @@
       state.duplicateItems = scan.pairs.slice(state.duplicateOffset - scanOffset,
         state.duplicateOffset - scanOffset + DUPLICATE_PAGE_SIZE);
       state.duplicateTotal = scan.total;
-      renderDuplicateCandidates(scan);
+      renderDuplicateCandidates();
       setText(feedback, category === 'oshash_linked'
         ? `${state.duplicateTotal} active OSHASH-linked groups`
         : `${state.duplicateTotal} candidates · ${Number(scan.scanned) || 0} catalog items scanned`);
@@ -96,7 +96,7 @@
       state.duplicateItems = scan.pairs.slice(state.duplicateOffset - scanOffset,
         state.duplicateOffset - scanOffset + DUPLICATE_PAGE_SIZE);
       state.duplicateTotal = scan.total;
-      renderDuplicateCandidates(scan);
+      renderDuplicateCandidates();
       setText(feedback, category === 'oshash_linked'
         ? `${state.duplicateTotal} active OSHASH-linked groups`
         : `${state.duplicateTotal} candidates · ${Number(payload.scanned) || 0} catalog items scanned`);
