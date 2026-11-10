@@ -236,44 +236,49 @@ class TelegramLoginManager:
         try:
             api_id, api_hash = ctx.get_api_credentials()
             authorized = await asyncio.wait_for(
-                is_session_authorized(target_path, api_id, api_hash),
+                is_session_authorized(target_path, api_id, api_hash, raise_on_error=True),
                 timeout=LOGIN_NETWORK_TIMEOUT_SECONDS,
             )
-            self._cached_auth[ctx.account_id] = bool(authorized)
-            if authorized:
-                return {
-                    "ok": True,
-                    "account_id": ctx.account_id,
-                    "status": "authorized",
-                    "authorized": True,
-                    "has_session_file": True,
-                    "api_configured": True,
-                    "message": "Telegram session is authorized.",
-                }
-            return {
-                "ok": True,
-                "account_id": ctx.account_id,
-                "status": "unauthorized_session_present",
-                "authorized": False,
-                "has_session_file": True,
-                "api_configured": True,
-                "message": (
-                    "Existing Telegram session file is present but not authorized. "
-                    "To protect existing session data, setup will not overwrite it. "
-                    "Use Replace unauthorized session to move it to a backup, then log in again."
-                ),
-            }
+        except ValueError:
+            # Not a SQLite session file, so Telegram cannot accept it as a session.
+            authorized = False
         except Exception as exc:
-            logger.debug("Error checking existing session for %s: %s", target_path, exc)
+            # The check could not finish (network, locked database). That is not a verdict,
+            # so the cached result stays as it was.
+            logger.info("Live session status could not complete for account %s (%s)", ctx.account_id, type(exc).__name__)
             return {
                 "ok": True,
                 "account_id": ctx.account_id,
-                "status": "unauthorized_session_present",
+                "status": "check_failed",
                 "authorized": False,
                 "has_session_file": True,
                 "api_configured": True,
-                "message": "Existing Telegram session file could not be verified.",
+                "message": "Could not verify the Telegram session right now. The session file was not changed. Try again in a moment.",
             }
+        self._cached_auth[ctx.account_id] = bool(authorized)
+        if authorized:
+            return {
+                "ok": True,
+                "account_id": ctx.account_id,
+                "status": "authorized",
+                "authorized": True,
+                "has_session_file": True,
+                "api_configured": True,
+                "message": "Telegram session is authorized.",
+            }
+        return {
+            "ok": True,
+            "account_id": ctx.account_id,
+            "status": "unauthorized_session_present",
+            "authorized": False,
+            "has_session_file": True,
+            "api_configured": True,
+            "message": (
+                "Existing Telegram session file is present but not authorized. "
+                "To protect existing session data, setup will not overwrite it. "
+                "Use Replace unauthorized session to move it to a backup, then log in again."
+            ),
+        }
 
     async def get_status(
         self,

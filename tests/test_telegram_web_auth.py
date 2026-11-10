@@ -135,6 +135,22 @@ class TestTelegramLoginManagerLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(status["authorized"])
         self.assertTrue(status["api_configured"])
 
+    async def test_get_status_check_error_is_not_reported_as_unauthorized(self):
+        Path(self.session_path).write_bytes(b"sqlite_data")
+        with patch("resolver.providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_auth:
+            mock_auth.side_effect = RuntimeError("database is locked")
+            status = await self.manager.get_status()
+        self.assertEqual(status["status"], "check_failed")
+        self.assertFalse(status["authorized"])
+        self.assertTrue(Path(self.session_path).exists())
+        # The failed check must not poison the cached verdict that later reads without a live check use.
+        self.assertNotIn(self.manager._cached_auth.get("default"), (False,))
+
+        with patch("resolver.providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_auth:
+            mock_auth.return_value = True
+            status = await self.manager.get_status()
+        self.assertEqual(status["status"], "authorized")
+
     async def test_get_status_authorized_when_existing_session_valid(self):
         Path(self.session_path).write_bytes(b"sqlite_data")
         with patch("resolver.providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_auth:
