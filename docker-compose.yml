@@ -7,6 +7,9 @@ services:
     image: jellyfin/jellyfin:12.4
     container_name: jellyfin
     restart: unless-stopped
+    # Runs as the host owner of the /config and /cache data (uid/gid 1000). GPU access comes from
+    # the video (44) and render (992) groups below, which match the /dev/dri device owners.
+    user: "1000:1000"
     # Compose's service_healthy dependency below needs an explicit condition
     # here; this also keeps readiness behavior visible alongside the service.
     healthcheck:
