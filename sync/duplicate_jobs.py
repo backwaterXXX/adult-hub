@@ -416,5 +416,11 @@ def _performer_refresh(conn: db.Connection, job_id: str, payload: dict,
     return {"videos_refreshed": updated, "jellyfin_refresh": "requested"}
 
 
-from sync.duplicate_job_worker import process_video_duplicate_jobs_locked  # noqa: E402, F401
+def __getattr__(name: str):
+    # Resolved on first access instead of at import: the worker imports sibling duplicate_job_*
+    # modules that import this one, so a module-level import here closes an import cycle.
+    if name == "process_video_duplicate_jobs_locked":
+        from sync.duplicate_job_worker import process_video_duplicate_jobs_locked
+        return process_video_duplicate_jobs_locked
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

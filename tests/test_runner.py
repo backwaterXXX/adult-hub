@@ -115,7 +115,7 @@ class TestSyncRunnerProcess(PgTestCase):
             finally:
                 if runner.poll() is None:
                     runner.kill()
-                    runner.wait(timeout=5)
+                    runner.communicate(timeout=5)
 
     def test_calculate_next_sleep_seconds_and_format_duration(self):
         import importlib.util
@@ -316,7 +316,7 @@ class TestSyncRunnerProcess(PgTestCase):
                 self.assertTrue(child_pid_file.exists())
             finally:
                 runner.terminate()
-                runner.wait(timeout=5)
+                runner.communicate(timeout=5)
 
     def test_durable_sync_job_preserves_source_and_mode_after_restart(self):
         with tempfile.TemporaryDirectory(prefix="adult_hub_runner_syncjob_") as temp:
@@ -384,7 +384,7 @@ class TestSyncRunnerProcess(PgTestCase):
                 self.assertEqual(result["exit_code"], 0)
             finally:
                 runner.terminate()
-                runner.wait(timeout=5)
+                runner.communicate(timeout=5)
 
     def test_idle_durable_queue_survives_missing_or_overwritten_wake(self):
         from common.job_queue import enqueue_job
@@ -449,7 +449,7 @@ class TestSyncRunnerProcess(PgTestCase):
                         self.assertEqual([call for call in calls if call != ["--jobs-only"]], [["--source", "Chan"]])
                 finally:
                     runner.terminate()
-                    runner.wait(timeout=5)
+                    runner.communicate(timeout=5)
 
 
     def test_jobs_trigger_runs_jobs_only_and_does_not_trigger_full_sync(self):
@@ -512,7 +512,7 @@ class TestSyncRunnerProcess(PgTestCase):
                 self.assertFalse(child_pid_file.exists(), "runner launched full sync child on jobs trigger!")
             finally:
                 runner.terminate()
-                runner.wait(timeout=5)
+                runner.communicate(timeout=5)
 
 
 if __name__ == "__main__":

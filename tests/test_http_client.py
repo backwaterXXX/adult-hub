@@ -1,4 +1,5 @@
 import errno
+import io
 import unittest
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -52,13 +53,15 @@ class TestHttpClientRetryClassification(unittest.TestCase):
         self.assertLessEqual(sleeps[0], 20)
 
     def test_urllib_http_error_retry_after_header_is_honored(self):
+        body = io.BytesIO(b"")
         error = HTTPError(
             "https://example.invalid/status",
             429,
             "Too Many Requests",
             {"Retry-After": "17"},
-            None,
+            body,
         )
+        self.addCleanup(error.close)
         self.assertEqual(retry_after_from_error(error, 3), 17)
         self.assertTrue(is_retryable_error(error))
 
