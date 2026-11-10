@@ -409,7 +409,16 @@ class Connection:
 
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> Cursor:
         self._ensure_open()
-        return Cursor(self, self._raw.cursor()).execute(sql, params)
+        idle = not self.in_transaction
+        try:
+            return Cursor(self, self._raw.cursor()).execute(sql, params)
+        except psycopg.OperationalError:
+            # psycopg notices a dropped session only when it is used. Retry once on a fresh session,
+            # but only outside a transaction: a retry inside one would commit a partial transaction.
+            if not idle or not self._raw.closed or not self._url:
+                raise
+            self._ensure_open()
+            return Cursor(self, self._raw.cursor()).execute(sql, params)
 
     def executemany(self, sql: str, seq: Iterable[Sequence[Any]]) -> Cursor:
         self._ensure_open()
