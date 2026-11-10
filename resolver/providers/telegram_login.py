@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from resolver.providers.telegram_account import DEFAULT_ACCOUNT_ID, TelegramAccountContext
@@ -26,6 +27,52 @@ LOGIN_NETWORK_TIMEOUT_SECONDS = 25.0
 DISCONNECT_TIMEOUT_SECONDS = 5.0
 MAX_ACCOUNT_STARTS = 5
 ACCOUNT_COOLDOWN_SECONDS = 300.0
+UNAUTHORIZED_BACKUP_MARKER = ".unauthorized-backup-"
+SQLITE_SIDECAR_SUFFIXES = ("-journal", "-wal", "-shm")
+
+
+def _move_session_aside(target_path: str) -> str:
+    """Rename a session file and its SQLite sidecars to one free timestamped backup name.
+
+    Nothing is deleted or overwritten: a candidate name is used only when neither the
+    main backup nor any of its sidecars exists. If a rename fails, the files already
+    moved are renamed back. Returns the backup file name without its directory.
+    """
+    directory, base = os.path.split(target_path)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_base = None
+    for index in range(1, 1000):
+        candidate = f"{base}{UNAUTHORIZED_BACKUP_MARKER}{stamp}" if index == 1 else (
+            f"{base}{UNAUTHORIZED_BACKUP_MARKER}{stamp}-{index}"
+        )
+        names = [candidate, *(candidate + suffix for suffix in SQLITE_SIDECAR_SUFFIXES)]
+        if not any(os.path.lexists(os.path.join(directory, name)) for name in names):
+            backup_base = candidate
+            break
+    if backup_base is None:
+        raise OSError("No free backup file name was found.")
+
+    # Sidecars move first and the main file last, so a failure leaves the canonical name in place.
+    moves = [
+        (target_path + suffix, os.path.join(directory, backup_base + suffix))
+        for suffix in SQLITE_SIDECAR_SUFFIXES
+        if os.path.lexists(target_path + suffix)
+    ]
+    moves.append((target_path, os.path.join(directory, backup_base)))
+
+    done: list[tuple[str, str]] = []
+    try:
+        for source, destination in moves:
+            os.replace(source, destination)
+            done.append((source, destination))
+    except OSError:
+        for source, destination in reversed(done):
+            try:
+                os.replace(destination, source)
+            except OSError:
+                logger.error("Could not restore session file %s after a failed move.", os.path.basename(source))
+        raise
+    return backup_base
 
 
 def mask_phone_number(phone: str) -> str:
@@ -212,7 +259,7 @@ class TelegramLoginManager:
                 "message": (
                     "Existing Telegram session file is present but not authorized. "
                     "To protect existing session data, setup will not overwrite it. "
-                    "Please back up or remove the invalid session file manually before re-authenticating."
+                    "Use Replace unauthorized session to move it to a backup, then log in again."
                 ),
             }
         except Exception as exc:
@@ -336,7 +383,7 @@ class TelegramLoginManager:
                 "code": "unauthorized_session_present",
                 "error": (
                     "Existing Telegram session file is present but unauthorized. "
-                    "Setup will not overwrite it. Please back up or remove the session file manually."
+                    "Setup will not overwrite it. Use Replace unauthorized session on the account to move it to a backup first."
                 ),
             }
         return None
@@ -856,6 +903,116 @@ class TelegramLoginManager:
                 await self._cleanup_challenge(challenge)
                 return {"ok": True, "message": "Login challenge cancelled and pending state cleaned up."}
             return {"ok": True, "message": "No active login challenge found."}
+
+    async def replace_unauthorized_session(self, account_id: str = DEFAULT_ACCOUNT_ID) -> dict:
+        """Move an unauthorized session file to a backup so a new login can start.
+
+        The live check runs again inside the account lock, and the file moves only when
+        Telegram reports the session as not authorized. Cached auth state is never used
+        for this decision. Nothing is deleted: the old file and its sidecars are renamed.
+        """
+        try:
+            ctx = TelegramAccountContext(account_id)
+        except ValueError as exc:
+            return {"ok": False, "code": "invalid_account_id", "error": str(exc)}
+
+        from resolver.providers.telegram_account_store import get_account
+
+        record = get_account(ctx.account_id)
+        if record is None:
+            return {"ok": False, "code": "not_found", "error": f"Account '{ctx.account_id}' not found."}
+        if not record.enabled:
+            return {
+                "ok": False,
+                "code": "account_disabled",
+                "error": "Account is disabled. Enable it before replacing its session.",
+            }
+
+        target_path = ctx.get_session_path()
+        account_lock = self._get_account_lock(ctx.account_id)
+        async with account_lock:
+            async with self._manager_lock:
+                if ctx.account_id in self._challenges:
+                    return {
+                        "ok": False,
+                        "code": "login_in_progress",
+                        "error": "A Telegram login is in progress for this account. Cancel it before replacing the session.",
+                    }
+
+            if not (os.path.isfile(target_path) and os.path.getsize(target_path) > 0):
+                return {
+                    "ok": False,
+                    "code": "no_session_file",
+                    "error": "No session file exists for this account. Start login instead.",
+                }
+            if not ctx.has_api_credentials():
+                return {
+                    "ok": False,
+                    "code": "check_failed",
+                    "error": "Telegram API credentials are missing, so the session could not be checked. The file was not changed.",
+                }
+
+            try:
+                api_id, api_hash = ctx.get_api_credentials()
+                authorized = await asyncio.wait_for(
+                    is_session_authorized(target_path, api_id, api_hash, raise_on_error=True),
+                    timeout=LOGIN_NETWORK_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                logger.warning("Live session check failed for account %s (%s)", ctx.account_id, type(exc).__name__)
+                return {
+                    "ok": False,
+                    "code": "check_failed",
+                    "error": "Could not verify the current session with Telegram. The file was not changed. Try again later.",
+                }
+
+            self._cached_auth[ctx.account_id] = bool(authorized)
+            if authorized:
+                return {
+                    "ok": False,
+                    "code": "session_authorized",
+                    "error": "The Telegram session is authorized, so it will not be replaced.",
+                }
+
+            try:
+                backup_name = _move_session_aside(target_path)
+            except OSError as exc:
+                logger.error("Could not move unauthorized session for account %s (%s)", ctx.account_id, type(exc).__name__)
+                return {
+                    "ok": False,
+                    "code": "move_failed",
+                    "error": "The session file could not be moved to a backup. It was left in place.",
+                }
+
+            self._cached_auth.pop(ctx.account_id, None)
+            logger.info("Moved unauthorized session for account %s to backup %s", ctx.account_id, backup_name)
+
+            await self._reset_clients_after_session_move(ctx.account_id)
+
+        return {
+            "ok": True,
+            "account_id": ctx.account_id,
+            "backup_file": backup_name,
+            "message": "The unauthorized session was kept as a backup. Log in to authenticate this account.",
+        }
+
+    async def _reset_clients_after_session_move(self, account_id: str) -> None:
+        """Drop any Telegram client that still points at the moved session file."""
+        try:
+            from resolver.providers.telegram_router import get_telegram_router
+            await get_telegram_router().reset_account_client(account_id)
+        except Exception as exc:
+            logger.warning("Could not reset Telegram router client for account %s (%s)",
+                           account_id, type(exc).__name__)
+        if account_id == DEFAULT_ACCOUNT_ID:
+            try:
+                from resolver.providers.telegram import reset_telegram_client
+                res = reset_telegram_client("default")
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception as exc:
+                logger.warning("Could not reset default Telegram client after session move (%s)",
+                               type(exc).__name__)
 
     async def _get_valid_challenge(self, account_id: str) -> Optional[ActiveLoginChallenge]:
         challenge_to_clean = None

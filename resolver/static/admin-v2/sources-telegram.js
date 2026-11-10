@@ -738,14 +738,66 @@
 
   function renderWizardUnauthorizedPresent(body, message) {
     const wrap = create('div', 'telegram-auth-view');
-    const err = create('p', 'detail-error', message || 'Existing session file is present but unauthorized. Adult Hub will not overwrite it automatically. Please back up or remove the invalid file manually.');
+    const err = create('p', 'detail-error', message || 'Existing Telegram session file is present but not authorized. Use "Replace unauthorized session" to keep it as a backup and log in again.');
+    const note = create('p', 'detail-note', 'Replacing moves the current session file to a backup in the same folder. Nothing is deleted.');
     const actions = create('div', 'operation-dialog-actions');
-    const closeBtn = create('button', 'button button-primary', 'Close');
+    const closeBtn = create('button', 'button button-quiet', 'Close');
     closeBtn.type = 'button';
     closeBtn.addEventListener('click', closeTelegramAuthWizard);
-    actions.appendChild(closeBtn);
-    wrap.append(err, actions);
+    const replaceBtn = create('button', 'button button-primary', 'Replace unauthorized session');
+    replaceBtn.type = 'button';
+    replaceBtn.addEventListener('click', () => confirmReplaceUnauthorizedSession(replaceBtn));
+    actions.append(closeBtn, replaceBtn);
+    wrap.append(err, note, actions);
     body.replaceChildren(wrap);
+  }
+
+  async function confirmReplaceUnauthorizedSession(replaceBtn) {
+    const target = isValidTelegramAccountId(state.activeAuthAccountId) ? state.activeAuthAccountId : '';
+    if (!target) {
+      setWizardBanner('error', 'Invalid account ID.');
+      return;
+    }
+    const confirmed = window.confirm(
+      `Replace the unauthorized Telegram session for account "${target}"?\n\n`
+      + 'The current session file is moved to a backup in the same folder and kept. Nothing is deleted. '
+      + 'You will then log in to this account again.'
+    );
+    if (!confirmed) return;
+
+    const expectedSeq = state.wizardSeq;
+    const isCurrentWizard = () => expectedSeq === state.wizardSeq
+      && state.activeWizardMode === 'auth' && state.activeAuthAccountId === target;
+    replaceBtn.disabled = true;
+    replaceBtn.textContent = 'Replacing…';
+    setWizardBanner('', '');
+
+    try {
+      const result = await postTelegramAuth(
+        `${TELEGRAM_ACCOUNTS_URL}/${encodeURIComponent(target)}/session/replace-unauthorized`,
+        { account_id: target },
+      );
+      const backupName = result.backup_file || 'a backup file';
+      if (!isCurrentWizard()) {
+        setNotice('success', `The unauthorized session for account "${target}" was kept as ${backupName}. Log in to continue.`);
+        renderTelegramAccountCard();
+        return;
+      }
+      await refreshTelegramAuthWizard(target);
+      if (isCurrentWizard()) {
+        setWizardBanner('success', `The old session was kept as ${backupName}. Enter the phone number to log in again.`);
+      }
+      renderTelegramAccountCard();
+    } catch (err) {
+      const message = extractErrorMessage(err, 'Could not replace the unauthorized session.');
+      if (!isCurrentWizard()) {
+        setNotice('error', `Could not replace the session for account "${target}": ${message}`);
+        return;
+      }
+      setWizardBanner('error', message);
+      replaceBtn.disabled = false;
+      replaceBtn.textContent = 'Replace unauthorized session';
+    }
   }
 
   function renderWizardSessionPresent(body, message) {

@@ -64,8 +64,18 @@ def _has_sqlite_header(path: str) -> bool:
         return False
 
 
-async def is_session_authorized(session_path: str, api_id: Any, api_hash: Any) -> bool:
-    """Check if the given session file exists and is authorized."""
+async def is_session_authorized(
+    session_path: str,
+    api_id: Any,
+    api_hash: Any,
+    *,
+    raise_on_error: bool = False,
+) -> bool:
+    """Check if the given session file exists and is authorized.
+
+    By default a network or Telegram error returns False. With raise_on_error=True the
+    error propagates, so a caller can tell "not authorized" apart from "could not check".
+    """
     actual_path = get_sqlite_session_file_path(session_path)
     if not os.path.isfile(actual_path) or os.path.getsize(actual_path) == 0:
         return False
@@ -93,6 +103,8 @@ async def is_session_authorized(session_path: str, api_id: Any, api_hash: Any) -
         await client.connect()
         return bool(await client.is_user_authorized())
     except Exception:
+        if raise_on_error:
+            raise
         logger.debug("Failed checking session authorization for %s", actual_path, exc_info=True)
         return False
     finally:

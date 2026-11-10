@@ -20,6 +20,19 @@ def _json_resp(admin: Any, content: Any, status_code: int = 200) -> Any:
     return factory(content, status_code=status_code)
 
 
+# HTTP status for each refusal code of the replace-unauthorized-session action.
+_REPLACE_ERROR_STATUS = {
+    "invalid_account_id": 400,
+    "not_found": 404,
+    "account_disabled": 409,
+    "login_in_progress": 409,
+    "no_session_file": 409,
+    "session_authorized": 409,
+    "check_failed": 503,
+    "move_failed": 500,
+}
+
+
 def _validate_endpoint_account(account_id_raw: Any, admin: Any):
     """Validate account_id format for Admin web endpoints."""
     raw_str = str(account_id_raw or DEFAULT_ACCOUNT_ID).strip() or DEFAULT_ACCOUNT_ID
@@ -368,6 +381,18 @@ async def _handle_test_account(admin: Any, manager: Any, request: Request, accou
     })
 
 
+async def _handle_replace_unauthorized_session(admin: Any, manager: Any, request: Request, account_id: str) -> Any:
+    denied = _verify_write_access(admin, request)
+    if denied:
+        return denied
+    account, err = _validate_endpoint_account(account_id, admin)
+    if err:
+        return err
+    res = await manager.replace_unauthorized_session(account)
+    status_code = 200 if res.get("ok") else _REPLACE_ERROR_STATUS.get(res.get("code"), 409)
+    return _json_resp(admin, res, status_code=status_code)
+
+
 async def _handle_channels_access(admin: Any, request: Request) -> Any:
     if admin._admin_blocked(request):
         return _json_resp(admin, {"error": "Admin is only available locally."}, status_code=403)
@@ -397,6 +422,10 @@ def _register_account_routes(router: APIRouter, admin: Any, manager: Any) -> Non
     @router.post("/api/v2/telegram/accounts/{account_id}/test")
     async def test_account_endpoint(request: Request, account_id: str):
         return await _handle_test_account(admin, manager, request, account_id)
+
+    @router.post("/api/v2/telegram/accounts/{account_id}/session/replace-unauthorized")
+    async def replace_unauthorized_session_endpoint(request: Request, account_id: str):
+        return await _handle_replace_unauthorized_session(admin, manager, request, account_id)
 
     @router.get("/api/v2/telegram/channels/access")
     async def channels_access_endpoint(request: Request):

@@ -293,6 +293,7 @@ class TestResolverHttpApi(unittest.TestCase):
         ("PATCH", "/admin/api/v2/telegram/accounts/{account_id}"),
         ("DELETE", "/admin/api/v2/telegram/accounts/{account_id}"),
         ("POST", "/admin/api/v2/telegram/accounts/{account_id}/test"),
+        ("POST", "/admin/api/v2/telegram/accounts/{account_id}/session/replace-unauthorized"),
     )
     CLIENT_INTEGRATION_MUTATIONS = {
         ("POST", "/admin/api/v2/video-phash/frames"),
