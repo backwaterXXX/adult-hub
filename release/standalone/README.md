@@ -21,7 +21,7 @@ Edit `.env`:
 - Set `POSTGRES_PASSWORD` to a secure password.
 - Set `ADMIN_WRITE_TOKEN` to a secure secret token.
 - Set `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from [my.telegram.org](https://my.telegram.org).
-- (Optional) To access Adult Hub from other devices on your home network, set `RESOLVER_BIND_IP` and `JELLYFIN_BIND_IP` to your host's LAN IP (e.g. `192.168.1.100`), and set `STANDALONE_STREAM_PUBLIC_URL_TELEGRAM=http://192.168.1.100:8090`.
+- (Optional) To access Adult Hub from other devices on your home network, set `RESOLVER_BIND_IP` and `JELLYFIN_BIND_IP` to your host's LAN IP (e.g. `192.168.1.100`), and set `STREAM_PUBLIC_URL_TELEGRAM=http://192.168.1.100:8090`.
 
 ### 2. Pull Images and Authenticate Telegram
 

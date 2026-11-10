@@ -10,7 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VERSION="${1:-$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION" 2>/dev/null || echo "0.4.14")}"
+VERSION="${1:-$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION" 2>/dev/null || echo "0.4.15")}"
 SOURCE_DIR="${ROOT_DIR}/release/standalone"
 DIST_DIR="${ROOT_DIR}/dist"
 
@@ -44,10 +44,9 @@ cp "${SOURCE_DIR}/.env.example" "${BUNDLE_DIR}/.env.example"
 cp "${SOURCE_DIR}/config.example.yaml" "${BUNDLE_DIR}/config.example.yaml"
 cp "${SOURCE_DIR}/README.md" "${BUNDLE_DIR}/README.md"
 
-# Align versions in copied bundle files if needed
-sed -i "s/:0.4.14/:${VERSION}/g; s/:-0.4.14/:-${VERSION}/g" "${BUNDLE_DIR}/docker-compose.yml"
-sed -i "s/APP_VERSION=0.4.14/APP_VERSION=${VERSION}/g" "${BUNDLE_DIR}/.env.example"
-sed -i "s/:0.4.14/:${VERSION}/g" "${BUNDLE_DIR}/.env.example"
+# Rewrite the release version only where the app image tags and APP_VERSION are set.
+# Other dotted numbers in these files (such as 127.0.0.1) must stay untouched.
+sed -i -E "s#(adult-hub-(sync|resolver):|APP_VERSION[:=]-?)[0-9]+\.[0-9]+\.[0-9]+#\1${VERSION}#g" "${BUNDLE_DIR}/docker-compose.yml" "${BUNDLE_DIR}/.env.example"
 
 # Set standard permissions: 0755 dirs, 0644 files
 find "${BUNDLE_DIR}" -type d -exec chmod 0755 {} +

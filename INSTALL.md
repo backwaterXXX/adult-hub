@@ -76,7 +76,7 @@ The standalone release bundle is the fastest and cleanest installation method fo
 
 ### Overview and Bundle Contents
 
-The downloadable archive (`adult-hub-standalone-v0.4.14.tar.gz` or `.zip`) contains everything needed to operate the stack:
+The downloadable archive (`adult-hub-standalone-v0.4.15.tar.gz` or `.zip`) contains everything needed to operate the stack:
 
 ```
 adult-hub/
@@ -153,9 +153,9 @@ By default, services bind to `127.0.0.1` (loopback) for security. To enable stre
    RESOLVER_BIND_IP=192.168.1.100
    JELLYFIN_BIND_IP=192.168.1.100
    ```
-2. Set `STANDALONE_STREAM_PUBLIC_URL_TELEGRAM` to your resolver endpoint reachable by client devices:
+2. Set `STREAM_PUBLIC_URL_TELEGRAM` to your resolver endpoint reachable by client devices. The legacy name `STANDALONE_STREAM_PUBLIC_URL_TELEGRAM` is still accepted as a fallback:
    ```env
-   STANDALONE_STREAM_PUBLIC_URL_TELEGRAM=http://192.168.1.100:8090
+   STREAM_PUBLIC_URL_TELEGRAM=http://192.168.1.100:8090
    ```
    Inside the Docker bridge network, Jellyfin resolves stream links through Compose internal DNS (`http://resolver:8090`), while client-facing players use the configured LAN URL.
 
@@ -614,8 +614,7 @@ To enable:
 1. In Jellyfin, go to **Dashboard** -> **Administration** -> **API Keys**.
 2. Click `+` to generate a new key (name it `Adult Hub`).
 3. Add the key to `.env`:
-   - Standalone: `STANDALONE_JELLYFIN_API_KEY=your_key_here`
-   - Production: `JELLYFIN_API_KEY=your_key_here`
+   - Standalone and production: `JELLYFIN_API_KEY=your_key_here`. The legacy name `STANDALONE_JELLYFIN_API_KEY` is still accepted as a fallback in standalone mode.
 4. Restart services or run `make update` / `make deploy`.
 
 ---

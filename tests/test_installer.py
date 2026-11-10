@@ -199,14 +199,18 @@ class TestStandaloneInstaller(unittest.TestCase):
         self.assertIn("POSTGRES_USER=adulthub", env_content)
         self.assertIn("RESOLVER_BIND_IP=127.0.0.1", env_content)
         self.assertIn("JELLYFIN_BIND_IP=127.0.0.1", env_content)
-        self.assertIn("STANDALONE_JELLYFIN_URL=http://jellyfin:8096", env_content)
-        self.assertIn("STANDALONE_ADMIN_PUBLIC=false", env_content)
+        self.assertIn("DATABASE_URL=postgresql://adulthub:", env_content)
+        self.assertNotIn("STANDALONE_DATABASE_URL=", env_content)
+        self.assertIn("JELLYFIN_URL=http://jellyfin:8096", env_content)
+        self.assertNotIn("STANDALONE_JELLYFIN_URL=", env_content)
+        self.assertIn("ADMIN_PUBLIC=false", env_content)
+        self.assertNotIn("STANDALONE_ADMIN_PUBLIC=", env_content)
 
         # Verify public URL matches the selected resolver port
         port_match = [line.split("=", 1)[1] for line in env_content.splitlines() if line.startswith("RESOLVER_PORT=")]
         self.assertTrue(port_match)
         sel_port = port_match[0]
-        self.assertIn(f"STANDALONE_RESOLVER_PUBLIC_URL=http://127.0.0.1:{sel_port}", env_content)
+        self.assertIn(f"RESOLVER_PUBLIC_URL=http://127.0.0.1:{sel_port}", env_content)
 
         # Check runtime directories
         self.assertTrue((self.isolated_root / "standalone" / "data").is_dir())
@@ -254,7 +258,7 @@ class TestStandaloneInstaller(unittest.TestCase):
         env_content = (self.isolated_root / ".env").read_text()
         self.assertIn(f"RESOLVER_BIND_IP={lan_ip}", env_content)
         self.assertIn(f"JELLYFIN_BIND_IP={lan_ip}", env_content)
-        self.assertIn(f"STANDALONE_RESOLVER_PUBLIC_URL={playback_url}", env_content)
+        self.assertIn(f"RESOLVER_PUBLIC_URL={playback_url}", env_content)
         # Ensure 0.0.0.0 is not used
         self.assertNotIn("0.0.0.0", env_content)
 
@@ -661,7 +665,7 @@ class TestStandaloneInstaller(unittest.TestCase):
 
         env_path = self.isolated_root / ".env"
         env_content = env_path.read_text()
-        env_content = env_content.replace("STANDALONE_JELLYFIN_API_KEY=", "STANDALONE_JELLYFIN_API_KEY=test-jellyfin-key-123\n")
+        env_content = env_content.replace("JELLYFIN_API_KEY=", "JELLYFIN_API_KEY=test-jellyfin-key-123\n")
         env_path.write_text(env_content)
 
         res_status = self.run_installer([
@@ -748,6 +752,60 @@ class TestStandaloneInstaller(unittest.TestCase):
         self.assertEqual(res.returncode, 0, f"Setup failed to resume:\n{res.stderr}")
         env_after = env_path.read_text()
         self.assertIn("POSTGRES_PASSWORD=preexisting-secret-pw", env_after)
+
+    def test_legacy_standalone_env_names_survive_rerun(self):
+        """An existing .env that uses only STANDALONE_* names keeps those values when setup runs again."""
+        mock_docker = make_mock_docker(self.isolated_root)
+        env_path = self.isolated_root / ".env"
+        env_path.write_text(
+            "ADULT_HUB_STANDALONE=true\n"
+            "POSTGRES_DB=adulthub\n"
+            "POSTGRES_USER=adulthub\n"
+            "POSTGRES_PASSWORD=legacy-pw-456\n"
+            "STANDALONE_JELLYFIN_URL=http://legacy-jellyfin:8096\n"
+            "STANDALONE_ADMIN_PUBLIC=true\n"
+            "RESOLVER_BIND_IP=127.0.0.1\n"
+            "RESOLVER_PORT=8090\n"
+        )
+        env_path.chmod(0o600)
+
+        res = self.run_installer([
+            "--non-interactive",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res.returncode, 0, f"Setup failed on legacy .env:\n{res.stderr}")
+        env_after = env_path.read_text()
+        self.assertIn("STANDALONE_JELLYFIN_URL=http://legacy-jellyfin:8096", env_after)
+        self.assertIn("STANDALONE_ADMIN_PUBLIC=true", env_after)
+        self.assertIn("POSTGRES_PASSWORD=legacy-pw-456", env_after)
+
+    def test_legacy_standalone_resolver_public_url_migrates_on_rerun(self):
+        """A legacy .env with only STANDALONE_RESOLVER_PUBLIC_URL gains RESOLVER_PUBLIC_URL with the same value."""
+        mock_docker = make_mock_docker(self.isolated_root)
+        env_path = self.isolated_root / ".env"
+        env_path.write_text(
+            "ADULT_HUB_STANDALONE=true\n"
+            "POSTGRES_DB=adulthub\n"
+            "POSTGRES_USER=adulthub\n"
+            "POSTGRES_PASSWORD=legacy-pw-789\n"
+            "STANDALONE_RESOLVER_PUBLIC_URL=http://192.168.1.50:8090\n"
+            "RESOLVER_BIND_IP=192.168.1.50\n"
+            "RESOLVER_PORT=8090\n"
+        )
+        env_path.chmod(0o600)
+
+        res = self.run_installer([
+            "--non-interactive",
+            "--docker-bin", mock_docker,
+            "--root-dir", str(self.isolated_root),
+        ])
+        self.assertEqual(res.returncode, 0, f"Setup failed on legacy .env:\n{res.stderr}")
+        env_lines = env_path.read_text().splitlines()
+        resolver_lines = [line for line in env_lines if line.startswith("RESOLVER_PUBLIC_URL=")]
+        self.assertEqual(resolver_lines, ["RESOLVER_PUBLIC_URL=http://192.168.1.50:8090"])
+        self.assertIn("STANDALONE_RESOLVER_PUBLIC_URL=http://192.168.1.50:8090", env_lines)
+        self.assertEqual(stat.S_IMODE(env_path.stat().st_mode), 0o600)
 
     def test_setup_preserves_preexisting_media_backups_and_data(self):
         """Existing media files, backups, and data are strictly preserved during installer run."""

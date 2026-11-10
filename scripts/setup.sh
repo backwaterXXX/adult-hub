@@ -194,15 +194,18 @@ print_summary() {
     echo "Jellyfin Port:      ${JELLYFIN_PORT}"
     echo ""
     echo "Service Endpoints:"
-    echo "  - Admin UI:       ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/"
+    echo "  - Admin UI:       ${RESOLVER_PUBLIC_URL}/admin/"
     echo "  - Jellyfin UI:    http://${JELLYFIN_BIND_IP}:${JELLYFIN_PORT}/"
     echo ""
     echo "Status:"
     echo "  - Core Services:  ${SERVICES_STATUS}"
     echo "  - Telegram Auth:  ${TG_AUTH_STATE}"
-    local jf_api_key="${STANDALONE_JELLYFIN_API_KEY:-${JELLYFIN_API_KEY:-}}"
+    local jf_api_key="${JELLYFIN_API_KEY:-${STANDALONE_JELLYFIN_API_KEY:-}}"
     if [ -z "${jf_api_key}" ] && [ -f .env ]; then
-        jf_api_key="$(grep -E '^[[:space:]]*(STANDALONE_)?JELLYFIN_API_KEY=' .env | head -n1 | cut -d= -f2- | tr -d '[:space:]"' || true)"
+        jf_api_key="$(grep -E '^[[:space:]]*JELLYFIN_API_KEY=' .env | head -n1 | cut -d= -f2- | tr -d '[:space:]"' || true)"
+    fi
+    if [ -z "${jf_api_key}" ] && [ -f .env ]; then
+        jf_api_key="$(grep -E '^[[:space:]]*STANDALONE_JELLYFIN_API_KEY=' .env | head -n1 | cut -d= -f2- | tr -d '[:space:]"' || true)"
     fi
     if [ -n "${jf_api_key}" ]; then
         echo "  - Jellyfin API:   ACTIVE"
@@ -212,14 +215,14 @@ print_summary() {
     echo ""
     echo "Next Steps:"
     if [[ "${TG_AUTH_STATE}" == *"AUTHORIZED"* ]] && [[ "${TG_AUTH_STATE}" != *"NOT_AUTHORIZED"* ]] && [[ "${TG_AUTH_STATE}" != *"FAILED"* ]]; then
-        echo "  1. Open Admin UI at ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/#sources to add your first channel."
+        echo "  1. Open Admin UI at ${RESOLVER_PUBLIC_URL}/admin/#sources to add your first channel."
         echo "  2. Access Jellyfin UI at http://${JELLYFIN_BIND_IP}:${JELLYFIN_PORT}/ for media playback."
     else
         echo "  1. If Telegram credentials are not yet configured, set TELEGRAM_API_ID and"
         echo "     TELEGRAM_API_HASH in .env."
         echo "  2. Complete Telegram authentication by running 'make setup' interactively"
         echo "     (or place an authenticated session in ${STANDALONE_DATA_DIR}/telegram.session)."
-        echo "  3. Open Admin UI at ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/#sources to add your first channel."
+        echo "  3. Open Admin UI at ${RESOLVER_PUBLIC_URL}/admin/#sources to add your first channel."
         echo "  4. Access Jellyfin UI at http://${JELLYFIN_BIND_IP}:${JELLYFIN_PORT}/ for media playback."
     fi
     echo "================================================================================"
@@ -236,7 +239,11 @@ if [ "${STATUS_ONLY}" -eq 1 ]; then
     RESOLVER_PORT="$(grep -E '^[[:space:]]*RESOLVER_PORT=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "8090")"
     JELLYFIN_BIND_IP="$(grep -E '^[[:space:]]*JELLYFIN_BIND_IP=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "127.0.0.1")"
     JELLYFIN_PORT="$(grep -E '^[[:space:]]*JELLYFIN_PORT=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "8096")"
-    STANDALONE_RESOLVER_PUBLIC_URL="$(grep -E '^[[:space:]]*STANDALONE_RESOLVER_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "http://${RESOLVER_BIND_IP}:${RESOLVER_PORT}")"
+    RESOLVER_PUBLIC_URL="$(grep -E '^[[:space:]]*RESOLVER_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '[:space:]"' || true)"
+    if [ -z "${RESOLVER_PUBLIC_URL}" ]; then
+        # Legacy name read second so installs written before RESOLVER_PUBLIC_URL keep their URL.
+        RESOLVER_PUBLIC_URL="$(grep -E '^[[:space:]]*STANDALONE_RESOLVER_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "http://${RESOLVER_BIND_IP}:${RESOLVER_PORT}")"
+    fi
     STANDALONE_DATA_DIR="./standalone/data"
     STANDALONE_CONFIG_PATH="./standalone/config.yaml"
 
@@ -371,7 +378,16 @@ if [ -f .env ] && grep -Eq '^[[:space:]]*ADULT_HUB_STANDALONE=true' .env; then
     RESOLVER_PORT="$(grep -E '^[[:space:]]*RESOLVER_PORT=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
     JELLYFIN_BIND_IP="$(grep -E '^[[:space:]]*JELLYFIN_BIND_IP=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
     JELLYFIN_PORT="$(grep -E '^[[:space:]]*JELLYFIN_PORT=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
-    STANDALONE_RESOLVER_PUBLIC_URL="$(grep -E '^[[:space:]]*STANDALONE_RESOLVER_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
+    RESOLVER_PUBLIC_URL="$(grep -E '^[[:space:]]*RESOLVER_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
+    if [ -z "${RESOLVER_PUBLIC_URL}" ]; then
+        # Legacy name only: append the same value under RESOLVER_PUBLIC_URL (the name compose
+        # passes to sync). The legacy line is kept. Nothing else in .env is touched.
+        RESOLVER_PUBLIC_URL="$(grep -E '^[[:space:]]*STANDALONE_RESOLVER_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
+        if [ -n "${RESOLVER_PUBLIC_URL}" ]; then
+            printf '\nRESOLVER_PUBLIC_URL=%s\n' "${RESOLVER_PUBLIC_URL}" >> .env
+            echo "[INFO] Added RESOLVER_PUBLIC_URL to .env from legacy STANDALONE_RESOLVER_PUBLIC_URL."
+        fi
+    fi
 fi
 
 if [ "${PRESERVING_EXISTING_ENV}" -eq 0 ]; then
@@ -502,7 +518,7 @@ if [ "${PRESERVING_EXISTING_ENV}" -eq 0 ]; then
 
     # Client-facing playback URL
     if [ "${RESOLVER_BIND_IP}" = "127.0.0.1" ]; then
-        STANDALONE_RESOLVER_PUBLIC_URL="http://127.0.0.1:${RESOLVER_PORT}"
+        RESOLVER_PUBLIC_URL="http://127.0.0.1:${RESOLVER_PORT}"
     else
         DEFAULT_PUBLIC_URL="http://${RESOLVER_BIND_IP}:${RESOLVER_PORT}"
         if [ -n "${PUBLIC_URL_OVERRIDE}" ]; then
@@ -510,15 +526,15 @@ if [ "${PRESERVING_EXISTING_ENV}" -eq 0 ]; then
                 echo "[ERROR] Invalid --public-url '${PUBLIC_URL_OVERRIDE}': ${err_msg}" >&2
                 exit 1
             fi
-            STANDALONE_RESOLVER_PUBLIC_URL="${PUBLIC_URL_OVERRIDE}"
+            RESOLVER_PUBLIC_URL="${PUBLIC_URL_OVERRIDE}"
         elif [ "${NON_INTERACTIVE}" -eq 1 ] || [ ! -t 0 ]; then
-            STANDALONE_RESOLVER_PUBLIC_URL="${DEFAULT_PUBLIC_URL}"
+            RESOLVER_PUBLIC_URL="${DEFAULT_PUBLIC_URL}"
         else
             while true; do
                 read -rp "Enter client-facing resolver/playback URL [${DEFAULT_PUBLIC_URL}]: " user_url
                 url_candidate="${user_url:-${DEFAULT_PUBLIC_URL}}"
                 if err_msg=$(validate_lan_url "${url_candidate}" 2>&1); then
-                    STANDALONE_RESOLVER_PUBLIC_URL="${url_candidate}"
+                    RESOLVER_PUBLIC_URL="${url_candidate}"
                     break
                 else
                     echo "[ERROR] ${err_msg}. Please enter a reachable LAN URL." >&2
@@ -533,7 +549,7 @@ RESOLVER_BIND_IP="${RESOLVER_BIND_IP:-127.0.0.1}"
 RESOLVER_PORT="${RESOLVER_PORT:-8090}"
 JELLYFIN_BIND_IP="${JELLYFIN_BIND_IP:-127.0.0.1}"
 JELLYFIN_PORT="${JELLYFIN_PORT:-8096}"
-STANDALONE_RESOLVER_PUBLIC_URL="${STANDALONE_RESOLVER_PUBLIC_URL:-http://${RESOLVER_BIND_IP}:${RESOLVER_PORT}}"
+RESOLVER_PUBLIC_URL="${RESOLVER_PUBLIC_URL:-http://${RESOLVER_BIND_IP}:${RESOLVER_PORT}}"
 
 # -----------------------------------------------------------------------------
 # 4. Create isolated standalone runtime directories
@@ -574,7 +590,7 @@ ADULT_HUB_STANDALONE=true
 POSTGRES_DB=adulthub
 POSTGRES_USER=adulthub
 POSTGRES_PASSWORD=${PG_PASSWORD}
-STANDALONE_DATABASE_URL=postgresql://adulthub:${PG_PASSWORD}@database:5432/adulthub
+DATABASE_URL=postgresql://adulthub:${PG_PASSWORD}@database:5432/adulthub
 
 # Isolated standalone storage directories
 STANDALONE_CONFIG_PATH=${STANDALONE_CONFIG_PATH}
@@ -589,10 +605,10 @@ JELLYFIN_BIND_IP=${JELLYFIN_BIND_IP}
 JELLYFIN_PORT=${JELLYFIN_PORT}
 
 # Public URLs and access control
-STANDALONE_RESOLVER_PUBLIC_URL=${STANDALONE_RESOLVER_PUBLIC_URL}
-STANDALONE_JELLYFIN_URL=http://jellyfin:8096
-STANDALONE_JELLYFIN_API_KEY=
-STANDALONE_ADMIN_PUBLIC=false
+RESOLVER_PUBLIC_URL=${RESOLVER_PUBLIC_URL}
+JELLYFIN_URL=http://jellyfin:8096
+JELLYFIN_API_KEY=
+ADMIN_PUBLIC=false
 ADMIN_WRITE_TOKEN=${ADMIN_TOKEN}
 
 # Telegram credentials (configure at setup or via Stage 3)

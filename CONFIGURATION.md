@@ -28,7 +28,7 @@ Adult Hub reads configuration from multiple layers, prioritizing operator runtim
 1. **Dynamic Sources Win**: When a Telegram channel is added, edited, or removed via the Admin panel, the change is written to `/data/admin-source-overrides.json`. This override always takes precedence over any channel in `config.yaml`.
 2. **Startup Safety**: Container startup **never overwrites** Admin UI values.
 3. **Schedule Persistence**: System schedules (`database-backup`, `library-sync`, `artwork-generation`, `scene-fingerprints`) are seeded into the `system_schedules` database table on initial boot using `ON CONFLICT DO NOTHING`. Once initialized, schedules edited in the Admin UI (`/admin/schedules`) persist across container restarts and are not reset by environment variables.
-4. **Database Connection Precedence**: `DATABASE_URL` is the canonical connection string for PostgreSQL 17. If unset, it falls back to `STANDALONE_DATABASE_URL`, and in standalone mode defaults to `postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}`. Inside standalone Docker networks, the database container hostname is `database` (aliased as `postgres` for backward compatibility).
+4. **Database Connection Precedence**: `DATABASE_URL` is the canonical connection string for PostgreSQL 17. If unset or empty, it falls back to the legacy `STANDALONE_DATABASE_URL`, and in standalone mode defaults to `postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}`. Inside standalone Docker networks, the database container hostname is `database` (aliased as `postgres` for backward compatibility). The same rule applies to the other legacy `STANDALONE_*` names in section 4.3: the canonical name wins whenever it is set, and the legacy name is used only when it is unset or empty.
 5. **Optional `config.yaml`**: `config.yaml` is completely optional. If absent, Adult Hub boots with default sync schedules and sources loaded directly from the Admin overlay. An unset or default container path (`/config/config.yaml`) is tolerated on fresh installs; an explicitly configured missing custom path will fail fast with an actionable error.
 6. **Environment Scoping**: Secrets (`DATABASE_URL`, `ADMIN_WRITE_TOKEN`, `TELEGRAM_API_HASH`, etc.) are scoped to the specific container that requires them.
 
@@ -256,8 +256,12 @@ Older environment variables are automatically mapped to their canonical equivale
 | `ADMIN_DUPLICATE_TOKEN` | `ADMIN_WRITE_TOKEN` | Deprecated alias, accepted as fallback |
 | `STASH_API_KEY` | `STASHDB_API_KEY` | Compatibility alias, accepted as fallback |
 | `THEPORNDB_API_KEY` | `THEPORNDB_API_TOKEN` | Compatibility alias, accepted as fallback |
-| `STANDALONE_DATABASE_URL`| `DATABASE_URL` | Compatibility alias, accepted as fallback |
-| `STANDALONE_ADMIN_PUBLIC`| `ADMIN_PUBLIC` | Compatibility alias, accepted as fallback |
+| `STANDALONE_DATABASE_URL`| `DATABASE_URL` | Legacy standalone name, accepted as fallback |
+| `STANDALONE_ADMIN_PUBLIC`| `ADMIN_PUBLIC` | Legacy standalone name, accepted as fallback |
+| `STANDALONE_JELLYFIN_URL` | `JELLYFIN_URL` | Legacy standalone name, accepted as fallback |
+| `STANDALONE_JELLYFIN_API_KEY` | `JELLYFIN_API_KEY` | Legacy standalone name, accepted as fallback |
+| `STANDALONE_STREAM_PUBLIC_URL_TELEGRAM` | `STREAM_PUBLIC_URL_TELEGRAM` | Legacy standalone name, accepted as fallback |
+| `STANDALONE_STREAM_RESOLVER_URL` | `RESOLVER_PUBLIC_URL` | Legacy standalone name, accepted as fallback. `RESOLVER_PUBLIC_URL` takes precedence when both are set |
 | `RESOLVER_TRUSTED_PROXY_IPS`| `FORWARDED_ALLOW_IPS`| Compatibility alias, accepted as fallback |
 | `MEDIA_PATH` | `MEDIA_DIR` | Directory path alias, accepted as fallback |
 

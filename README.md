@@ -86,7 +86,7 @@ docker compose up -d
 
 `telegram-auth` prompts for your phone number, code, and optional 2FA password, and writes an authorized session token to `./data/telegram.session`. Startup automatically applies database migrations and brings up PostgreSQL, Jellyfin, Resolver, and Sync services (with automated backups managed directly through the sync worker).
 
-To access the stack from other devices on your local network (LAN), set `RESOLVER_BIND_IP` and `JELLYFIN_BIND_IP` to your host's LAN IP, and set `STANDALONE_STREAM_PUBLIC_URL_TELEGRAM=http://<YOUR_LAN_IP>:8090` in `.env`.
+To access the stack from other devices on your local network (LAN), set `RESOLVER_BIND_IP` and `JELLYFIN_BIND_IP` to your host's LAN IP, and set `STREAM_PUBLIC_URL_TELEGRAM=http://<YOUR_LAN_IP>:8090` in `.env`.
 
 ### Alternative: Automated Source Installer
 

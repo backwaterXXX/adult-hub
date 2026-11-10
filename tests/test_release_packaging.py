@@ -39,7 +39,7 @@ class TestReleasePackaging(unittest.TestCase):
     def test_package_script_creates_valid_archives(self):
         """Packaging script creates .tar.gz containing the expected release files."""
         res = subprocess.run(
-            [str(PACKAGE_SCRIPT), "0.4.14"],
+            [str(PACKAGE_SCRIPT), "0.4.15"],
             capture_output=True,
             text=True,
             cwd=str(ROOT),
@@ -48,7 +48,7 @@ class TestReleasePackaging(unittest.TestCase):
         self.assertEqual(res.returncode, 0, f"Packaging failed:\n{res.stderr}")
         self.assertIn("Packaged standalone release bundles", res.stdout)
 
-        tar_path = ROOT / "dist" / "adult-hub-standalone-v0.4.14.tar.gz"
+        tar_path = ROOT / "dist" / "adult-hub-standalone-v0.4.15.tar.gz"
         self.assertTrue(tar_path.exists(), f"Archive {tar_path} was not created")
 
         # Inspect archive contents
@@ -95,8 +95,8 @@ class TestReleasePackaging(unittest.TestCase):
     def test_distributable_compose_validation_with_fake_credentials(self):
         """Extracted bundle validates cleanly with real 'docker compose config' (no container starts)."""
         # Extract release tarball into isolated root
-        subprocess.run([str(PACKAGE_SCRIPT), "0.4.14"], check=True, cwd=str(ROOT))
-        tar_path = ROOT / "dist" / "adult-hub-standalone-v0.4.14.tar.gz"
+        subprocess.run([str(PACKAGE_SCRIPT), "0.4.15"], check=True, cwd=str(ROOT))
+        tar_path = ROOT / "dist" / "adult-hub-standalone-v0.4.15.tar.gz"
 
         with tarfile.open(tar_path, "r:gz") as tar:
             if hasattr(tarfile, "data_filter"):

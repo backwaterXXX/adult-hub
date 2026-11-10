@@ -203,10 +203,16 @@ class TestStandaloneComposeConfigValidation(unittest.TestCase):
         self.assertTrue(db_env.get("POSTGRES_PASSWORD"))
 
         sync_env = services["sync"].get("environment", {})
-        self.assertEqual(sync_env.get("RESOLVER_PUBLIC_URL"), "http://resolver:8090")
+        # sync must receive the URL the installer wrote to .env, not the in-network default
+        written_url = next(
+            line.split("=", 1)[1]
+            for line in env_path.read_text().splitlines()
+            if line.startswith("RESOLVER_PUBLIC_URL=")
+        )
+        self.assertEqual(sync_env.get("RESOLVER_PUBLIC_URL"), written_url)
 
     def test_absent_jellyfin_api_key_compose_config_valid(self):
-        """When STANDALONE_JELLYFIN_API_KEY is unset or empty, Compose config remains valid."""
+        """When JELLYFIN_API_KEY is unset or empty, Compose config remains valid."""
         setup_res = subprocess.run(
             [str(SETUP_SCRIPT), "--non-interactive", "--skip-docker-start", "--root-dir", str(self.isolated_root)],
             capture_output=True,
@@ -218,8 +224,9 @@ class TestStandaloneComposeConfigValidation(unittest.TestCase):
 
         env_path = self.isolated_root / ".env"
         env_text = env_path.read_text()
-        # Verify STANDALONE_JELLYFIN_API_KEY is empty
-        self.assertIn("STANDALONE_JELLYFIN_API_KEY=\n", env_text)
+        # Verify the canonical JELLYFIN_API_KEY is empty and the legacy name is not written
+        self.assertIn("JELLYFIN_API_KEY=\n", env_text)
+        self.assertNotIn("STANDALONE_JELLYFIN_API_KEY=", env_text)
 
         config_res = subprocess.run(
             [

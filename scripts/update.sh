@@ -276,14 +276,18 @@ fi
 
 RESOLVER_BIND_IP="$(grep -E '^[[:space:]]*RESOLVER_BIND_IP=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "127.0.0.1")"
 RESOLVER_PORT="$(grep -E '^[[:space:]]*RESOLVER_PORT=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "8090")"
-STANDALONE_RESOLVER_PUBLIC_URL="$(grep -E '^[[:space:]]*STANDALONE_RESOLVER_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "http://${RESOLVER_BIND_IP}:${RESOLVER_PORT}")"
+RESOLVER_PUBLIC_URL="$(grep -E '^[[:space:]]*RESOLVER_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '[:space:]"' || true)"
+if [ -z "${RESOLVER_PUBLIC_URL}" ]; then
+    # Legacy name read second so installs written before RESOLVER_PUBLIC_URL keep their URL.
+    RESOLVER_PUBLIC_URL="$(grep -E '^[[:space:]]*STANDALONE_RESOLVER_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "http://${RESOLVER_BIND_IP}:${RESOLVER_PORT}")"
+fi
 
 echo ""
 echo "================================================================================"
 echo "             Adult Hub Standalone Update Succeeded                              "
 echo "================================================================================"
 echo "Version:            ${APP_VERSION}"
-echo "Admin UI:           ${STANDALONE_RESOLVER_PUBLIC_URL}/admin/"
+echo "Admin UI:           ${RESOLVER_PUBLIC_URL}/admin/"
 if [ "${is_authed}" -eq 1 ]; then
     echo "Services:           resolver, sync, database, jellyfin running"
 else
