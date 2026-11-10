@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from resolver.providers.telegram_account_store import (
     _MEMORY_ACCOUNTS,
@@ -39,11 +39,22 @@ class SqliteConnWrapper:
         self._conn.rollback()
 
 
+async def _all_accounts_authorized(account_ids):
+    """Fixture session files are not real Telegram sessions; treat every listed account as authorized."""
+    return list(account_ids)
+
+
 class TestTelegramMultiAccountSync(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         set_memory_only_mode(True)
         _MEMORY_ACCOUNTS.clear()
         _MEMORY_CHANNEL_ACCESS.clear()
+        # Fixture sessions are not real Telegram sessions; the authorization filter is tested separately.
+        auth_patch = patch(
+            "resolver.providers.telegram_router.authorized_account_ids", _all_accounts_authorized
+        )
+        auth_patch.start()
+        self.addCleanup(auth_patch.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.sqlite = sqlite3.connect(":memory:")
         self.sqlite.execute("""

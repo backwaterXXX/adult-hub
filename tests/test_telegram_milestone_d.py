@@ -16,11 +16,22 @@ from resolver.providers.telegram_router import TelegramAccountRouter
 from resolver.telegram_stream import ParallelTelegramStreamManager
 
 
+async def _all_accounts_authorized(account_ids):
+    """Fixture session files are not real Telegram sessions; treat every listed account as authorized."""
+    return list(account_ids)
+
+
 class TestMilestoneDStreaming(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         _MEMORY_ACCOUNTS.clear()
         _MEMORY_CHANNEL_ACCESS.clear()
         set_memory_only_mode(True)
+        # Fixture sessions are not real Telegram sessions; the authorization filter is tested separately.
+        auth_patch = patch(
+            "resolver.providers.telegram_router.authorized_account_ids", _all_accounts_authorized
+        )
+        auth_patch.start()
+        self.addCleanup(auth_patch.stop)
 
     def tearDown(self):
         set_memory_only_mode(False)

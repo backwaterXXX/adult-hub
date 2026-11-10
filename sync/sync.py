@@ -225,6 +225,19 @@ def is_cleanup_allowed(video_id: str, provider: Optional[str] = None,
 
 def _check_resolver_auth(resolver_url: str) -> Optional[bool]:
     base_url = str(resolver_url).rstrip("/")
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"{base_url}/admin/internal/telegram/auth/any",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=30.0) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                if isinstance(data, dict) and isinstance(data.get("authorized"), bool):
+                    return data["authorized"]
+    except Exception:
+        pass
     status_urls = [
         f"{base_url}/admin/internal/telegram/auth/status",
         f"{base_url}/admin/api/v2/telegram/auth/status",

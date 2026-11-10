@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from resolver.providers.telegram_account import DEFAULT_ACCOUNT_ID, TelegramAccountContext
+from resolver.providers.telegram_authorization import invalidate as invalidate_account_authorization
 from resolver.providers.telegram_session import (
     _cleanup_pending_session,
     _promote_pending_session,
@@ -426,6 +427,7 @@ class TelegramLoginManager:
                 await self._safe_disconnect(client)
                 _promote_pending_session(pending_path, target_path)
                 self._cached_auth[ctx.account_id] = True
+                invalidate_account_authorization(ctx.account_id)
                 self._clear_account_limits(ctx.account_id)
                 return {
                     "ok": True,
@@ -985,6 +987,7 @@ class TelegramLoginManager:
                 }
 
             self._cached_auth.pop(ctx.account_id, None)
+            invalidate_account_authorization(ctx.account_id)
             logger.info("Moved unauthorized session for account %s to backup %s", ctx.account_id, backup_name)
 
             await self._reset_clients_after_session_move(ctx.account_id)
@@ -1058,10 +1061,12 @@ class TelegramLoginManager:
                     except OSError:
                         pass
                 self._cached_auth.pop(challenge.account_id, None)
+                invalidate_account_authorization(challenge.account_id)
                 raise RuntimeError(f"Failed to persist authorized account to database: {store_err}") from store_err
 
             challenge.state = "authorized"
             self._cached_auth[challenge.account_id] = True
+            invalidate_account_authorization(challenge.account_id)
             self._clear_account_limits(challenge.account_id)
 
             async with self._manager_lock:

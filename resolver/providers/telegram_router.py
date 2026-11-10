@@ -18,6 +18,7 @@ from resolver.providers.telegram_account_store import (
     list_channel_access,
     set_channel_access,
 )
+from resolver.providers.telegram_authorization import authorized_account_ids
 from resolver.providers.telegram_config import _entity_ref
 
 logger = logging.getLogger(__name__)
@@ -438,6 +439,14 @@ class TelegramAccountRouter:
                 f"No eligible Telegram accounts available with access to channel {clean_channel}."
             )
 
+        # Only accounts whose session is logged in may serve requests (cached per account).
+        candidates = await authorized_account_ids(candidates)
+        if not candidates:
+            raise RuntimeError(
+                f"No eligible Telegram accounts available with access to channel {clean_channel}: "
+                "no authorized Telegram account is available."
+            )
+
         # Prioritize accounts with verified 'accessible' status
         verified = [
             a_id for a_id in candidates
@@ -485,6 +494,11 @@ class TelegramAccountRouter:
                     f"All enabled Telegram accounts reached concurrency limit: {', '.join(at_capacity)}"
                 )
             raise RuntimeError("No enabled Telegram accounts available.")
+        candidates = await authorized_account_ids(candidates)
+        if not candidates:
+            raise RuntimeError(
+                "No eligible Telegram accounts available: no authorized Telegram account is available."
+            )
         return min(candidates, key=lambda a_id: self._active_leases.get(a_id, 0))
 
     async def acquire_client_lease(

@@ -98,6 +98,19 @@ def _wake_sync_worker_if_possible(admin: Any) -> bool:
     return False
 
 
+async def _handle_internal_any_authorized(admin: Any) -> Any:
+    """Report whether any enabled account is logged in. Used by the sync gate."""
+    from resolver.providers.telegram_account_store import list_accounts
+    from resolver.providers.telegram_authorization import authorized_account_ids
+
+    try:
+        accounts = await authorized_account_ids([acc.account_id for acc in list_accounts()])
+    except Exception as exc:
+        logger.warning("Telegram any-account authorization check failed (%s)", type(exc).__name__)
+        return _json_resp(admin, {"ok": False, "error": "Telegram authorization check failed."}, status_code=503)
+    return _json_resp(admin, {"ok": True, "authorized": bool(accounts), "accounts": accounts})
+
+
 async def _handle_status(admin: Any, manager: Any, request: Request, account_id: str) -> Any:
     if admin._admin_blocked(request):
         client_host = getattr(getattr(request, "client", None), "host", "") or ""
@@ -333,6 +346,7 @@ async def _handle_delete_account(admin: Any, request: Request, account_id: str) 
         )
 
     from resolver.providers.telegram_account_store import delete_account
+    from resolver.providers.telegram_authorization import invalidate as invalidate_account_authorization
     from resolver.providers.telegram_router import get_telegram_router
 
     router = get_telegram_router()
@@ -344,6 +358,7 @@ async def _handle_delete_account(admin: Any, request: Request, account_id: str) 
             {"ok": False, "code": "delete_failed", "error": f"Failed to delete account '{account}': {exc}"},
             status_code=500,
         )
+    invalidate_account_authorization(account)
     if not deleted:
         return _json_resp(admin,
             {"ok": False, "code": "not_found", "error": f"Account '{account}' not found."},
@@ -444,6 +459,10 @@ def _register_auth_routes(router: APIRouter, admin: Any, manager: Any) -> None:
             return err
         check_live_param = request.query_params.get("check_live", "false").lower() in ("true", "1", "yes")
         return await manager.get_status(account, check_live=check_live_param)
+
+    @router.get("/internal/telegram/auth/any")
+    async def get_internal_any_authorized(request: Request):
+        return await _handle_internal_any_authorized(admin)
 
     @router.post("/api/v2/telegram/auth/start")
     async def start_login(request: Request):

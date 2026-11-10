@@ -3,7 +3,7 @@
 import asyncio
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from resolver.providers.telegram_account_store import (
     _MEMORY_ACCOUNTS,
@@ -15,12 +15,25 @@ from resolver.providers.telegram_account_store import (
 from resolver.providers.telegram_router import TelegramAccountRouter
 
 
+async def _all_accounts_authorized(account_ids):
+    """Fixture session files are not real Telegram sessions, so treat every listed account as authorized.
+
+    The authorization filter itself is covered by tests/test_telegram_authorization.py.
+    """
+    return list(account_ids)
+
+
 class TestTelegramAccountRouter(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         _MEMORY_ACCOUNTS.clear()
         _MEMORY_CHANNEL_ACCESS.clear()
         set_memory_only_mode(True)
         self.router = TelegramAccountRouter()
+        auth_patch = patch(
+            "resolver.providers.telegram_router.authorized_account_ids", _all_accounts_authorized
+        )
+        auth_patch.start()
+        self.addCleanup(auth_patch.stop)
 
     def tearDown(self):
         set_memory_only_mode(False)
