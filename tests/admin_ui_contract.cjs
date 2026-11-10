@@ -1,12 +1,13 @@
 const fs = require('fs');
 const assert = require('assert/strict');
+const { adminV2Source } = require('./helpers/admin_v2_scripts.cjs');
 
 const classicTemplate = 'resolver/templates/admin.html';
 const classicAssets = 'resolver/static/admin';
 const v2Template = fs.readFileSync('resolver/templates/admin_v2.html', 'utf8');
 const adminRoutes = fs.readFileSync('resolver/admin.py', 'utf8');
 const appRoutes = fs.readFileSync('resolver/app.py', 'utf8');
-const v2Script = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
+const v2Script = adminV2Source();
 
 assert.equal(fs.existsSync(classicTemplate), false, 'Classic HTML must be removed');
 assert.equal(fs.existsSync(classicAssets), false, 'Classic browser assets must be removed');

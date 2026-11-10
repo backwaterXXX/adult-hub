@@ -1,8 +1,9 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { adminV2Source } = require('./helpers/admin_v2_scripts.cjs');
 
-const source = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
+const source = adminV2Source();
 const start = source.indexOf('  function fileSize(');
 const end = source.indexOf('\n  function duration(', start);
 assert.ok(start >= 0 && end > start);

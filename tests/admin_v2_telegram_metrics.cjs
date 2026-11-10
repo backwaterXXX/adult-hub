@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { createAdminV2Helpers } = require('./helpers/admin_v2_shared_helpers.cjs');
+const { sourcesSource } = require('./helpers/admin_v2_scripts.cjs');
 
 let activeElement = null;
 class Element {
@@ -157,7 +158,7 @@ async function run() {
     },
   };
 
-  const code = fs.readFileSync(require.resolve('../resolver/static/admin-v2/sources.js'), 'utf8');
+  const code = sourcesSource();
   const location = { hash: '#sources', search: '', href: 'http://localhost/admin/v2/#sources' };
   const history = {
     replaceState() {},

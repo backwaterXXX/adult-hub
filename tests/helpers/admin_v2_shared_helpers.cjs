@@ -1,15 +1,15 @@
 'use strict';
 // Fake window.AdminV2 helper surface for the browser contract tests.
 //
-// The shared helpers are extracted from the real admin-v2.js module so the sandboxes
+// The shared helpers are extracted from the real admin-v2-core.js module so the sandboxes
 // exercise the same implementations the panel ships, instead of a second copy of them.
 const fs = require('node:fs');
 const path = require('node:path');
 
-const source = fs.readFileSync(path.join(__dirname, '..', '..', 'resolver', 'static', 'admin-v2', 'admin-v2.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '..', '..', 'resolver', 'static', 'admin-v2', 'admin-v2-core.js'), 'utf8');
 const start = source.indexOf('  // Shared Admin V2 helpers.');
-const end = source.indexOf('  window.AdminV2 = Object.freeze({');
-if (start < 0 || end <= start) throw new Error('admin-v2.js no longer exposes the shared helper block');
+const end = source.indexOf('  // Publish core bindings for the other Admin V2 scripts.');
+if (start < 0 || end <= start) throw new Error('admin-v2-core.js no longer exposes the shared helper block');
 
 function createAdminV2Helpers(document, timers = {}) {
   const schedule = timers.setTimeout || setTimeout;

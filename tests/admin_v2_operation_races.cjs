@@ -1,15 +1,18 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { adminV2Source, partEndAfter } = require('./helpers/admin_v2_scripts.cjs');
 
-const source = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
+const source = adminV2Source();
 function extract(name) {
   const marker = `  async function ${name}(`;
   const start = source.indexOf(marker);
   assert.notEqual(start, -1, `missing ${name}`);
   const end = source.indexOf('\n  async function ', start + marker.length);
   const nextSync = source.indexOf('\n  function ', start + marker.length);
-  const stop = [end, nextSync].filter(index => index >= 0).sort((a, b) => a - b)[0];
+  // Each part is its own IIFE, so a slice must also stop where the part that holds the function ends.
+  const partEnd = partEndAfter(source, start + marker.length);
+  const stop = [end, nextSync, partEnd].filter(index => index >= 0).sort((a, b) => a - b)[0];
   return source.slice(start, stop < 0 ? source.length : stop);
 }
 function deferred() {
@@ -116,7 +119,8 @@ const textOf = node => `${node.textContent || ''} ${(node.children || []).map(te
     assert.notEqual(start, -1, `missing ${name}`);
     const end = source.indexOf('\n  function ', start + marker.length);
     const asyncEnd = source.indexOf('\n  async function ', start + marker.length);
-    const stop = [end, asyncEnd].filter(index => index >= 0).sort((a, b) => a - b)[0];
+    const partEnd = partEndAfter(source, start + marker.length);
+    const stop = [end, asyncEnd, partEnd].filter(index => index >= 0).sort((a, b) => a - b)[0];
     vm.runInContext(`${source.slice(start, stop < 0 ? source.length : stop)}\nglobalThis.__target = ${name};`, context);
     return context.__target;
   };

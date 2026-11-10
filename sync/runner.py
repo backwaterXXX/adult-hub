@@ -98,14 +98,17 @@ def signal_handler(signum, frame):
         except Exception:
             logger.debug("Ignored exception in signal_handler", exc_info=True)
 
-signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGINT, signal_handler)
+def install_signal_handlers() -> None:
+    """Route SIGTERM and SIGINT to a graceful stop. Called only by the daemon entry point."""
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
 
 
-if daily_at:
-    LOGGER.info("[sync-daemon] Adult-Hub %s; scheduled daily sync at %s (retry base %ss, max %ss)...", APP_VERSION, daily_at, BASE_BACKOFF_SECONDS, MAX_BACKOFF_SECONDS)
-else:
-    LOGGER.info("[sync-daemon] Adult-Hub %s; starting periodic sync runner (every %s min, retry base %ss, max %ss)...", APP_VERSION, interval // 60, BASE_BACKOFF_SECONDS, MAX_BACKOFF_SECONDS)
+def log_startup_banner() -> None:
+    if daily_at:
+        LOGGER.info("[sync-daemon] Adult-Hub %s; scheduled daily sync at %s (retry base %ss, max %ss)...", APP_VERSION, daily_at, BASE_BACKOFF_SECONDS, MAX_BACKOFF_SECONDS)
+    else:
+        LOGGER.info("[sync-daemon] Adult-Hub %s; starting periodic sync runner (every %s min, retry base %ss, max %ss)...", APP_VERSION, interval // 60, BASE_BACKOFF_SECONDS, MAX_BACKOFF_SECONDS)
 
 TRIGGER_FILE = os.getenv("SYNC_TRIGGER_FILE", "/data/cache/sync.trigger")
 STATUS_FILE = os.getenv("SYNC_STATUS_FILE", "/data/cache/sync_status.json")
@@ -819,6 +822,8 @@ def run_loop():
 
 
 if __name__ == "__main__":
+    install_signal_handlers()
+    log_startup_banner()
     if init_db is not None:
         try:
             init_db(DB_URL).close()

@@ -348,14 +348,16 @@ class TestStartupConfiguration(RunnerHarness):
         self.assertEqual(module.SHUTDOWN_GRACE_SECONDS, 45)
 
     def test_the_startup_log_announces_the_interval(self):
-        self.load(interval_minutes=25, backoff_base=45, backoff_max=1_200)
+        module = self.load(interval_minutes=25, backoff_base=45, backoff_max=1_200)
+        module.log_startup_banner()
 
         self.assertTrue(self.logs.has("starting periodic sync runner (every 25 min", "info"))
         self.assertTrue(self.logs.has("retry base 45s, max 1200s", "info"))
         self.assertFalse(self.logs.has("scheduled daily sync", "info"))
 
     def test_the_startup_log_announces_the_daily_slot_instead(self):
-        self.load(daily_at="03:30", backoff_base=5, backoff_max=60)
+        module = self.load(daily_at="03:30", backoff_base=5, backoff_max=60)
+        module.log_startup_banner()
 
         self.assertTrue(self.logs.has("scheduled daily sync at 03:30 (retry base 5s, max 60s)", "info"))
         self.assertFalse(self.logs.has("periodic sync runner", "info"))
@@ -393,6 +395,7 @@ class TestStartupConfiguration(RunnerHarness):
 class TestShutdownSignal(RunnerHarness):
     def test_both_shutdown_signals_are_wired_to_the_handler(self):
         module = self.load()
+        module.install_signal_handlers()
 
         self.assertIs(signal.getsignal(signal.SIGTERM), module.signal_handler)
         self.assertIs(signal.getsignal(signal.SIGINT), module.signal_handler)

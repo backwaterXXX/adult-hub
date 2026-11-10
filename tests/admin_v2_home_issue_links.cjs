@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { adminV2Source, runAdminV2Scripts, sourcesSource } = require('./helpers/admin_v2_scripts.cjs');
 
 let activeDocument = null;
 class Element {
@@ -49,7 +50,7 @@ class Element {
 const textOf = node => `${node?.textContent || ''} ${(node?.children || []).map(textOf).join(' ')}`.trim();
 
 const html = fs.readFileSync('resolver/templates/admin_v2.html', 'utf8');
-const routerSource = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
+const routerSource = adminV2Source();
 
 assert.match(html, /class="view"[^>]*data-view="operational"/,
   'Sources, Tasks, and System must use the named shared operational view');
@@ -409,7 +410,7 @@ const context = {
 
 (async () => {
   vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/header-status.js', 'utf8'), context);
-  vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8'), context);
+  runAdminV2Scripts(context);
   const flush = async (ticks = 5) => {
     for (let index = 0; index < ticks; index += 1) await new Promise(resolve => setImmediate(resolve));
   };
@@ -984,7 +985,7 @@ const context = {
   assert.equal(elements.get('legacyScreenNotice').hidden, false, 'a retired report displays its one-time notice');
   assert.match(routerSource, /system.*linkcheck[\s\S]*?return retired\(\)/,
     'legacy report routes are rewritten without activating their former controllers');
-  assert.match(fs.readFileSync('resolver/static/admin-v2/sources.js', 'utf8'),
+  assert.match(sourcesSource(),
     /route === 'system' && \['sync', 'sync-activity', 'sync_activity', 'history'\]\.includes\(tab\)/,
     'the old global sync-history hashes still render the Sources history view');
   const oldAutomation = new URL(location.href); oldAutomation.hash = '#system?tab=automation';

@@ -1,7 +1,8 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const { adminV2Source } = require('./helpers/admin_v2_scripts.cjs');
 
-const script = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
+const script = adminV2Source();
 const migration = fs.readFileSync('common/migrations/m0040_performer_profile_overrides.py', 'utf8');
 
 assert.match(script, /id = 'personProfileBio'/, 'the details dialog exposes biography editing');

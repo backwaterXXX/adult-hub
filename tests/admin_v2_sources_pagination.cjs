@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { createAdminV2Helpers } = require('./helpers/admin_v2_shared_helpers.cjs');
+const { runSourcesScripts } = require('./helpers/admin_v2_scripts.cjs');
 
 let activeElement = null;
 class Element {
@@ -157,7 +158,7 @@ function descendants(root, predicate) {
     window, document, location, history, URL, URLSearchParams, AbortController,
     setTimeout, clearTimeout, Intl, Date, Map, Set, Array, Object, Number, String, Boolean, Math,
   };
-  vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/sources.js', 'utf8'), context);
+  runSourcesScripts(context);
   await new Promise(resolve => setTimeout(resolve, 0));
   const selectTab = async tab => {
     location.hash = tab === 'history' ? '#sources?tab=history' : '#sources';
@@ -362,7 +363,7 @@ function descendants(root, predicate) {
   location.hash = '#sources';
   location.search = '?source_id=telegram%3A2';
   location.href = 'http://localhost/admin/v2/?source_id=telegram%3A2#sources';
-  vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/sources.js', 'utf8'), context);
+  runSourcesScripts(context);
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(elements.sourcesQuery.value, '2');
   assert.equal(elements.sourcesRows.children.length, 1);

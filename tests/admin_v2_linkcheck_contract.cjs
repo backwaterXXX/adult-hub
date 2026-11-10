@@ -1,7 +1,8 @@
 const fs = require('node:fs');
+const { adminV2Source } = require('./helpers/admin_v2_scripts.cjs');
 const assert = require('node:assert/strict');
 const template = fs.readFileSync('resolver/templates/admin_v2.html', 'utf8');
-const router = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
+const router = adminV2Source();
 assert.doesNotMatch(template, /linkcheck(?:Refresh|Rows|Feedback|Samples)|linkcheck\.js|Link-check report/,
   'the retired link-check report and controller are absent from the admin page');
 assert.match(router, /'linkcheck'/, 'old link-check addresses remain recognized by the redirect map');

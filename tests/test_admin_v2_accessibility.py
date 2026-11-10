@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 import unittest
 
+from tests.helpers.admin_v2_scripts import admin_v2_source
+
 
 TEMPLATE = Path(__file__).parents[1] / "resolver/templates/admin_v2.html"
 STATIC_DIR = Path(__file__).parents[1] / "resolver/static/admin-v2"
@@ -306,7 +308,7 @@ class TestAdminV2TemplateAccessibility(unittest.TestCase):
             r'[^>]*aria-live="polite"[^>]*aria-atomic="true"[^>]*aria-label="[^"]+"',
         )
         self.assertNotIn('id="connectionState"', source)
-        script = (STATIC_DIR / "admin-v2.js").read_text(encoding="utf-8")
+        script = admin_v2_source()
         self.assertIn("if (!element) return;", script)
         # The aggregate control rewrites only its label span, and only when the
         # combined state actually changed, so the polite live region stays quiet.
@@ -335,7 +337,7 @@ class TestAdminV2TemplateAccessibility(unittest.TestCase):
             r'aria-label="[^"]*…\.',
             "Accessible labels must not double punctuation with an ellipsis before a period",
         )
-        script = (STATIC_DIR / "admin-v2.js").read_text(encoding="utf-8")
+        script = admin_v2_source()
         self.assertIn("function renderActiveTasksChip(payload)", script)
         self.assertIn("$('#activeTasks')", script)
         self.assertIn("renderActiveTasksChip(state.services.activeTasks);", script)

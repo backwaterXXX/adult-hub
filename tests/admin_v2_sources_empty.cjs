@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { createAdminV2Helpers } = require('./helpers/admin_v2_shared_helpers.cjs');
+const { runSourcesScripts } = require('./helpers/admin_v2_scripts.cjs');
 
 let activeElement = null;
 class Element {
@@ -135,7 +136,7 @@ function descendants(root, predicate) {
     setTimeout, clearTimeout, Intl, Date, Map, Set, Array, Object, Number, String, Boolean, Math,
   };
 
-  vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/sources.js', 'utf8'), context);
+  runSourcesScripts(context);
   await new Promise(resolve => setTimeout(resolve, 20));
 
   // 1. Verify empty state is displayed

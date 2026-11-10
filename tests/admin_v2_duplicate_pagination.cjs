@@ -1,8 +1,9 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { adminV2Source, partEndAfter } = require('./helpers/admin_v2_scripts.cjs');
 
-const source = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
+const source = adminV2Source();
 assert(source.includes('function showLibraryTab(tab, match) {'),
   'the Library tab controller must remain the single owner of catalog screens');
 assert(source.includes('else loadDuplicateCandidates({ cacheOnly: true });'),
@@ -14,7 +15,7 @@ const start = source.indexOf('  async function loadDuplicateCandidates(');
 const end = source.indexOf('  function renderDuplicateCandidates(', start);
 assert(start >= 0 && end > start, 'duplicate scan loader must remain available for pagination tests');
 const actionStart = source.indexOf('  async function previewDuplicate(');
-const actionEnd = source.indexOf('  function toggleTheme(', actionStart);
+const actionEnd = partEndAfter(source, actionStart);
 assert(actionStart >= 0 && actionEnd > actionStart, 'duplicate actions must remain available for pagination tests');
 
 const state = {

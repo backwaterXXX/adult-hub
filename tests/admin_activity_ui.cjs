@@ -1,8 +1,9 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const { adminV2Source } = require('./helpers/admin_v2_scripts.cjs');
 
 const html = fs.readFileSync('resolver/templates/admin_v2.html', 'utf8');
-const router = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
+const router = adminV2Source();
 assert.doesNotMatch(html, /systemActivityView|activityRows|activityChangeRows|activity\.js/,
   'administrative request and change history are removed from the UI');
 assert.doesNotMatch(router, /\/api\/v2\/activity|activityChange|activityRows/,

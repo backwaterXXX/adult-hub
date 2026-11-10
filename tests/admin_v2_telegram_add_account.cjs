@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { createAdminV2Helpers } = require('./helpers/admin_v2_shared_helpers.cjs');
+const { runSourcesScripts } = require('./helpers/admin_v2_scripts.cjs');
 
 function createDeferred() {
   let resolve, reject;
@@ -189,7 +190,7 @@ function descendants(root, predicate) {
     setTimeout, clearTimeout, setInterval, clearInterval, setImmediate, Intl, Date, Map, Set, Array, Object, Number, String, Boolean, Math, Symbol,
   };
 
-  vm.runInNewContext(fs.readFileSync('resolver/static/admin-v2/sources.js', 'utf8'), context);
+  runSourcesScripts(context);
   await new Promise(resolve => setImmediate(resolve));
 
   // 1. Verify clicking telegramLoginButton opens telegramAuthDialog with Add Account screen without calling prompt()

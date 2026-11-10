@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { adminV2Source } = require('./helpers/admin_v2_scripts.cjs');
 
 class Element {
   constructor(tag = 'div') {
@@ -95,9 +96,9 @@ class Element {
     }
   };
 
-  const source = fs.readFileSync('resolver/static/admin-v2/admin-v2.js', 'utf8');
+  const source = adminV2Source();
   const start = source.indexOf('  let channelFilterLoaded = false;');
-  assert.ok(start >= 0, 'loadChannelFilterOptions must exist in admin-v2.js');
+  assert.ok(start >= 0, 'loadChannelFilterOptions must exist in the Admin V2 parts');
   const end = source.indexOf('\n  function syncFiltersFromUrl(', start);
   assert.ok(end > start, 'syncFiltersFromUrl marker must follow loadChannelFilterOptions');
   const codeToRun = `
