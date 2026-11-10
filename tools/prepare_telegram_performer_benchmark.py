@@ -10,12 +10,8 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-for source_root in (ROOT / "resolver", ROOT):
-    if str(source_root) not in sys.path:
-        sys.path.insert(0, str(source_root))
 
-from resolver.providers.telegram_messages import (  # noqa: E402
+from resolver.providers.telegram_messages import (
     _filename_to_title,
     _filter_caption_for_title,
     parse_caption_title,

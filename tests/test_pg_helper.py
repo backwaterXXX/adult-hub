@@ -8,8 +8,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "tests"))
 
 from pg_helper import PgTestCase, TEST_URL
 from tests.pg_helper import PgTestCase as PackagedPgTestCase
@@ -38,8 +36,6 @@ class TestPgTestCaseSetup(unittest.TestCase):
 
 CHILD_CODE = """
 import sys
-sys.path.insert(0, {root!r})
-sys.path.insert(0, {tests!r})
 from pg_helper import _acquire_run_guard, TEST_URL
 try:
     _acquire_run_guard(TEST_URL)
@@ -55,11 +51,11 @@ class TestRunGuard(PgTestCase):
     def test_second_process_is_rejected(self):
         # This process holds the run lock via setUpClass; a child attempting
         # the same database must fail fast with the guard message.
-        code = CHILD_CODE.format(root=str(ROOT), tests=str(ROOT / "tests"))
+        code = CHILD_CODE
         # Deliberately minimal env: no runtime config from the parent, but
         # CI provides TEST_DATABASE_URL only through the environment, so
         # forward it (local runs fall back to .env) plus PATH for the binary.
-        child_env = {"PATH": os.environ.get("PATH", "")}
+        child_env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(ROOT / "tests")}
         if TEST_URL:
             child_env["TEST_DATABASE_URL"] = TEST_URL
         result = subprocess.run(

@@ -1,19 +1,15 @@
 """Database-free contracts for persisted V2 operation routes."""
 
 import json
-import sys
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
 
-import admin_v2_operations
+import resolver.admin_v2_operations as admin_v2_operations
 
 
 def request(path, payload=None, *, method="POST", raw=None):

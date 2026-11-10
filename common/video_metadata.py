@@ -8,6 +8,7 @@ import json
 from psycopg.types.json import Jsonb
 
 from common import db
+from common.json_helpers import json_object as _json_object
 
 
 EDITABLE_TEXT_FIELDS = {
@@ -125,17 +126,6 @@ def resolve_metadata(source: dict, overrides: object = None) -> dict:
         }
     effective["metadata_fields"] = fields
     return effective
-
-
-def _json_object(value) -> dict:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except (TypeError, ValueError):
-            value = {}
-    return value if isinstance(value, dict) else {}
 
 
 def load_metadata_state(conn, video_id: str) -> dict | None:

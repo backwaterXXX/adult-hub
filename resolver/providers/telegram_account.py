@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Tuple
 
-from .telegram_session import (
+from resolver.providers.telegram_session import (
     get_pending_session_file_path,
     get_sqlite_session_file_path,
     validate_api_credentials,

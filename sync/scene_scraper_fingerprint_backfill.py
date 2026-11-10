@@ -8,10 +8,7 @@ from common.telegram_transfer_budget import (
     DailyTelegramTransferBudgetUnavailable,
 )
 
-if __package__:
-    from . import scene_scrapers as _core
-else:
-    import scene_scrapers as _core
+from sync import scene_scrapers as _core
 
 
 def _telegram_oshash_batch_limit() -> int:
@@ -183,7 +180,7 @@ def _phash_size_sink(conn: Any, video_id: str) -> Callable[[int], None]:
 def _phash_match_for_video(conn: Any, video_id: Any, duration: Any, started: float, bytes_read: int,
                            http_client: Optional[Any]) -> Tuple[Any, int]:
     """Return (matched scene or None, bytes read for the pHash)."""
-    from video_fingerprints import DEFAULT_TIMEOUT_SECONDS, telegram_phash
+    from sync.video_fingerprints import DEFAULT_TIMEOUT_SECONDS, telegram_phash
     configured_budget, configured_timeout, configured_rate = _phash_settings(DEFAULT_TIMEOUT_SECONDS)
     phash = _core._cached_video_fingerprint(conn, video_id, "PHASH")
     if phash:

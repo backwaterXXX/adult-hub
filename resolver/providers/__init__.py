@@ -8,8 +8,8 @@ enables another provider fails fast via
 import re
 from typing import Dict, List
 
-from .base import BaseProvider
-from .telegram import TelegramProvider
+from resolver.providers.base import BaseProvider
+from resolver.providers.telegram import TelegramProvider
 
 # Provider names: non-empty, unique, lowercase letters/digits, no spaces.
 _NAME_RE = re.compile(r"^[a-z0-9]+$")

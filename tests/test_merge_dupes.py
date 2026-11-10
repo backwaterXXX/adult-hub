@@ -109,7 +109,9 @@ class MergeHarness(unittest.TestCase):
                "MEDIA_DIR": str(media_dir if media_dir is not None else self.media)}
         self.stub = self.sync_stub(**stub_options)
         self.stack.enter_context(patch.dict(os.environ, env))
-        self.stack.enter_context(patch.dict(sys.modules, {"sync": self.stub}))
+        package = types.ModuleType("sync")
+        package.sync = self.stub
+        self.stack.enter_context(patch.dict(sys.modules, {"sync": package, "sync.sync": self.stub}))
         path_before = list(sys.path)
         spec = importlib.util.spec_from_file_location("merge_dupes_under_test", MODULE_PATH)
         module = importlib.util.module_from_spec(spec)
@@ -123,7 +125,7 @@ class MergeHarness(unittest.TestCase):
 
     def sync_stub(self, *, purge_returns=1, nfo_error=None):
         """The pieces of the sync library an apply touches, every call recorded."""
-        stub = types.ModuleType("sync")
+        stub = types.ModuleType("sync.sync")
         stub.calls = []
         stub.init_db = lambda _url: self.connection
         stub.load_performer_thumbs = lambda _conn, performers: [f"thumb:{name}"

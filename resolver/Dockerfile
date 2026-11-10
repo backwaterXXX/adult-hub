@@ -29,12 +29,9 @@ ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}
 LABEL org.opencontainers.image.version=${APP_VERSION}
 COPY VERSION /opt/adult-hub/VERSION
-COPY sync/video_fingerprints.py ./resolver_video_fingerprints.py
-COPY sync/video_visual.py ./resolver_video_visual.py
-COPY sync/fingerprint_mp4.py ./fingerprint_mp4.py
-COPY sync/thumbnails.py ./thumbnails.py
-
-COPY resolver/ .
+COPY sync/ ./sync/
+COPY resolver/ ./resolver/
+COPY tools/__init__.py ./tools/__init__.py
 COPY tools/export_video_duplicate_review_corpus.py ./tools/export_video_duplicate_review_corpus.py
 
 EXPOSE 8090
@@ -47,4 +44,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 RUN useradd -m -u 10000 appuser && mkdir -p /cache /data && chown -R appuser /app /cache
 USER appuser
 
-CMD ["python3", "supervisor.py"]
+CMD ["python3", "-m", "resolver.supervisor"]

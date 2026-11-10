@@ -14,9 +14,9 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from common import db
-from admin_v2_errors import V2ErrorRoute
-from admin_catalog_serialization import _channel_id, _local_file_status, _safe_thumbnail, _serialize_video
-from admin_catalog_pagination import (
+from resolver.admin_v2_errors import V2ErrorRoute
+from resolver.admin_catalog_serialization import _channel_id, _local_file_status, _safe_thumbnail, _serialize_video
+from resolver.admin_catalog_pagination import (
     SORTS as _SORTS,
     decode_catalog_cursor as _decode_catalog_cursor,
 )
@@ -24,7 +24,7 @@ from admin_catalog_pagination import (
 __all__ = ["_channel_id", "_local_file_status", "_safe_thumbnail", "_serialize_video", "build_router", "db", "os"]
 
 
-from admin_catalog_queries import (
+from resolver.admin_catalog_queries import (
     CatalogUnavailable,
     _MISSING_FIELDS,
     _VIDEO_OPTIONAL_COLUMNS,  # noqa: F401 - compatibility alias used by existing callers
@@ -204,7 +204,7 @@ def _enqueue_phash(admin, video_id: str, requested_duration_us, force: bool) -> 
         if not dur_us or not (1 <= dur_us <= 86_400_000_000):
             return {"status": 400, "error": "Video duration is required to calculate pHash."}
 
-        from admin_v2_phash import PHASH_ALGORITHM_VERSION, _SERVER_PROFILE
+        from resolver.admin_v2_phash import PHASH_ALGORITHM_VERSION, _SERVER_PROFILE
         from common import phash_jobs
 
         if force:

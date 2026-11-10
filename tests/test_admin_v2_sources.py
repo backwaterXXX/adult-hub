@@ -13,15 +13,11 @@ from unittest.mock import MagicMock, patch
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-import sys
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
 
 try:
     from resolver import admin_v2_sources
 except (ImportError, ModuleNotFoundError):
-    import admin_v2_sources
+    import resolver.admin_v2_sources as admin_v2_sources
 
 from common.managed_sources import ManagedConfigConflict, ManagedConfigLockTimeout
 

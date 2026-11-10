@@ -1,4 +1,3 @@
-import sys
 import tempfile
 import unittest
 import httpx
@@ -7,12 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pg_helper import PgTestCase
-from dead_streams import (
+from sync.dead_streams import (
     DeadStreamServices,
     deadlisted_ids,
     denylist_ids,
@@ -45,7 +41,7 @@ class TestDeadStreams(PgTestCase):
         )
 
     def test_detailed_availability_probe_classifies_network_timeout_as_transient(self):
-        with patch("dead_streams.httpx.Client", side_effect=httpx.ConnectTimeout("test timeout")):
+        with patch("sync.dead_streams.httpx.Client", side_effect=httpx.ConnectTimeout("test timeout")):
             result = probe_stream_via_resolver_outcome("telegram:sample", services=self.services)
         self.assertEqual(result, "transient_error")
 
@@ -78,7 +74,7 @@ class TestDeadStreams(PgTestCase):
                                    iter_bytes=lambda _size: iter([body] if body else []))
 
         resolver_limited = Client(response(429))
-        with patch("dead_streams.httpx.Client", return_value=resolver_limited):
+        with patch("sync.dead_streams.httpx.Client", return_value=resolver_limited):
             self.assertEqual(
                 probe_stream_via_resolver_outcome("telegram:sample", services=self.services),
                 "transient_error",
@@ -89,7 +85,7 @@ class TestDeadStreams(PgTestCase):
         )
         resolver_redirect = Client(response(302, {"location": "https://cdn.example/video.m3u8"}))
         upstream_limited = Client(response(429))
-        with patch("dead_streams.httpx.Client", side_effect=[resolver_redirect, upstream_limited]):
+        with patch("sync.dead_streams.httpx.Client", side_effect=[resolver_redirect, upstream_limited]):
             self.assertEqual(
                 probe_stream_via_resolver_outcome("telegram:sample", services=redirected_services),
                 "transient_error",

@@ -7,10 +7,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
-if __package__:
-    from . import duplicate_jobs as _core
-else:
-    import duplicate_jobs as _core
+from sync import duplicate_jobs as _core
 
 
 def _orphan_file_operation(conn, job_id: str, payload: dict, media_dir: Path, quarantine_root: Path,

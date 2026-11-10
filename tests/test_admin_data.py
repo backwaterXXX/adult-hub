@@ -1,20 +1,16 @@
 """Domain data access for the admin panel, independent of HTTP routing."""
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase, TEST_URL
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
-sys.path.insert(0, str(ROOT))
 
-import admin_data
+import resolver.admin_data as admin_data
 from common import db
+from tests.helpers.db_session import db_session
 
 
 BAD_URL = "postgresql://127.0.0.1:1/missing"
@@ -145,24 +141,20 @@ class TestPerformerQualityMetrics(unittest.TestCase):
 
 class TestUnavailableVideos(PgTestCase):
     def _insert_videos(self, rows):
-        conn = db.connect(TEST_URL)
-        with conn:
+        with db_session(TEST_URL) as conn:
             for row in rows:
                 conn.execute(
                     "INSERT INTO videos (id, title, provider, studio, playable) VALUES (%s, %s, %s, %s, %s)",
                     row,
                 )
-        conn.close()
 
     def _insert_dead(self, rows):
-        conn = db.connect(TEST_URL)
-        with conn:
+        with db_session(TEST_URL) as conn:
             for row in rows:
                 conn.execute(
                     "INSERT INTO dead_streams (video_id, reason, detected_at) VALUES (%s, %s, %s)",
                     row,
                 )
-        conn.close()
 
     def _counts(self):
         conn = db.connect(TEST_URL)
@@ -210,12 +202,10 @@ class TestQuarantineReport(PgTestCase):
             "video": {"id": "v1", "title": "V1", "provider": "p"},
             "files": [{"source": "/secret/path.strm", "quarantine": "/hidden/x.strm"}],
         })
-        conn = db.connect(TEST_URL)
-        with conn:
+        with db_session(TEST_URL) as conn:
             conn.execute("INSERT INTO video_duplicate_decisions (loser_id, keeper_id, operation_id, state, created_at, snapshot) VALUES ('v1','v1','op1','active',10,%s)", (snapshot,))
             conn.execute("INSERT INTO video_duplicate_decisions (loser_id, keeper_id, operation_id, state, created_at, snapshot) VALUES ('v2','keeper','op2','active',20,%s)", (snapshot,))
             conn.execute("INSERT INTO video_duplicate_decisions (loser_id, keeper_id, operation_id, state, created_at, snapshot) VALUES ('v3','v3','op3','undone',30,%s)", (snapshot,))
-        conn.close()
 
     def test_lists_only_active_decisions_without_paths(self):
         self._seed()

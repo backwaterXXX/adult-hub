@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Request
-from admin_v2_errors import V2ErrorRoute
+from resolver.admin_v2_errors import V2ErrorRoute
 
 logger = logging.getLogger(__name__)
 

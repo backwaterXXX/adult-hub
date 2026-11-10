@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,13 +18,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
-RESOLVER_DIR = ROOT / "resolver"
-if str(RESOLVER_DIR) not in sys.path:
-    sys.path.insert(0, str(RESOLVER_DIR))
 
-import admin_v2_telegram_auth
-from providers.telegram_account import DEFAULT_ACCOUNT_ID, TelegramAccountContext
-from providers.telegram_login import (
+import resolver.admin_v2_telegram_auth as admin_v2_telegram_auth
+from resolver.providers.telegram_account import DEFAULT_ACCOUNT_ID, TelegramAccountContext
+from resolver.providers.telegram_login import (
     ActiveLoginChallenge,
     TelegramLoginManager,
     mask_phone_number,
@@ -141,7 +137,7 @@ class TestTelegramLoginManagerLifecycle(unittest.IsolatedAsyncioTestCase):
 
     async def test_get_status_authorized_when_existing_session_valid(self):
         Path(self.session_path).write_bytes(b"sqlite_data")
-        with patch("providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_auth:
+        with patch("resolver.providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_auth:
             mock_auth.return_value = True
             status = await self.manager.get_status()
             self.assertEqual(status["status"], "authorized")
@@ -149,7 +145,7 @@ class TestTelegramLoginManagerLifecycle(unittest.IsolatedAsyncioTestCase):
 
     async def test_get_status_unauthorized_present_preserves_existing_session(self):
         Path(self.session_path).write_bytes(b"corrupted_or_stale_session_bytes")
-        with patch("providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_auth:
+        with patch("resolver.providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_auth:
             mock_auth.return_value = False
             status = await self.manager.get_status()
             self.assertEqual(status["status"], "unauthorized_session_present")
@@ -160,13 +156,13 @@ class TestTelegramLoginManagerLifecycle(unittest.IsolatedAsyncioTestCase):
 
     async def test_start_login_refuses_to_overwrite_existing_session(self):
         Path(self.session_path).write_bytes(b"existing_session")
-        with patch("providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_auth:
+        with patch("resolver.providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_auth:
             mock_auth.return_value = True
             res = await self.manager.start_login("+48123456789")
             self.assertFalse(res["ok"])
             self.assertEqual(res["code"], "already_authorized")
 
-        with patch("providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_auth:
+        with patch("resolver.providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_auth:
             mock_auth.return_value = False
             res = await self.manager.start_login("+48123456789")
             self.assertFalse(res["ok"])
@@ -273,7 +269,7 @@ class TestTelegramLoginManagerLifecycle(unittest.IsolatedAsyncioTestCase):
         )
         self.manager._challenges["default"] = challenge
 
-        with patch("providers.telegram.reset_telegram_client") as mock_reset:
+        with patch("resolver.providers.telegram.reset_telegram_client") as mock_reset:
             res = await self.manager.submit_code("12345")
             self.assertTrue(res["ok"])
             self.assertEqual(res["state"], "authorized")
@@ -311,7 +307,7 @@ class TestTelegramLoginManagerLifecycle(unittest.IsolatedAsyncioTestCase):
         challenge.state = "password_needed"
         self.manager._challenges["default"] = challenge
 
-        with patch("providers.telegram.reset_telegram_client"):
+        with patch("resolver.providers.telegram.reset_telegram_client"):
             res = await self.manager.submit_password("correct_2fa_password")
             self.assertTrue(res["ok"])
             self.assertEqual(res["state"], "authorized")
@@ -342,7 +338,7 @@ class TestTelegramLoginManagerLifecycle(unittest.IsolatedAsyncioTestCase):
         self.manager._challenges["default"] = challenge
 
         pwd_with_spaces = "  spaced_secret_password  "
-        with patch("providers.telegram.reset_telegram_client"):
+        with patch("resolver.providers.telegram.reset_telegram_client"):
             res = await self.manager.submit_password(pwd_with_spaces)
             self.assertTrue(res["ok"])
             mock_client.sign_in.assert_awaited_once_with(password=pwd_with_spaces)
@@ -463,7 +459,7 @@ class TestTelegramLoginManagerLifecycle(unittest.IsolatedAsyncioTestCase):
         self.manager._challenges["default"] = challenge
 
         # When promotion succeeds, challenge.state is authorized.
-        with patch("providers.telegram.reset_telegram_client"):
+        with patch("resolver.providers.telegram.reset_telegram_client"):
             submit_res = await self.manager.submit_code("12345")
             self.assertTrue(submit_res["ok"])
             self.assertEqual(submit_res["state"], "authorized")
@@ -476,7 +472,7 @@ class TestTelegramLoginManagerLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Path(self.session_path).read_bytes(), b"promoted_bytes")
 
     async def test_reset_telegram_client_disconnects(self):
-        from providers import telegram
+        from resolver.providers import telegram
         mock_old = MagicMock()
         mock_old.disconnect = AsyncMock()
         mock_old.is_connected = MagicMock(return_value=True)
@@ -490,7 +486,7 @@ class TestTelegramLoginManagerLifecycle(unittest.IsolatedAsyncioTestCase):
 
     async def test_get_status_does_not_open_telegram_connection_when_check_live_false(self):
         Path(self.session_path).write_bytes(b"session_bytes")
-        with patch("providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_live:
+        with patch("resolver.providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_live:
             res = await self.manager.get_status(check_live=False)
             self.assertTrue(res["ok"])
             self.assertEqual(res["status"], "session_file_present")
@@ -850,7 +846,7 @@ class TestSourcesListIntegration(unittest.TestCase):
     """Test that /api/v2/sources/list includes telegram_auth information."""
 
     def test_sources_list_includes_telegram_auth(self):
-        import admin_v2_sources
+        import resolver.admin_v2_sources as admin_v2_sources
         from starlette.responses import JSONResponse
 
         app = FastAPI()
@@ -874,7 +870,7 @@ class TestSourcesListIntegration(unittest.TestCase):
         client = TestClient(app, base_url="http://testserver")
 
         with patch(
-            "providers.telegram_login.get_telegram_login_manager",
+            "resolver.providers.telegram_login.get_telegram_login_manager",
         ) as mock_get_mgr:
             mock_mgr = MagicMock()
             mock_mgr.get_status = AsyncMock(return_value={
@@ -891,7 +887,7 @@ class TestSourcesListIntegration(unittest.TestCase):
             self.assertEqual(data["telegram_auth"]["status"], "ready")
 
     def test_sources_list_does_not_open_telegram_connection(self):
-        import admin_v2_sources
+        import resolver.admin_v2_sources as admin_v2_sources
         from starlette.responses import JSONResponse
 
         app = FastAPI()
@@ -914,7 +910,7 @@ class TestSourcesListIntegration(unittest.TestCase):
         app.include_router(router)
         client = TestClient(app, base_url="http://testserver")
 
-        with patch("providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_mtproto:
+        with patch("resolver.providers.telegram_login.is_session_authorized", new_callable=AsyncMock) as mock_mtproto:
             res = client.get("/api/v2/sources/list")
             self.assertEqual(res.status_code, 200)
             mock_mtproto.assert_not_called()
@@ -951,7 +947,7 @@ class TestTelegramLoginDbPersistenceFailure(unittest.IsolatedAsyncioTestCase):
             mgr._challenges["test_persist"] = challenge
 
             # Simulate transient DB failure when persisting account to store
-            with patch("providers.telegram_account_store.upsert_account",
+            with patch("resolver.providers.telegram_account_store.upsert_account",
                        side_effect=RuntimeError("Database connection lost")):
                 res = await mgr.submit_code("12345", account_id="test_persist")
 

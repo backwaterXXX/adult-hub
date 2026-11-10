@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import yaml
 from common import db
 
 logger = logging.getLogger(__name__)
@@ -74,7 +73,7 @@ def _release_channel_removal_lock(lock_file):
 
 def _verify_channel_not_configured(channel_id: str, timeout: float = 30.0) -> None:
     """Verify that the channel is disabled/removed in effective config within a bounded timeout."""
-    from common.config_loader import find_config_file
+    from common.config_loader import find_config_file, read_base_config
     from common.managed_sources import apply_overrides, config_lock, overrides_path, read_overrides
 
     aliases = _channel_ids(channel_id)
@@ -83,7 +82,8 @@ def _verify_channel_not_configured(channel_id: str, timeout: float = 30.0) -> No
     while True:
         try:
             with config_lock(target, timeout=min(5.0, max(0.5, deadline - time.monotonic()))):
-                base = yaml.safe_load(find_config_file().read_text(encoding="utf-8")) or {}
+                # find_config_file() raises when no config exists; read_base_config(None) would treat that as {}.
+                base = read_base_config(find_config_file())
                 effective = apply_overrides(base, read_overrides(target))
                 telegram = next((source for source in effective.get("sources", [])
                                  if source.get("provider") == "telegram"), {})
@@ -352,10 +352,7 @@ def remove_telegram_channel(conn, media_dir: Path, channel_id: str, job_id: str,
             ).fetchall()
             for (files_data,) in rows:
                 if files_data:
-                    try:
-                        from telegram_unavailable import _restore_files
-                    except ImportError:
-                        from .telegram_unavailable import _restore_files
+                    from sync.telegram_unavailable import _restore_files
                     try:
                         _restore_files(files_data)
                     except Exception as exc:

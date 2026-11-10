@@ -1,15 +1,11 @@
 """Database-free checks for the Admin v2 request-validation contract."""
 
 import asyncio
-import sys
 import unittest
-from pathlib import Path
 
 import httpx
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
-import app as resolver_app
+import resolver.app as resolver_app
 
 
 class TestAdminV2ErrorEnvelope(unittest.TestCase):
@@ -45,7 +41,7 @@ class TestAdminV2ErrorEnvelope(unittest.TestCase):
         self.assertNotIn("error", response.json())
 
     def test_uncaught_v2_exception_is_redacted_and_legacy_500_stays_plain(self):
-        from admin_v2_errors import V2ErrorRoute
+        from resolver.admin_v2_errors import V2ErrorRoute
 
         async def unexpected_failure():
             raise RuntimeError("private path /srv/media and token=secret")

@@ -8,9 +8,9 @@ services:
     image: ${POSTGRES_IMAGE:-postgres:17-alpine}
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
-      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in .env}
     networks:
       default:
         aliases:
@@ -239,7 +239,7 @@ services:
     restart: "no"
     stdin_open: true
     tty: true
-    command: ["python3", "-m", "providers.telegram_auth", "auth"]
+    command: ["python3", "-m", "resolver.providers.telegram_auth", "auth"]
     environment:
       - PYTHONUNBUFFERED=1
       - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}

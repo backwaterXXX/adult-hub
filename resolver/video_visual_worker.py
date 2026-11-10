@@ -13,8 +13,8 @@ import urllib.request
 from common import db
 from common.video_visual_jobs import (claim_next, finish_comparison, finish_failure,
                                      finish_signature, heartbeat, recover_expired)
-from resolver_video_visual import compare_pair
-from resolver_video_fingerprints import telegram_phash
+from sync.video_visual import compare_pair
+from sync.video_fingerprints import telegram_phash
 
 LOG = logging.getLogger("resolver.video_visual_worker")
 DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None

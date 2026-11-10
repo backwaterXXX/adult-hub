@@ -280,8 +280,8 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
         # Import the handler the flat way the sync image does, so this does not
         # depend on which module identity the suite happened to load first.
         try:
-            import duplicate_job_external_handlers
-            import media_files
+            import sync.duplicate_job_external_handlers as duplicate_job_external_handlers
+            import sync.media_files as media_files
         except ModuleNotFoundError:
             from sync import duplicate_job_external_handlers
             from sync import media_files

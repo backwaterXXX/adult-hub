@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 
 from tests.pg_helper import PgTestCase
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
 
 from common.metadata_review import list_metadata_review_proposals, refresh_metadata_review_proposal, reject_metadata_review_proposal, store_metadata_review_proposal
 from common.admin_operations import execute_operation, preview_metadata_plan

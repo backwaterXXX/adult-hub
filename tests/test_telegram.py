@@ -8,9 +8,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pg_helper import TEST_URL, init_test_db, require_url
 
@@ -23,8 +20,8 @@ if TEST_URL:
 from test_support import optional_import_failed
 
 try:
-    from providers import telegram as tg_module
-    from providers.telegram import (
+    from resolver.providers import telegram as tg_module
+    from resolver.providers.telegram import (
         channel_to_category,
         extract_file_ref,
         is_channel_authorized,
@@ -56,13 +53,13 @@ except ImportError as e:
     _IMPORT_ERROR = e
 
 try:
-    from providers.telegram import extract_hashtags
+    from resolver.providers.telegram import extract_hashtags
 except ImportError as exc:
     optional_import_failed(exc)
     extract_hashtags = None
 
 try:
-    from providers.base import CategoryItem, VideoItem
+    from resolver.providers.base import CategoryItem, VideoItem
     BASE_AVAILABLE = True
 except ImportError as exc:
     optional_import_failed(exc)

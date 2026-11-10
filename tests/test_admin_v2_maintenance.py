@@ -1,19 +1,15 @@
 """Database/network-free contract tests for Admin v2 maintenance actions."""
 
 import json
-import sys
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
 
-import admin_v2_maintenance
+import resolver.admin_v2_maintenance as admin_v2_maintenance
 
 
 class InlineAsyncio:
@@ -131,7 +127,7 @@ class TestAdminV2Maintenance(unittest.IsolatedAsyncioTestCase):
         admin = make_admin()
         route = self.routes(admin)["/api/v2/maintenance/collections/refresh"]
         with patch.dict("os.environ", {"JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "secret"}), \
-             patch("video_duplicates.enqueue_job", return_value="job-collections") as enqueue:
+             patch("resolver.video_duplicates.enqueue_job", return_value="job-collections") as enqueue:
             result = await route(make_request("/admin/api/v2/maintenance/collections/refresh"))
         self.assertEqual(result.status_code, 202)
         self.assertEqual(response_body(result), {"ok": True, "queued": True,
@@ -143,7 +139,7 @@ class TestAdminV2Maintenance(unittest.IsolatedAsyncioTestCase):
         admin = make_admin()
         route = self.routes(admin)["/api/v2/maintenance/collections/refresh"]
         with patch.dict("os.environ", {"JELLYFIN_URL": "", "JELLYFIN_API_KEY": ""}), \
-             patch("video_duplicates.enqueue_job") as enqueue:
+             patch("resolver.video_duplicates.enqueue_job") as enqueue:
             result = await route(make_request("/admin/api/v2/maintenance/collections/refresh"))
         self.assertEqual(result.status_code, 503)
         self.assertEqual(response_body(result), {
@@ -155,7 +151,7 @@ class TestAdminV2Maintenance(unittest.IsolatedAsyncioTestCase):
     async def test_global_sync_queues_scheduled_mode_and_rejects_invalid_mode(self):
         admin = make_admin()
         route = self.routes(admin)["/api/v2/maintenance/sync"]
-        with patch("video_duplicates.enqueue_job", return_value="job-sync") as enqueue:
+        with patch("resolver.video_duplicates.enqueue_job", return_value="job-sync") as enqueue:
             result = await route(make_request("/admin/api/v2/maintenance/sync",
                                               body={"source": None, "sync_mode": "scheduled"}))
         self.assertEqual(result.status_code, 202)

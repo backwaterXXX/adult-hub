@@ -100,7 +100,7 @@ class TestAdminV1V2RouteInventory(unittest.TestCase):
         self.assertTrue(expected_client_routes <= v2_routes)
         self.assertFalse((ROOT / "resolver/admin_v1_phash.py").exists())
         self.assertFalse((ROOT / "resolver/admin_v1_phash.py.orig").exists())
-        self.assertIn("import admin_v2_phash", source)
+        self.assertIn("from resolver import admin_v2_phash", source)
         for module in ("admin_status.py", "admin_diagnostics.py", "admin_library.py",
                        "admin_maintenance.py", "admin_jobs.py", "admin_performers.py"):
             self.assertFalse((ROOT / "resolver" / module).exists(), module)
@@ -119,7 +119,7 @@ class TestAdminV1V2RouteInventory(unittest.TestCase):
             "GET /api/v2/sources/sync-history", "GET /api/v2/schedules",
         }
         self.assertTrue(retained <= routes)
-        self.assertIn("import admin_v2_schedules", (ROOT / "resolver/admin.py").read_text())
+        self.assertIn("from resolver import admin_v2_schedules", (ROOT / "resolver/admin.py").read_text())
         self.assertFalse((ROOT / "resolver/playback_diagnostics.py").exists())
         for module in ("admin_v2_audits.py", "admin_v2_activity.py", "admin_v2_enrichment.py"):
             self.assertFalse((ROOT / "resolver" / module).exists(), module)

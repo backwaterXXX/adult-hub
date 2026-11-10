@@ -178,7 +178,7 @@ services:
           echo "[ERROR] Run 'docker compose run --rm telegram-auth' to authenticate before starting sync." >&2
           exit 1
         fi
-        exec python runner.py
+        exec python -m sync.runner
     environment:
       - TZ=${TZ:-Europe/Warsaw}
       - PYTHONUNBUFFERED=1
@@ -228,7 +228,7 @@ services:
     restart: "no"
     stdin_open: true
     tty: true
-    command: ["python3", "-m", "providers.telegram_auth", "auth"]
+    command: ["python3", "-m", "resolver.providers.telegram_auth", "auth"]
     environment:
       - PYTHONUNBUFFERED=1
       - TELEGRAM_API_ID=${TELEGRAM_API_ID:?TELEGRAM_API_ID is required in .env}

@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-if __package__:
-    from . import scene_scrapers as _core
-else:
-    import scene_scrapers as _core
+from sync import scene_scrapers as _core
 
 
 def search_tpdb_scene_by_oshash(

@@ -10,17 +10,17 @@ from typing import Any, Dict, Iterable, List, Optional
 from common import db
 from common.duration import parse_duration_seconds
 from common.performer_titles import parse_title_performers_with_known_map as _parse_title_performers_with_known_map
-from http_client import (
+from sync.http_client import (
     is_retryable_error as _is_retryable_error_impl,
     parse_retry_after as _parse_retry_after,
     retry_after_from_error as _retry_after_from_error_impl,
 )
-from nfo import (
+from sync.nfo import (
     format_dateadded as _format_dateadded_impl,
     load_performer_links as _load_performer_links_impl,
     load_performer_thumbs as _load_performer_thumbs_impl,
 )
-from video_persistence import _merge_video_fields as _merge_video_fields_impl
+from sync.video_persistence import _merge_video_fields as _merge_video_fields_impl
 
 
 def sanitize_filename(name: str) -> str:

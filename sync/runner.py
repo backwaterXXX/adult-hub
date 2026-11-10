@@ -14,10 +14,7 @@ logger = logging.getLogger(__name__)
 
 LOGGER = configure_logging("sync.runner")
 
-_SYNC_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SYNC_DIR not in sys.path:
-    sys.path.append(_SYNC_DIR)
-from runner_helpers import (  # noqa: E402
+from sync.runner_helpers import (  # noqa: E402
     _WaitTimers,
     _sync_child_args,
     calculate_next_sleep_seconds,  # noqa: F401 - re-exported for runner.<name> callers
@@ -58,7 +55,7 @@ except Exception:  # pragma: no cover - older deployments may not have migration
     claim_due_system_schedule = dispatch_due_system_schedules = ensure_system_schedules = finish_system_schedule = list_system_schedules = recover_system_schedules = None
 
 try:
-    from db_schema import init_db
+    from sync.db_schema import init_db
 except ImportError:  # pragma: no cover - module is present in the sync image
     init_db = None
 
@@ -77,10 +74,10 @@ try:
     MAX_BACKOFF_SECONDS = cfg.sync.retry_backoff_max_seconds
     SHUTDOWN_GRACE_SECONDS = getattr(cfg.sync, "shutdown_grace_seconds", 180)
 except ConfigError as ce:
-    LOGGER.critical(f"[sync-daemon] FATAL CONFIG ERROR: {ce}")
+    LOGGER.critical("[sync-daemon] FATAL CONFIG ERROR: %s", ce)
     sys.exit(1)
 except Exception as e:
-    LOGGER.critical(f"[sync-daemon] FATAL: config load failed unexpectedly: {e}")
+    LOGGER.critical("[sync-daemon] FATAL: config load failed unexpectedly: %s", e)
     sys.exit(1)
 
 stop_event = threading.Event()
@@ -106,9 +103,9 @@ signal.signal(signal.SIGINT, signal_handler)
 
 
 if daily_at:
-    LOGGER.info(f"[sync-daemon] Adult-Hub {APP_VERSION}; scheduled daily sync at {daily_at} (retry base {BASE_BACKOFF_SECONDS}s, max {MAX_BACKOFF_SECONDS}s)...")
+    LOGGER.info("[sync-daemon] Adult-Hub %s; scheduled daily sync at %s (retry base %ss, max %ss)...", APP_VERSION, daily_at, BASE_BACKOFF_SECONDS, MAX_BACKOFF_SECONDS)
 else:
-    LOGGER.info(f"[sync-daemon] Adult-Hub {APP_VERSION}; starting periodic sync runner (every {interval//60} min, retry base {BASE_BACKOFF_SECONDS}s, max {MAX_BACKOFF_SECONDS}s)...")
+    LOGGER.info("[sync-daemon] Adult-Hub %s; starting periodic sync runner (every %s min, retry base %ss, max %ss)...", APP_VERSION, interval // 60, BASE_BACKOFF_SECONDS, MAX_BACKOFF_SECONDS)
 
 TRIGGER_FILE = os.getenv("SYNC_TRIGGER_FILE", "/data/cache/sync.trigger")
 STATUS_FILE = os.getenv("SYNC_STATUS_FILE", "/data/cache/sync_status.json")
@@ -164,7 +161,7 @@ def publish_worker_heartbeat(running: bool = True) -> None:
             WORKER_CAPABILITIES_FILE, version=APP_VERSION, actions=ALL_ACTIONS, running=running
         )
     except Exception as e:
-        LOGGER.warning(f"[sync-daemon] Could not publish worker capabilities: {e}")
+        LOGGER.warning("[sync-daemon] Could not publish worker capabilities: %s", e)
 
 
 def worker_heartbeat_loop() -> None:
@@ -208,16 +205,16 @@ def update_sync_status(running: bool, exit_code: int = None, success: bool = Non
                 pass
             raise
     except Exception as e:
-        LOGGER.warning(f"[sync-daemon] Could not update status file: {e}")
+        LOGGER.warning("[sync-daemon] Could not update status file: %s", e)
 
 
 def run_jobs_worker() -> int:
-    """Run sync.py --jobs-only to process queued jobs without full sync."""
+    """Run ``python -m sync.sync --jobs-only`` to process queued jobs without a full sync."""
     global current_process
     LOGGER.info("[sync-daemon] On-demand jobs trigger detected, executing jobs-only worker...")
     timers = _WaitTimers()
     try:
-        proc = subprocess.Popen([sys.executable, "sync.py", "--jobs-only"])
+        proc = subprocess.Popen([sys.executable, "-m", "sync.sync", "--jobs-only"])
         current_process = proc
         while proc.poll() is None:
             if stop_event.is_set():
@@ -229,10 +226,10 @@ def run_jobs_worker() -> int:
             time.sleep(0.2)
         code = proc.returncode if proc.returncode is not None else 0
         if code != 0:
-            LOGGER.warning(f"[sync-daemon] Jobs worker exited with code {code}")
+            LOGGER.warning("[sync-daemon] Jobs worker exited with code %s", code)
         return code
     except Exception as e:
-        LOGGER.warning(f"[sync-daemon] Jobs worker execution error: {e}")
+        LOGGER.warning("[sync-daemon] Jobs worker execution error: %s", e)
         return -1
     finally:
         current_process = None
@@ -246,11 +243,11 @@ def log_next_sync_schedule():
             from zoneinfo import ZoneInfo
             zone = schedule.get("timezone", "UTC")
             upcoming = datetime.fromisoformat(schedule["next_run_at"]).astimezone(ZoneInfo(zone))
-            LOGGER.info(f"[sync-daemon] Next scheduled sync at {upcoming.isoformat()} ({zone}).")
+            LOGGER.info("[sync-daemon] Next scheduled sync at %s (%s).", upcoming.isoformat(), zone)
         else:
             LOGGER.info("[sync-daemon] Library sync schedule is disabled or has no next run.")
     except Exception as exc:
-        LOGGER.warning(f"[sync-daemon] Could not read next sync schedule: {exc}")
+        LOGGER.warning("[sync-daemon] Could not read next sync schedule: %s", exc)
 
 
 def _poll_system_schedule(timers: _WaitTimers, allow_schedule: bool) -> bool:
@@ -300,10 +297,7 @@ def _dispatch_system_schedules_due(timers: _WaitTimers) -> bool:
 def _dispatch_artwork_batch() -> tuple[bool, int]:
     try:
         from pathlib import Path
-        try:
-            from artwork_schedule import queue_artwork_generation_batch
-        except ImportError:
-            from sync.artwork_schedule import queue_artwork_generation_batch
+        from sync.artwork_schedule import queue_artwork_generation_batch
         result = queue_artwork_generation_batch(DB_URL, Path(os.getenv("MEDIA_DIR", "/media/adult")))
         queued = len(result.get("job_ids") or [])
         LOGGER.info(
@@ -491,7 +485,7 @@ def run_full_sync(source_filter=None, sync_mode="scheduled"):
     success = False
     exit_code = -1
     try:
-        current_process = subprocess.Popen([sys.executable, "sync.py", *source_arg, *mode_arg])
+        current_process = subprocess.Popen([sys.executable, "-m", "sync.sync", *source_arg, *mode_arg])
         interrupted = _wait_for_sync_child(current_process)
         exit_code = current_process.returncode if current_process.returncode is not None else -1
         success = _report_sync_exit(exit_code, interrupted)
@@ -827,7 +821,7 @@ def run_loop():
 if __name__ == "__main__":
     if init_db is not None:
         try:
-            init_db(DB_URL)
+            init_db(DB_URL).close()
         except Exception:
             LOGGER.exception("[sync-daemon] Could not apply database migrations; refusing to start.")
             sys.exit(1)

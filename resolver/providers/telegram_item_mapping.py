@@ -7,8 +7,8 @@ import logging
 
 from common.telegram_metadata import extract_telegram_metadata, resolve_explicit_cast
 from common.title_cleaning import clean_title_text
-from .base import VideoItem
-from .telegram_messages import (
+from resolver.providers.base import VideoItem
+from resolver.providers.telegram_messages import (
     _caption_of,
     _duration_of,
     _filter_caption_for_title,

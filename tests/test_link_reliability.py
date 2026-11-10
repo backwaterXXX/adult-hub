@@ -1,16 +1,11 @@
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 
 try:
-    from app import rewrite_m3u8_playlist, looks_like_playlist, cache_ttl_for_provider, validate_proxy_url
+    from resolver.app import rewrite_m3u8_playlist, looks_like_playlist, cache_ttl_for_provider, validate_proxy_url
     APP_AVAILABLE = True
 except ImportError as exc:
     from test_support import optional_import_failed
@@ -18,8 +13,8 @@ except ImportError as exc:
     APP_AVAILABLE = False
 
 try:
-    from test_support import load_flat_sync_module
-    sync_module = load_flat_sync_module()
+    from test_support import load_sync_module
+    sync_module = load_sync_module()
     SYNC_AVAILABLE = True
 except ImportError as exc:
     from test_support import optional_import_failed
@@ -63,7 +58,7 @@ class TestProxyRewrite(unittest.TestCase):
 
     def test_proxy_rejects_private_resolved_addresses(self):
         local = ("", [], 0, "", ("10.0.0.4", 443))
-        with patch("app.socket.getaddrinfo", return_value=[local]):
+        with patch("resolver.app.socket.getaddrinfo", return_value=[local]):
             with self.assertRaises(Exception):
                 validate_proxy_url("https://stream.example/video.mp4")
 

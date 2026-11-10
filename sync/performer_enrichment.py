@@ -81,7 +81,7 @@ def backfill_performers_from_titles(conn: db.Connection, media_dir: Path, *, ser
                WHERE performers IS NULL OR performers = '[]'::jsonb"""
         ).fetchall()
     except Exception as e:
-        services.logger.warning(f"Title performer backfill query failed: {e}")
+        services.logger.warning("Title performer backfill query failed: %s", e)
         return 0
 
     updated = 0
@@ -90,7 +90,7 @@ def backfill_performers_from_titles(conn: db.Connection, media_dir: Path, *, ser
             updated += 1
 
     if updated:
-        services.logger.info(f"Title performer backfill: {updated} videos enriched from titles")
+        services.logger.info("Title performer backfill: %s videos enriched from titles", updated)
     return updated
 
 
@@ -145,7 +145,7 @@ def _apply_title_performers(conn, media_dir: Path, row, known_dict: dict, servic
             if k not in known_dict:
                 known_dict[k] = n.strip()
     except Exception as e:
-        services.logger.warning(f"Title performer backfill store failed for {vid_id}: {e}")
+        services.logger.warning("Title performer backfill store failed for %s: %s", vid_id, e)
     return stored
 
 

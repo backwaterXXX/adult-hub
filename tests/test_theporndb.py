@@ -1,19 +1,15 @@
 """ThePornDB enrichment tests."""
 import json
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 from test_support import load_json_fixture
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
 
 
 try:
-    import theporndb as tpdb_module
+    import sync.theporndb as tpdb_module
     TPDB_AVAILABLE = True
 except ImportError as exc:
     from test_support import optional_import_failed

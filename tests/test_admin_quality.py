@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import sys
 import time
 import unittest
-from pathlib import Path
 
 from psycopg.types.json import Jsonb
 from tests.pg_helper import PgTestCase
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
 
 from common.admin_quality import read_quality_summary
 from common.admin_quality import _complete_audit

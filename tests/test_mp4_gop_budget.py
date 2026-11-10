@@ -1,9 +1,6 @@
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sync"))
-from mp4_gop_budget import MP4IndexError, estimate_video_gops, union_bytes
+from sync.mp4_gop_budget import MP4IndexError, estimate_video_gops, union_bytes
 
 
 def box(kind: bytes, payload: bytes) -> bytes:

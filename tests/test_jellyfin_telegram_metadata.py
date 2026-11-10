@@ -1,6 +1,5 @@
 import copy
 import ast
-import importlib.util
 import hashlib
 import json
 import logging
@@ -10,13 +9,10 @@ import sys
 import unittest
 from unittest.mock import Mock, patch
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 
 
-spec = importlib.util.spec_from_file_location('jf_reconcile', Path(__file__).parents[1] / 'sync/jellyfin_db.py')
-jf = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(jf)
+import sync.jellyfin_db as jf
 
 
 class Response:
@@ -172,8 +168,8 @@ class TestTelegramImportStateAudit(unittest.TestCase):
 
 class TestTelegramMetadata(PgTestCase):
     def test_sync_wrapper_confirms_completed_job_after_jellyfin_refresh_and_hash_match(self):
-        from test_support import load_flat_sync_module
-        sync = load_flat_sync_module()
+        from test_support import load_sync_module
+        sync = load_sync_module()
 
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

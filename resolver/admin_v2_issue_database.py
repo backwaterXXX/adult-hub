@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 from common.admin_job_health import PROCESSING_STALE_WARNING_SECONDS, is_processing_stale
 from common.job_queue import ALL_ACTIONS
-from admin_v2_issue_builder import (
+from resolver.admin_v2_issue_builder import (
     _issue,
     _quality_issues,
     _timestamp,
@@ -65,7 +65,7 @@ def _failed_job_issues(failed_jobs, now) -> list:
 def collect_database_issues(admin, now, health, issues):
     db_available = False
     try:
-        from admin_services import sync_backlog, job_listing, unresolved_failed_task_listing
+        from resolver.admin_services import sync_backlog, job_listing, unresolved_failed_task_listing
 
         backlog = sync_backlog(admin.HUB_DB_URL)
         health["available"]["database"] = bool(backlog.get("available"))

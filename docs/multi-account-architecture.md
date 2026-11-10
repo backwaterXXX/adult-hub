@@ -228,14 +228,14 @@ Run the deterministic synthetic benchmark suite using the provided CLI tool:
 
 ```bash
 # Run both Scenario 1 (Independent Concurrent Streams) and Scenario 2 (Same-Video Shared Cache)
-.venv/bin/python3 scripts/benchmark_telegram_multi_account.py --accounts 3 --streams 12 --chunks 5
+.venv/bin/python3 -m scripts.benchmark_telegram_multi_account --accounts 3 --streams 12 --chunks 5
 
 # Test FloodWait cooldown handling and lease exclusion
-.venv/bin/python3 scripts/benchmark_telegram_multi_account.py --simulate-floodwait
+.venv/bin/python3 -m scripts.benchmark_telegram_multi_account --simulate-floodwait
 
 # Run specific scenarios
-.venv/bin/python3 scripts/benchmark_telegram_multi_account.py --scenario independent
-.venv/bin/python3 scripts/benchmark_telegram_multi_account.py --scenario shared
+.venv/bin/python3 -m scripts.benchmark_telegram_multi_account --scenario independent
+.venv/bin/python3 -m scripts.benchmark_telegram_multi_account --scenario shared
 ```
 
 ### Redacted Sample Benchmark Output

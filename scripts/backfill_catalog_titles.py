@@ -14,20 +14,16 @@ database and in the NFO sidecar.
 import argparse
 import json
 import os
-import sys
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-for _candidate in (ROOT, ROOT / "sync", Path("/app"), Path.cwd()):
-    if _candidate.is_dir() and str(_candidate) not in sys.path:
-        sys.path.insert(0, str(_candidate))
 
 from common import db
-import display_titles
-from media_files import stable_media_basename
-from scene_scraper_text_sources import fetch_stashdb_scene_by_id, fetch_tpdb_scene_by_id
+from sync import display_titles
+from sync.media_files import stable_media_basename
+from sync.scene_scraper_text_sources import fetch_stashdb_scene_by_id, fetch_tpdb_scene_by_id
 
 clean_display_title = display_titles.clean_display_title
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", str(ROOT / "media" / "adult")))
@@ -167,7 +163,7 @@ def _push_to_jellyfin(changed_ids: list) -> str:
     item_ids = list(_jellyfin_item_ids(url, api_key, wanted).values())
     if not item_ids:
         return "skipped: no matching Jellyfin items"
-    from jellyfin_db import sync_jellyfin_telegram_metadata as reconcile
+    from sync.jellyfin_db import sync_jellyfin_telegram_metadata as reconcile
     state_path = Path(os.getenv("DATA_DIR", "/data")) / "telegram-metadata-state.json"
     result = reconcile(url, api_key, str(MEDIA_DIR), state_path=state_path,
                        limit=len(item_ids), item_ids=item_ids, workers=4)
@@ -251,7 +247,7 @@ def _run_jellyfin_steps(report: dict) -> None:
     except Exception as exc:
         report["jellyfin_import"] = f"failed: {type(exc).__name__}"
     try:
-        import sync as sync_module
+        from sync import sync as sync_module
         report["jellyfin_refresh"] = (
             "triggered" if sync_module.trigger_jellyfin_refresh() else "not_confirmed"
         )

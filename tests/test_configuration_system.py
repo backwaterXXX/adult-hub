@@ -160,9 +160,7 @@ class TestConfigDefaultsAndValidation(unittest.TestCase):
             self.assertIn("cannot be whitespace-only", str(ctx.exception))
 
     def test_admin_security_write_authorized_fails_closed_when_token_is_none(self):
-        import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "resolver"))
-        import admin_security
+        import resolver.admin_security as admin_security
 
         class DummyRequest:
             headers = {

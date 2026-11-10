@@ -26,11 +26,11 @@ from common.logging_setup import configure_logging
 
 
 UVICORN_COMMAND = [
-    "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8090",
+    "uvicorn", "resolver.app:app", "--host", "0.0.0.0", "--port", "8090",
     "--timeout-graceful-shutdown", "5",
 ]
-PHASH_WORKER_COMMAND = ["python3", "phash_worker.py"]
-VISUAL_WORKER_COMMAND = ["python3", "video_visual_worker.py"]
+PHASH_WORKER_COMMAND = ["python3", "-m", "resolver.phash_worker"]
+VISUAL_WORKER_COMMAND = ["python3", "-m", "resolver.video_visual_worker"]
 HEALTH_URL = "http://127.0.0.1:8090/admin/health/live"
 CHECK_INTERVAL = max(2.0, parse_float(os.getenv("RESOLVER_WATCHDOG_INTERVAL_SECONDS"), DEFAULT_RESOLVER_WATCHDOG_INTERVAL_SECONDS, name="RESOLVER_WATCHDOG_INTERVAL_SECONDS"))
 CHECK_TIMEOUT = max(1.0, parse_float(os.getenv("RESOLVER_WATCHDOG_TIMEOUT_SECONDS"), DEFAULT_RESOLVER_WATCHDOG_TIMEOUT_SECONDS, name="RESOLVER_WATCHDOG_TIMEOUT_SECONDS"))

@@ -6,12 +6,12 @@ import re
 import logging
 
 from fastapi import APIRouter, Query, Request
-from admin_v2_errors import V2ErrorRoute
+from resolver.admin_v2_errors import V2ErrorRoute
 from common.admin_job_health import is_processing_stale
 from common.job_queue import ALL_ACTIONS
 from common.job_stages import ALL_STAGES
 from common.job_failures import FAILURE_MESSAGES
-from admin_v2_duplicate_routes import (
+from resolver.admin_v2_duplicate_routes import (
     MAX_DUPLICATE_ACTION_BYTES as MAX_DUPLICATE_ACTION_BYTES,
     register_duplicate_routes,
 )
@@ -467,7 +467,7 @@ def _route_admin_v2_jobs(router, admin):
             return admin.JSONResponse({"error": "Invalid job action filter."}, status_code=400)
 
         try:
-            from admin_services import job_listing
+            from resolver.admin_services import job_listing
 
             page = await admin.asyncio.to_thread(
                 job_listing,
@@ -513,7 +513,7 @@ def _route_admin_v2_job(router, admin):
         if admin._admin_blocked(request):
             return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
         try:
-            from admin_services import get_job_v2
+            from resolver.admin_services import get_job_v2
 
             result = await admin.asyncio.to_thread(get_job_v2, admin.HUB_DB_URL, job_id)
         except Exception:

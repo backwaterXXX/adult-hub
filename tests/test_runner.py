@@ -12,8 +12,22 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
+from tests.helpers.db_session import db_session
+
+
+def _fake_sync_child(temp_path: Path) -> Path:
+    """Return the path of the fake ``sync.sync`` child the runner starts in ``temp_path``.
+
+    The runner runs ``python -m sync.sync`` from its working directory. The temp
+    directory gets a regular ``sync`` package whose ``__path__`` also lists the
+    checkout's ``sync`` directory, so ``sync.runner`` still comes from the checkout
+    and only ``sync.sync`` is replaced by the fake.
+    """
+    package = temp_path / "sync"
+    package.mkdir(exist_ok=True)
+    (package / "__init__.py").write_text(f"__path__.append({str(ROOT / 'sync')!r})\n", encoding="utf-8")
+    return package / "sync.py"
 
 
 class TestSyncRunnerProcess(PgTestCase):
@@ -52,7 +66,7 @@ class TestSyncRunnerProcess(PgTestCase):
             status_file = temp_path / "sync_status.json"
             capabilities_file = temp_path / "worker-capabilities.json"
             trigger_file = temp_path / "sync.trigger"
-            (temp_path / "sync.py").write_text(
+            _fake_sync_child(temp_path).write_text(
                 "import os, signal, time\n"
                 "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
                 f"open({str(child_pid_file)!r}, 'w').write(str(os.getpid()))\n"
@@ -70,7 +84,7 @@ class TestSyncRunnerProcess(PgTestCase):
             env["ADMIN_WORKER_CAPABILITIES_PATH"] = str(capabilities_file)
 
             runner = subprocess.Popen(
-                [sys.executable, str(ROOT / "sync/runner.py")],
+                [sys.executable, "-m", "sync.runner"],
                 cwd=temp_path,
                 env=env,
                 stdout=subprocess.PIPE,
@@ -265,7 +279,7 @@ class TestSyncRunnerProcess(PgTestCase):
                 "sources: []\n",
                 encoding="utf-8",
             )
-            (temp_path / "sync.py").write_text(
+            _fake_sync_child(temp_path).write_text(
                 "import os, time\n"
                 f"open({str(child_pid_file)!r}, 'w').write(str(os.getpid()))\n",
                 encoding="utf-8",
@@ -280,7 +294,7 @@ class TestSyncRunnerProcess(PgTestCase):
             env["SYNC_TRIGGER_FILE"] = str(trigger_file)
 
             runner = subprocess.Popen(
-                [sys.executable, str(ROOT / "sync/runner.py")],
+                [sys.executable, "-m", "sync.runner"],
                 cwd=temp_path,
                 env=env,
                 stdout=subprocess.PIPE,
@@ -316,19 +330,16 @@ class TestSyncRunnerProcess(PgTestCase):
                 "sync:\n  daily_at: '03:30'\n  run_on_startup: false\nsources: []\n",
                 encoding="utf-8",
             )
-            (temp_path / "sync.py").write_text(
+            _fake_sync_child(temp_path).write_text(
                 "import sys\n"
                 f"open({str(argv_file)!r}, 'w').write(' '.join(sys.argv[1:]))\n",
                 encoding="utf-8",
             )
-            sys.path.insert(0, str(ROOT))
             from common.job_queue import enqueue_job
-            from common import db
             job_id = enqueue_job(db_path, "sync", {"source": "Chan", "sync_mode": "backfill"})
             # Simulate a worker crash: the request is left mid-flight.
-            with db.connect(db_path) as conn:
-                with conn:
-                    conn.execute("UPDATE video_duplicate_jobs SET state='processing' WHERE id=%s", (job_id,))
+            with db_session(db_path) as conn:
+                conn.execute("UPDATE video_duplicate_jobs SET state='processing' WHERE id=%s", (job_id,))
 
             env = dict(os.environ)
             current_pythonpath = env.get("PYTHONPATH", "")
@@ -342,7 +353,7 @@ class TestSyncRunnerProcess(PgTestCase):
             env["TEST_DATABASE_URL"] = str(db_path)
 
             runner = subprocess.Popen(
-                [sys.executable, str(ROOT / "sync/runner.py")],
+                [sys.executable, "-m", "sync.runner"],
                 cwd=temp_path, env=env, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True,
             )
@@ -358,7 +369,7 @@ class TestSyncRunnerProcess(PgTestCase):
                 deadline = time.monotonic() + 5
                 row = None
                 while time.monotonic() < deadline:
-                    with db.connect(db_path) as conn:
+                    with db_session(db_path) as conn:
                         row = conn.execute(
                             "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
                     if row and row[0] == "done":
@@ -377,7 +388,6 @@ class TestSyncRunnerProcess(PgTestCase):
 
     def test_idle_durable_queue_survives_missing_or_overwritten_wake(self):
         from common.job_queue import enqueue_job
-        from common import db
         for scenario in ("missing_sync_wake", "overwritten_sync_wake", "worker_restart"):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -386,22 +396,22 @@ class TestSyncRunnerProcess(PgTestCase):
                 trigger = root / "sync.trigger"
                 config = root / "config.yaml"
                 config.write_text("sync:\n  interval_minutes: 1440\n  run_on_startup: false\nsources: []\n")
-                (root / "sync.py").write_text(
+                _fake_sync_child(root).write_text(
                     "import json, os, sys\n"
-                    "for p in os.environ.get('PYTHONPATH', '').split(os.pathsep):\n"
-                    "    if p and p not in sys.path: sys.path.insert(0, p)\n"
                     "from common import db\n"
                     f"with open({str(marker)!r}, 'a') as handle: handle.write(json.dumps(sys.argv[1:]) + '\\n')\n"
                     "if '--jobs-only' in sys.argv:\n"
-                    "    with db.connect(os.environ.get('DATABASE_URL') or os.environ.get('DB_PATH')) as conn:\n"
+                    "    conn = db.connect(os.environ.get('DATABASE_URL') or os.environ.get('DB_PATH'))\n"
+                    "    try:\n"
                     "        with conn:\n"
                     "            conn.execute(\"UPDATE video_duplicate_jobs SET state='done' WHERE action<>'sync' AND state IN ('queued','processing')\")\n"
+                    "    finally:\n"
+                    "        conn.close()\n"
                 )
                 if scenario == "worker_restart":
                     job_id = enqueue_job(db_url, "performer_merge", {"merges": []})
-                    with db.connect(db_url) as conn:
-                        with conn:
-                            conn.execute("UPDATE video_duplicate_jobs SET state='processing' WHERE id=%s", (job_id,))
+                    with db_session(db_url) as conn:
+                        conn.execute("UPDATE video_duplicate_jobs SET state='processing' WHERE id=%s", (job_id,))
                 current_pythonpath = os.environ.get("PYTHONPATH", "")
                 pythonpath = os.pathsep.join(
                     part for part in (str(ROOT), current_pythonpath) if part)
@@ -409,7 +419,7 @@ class TestSyncRunnerProcess(PgTestCase):
                            DB_PATH=str(db_url), DATABASE_URL=str(db_url), TEST_DATABASE_URL=str(db_url),
                            SYNC_TRIGGER_FILE=str(trigger),
                            SYNC_STATUS_FILE=str(root / "status.json"))
-                runner = subprocess.Popen([sys.executable, str(ROOT / "sync/runner.py")],
+                runner = subprocess.Popen([sys.executable, "-m", "sync.runner"],
                     cwd=root, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, text=True)
                 try:
                     if scenario != "worker_restart":
@@ -425,7 +435,7 @@ class TestSyncRunnerProcess(PgTestCase):
                     while time.monotonic() < deadline:
                         if runner.poll() is not None:
                             self.fail("runner exited before durable work completed")
-                        with db.connect(db_url) as conn:
+                        with db_session(db_url) as conn:
                             state = conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0]
                         if state == "done":
                             break
@@ -457,7 +467,7 @@ class TestSyncRunnerProcess(PgTestCase):
                 "sources: []\n",
                 encoding="utf-8",
             )
-            (temp_path / "sync.py").write_text(
+            _fake_sync_child(temp_path).write_text(
                 "import os, sys\n"
                 "if '--jobs-only' in sys.argv:\n"
                 f"    open({str(jobs_marker_file)!r}, 'w').write('jobs_ok')\n"
@@ -475,7 +485,7 @@ class TestSyncRunnerProcess(PgTestCase):
             env["SYNC_TRIGGER_FILE"] = str(trigger_file)
 
             runner = subprocess.Popen(
-                [sys.executable, str(ROOT / "sync/runner.py")],
+                [sys.executable, "-m", "sync.runner"],
                 cwd=temp_path,
                 env=env,
                 stdout=subprocess.PIPE,

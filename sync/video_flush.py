@@ -14,18 +14,12 @@ from common.duration import MIN_VIDEO_DURATION_SECONDS, passes_minimum_video_dur
 from common.video_metadata import load_metadata_state
 
 if TYPE_CHECKING:
-    if __package__:
-        from .video_persistence import VideoPersistenceServices
-    else:
-        from video_persistence import VideoPersistenceServices
+    from sync.video_persistence import VideoPersistenceServices
 
 
 def _persistence_module():
     """Return video_persistence. It imports this module at its end, so the import stays local."""
-    if __package__:
-        from . import video_persistence
-    else:
-        import video_persistence
+    from sync import video_persistence
     return video_persistence
 
 
@@ -95,7 +89,7 @@ def _prepare_collected_items(collected: Dict[str, Dict[str, Any]], media_dir: Pa
                 prepared_items.append(prepared)
         except Exception as e:
             errors.append(f"{comp_id}: {type(e).__name__}: {e}")
-            services.logger.error(f"Failed to write video {comp_id}: {e}")
+            services.logger.error("Failed to write video %s: %s", comp_id, e)
     return prepared_items
 
 
@@ -120,7 +114,7 @@ def _persist_prepared_batch(prepared_items: List[Dict[str, Any]], conn: db.Conne
         except Exception:
             _persistence_module().logger.debug("Ignored exception in flush_collected", exc_info=True)
         errors.append(f"database batch: {type(e).__name__}: {e}")
-        services.logger.warning(f"Database batch failed: {e}")
+        services.logger.warning("Database batch failed: %s", e)
         written = 0
     return written, committed_items
 
@@ -156,7 +150,7 @@ def flush_collected(
         return 0
     count = len(collected)
     label = f" ({source_name})" if source_name else ""
-    services.logger.info(f"Writing {count} videos{label} to {media_dir} and DB...")
+    services.logger.info("Writing %s videos%s to %s and DB...", count, label, media_dir)
 
     errors: List[str] = []
     _merge_stored_metadata(collected, conn, services, errors)
@@ -175,7 +169,7 @@ def flush_collected(
         if raise_on_error:
             raise RuntimeError("Catalog persistence incomplete: " + "; ".join(errors[:5]))
     else:
-        services.logger.info(f"Successfully saved {written}/{count} videos{label} to {media_dir} and DB.")
+        services.logger.info("Successfully saved %s/%s videos%s to %s and DB.", written, count, label, media_dir)
     collected.clear()
     return written
 

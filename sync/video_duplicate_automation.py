@@ -148,7 +148,7 @@ def _reconcile_visual(db_url: str | None, pairs: list[dict]) -> dict:
     try:
         from sync.video_visual import source_key, reevaluate_evidence
     except ModuleNotFoundError:
-        from video_visual import source_key, reevaluate_evidence
+        from sync.video_visual import source_key, reevaluate_evidence
     now = int(time.time())
     conn = db.connect(db_url)
     try:
@@ -410,7 +410,7 @@ def reconcile(db_url: str | None, *, limit: int = MAX_AUTO_LOSERS,
     """Queue missing pHashes and reversible hides for high-confidence matches."""
     from common.job_queue import enqueue_jobs_batch
     from common.phash_jobs import enqueue as enqueue_phash
-    import video_duplicates
+    from resolver import video_duplicates
 
     scan = video_duplicates.scan_duplicate_index(db_url)
     visual = _reconcile_visual(db_url, scan.get("pairs", [])) if scan.get("complete") else {}

@@ -18,8 +18,8 @@ Finds and merges performer name variants by category:
    Seb Leblan vs Seb Leblanc, Damian Dark vs Damien Dark).
 
 CLI usage:
-  python3 fuzzy_performers.py --report                 # Readable console report
-  python3 fuzzy_performers.py --json                   # Report in JSON format
+  python3 -m common.fuzzy_performers --report                 # Readable console report
+  python3 -m common.fuzzy_performers --json                   # Report in JSON format
   # Merges are processed via the admin panel queue, handled by the sync container.
 """
 
@@ -35,26 +35,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from common.logging_setup import configure_logging
 
-try:
-    from common.db import Connection, connect, table_names
-except ImportError:
-    try:
-        from db import Connection, connect, table_names  # type: ignore[no-redef]
-    except ImportError:
-        Connection = Any  # type: ignore[no-redef, misc]
-        connect = None  # type: ignore[assignment]
-        table_names = None  # type: ignore[assignment]
+from common.db import Connection, connect, table_names  # noqa: F401
 
-try:
-    from common.performers import is_valid_performer_name, is_safe_alias
-except ImportError:
-    try:
-        from performers import is_valid_performer_name, is_safe_alias
-    except ImportError:
-        def is_valid_performer_name(name: str) -> bool:
-            return bool(name and len(name.strip()) >= 2)
-        def is_safe_alias(alias: str, canonical: str = "") -> bool:
-            return True
+from common.performers import is_valid_performer_name, is_safe_alias  # noqa: F401
 
 # Sciezki domyslne
 DB_URL = os.getenv("DATABASE_URL", "")
@@ -212,19 +195,13 @@ def find_fuzzy_performer_candidates(
     similarity_threshold: float = 0.88,
 ) -> Dict[str, Any]:
     """Compatibility facade for the fuzzy performer candidate scan."""
-    if __package__:
-        from .fuzzy_matching import find_fuzzy_performer_candidates as implementation
-    else:
-        from fuzzy_matching import find_fuzzy_performer_candidates as implementation
+    from common.fuzzy_matching import find_fuzzy_performer_candidates as implementation
     return implementation(db_url, similarity_threshold, _core=globals())
 
 
 def make_backup(db_url: Optional[str] = None, backup_dir: Optional[Path] = None) -> Path:
     """Create a compressed PostgreSQL backup with pg_dump (see ``common.db``)."""
-    try:
-        from common.db import pg_backup
-    except ImportError:
-        from db import pg_backup  # type: ignore[no-redef]
+    from common.db import pg_backup
     return Path(str(pg_backup(db_url or DB_URL or None, backup_dir,
                               prefix="adulthub-pre-fuzzy-merge")))
 
@@ -263,10 +240,7 @@ def trigger_jellyfin_refresh(url: Optional[str] = None, api_key: Optional[str] =
 
 
 def _fuzzy_merge_implementation():
-    if __package__:
-        from . import fuzzy_merge
-    else:
-        import fuzzy_merge
+    from common import fuzzy_merge
     return fuzzy_merge
 
 

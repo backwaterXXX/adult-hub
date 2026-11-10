@@ -8,7 +8,7 @@ import logging
 import os
 import sys
 
-from .telegram_session import (
+from resolver.providers.telegram_session import (
     interactive_login,
     is_session_authorized,
     validate_api_credentials,

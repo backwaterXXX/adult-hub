@@ -8,12 +8,8 @@ from typing import Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-if __package__:
-    from . import scene_scrapers as _core
-    from .scene_scraper_models import PART_MARKER_SQL
-else:
-    import scene_scrapers as _core
-    from scene_scraper_models import PART_MARKER_SQL
+from sync import scene_scrapers as _core  # noqa: E402
+from sync.scene_scraper_models import PART_MARKER_SQL  # noqa: E402
 
 def _load_official_stashdb_performers(conn: Any) -> list[dict]:
     """Load only active StashDB identities and their approved official aliases."""
@@ -71,10 +67,7 @@ def _import_caption_title_helpers():
     """(extract_telegram_metadata, search_scene_by_exact_title), or None when unavailable."""
     try:
         from common.telegram_metadata import extract_telegram_metadata
-        if __package__:
-            from .scene_scraper_text_sources import search_scene_by_exact_title
-        else:
-            from scene_scraper_text_sources import search_scene_by_exact_title
+        from sync.scene_scraper_text_sources import search_scene_by_exact_title
     except ImportError as exc:
         _core.logger.warning("Caption title lookup unavailable (%s)", type(exc).__name__)
         return None
@@ -171,10 +164,7 @@ def _backfill_stashdb_caption_matches(conn: Any, *, limit: int) -> Tuple[int, in
         return 0, 0
 
     try:
-        if __package__:
-            from common.performer_catalog import match_catalog, prepare_catalog
-        else:
-            from common.performer_catalog import match_catalog, prepare_catalog
+        from common.performer_catalog import match_catalog, prepare_catalog
         catalog = _load_official_stashdb_performers(conn)
         if not catalog:
             return 0, 0

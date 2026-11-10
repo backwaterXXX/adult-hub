@@ -5,20 +5,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-if __package__:
-    from . import duplicate_jobs as _core
-    from . import duplicate_job_external_handlers as _external_handlers
-    from .duplicate_job_undo import _run_undo
-    from .duplicate_job_quarantine import _run_quarantine
-    from .duplicate_job_hide import _run_hide
-    from .duplicate_job_dispatch import _catalog_result, _run_catalog_full_audit, _run_external_action, _run_dismiss, _run_undismiss
-else:
-    import duplicate_jobs as _core
-    import duplicate_job_external_handlers as _external_handlers
-    from duplicate_job_undo import _run_undo
-    from duplicate_job_quarantine import _run_quarantine
-    from duplicate_job_hide import _run_hide
-    from duplicate_job_dispatch import _catalog_result, _run_catalog_full_audit, _run_external_action, _run_dismiss, _run_undismiss
+from sync import duplicate_jobs as _core  # noqa: E402
+from sync import duplicate_job_external_handlers as _external_handlers  # noqa: E402
+from sync.duplicate_job_undo import _run_undo  # noqa: E402
+from sync.duplicate_job_quarantine import _run_quarantine  # noqa: E402
+from sync.duplicate_job_hide import _run_hide  # noqa: E402
+from sync.duplicate_job_dispatch import _catalog_result, _run_catalog_full_audit, _run_external_action, _run_dismiss, _run_undismiss  # noqa: E402
 
 
 class _JobRun:

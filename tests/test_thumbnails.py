@@ -1,13 +1,10 @@
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from thumbnails import (
+from sync.thumbnails import (
     ThumbnailServices,
     _thumb_fail_marker,
     _valid_thumbnail_bytes,

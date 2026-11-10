@@ -1,14 +1,8 @@
 """Focused service tests for shared legacy/Admin V2 proposal operations."""
 
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "sync"))
-sys.path.insert(0, str(ROOT / "resolver"))
 
 from common import performer_proposals
 
@@ -107,7 +101,7 @@ class TestPerformerProposalService(unittest.TestCase):
         ])
         wake = []
         with patch.object(performer_proposals.db, "connect", return_value=conn), \
-             patch("video_duplicates.enqueue_job", return_value="job-9") as enqueue:
+             patch("resolver.video_duplicates.enqueue_job", return_value="job-9") as enqueue:
             result = performer_proposals.review_proposal(
                 "db", 8, {"action": "approve", "performer_id": "p9"}, wake_worker=wake.append,
             )

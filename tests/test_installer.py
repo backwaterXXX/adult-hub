@@ -13,6 +13,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.helpers.docker_stub import make_docker_stub
+
 ROOT = Path(__file__).resolve().parents[1]
 SETUP_SCRIPT = ROOT / "scripts" / "setup.sh"
 
@@ -110,13 +112,19 @@ class TestStandaloneInstaller(unittest.TestCase):
         shutil.copy(ROOT / "VERSION", self.isolated_root / "VERSION")
         shutil.copy(ROOT / "compose.standalone.yml", self.isolated_root / "compose.standalone.yml")
         shutil.copytree(ROOT / "common", self.isolated_root / "common")
+        # Default Docker CLI for runs without --docker-bin: no containers reported, so the
+        # production-project guard does not depend on the host's running stack.
+        self.stub_dir = tempfile.TemporaryDirectory(prefix="adulthub_docker_stub_")
+        self.docker_stub = make_docker_stub(Path(self.stub_dir.name))
 
     def tearDown(self):
+        self.stub_dir.cleanup()
         self.temp_dir.cleanup()
 
     def run_installer(self, args, *, env=None, cwd=None, input_data=None):
         cmd = [str(SETUP_SCRIPT)] + args
         run_env = os.environ.copy()
+        run_env["DOCKER_BIN"] = self.docker_stub
         if env:
             run_env.update(env)
         target_cwd = cwd or str(self.isolated_root)
@@ -151,6 +159,21 @@ class TestStandaloneInstaller(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("Active production Compose project 'adult-hub'", result.stderr)
+
+    def test_guard_refuses_when_stub_reports_running_adult_hub_container(self):
+        """Production guard still refuses when the default Docker CLI reports a running adult-hub container."""
+        running_dir = Path(self.stub_dir.name) / "running"
+        running_dir.mkdir()
+        running_stub = make_docker_stub(running_dir, running_container=True)
+
+        result = self.run_installer(
+            ["--non-interactive", "--root-dir", str(self.isolated_root)],
+            env={"DOCKER_BIN": running_stub},
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Active production Compose project 'adult-hub' is currently running", result.stderr)
+        self.assertFalse((self.isolated_root / ".env").exists())
 
     def test_fresh_installation_loopback_mode(self):
         """Installer generates valid .env, config.yaml, and isolated directories."""

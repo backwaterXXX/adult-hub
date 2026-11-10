@@ -29,15 +29,15 @@ ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}
 LABEL org.opencontainers.image.version=${APP_VERSION}
 COPY VERSION /opt/adult-hub/VERSION
-COPY resolver/video_duplicates.py resolver/video_duplicate_scoring.py resolver/video_duplicate_merge_history.py ./
-
+COPY sync/ ./sync/
+COPY resolver/ ./resolver/
 COPY backup_db.py restore_db.py ./
+COPY tools/__init__.py ./tools/__init__.py
 COPY tools/benchmark_catalog_search.py ./tools/benchmark_catalog_search.py
-COPY sync/ .
 
 # Run as non-root: /data and /cache are volume-mounted read-write in
 # compose, so they are writable for appuser (the database lives in Postgres).
 RUN useradd -m -u 10000 appuser && mkdir -p /cache /data && chown -R appuser /app /cache
 USER appuser
 
-CMD ["python", "runner.py"]
+CMD ["python", "-m", "sync.runner"]

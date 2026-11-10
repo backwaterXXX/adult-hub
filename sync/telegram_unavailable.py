@@ -98,7 +98,7 @@ def reconcile_telegram_channel(
                 counts["errors"] += 1
                 logger.info("Telegram availability check inconclusive for %s: %s", video_id, exc)
                 _retain_inconclusive(conn, video_id, channel_id, message_id, unique_id,
-                                     old_status, old_misses, old_files, now, exc)
+                                     old_status, old_misses, old_files, now, exc, logger)
                 continue
         counts["checked"] += 1
         if status == "available":
@@ -146,7 +146,7 @@ def _fetch_message_status(url: str, fetch_json_with_retry: Callable) -> str:
 
 
 def _retain_inconclusive(conn, video_id, channel_id, message_id, unique_id,
-                         old_status, old_misses, old_files, now, exc) -> None:
+                         old_status, old_misses, old_files, now, exc, logger) -> None:
     """Keep the previous quarantine state when the check could not give an answer."""
     retained_status = old_status if old_status in {"suspect", "quarantined"} else "failed"
     try:
@@ -160,7 +160,8 @@ def _retain_inconclusive(conn, video_id, channel_id, message_id, unique_id,
         """, (video_id, channel_id, message_id, unique_id, retained_status,
               int(old_misses or 0), now, json.dumps(old_files or []), str(exc)[:500]))
     except Exception:
-        pass
+        logger.warning("Could not record inconclusive Telegram availability check for %s; "
+                       "the quarantine row was not updated", video_id, exc_info=True)
 
 
 def _restore_available(conn, video_id, old_status, old_files, now, counts, logger) -> None:

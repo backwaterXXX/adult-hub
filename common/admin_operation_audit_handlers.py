@@ -1,10 +1,7 @@
 """Admin operation handlers for file and consistency audit plans."""
 from __future__ import annotations
 
-if __package__:
-    from . import admin_operation_execution as _core
-else:
-    import admin_operation_execution as _core
+from common import admin_operation_execution as _core
 
 
 def handle_orphan_file_operation(conn, db_url, plan_id, row, config, scope, revisions, now):

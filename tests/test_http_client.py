@@ -1,17 +1,13 @@
 import errno
-import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
-from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
 from unittest.mock import Mock
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "sync"))
 
-from http_client import fetch_json_with_retry, is_retryable_error, parse_retry_after, retry_after_from_error
+from sync.http_client import fetch_json_with_retry, is_retryable_error, parse_retry_after, retry_after_from_error
 
 
 class TestHttpClientRetryClassification(unittest.TestCase):

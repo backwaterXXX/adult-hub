@@ -19,11 +19,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "resolver"))
 
-import phash_worker
+import resolver.phash_worker as phash_worker
 from common.worker_capabilities import read_worker_capabilities
 
 JOB = {

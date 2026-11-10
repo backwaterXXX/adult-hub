@@ -14,20 +14,17 @@ Standalone calls without a success signal (providers_succeeded=None)
 always protect.
 """
 
-import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
 
 try:
-    from test_support import load_flat_sync_module
-    sync_module = load_flat_sync_module()
+    from test_support import load_sync_module
+    sync_module = load_sync_module()
     from common.config_loader import AppConfig, SourceConfig, SyncConfig, TelegramChannelConfig
     SYNC_AVAILABLE = True
 except ImportError as exc:

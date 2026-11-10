@@ -420,7 +420,9 @@ def _collect_nfo_targets(conn, canonical_names: set, _core) -> Dict[Any, Any]:
 
 def _regenerate_nfos(conn, resolved_merges: Dict[str, str], media_dir: Path, _core) -> Tuple[int, List[str]]:
     """Step 6: rewrite NFO files for affected videos; return (updated count, error messages)."""
-    import sync as S
+    # Batched rewrite driven by metadata state; it returns error text. Not the same as the
+    # rebuild_telegram_performers helper of this name, which takes (video_id, performers) pairs.
+    from sync import sync as S
     nfos_updated = 0
     canonical_names = set(resolved_merges.values())
     nfo_targets = _collect_nfo_targets(conn, canonical_names, _core)

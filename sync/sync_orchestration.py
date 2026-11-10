@@ -5,10 +5,7 @@ import os
 from typing import Any, Dict, Optional, Set
 from common.http_rate_limit import snapshot_host_rate_limit_stats
 
-if __package__:
-    from . import sync as _core
-else:
-    import sync as _core
+from sync import sync as _core
 
 from common import schedule_stages
 
@@ -151,7 +148,7 @@ def _run_performer_catalog_stage(recorder: _StageRecorder, conn) -> None:
     if recorder.open("performer-catalog"):
         catalogue_problems: list = []
         try:
-            from performer_catalog_sync import sync_catalog_if_due
+            from sync.performer_catalog_sync import sync_catalog_if_due
             catalogue_result = sync_catalog_if_due(conn)
             if catalogue_result:
                 _core.logger.info("Performer catalogue refreshed: %s people, %s aliases", *catalogue_result)
@@ -365,7 +362,7 @@ def _run_scene_identification(sp: _SyncPass) -> None:
     # The scraper is optional, so an absent module leaves the stage unrecorded
     # instead of reporting a failure on every install that never asked for it.
     try:
-        from scene_scrapers import backfill_scenes  # type: ignore
+        from sync.scene_scrapers import backfill_scenes  # type: ignore
     except ImportError:
         backfill_scenes = None
     if backfill_scenes is not None:
@@ -399,7 +396,7 @@ def _run_metadata_backfills(sp: _SyncPass, problems: list) -> None:
 
 def _run_pbc_backfill(sp: _SyncPass, problems: list) -> None:
     try:
-        from pbc import backfill_pbc  # type: ignore
+        from sync.pbc import backfill_pbc  # type: ignore
         _run_timed_stage("metadata_pbc", lambda: backfill_pbc(sp.conn, limit=_core.PBC_BACKFILL_PER_RUN))
     except ImportError:
         pass
@@ -410,7 +407,7 @@ def _run_pbc_backfill(sp: _SyncPass, problems: list) -> None:
 
 def _run_tpdb_backfill(sp: _SyncPass, problems: list) -> None:
     try:
-        from theporndb import backfill_tpdb  # type: ignore
+        from sync.theporndb import backfill_tpdb  # type: ignore
         _run_timed_stage("metadata_tpdb", lambda: backfill_tpdb(sp.conn, limit=_core.TPDB_BACKFILL_PER_RUN))
     except ImportError:
         pass
@@ -421,7 +418,7 @@ def _run_tpdb_backfill(sp: _SyncPass, problems: list) -> None:
 
 def _run_stashdb_backfill(sp: _SyncPass, problems: list) -> None:
     try:
-        from stashdb import backfill_stashdb  # type: ignore
+        from sync.stashdb import backfill_stashdb  # type: ignore
         _run_timed_stage("metadata_stashdb", lambda: backfill_stashdb(sp.conn, limit=_core.TPDB_BACKFILL_PER_RUN))
     except ImportError:
         pass
@@ -434,10 +431,7 @@ def _run_telegram_title_cleanup(sp: _SyncPass) -> None:
     # Repair stored Telegram titles and move caption hashtags into the existing
     # genre/tag fields. The bounded worker resumes its cursor on the next pass.
     try:
-        if __package__:
-            from .telegram_title_cleanup import cleanup_telegram_titles
-        else:
-            from telegram_title_cleanup import cleanup_telegram_titles
+        from sync.telegram_title_cleanup import cleanup_telegram_titles
         cleanup_result = sp.recorder.run(
             "telegram-title-cleanup", "telegram_title_cleanup",
             lambda: cleanup_telegram_titles(
@@ -484,7 +478,7 @@ def _run_jellyfin_reconciliation(sp: _SyncPass, jellyfin_active: bool, problems:
 def _publish_jellyfin_people(sp: _SyncPass, problems: list) -> None:
     # Publish structured StashDB details to existing Jellyfin person pages.
     try:
-        from jellyfin_people import sync_jellyfin_people
+        from sync.jellyfin_people import sync_jellyfin_people
         sync_jellyfin_people(
             sp.conn, _core.JELLYFIN_URL, _core.JELLYFIN_API_KEY,
             limit=_core.JELLYFIN_PEOPLE_PER_RUN,
@@ -635,21 +629,24 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
     _log_sync_start()
 
     conn = _core.init_db()
-    sp = _SyncPass(conn=conn, sync_mode=sync_mode, source_filter=source_filter,
-                   skip_telegram_channels=skip_telegram_channels)
-    sp.recorder.target = getattr(conn, "_url", None)
-    schedule_stages.mark_interrupted_stages(conn, _SYNC_SCHEDULE)
-    sp.recorder.stages.update(schedule_stages.stage_states(conn, _SYNC_SCHEDULE))
-    _run_performer_catalog_stage(sp.recorder, conn)
-    sp.before_ids = _core._video_id_snapshot(conn)
-    _run_startup_maintenance(conn)
-    _run_telegram_scans(sp)
-    _run_dead_stream_filter(sp)
-    _run_final_flush(sp)
-    _run_stream_rewrite(sp)
-    _run_scene_identification(sp)
-    sp.recorder.run_group("metadata-backfill", lambda problems: _run_metadata_backfills(sp, problems))
-    _run_telegram_title_cleanup(sp)
-    sp.recorder.run("library-maintenance", None, lambda: _library_maintenance_pass(sp))
-    _run_jellyfin_stage(sp)
-    return _finish_sync_pass(sp, started_at)
+    try:
+        sp = _SyncPass(conn=conn, sync_mode=sync_mode, source_filter=source_filter,
+                       skip_telegram_channels=skip_telegram_channels)
+        sp.recorder.target = getattr(conn, "_url", None)
+        schedule_stages.mark_interrupted_stages(conn, _SYNC_SCHEDULE)
+        sp.recorder.stages.update(schedule_stages.stage_states(conn, _SYNC_SCHEDULE))
+        _run_performer_catalog_stage(sp.recorder, conn)
+        sp.before_ids = _core._video_id_snapshot(conn)
+        _run_startup_maintenance(conn)
+        _run_telegram_scans(sp)
+        _run_dead_stream_filter(sp)
+        _run_final_flush(sp)
+        _run_stream_rewrite(sp)
+        _run_scene_identification(sp)
+        sp.recorder.run_group("metadata-backfill", lambda problems: _run_metadata_backfills(sp, problems))
+        _run_telegram_title_cleanup(sp)
+        sp.recorder.run("library-maintenance", None, lambda: _library_maintenance_pass(sp))
+        _run_jellyfin_stage(sp)
+        return _finish_sync_pass(sp, started_at)
+    finally:
+        conn.close()

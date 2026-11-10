@@ -1,17 +1,14 @@
 """Read-only job inspection must not alter worker recovery state."""
 import json
-import sys
-from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase, TEST_URL
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'resolver'))
-import admin
-import admin_services
+import resolver.admin as admin
+import resolver.admin_services as admin_services
 from common import db
 from common.job_queue import enqueue_job, retry_job
+from tests.helpers.db_session import db_session
 
 
 BAD_URL = "postgresql://127.0.0.1:1/missing"
@@ -45,11 +42,9 @@ class TestAdminJobInspection(PgTestCase):
     def test_sensitive_recovery_data_is_hidden_but_retained_for_worker(self):
         job_id = enqueue_job(TEST_URL, 'hide', {'fingerprints': {'private-path': 'fingerprint'}, 'keeper_id': 'v1'})
         recovery = {'operation_id': 'op-1', 'snapshots': [{'credential': 'private-secret'}]}
-        conn = db.connect(TEST_URL)
-        with conn:
+        with db_session(TEST_URL) as conn:
             conn.execute('UPDATE video_duplicate_jobs SET result=%s WHERE id=%s',
                          (json.dumps(recovery), job_id))
-        conn.close()
         public = _job(TEST_URL, job_id)
         self.assertEqual(public['result'], {'operation_id': 'op-1', 'recovery': 'in_progress'})
         self.assertNotIn('fingerprints', public['payload'])
@@ -65,11 +60,9 @@ class TestAdminJobInspection(PgTestCase):
 
     def test_nested_failure_error_is_redacted(self):
         job_id = enqueue_job(TEST_URL, 'performer_merge', {'merges': []})
-        conn = db.connect(TEST_URL)
-        with conn:
+        with db_session(TEST_URL) as conn:
             conn.execute('UPDATE video_duplicate_jobs SET result=%s WHERE id=%s',
                          (json.dumps({'error': 'https://private-token@remote.example/'}), job_id))
-        conn.close()
         self.assertNotIn('private-token', json.dumps(_job(TEST_URL, job_id)))
 
     def test_unresolved_failure_listing_reconciles_full_history_and_pages_groups(self):

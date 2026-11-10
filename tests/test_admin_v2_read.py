@@ -3,7 +3,6 @@
 import asyncio
 import json
 import os
-import sys
 import time
 import unittest
 from pathlib import Path
@@ -15,15 +14,12 @@ from starlette.requests import Request
 from tests.pg_helper import PgTestCase
 from common import db
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
 
-import admin_library_v2
-import admin_v2_issues
-import admin_v2_jobs
+import resolver.admin_library_v2 as admin_library_v2
+import resolver.admin_v2_issues as admin_v2_issues
+import resolver.admin_v2_jobs as admin_v2_jobs
 
-sys.path.insert(0, str(ROOT / "sync"))
-import duplicate_jobs
+import sync.duplicate_jobs as duplicate_jobs
 
 
 def request(query=b""):
@@ -372,11 +368,11 @@ class TestIssueCenterRules(unittest.TestCase):
             {"id": "2", "studio": "Paused", "enabled": False},
         ]}]
         admin = self.make_admin({"runs": []}, sources)
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [], "total": 0, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"available": True, "jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"available": True, "jobs": [], "truncated": False}):
             issues, health = admin_v2_issues._build_issues(admin, 100)
         self.assertEqual([i["object_id"] for i in issues if i["kind"] == "sync_never_run"], ["telegram:1"])
         self.assertFalse(health["incomplete"])
@@ -388,11 +384,11 @@ class TestIssueCenterRules(unittest.TestCase):
             {"ended_at": 10, "sources": [{"source": "telegram:1", "success": False, "error": "old"}]},
         ], "truncated": True}
         admin = self.make_admin(history, sources)
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [], "total": 0, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"available": True, "jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"available": True, "jobs": [], "truncated": False}):
             issues, health = admin_v2_issues._build_issues(admin, 100)
         self.assertFalse(any(i["kind"] == "sync_failure" for i in issues))
         self.assertFalse(any(i["kind"] == "sync_never_run" for i in issues))
@@ -403,11 +399,11 @@ class TestIssueCenterRules(unittest.TestCase):
     def test_unavailable_issue_links_to_matching_library_filter(self):
         admin = self.make_admin({"runs": []}, [])
         admin.admin_data.unavailable_videos = lambda *_a, **_k: {"available": True, "total": 3}
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [], "total": 0, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"available": True, "jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"available": True, "jobs": [], "truncated": False}):
             issues, _health = admin_v2_issues._build_issues(admin, 100)
         issue = next(i for i in issues if i["kind"] == "unavailable_video")
         self.assertEqual(issue["action"]["route"], "/admin/v2/#library?availability=unavailable")
@@ -420,9 +416,9 @@ class TestIssueCenterRules(unittest.TestCase):
         def run(unresolved_jobs):
             feed = {"available": True, "jobs": unresolved_jobs,
                     "total": len(unresolved_jobs), "truncated": False}
-            with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-                 patch("admin_services.unresolved_failed_task_listing", return_value=feed), \
-                 patch("admin_services.job_listing", return_value={
+            with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+                 patch("resolver.admin_services.unresolved_failed_task_listing", return_value=feed), \
+                 patch("resolver.admin_services.job_listing", return_value={
                      "available": True, "jobs": [], "truncated": False,
                  }):
                 return admin_v2_issues._build_issues(admin, 100)[0]
@@ -446,9 +442,9 @@ class TestIssueCenterRules(unittest.TestCase):
         feed = {"available": True, "jobs": [
             {**failed[1], "attempts": 2}, {**failed[2], "attempts": 1},
         ], "total": 2, "truncated": False}
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value=feed), \
-             patch("admin_services.job_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value=feed), \
+             patch("resolver.admin_services.job_listing", return_value={
                  "available": True, "jobs": [], "truncated": False,
              }):
             issues, _health = admin_v2_issues._build_issues(admin, 100)
@@ -564,7 +560,7 @@ class TestJobProgressProjection(unittest.TestCase):
         self.assertNotIn("result", safe)
 
     def test_progress_and_event_history_are_whitelisted(self):
-        from admin_services import _safe_job_progress
+        from resolver.admin_services import _safe_job_progress
 
         progress, events = _safe_job_progress({
             "progress": {"stage": "moving_files", "completed": 2, "total": 5, "path": "/private/file"},
@@ -775,7 +771,7 @@ class TestLibraryGeneratePhash(PgTestCase):
                 "INSERT INTO videos (id, provider, title, duration) VALUES (%s, 'telegram', 'Test Movie', 600)",
                 (video_id,),
             )
-        from admin_v2_phash import PHASH_ALGORITHM_VERSION, _SERVER_PROFILE
+        from resolver.admin_v2_phash import PHASH_ALGORITHM_VERSION, _SERVER_PROFILE
         from common import phash_jobs
         first = phash_jobs.enqueue(
             self.db_url, video_id=video_id, duration_us=600_000_000,

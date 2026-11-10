@@ -28,7 +28,6 @@ from pathlib import Path
 # PostgreSQL-only: resolver cache/diagnostics read DATABASE_URL (no SQLite
 # files). Point it at the test database BEFORE importing the resolver app
 # (its cache/diagnostics singletons resolve the URL at import).
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import TEST_URL
 
 if TEST_URL:
@@ -39,11 +38,9 @@ os.environ.setdefault(
     "CONFIG_PATH",
     str(Path(__file__).parent / "fixtures" / "config_telegram_only.yaml"))
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:
-    from telegram_stream import ParallelTelegramStreamManager  # type: ignore
+    from resolver.telegram_stream import ParallelTelegramStreamManager  # type: ignore
     STREAM_AVAILABLE = True
     _STREAM_IMPORT_ERROR = None
 except Exception as exc:  # module may not exist yet in some checkouts
@@ -52,7 +49,7 @@ except Exception as exc:  # module may not exist yet in some checkouts
     _STREAM_IMPORT_ERROR = exc
 
 try:
-    import app as resolver_app
+    import resolver.app as resolver_app
     RESOLVER_AVAILABLE = True
     _RESOLVER_IMPORT_ERROR = None
 except Exception as exc:
@@ -452,7 +449,7 @@ class TestParallelStreamBehavior(unittest.IsolatedAsyncioTestCase):
         # buffer and is not counted here (this test retains no output).
         # No process-RSS bound is claimed.
         try:
-            from telegram_stream import _Job  # internal; skip if refactored
+            from resolver.telegram_stream import _Job  # internal; skip if refactored
         except ImportError:
             self.skipTest("telegram_stream internals refactored")
         mgr = await self._mgr(workers=3, block_size=8192,
@@ -492,7 +489,7 @@ class TestParallelStreamBehavior(unittest.IsolatedAsyncioTestCase):
         # stay within the configured budget throughout, and every reader
         # still receives exact bytes.
         try:
-            from telegram_stream import _Job  # internal; skip if refactored
+            from resolver.telegram_stream import _Job  # internal; skip if refactored
         except ImportError:
             self.skipTest("telegram_stream internals refactored")
         mgr = await self._mgr(workers=3, global_workers=6, block_size=8192,
@@ -616,38 +613,29 @@ class TestResolverShutdown(unittest.IsolatedAsyncioTestCase):
 
 
 class TestDeployedImportLayout(unittest.TestCase):
-    """Deployment layout: resolver/ contents are the app root.
+    """Deployment layout: common/, resolver/ and sync/ sit side by side in the app root.
 
-    Runs a subprocess with cwd=resolver/ and a PYTHONPATH that exposes
-    only resolver/ (plus the shared common/ package, as installed in the
-    images) so ``import resolver...`` cannot work. The provider must still
+    Runs a subprocess whose working directory and PYTHONPATH hold only symlinks to
+    those three packages, as the images copy them, so the repository root (which
+    holds the checkout's own files) is not importable. The provider must still
     build and close the parallel stream manager with no Telegram access.
     """
 
     def test_global_stream_manager_in_deployed_layout(self):
         import subprocess
-        resolver_dir = str(Path(__file__).parent.parent / "resolver")
         repo_dir = str(Path(__file__).parent.parent)
         with tempfile.TemporaryDirectory(prefix="deploy_layout_") as tmp:
-            # Simulate site-packages common without exposing the repo root
-            # (which would also make the ``resolver`` package importable).
-            os.symlink(os.path.join(repo_dir, "common"),
-                       os.path.join(tmp, "common"))
+            for package in ("common", "resolver", "sync"):
+                os.symlink(os.path.join(repo_dir, package), os.path.join(tmp, package))
             env = dict(os.environ)
-            env["PYTHONPATH"] = resolver_dir + os.pathsep + tmp
+            env["PYTHONPATH"] = tmp
             for var in ("CONFIG_PATH", "DATABASE_URL"):
                 env.pop(var, None)
             script = (
                 "import asyncio, sys\n"
                 "assert not any('adult-hub' in p and 'resolver' not in p and '.venv' not in p "
                 "for p in sys.path), sys.path\n"
-                "try:\n"
-                "    import resolver\n"
-                "except ModuleNotFoundError:\n"
-                "    pass\n"
-                "else:\n"
-                "    raise SystemExit('repo-root leak: resolver importable')\n"
-                "from providers.telegram import _get_global_stream_manager\n"
+                "from resolver.providers.telegram import _get_global_stream_manager\n"
                 "m = _get_global_stream_manager()\n"
                 "assert type(m).__name__ == 'ParallelTelegramStreamManager', type(m)\n"
                 "asyncio.run(m.close())\n"
@@ -655,7 +643,7 @@ class TestDeployedImportLayout(unittest.TestCase):
             )
             proc = subprocess.run(
                 [sys.executable, "-c", script],
-                cwd=resolver_dir, env=env, capture_output=True, text=True,
+                cwd=tmp, env=env, capture_output=True, text=True,
                 timeout=30)
         self.assertEqual(
             proc.returncode, 0,

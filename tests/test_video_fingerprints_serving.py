@@ -327,11 +327,11 @@ class FingerprintHarness(unittest.TestCase):
         image_utils.compute_dhash = self.image_checks.compute_dhash
         image_utils.is_black_image = self.image_checks.is_black_image
         image_utils.is_bumper_hash = self.image_checks.is_bumper_hash
-        thumbnails = types.ModuleType("thumbnails")
+        thumbnails = types.ModuleType("sync.thumbnails")
         thumbnails._get_cached_bumper_hashes = self.thumbnails._get_cached_bumper_hashes
         thumbnails._valid_thumbnail_bytes = self.thumbnails._valid_thumbnail_bytes
         return {"stash_phash": stash, "stash_phash.video": video, "stash_phash.phash": phash,
-                "common.image_utils": image_utils, "thumbnails": thumbnails}
+                "common.image_utils": image_utils, "sync.thumbnails": thumbnails}
 
     def listening_server(self, address, handler):
         """The real loopback server, remembered, with its teardown calls recorded."""
@@ -782,11 +782,7 @@ class TestPhashRequirements(FingerprintHarness):
 
 
 class TestBothDeploymentLayouts(FingerprintHarness):
-    """The images install this file as a flat script; the repository can import it as a package."""
-
-    def test_the_script_layout_reaches_the_mp4_helpers_by_name(self):
-        self.assertEqual(self.module.__package__, "")
-        self.assertEqual(self.module._fingerprint_mp4.__name__, "fingerprint_mp4")
+    """The module, loaded as ``sync.video_fingerprints``, reaches its MP4 helpers as a sibling."""
 
     def test_the_package_layout_reaches_the_mp4_helpers_as_a_sibling(self):
         package = types.ModuleType("sync")

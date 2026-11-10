@@ -1,7 +1,7 @@
 """Read-only latency and query-plan benchmark for Admin catalog text search.
 
 Run inside the sync image with representative search terms, for example:
-    python tools/benchmark_catalog_search.py --term telegram --term performer
+    python -m tools.benchmark_catalog_search --term telegram --term performer
 
 Only aggregate timings and plan nodes are printed; search terms and catalog rows
 are not included in output. Each query runs in a read-only transaction and has a

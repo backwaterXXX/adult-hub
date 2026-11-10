@@ -1,19 +1,22 @@
 """Historical migrations kept only to upgrade databases that already used them.
 
-`LEGACY_MIGRATIONS` is the pre-baseline chain (versions 1-8). The current
-baseline (version 1, `0001_baseline`) creates the same schema from
+`LEGACY_MIGRATIONS` is the pre-baseline chain (versions 1-8). Its version 1 is
+`legacy_initial_schema.py`, not the baseline. The current baseline (version 1,
+`0001_baseline`, in `m0001_baseline.py`) creates the same schema from
 `schema_baseline.sql`, so these run only for databases whose recorded history
 proves they started before the baseline existed.
 
 `POST_BASELINE_MIGRATIONS` is the compatibility chain for databases that
-recorded the historical post-baseline upgrades (versions 10-62). They still
-upgrade through it; a database built by the current baseline never sees them.
-The migrations stay in their own files for exactly that reason, and ordering
-is load-bearing (m0039 drops the table m0035 creates).
+recorded the historical post-baseline upgrades (versions 10-67, 58 migrations).
+They still upgrade through it; a database built by the current baseline never
+sees them. The migrations stay in their own files for exactly that reason. The
+tuple must stay in apply order (ascending version): `runner.py` rejects an
+unordered chain, and ordering is load-bearing (m0039 drops the table m0035
+creates).
 """
 
 from common.migrations.base import Migration
-from common.migrations.m0001_initial_schema import migration as m0001
+from common.migrations.legacy_initial_schema import migration as m0001
 from common.migrations.m0002_duplicate_jobs_and_sources import migration as m0002
 from common.migrations.m0003_telegram_channel_state import migration as m0003
 from common.migrations.m0004_performer_enrichment import migration as m0004

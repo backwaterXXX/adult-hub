@@ -13,8 +13,8 @@ sort after registered providers. Keeper gets tags
 not add them back).
 
 Usage:
-    python3 merge_dupes.py --dry-run [--db ...]
-    python3 merge_dupes.py --apply   # ONLY inside sync container (writes to DB)
+    python3 -m sync.merge_dupes --dry-run [--db ...]
+    python3 -m sync.merge_dupes --apply   # ONLY inside sync container (writes to DB)
 """
 
 import argparse
@@ -27,7 +27,6 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent / "sync"))
 
 DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "./media/adult"))
@@ -88,10 +87,7 @@ def _pair_should_merge(members: list, title_overlap_min: float) -> bool:
         ok = t_overlap >= title_overlap_min and (unk or abs(durs[0] - durs[1]) <= 180)
 
     if ok:
-        try:
-            from resolver.video_duplicate_scoring import _has_different_season_markers
-        except ImportError:
-            from video_duplicate_scoring import _has_different_season_markers
+        from resolver.video_duplicate_scoring import _has_different_season_markers
         if _has_different_season_markers(t0, t1):
             ok = False
     return ok
@@ -234,7 +230,7 @@ def main() -> int:
         print("\nDry-run. Run with --apply INSIDE sync container.")
         return 0
 
-    import sync as S
+    from sync import sync as S
     media_dir = Path(args.media).resolve()
     conn = S.init_db(args.db_url or None)
     total_dropped = 0

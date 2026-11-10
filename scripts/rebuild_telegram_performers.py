@@ -8,45 +8,23 @@ matches and queue uncertain credits for review.
 import argparse
 import json
 import os
-import sys
 import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "sync"))
 
 from common import db
 from common.performer_catalog import (load_catalog, match_catalog, normalize_name,
                                       prepare_catalog)
+from common.performer_cleanup_support import regenerate_telegram_nfo
 from common.performers import is_non_performer_name
-import sync as S
+from sync import sync as S
 
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", str(ROOT / "media" / "adult")))
 
 
 def _regenerate_nfo(conn, video_id: str, performers: list[str]) -> bool:
-    row = conn.execute("""
-        SELECT provider,title,slug,duration,thumbnail,categories,tags,studio,first_seen,source_text
-        FROM videos WHERE id=%s
-    """, (video_id,)).fetchone()
-    if not row:
-        return False
-    provider, title, slug, duration, thumbnail, categories, tags, studio, first_seen, source_text = row
-    categories = categories if isinstance(categories, list) else json.loads(categories or "[]")
-    tags = tags if isinstance(tags, list) else json.loads(tags or "[]")
-    path = MEDIA_DIR / f"{S.stable_media_basename(video_id)}.nfo"
-    if not path.exists():
-        return False
-    video = {"id": video_id, "provider": provider,
-             "provider_video_id": video_id.split(":", 1)[-1],
-             "title": title or video_id, "slug": slug or "",
-             "duration": duration or 0, "thumbnail": thumbnail or "",
-             "performers": performers, "plot": source_text or "",
-             "performer_thumbs": S.load_performer_thumbs(conn, performers),
-             "studio": studio or "", "dateadded": S.format_dateadded(first_seen or 0)}
-    S.create_nfo_file(video, set(categories), set(tags), path, conn=conn)
-    return True
+    return regenerate_telegram_nfo(conn, video_id, performers, media_dir=MEDIA_DIR, sync_api=S)
 
 
 def _merge_performers(existing: list, matched: list[dict], prepared: dict) -> list[str]:
@@ -91,6 +69,7 @@ def _ensure_bio_backup_table(conn) -> None:
 
 def _regenerate_nfos(conn, nfo_tasks) -> tuple[int, int]:
     """Regenerate NFOs for (video_id, performers) pairs; return (updated, failed)."""
+    # Kept separate from common.fuzzy_merge._regenerate_nfos, which batches and returns error text.
     updated = failed = 0
     for video_id, performers in nfo_tasks:
         try:

@@ -194,10 +194,7 @@ def compare_pair(left_id: str, right_id: str, left_duration: float, right_durati
 
 def _extract_telegram_frames(video_id: str, times: list[float], cache_id: str,
                              byte_budget: int, cache_dir: str | None) -> list[bytes]:
-    try:
-        from resolver_video_fingerprints import telegram_frame_samples
-    except ImportError:
-        from video_fingerprints import telegram_frame_samples
+    from sync.video_fingerprints import telegram_frame_samples
     return telegram_frame_samples(video_id, times, byte_budget=byte_budget,
                                   timeout_seconds=900, resolver_url="http://127.0.0.1:8090/admin",
                                   cache_dir=cache_dir, cache_id=cache_id)

@@ -1,22 +1,14 @@
 """Unit tests for fuzzy_performers matching, scoring, reporting and merging."""
 
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase, TEST_URL
-from test_support import flat_sync_binding
 
-# Sciezki do resolver i sync
-sys.path.insert(0, str(Path(__file__).parent.parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-
-from fuzzy_performers import (
+from common.fuzzy_performers import (
     strip_accents,
     normalize_clean_key,
     extract_suffix_stem,
@@ -90,7 +82,7 @@ class TestFuzzyPerformersDatabase(PgTestCase):
         try:
             from resolver import admin
         except ImportError:
-            import admin
+            import resolver.admin as admin
         worker_path = Path(self.temp_dir.name) / "worker-capabilities.json"
         publish_worker_capabilities(worker_path, version="test-worker", actions=ALL_ACTIONS)
         capability_patch = patch.object(admin, "WORKER_CAPABILITIES_FILE", worker_path, create=True)
@@ -205,11 +197,6 @@ class TestFuzzyPerformersDatabase(PgTestCase):
             )
 
         merges = [("BostonJock", "Boston Jock")]
-        # The NFO step of the merge needs the flat facade bound to `sync`;
-        # see test_support.flat_sync_binding.
-        binding = flat_sync_binding()
-        binding.start()
-        self.addCleanup(binding.stop)
         try:
             res = execute_performer_merges(TEST_URL, self.media_dir, merges, skip_backup=True)
         except ImportError as exc:

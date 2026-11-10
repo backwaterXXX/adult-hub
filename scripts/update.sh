@@ -234,7 +234,7 @@ if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${CO
 fi
 
 is_authed=0
-if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" run --rm --no-deps resolver python3 -m providers.telegram_auth check 2>/dev/null; then
+if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" run --rm --no-deps resolver python3 -m resolver.providers.telegram_auth check 2>/dev/null; then
     is_authed=1
 fi
 

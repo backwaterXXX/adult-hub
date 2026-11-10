@@ -21,7 +21,7 @@ from common.app_version import __version__
 from common.logging_setup import configure_logging
 from common.worker_capabilities import publish_worker_capabilities
 
-from admin_v2_phash import _store
+from resolver.admin_v2_phash import _store
 
 LOGGER = configure_logging("resolver.phash_worker")
 DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None
@@ -74,7 +74,7 @@ from common.telegram_transfer_budget import (
     DailyTelegramTransferBudgetUnavailable,
 )
 from common.telegram_playback_activity import has_active_playback
-from resolver_video_fingerprints import FingerprintBudgetExceeded, telegram_phash
+from sync.video_fingerprints import FingerprintBudgetExceeded, telegram_phash
 payload = json.load(sys.stdin)
 
 def phash_transfer_rate():
@@ -333,7 +333,7 @@ def _close_quietly(leader) -> None:
     try:
         leader.close()
     except Exception:
-        pass
+        LOGGER.debug("Could not close pHash queue leader connection", exc_info=True)
 
 
 def _acquire_leader(last_recovery: float) -> tuple:

@@ -7,7 +7,7 @@ import logging
 
 import httpx
 from fastapi import APIRouter, Request
-from admin_v2_errors import V2ErrorRoute
+from resolver.admin_v2_errors import V2ErrorRoute
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ def _route_trigger_sync(router, admin):
             if error is not None:
                 return admin.JSONResponse({"ok": False, "error": error}, status_code=400)
         try:
-            from video_duplicates import enqueue_job
+            from resolver.video_duplicates import enqueue_job
 
             job_id = await admin.asyncio.to_thread(
                 enqueue_job, admin.HUB_DB_URL, "sync",
@@ -171,7 +171,7 @@ def _route_refresh_collections(router, admin):
                 status_code=503,
             )
         try:
-            from video_duplicates import enqueue_job
+            from resolver.video_duplicates import enqueue_job
 
             job_id = await admin.asyncio.to_thread(
                 enqueue_job, admin.HUB_DB_URL, "collections_refresh", {}

@@ -11,7 +11,7 @@ from unittest.mock import patch
 try:
     from sync import source_removal
 except (ImportError, ModuleNotFoundError):
-    import source_removal
+    import sync.source_removal as source_removal
 
 _channel_ids = source_removal._channel_ids
 _remove_sync_history = source_removal._remove_sync_history

@@ -10,8 +10,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
 
 import backup_db
 from common.db import pg_backup, pg_restore_test, restore_test_target_available

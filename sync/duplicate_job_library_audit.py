@@ -11,10 +11,7 @@ from pathlib import Path
 from common import db
 from psycopg.types.json import Jsonb
 
-if __package__:
-    from . import duplicate_jobs as _core
-else:
-    import duplicate_jobs as _core
+from sync import duplicate_jobs as _core
 
 
 def _parse_stored_overrides(overrides) -> dict:
@@ -396,28 +393,19 @@ def _consistency_audit(conn, job_id: str, media_dir: Path, services, payload: di
 
 def _audit_repair_nfo(conn, job_id: str, payload: dict, media_dir: Path, services) -> dict:
     """Compatibility facade for explicit local NFO and artwork repairs."""
-    if __package__:
-        from .duplicate_job_audit_repairs import _audit_repair_nfo as implementation
-    else:
-        from duplicate_job_audit_repairs import _audit_repair_nfo as implementation
+    from sync.duplicate_job_audit_repairs import _audit_repair_nfo as implementation
     return implementation(conn, job_id, payload, media_dir, services)
 
 
 def _audit_import_refresh(conn, job_id: str, payload: dict, services) -> dict:
     """Compatibility facade for Jellyfin audit import refresh requests."""
-    if __package__:
-        from .duplicate_job_audit_repairs import _audit_import_refresh as implementation
-    else:
-        from duplicate_job_audit_repairs import _audit_import_refresh as implementation
+    from sync.duplicate_job_audit_repairs import _audit_import_refresh as implementation
     return implementation(conn, job_id, payload, services)
 
 
 def _orphan_file_operation(conn, job_id: str, payload: dict, media_dir: Path, quarantine_root: Path,
                            services, moved: list[tuple[Path, Path]]) -> dict:
     """Compatibility facade for :mod:`duplicate_job_orphan_files`."""
-    if __package__:
-        from .duplicate_job_orphan_files import _orphan_file_operation as implementation
-    else:
-        from duplicate_job_orphan_files import _orphan_file_operation as implementation
+    from sync.duplicate_job_orphan_files import _orphan_file_operation as implementation
     return implementation(conn, job_id, payload, media_dir, quarantine_root, services, moved)
 

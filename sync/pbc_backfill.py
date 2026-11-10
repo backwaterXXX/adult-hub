@@ -9,10 +9,7 @@ logger = logging.getLogger(__name__)
 
 def backfill_pbc(conn, limit=25, sleep=1.0, fetch=None, search=None):
     """Run a PBC backfill using dependencies from the compatibility facade."""
-    if __package__:
-        from . import pbc as _core
-    else:
-        import pbc as _core
+    from sync import pbc as _core
     return _backfill_pbc(conn, limit, sleep, fetch, search, _core)
 
 

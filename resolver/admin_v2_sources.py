@@ -8,9 +8,9 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
-from admin_v2_errors import V2ErrorRoute
-from admin_v2_sync_history import safe_sync_history as _safe_sync_history
-from admin_v2_source_bodies import (
+from resolver.admin_v2_errors import V2ErrorRoute
+from resolver.admin_v2_sync_history import safe_sync_history as _safe_sync_history
+from resolver.admin_v2_source_bodies import (
     _create_channel_body, _read_channel_body,
     _remove_channel_body, _source_access_channel_id, _valid_channel_fields, _valid_channel_id, parse_body,
 )
@@ -149,7 +149,7 @@ def _route_list_sources(router, admin):
                     latest_revision = value
             tg_auth = None
             try:
-                from providers.telegram_login import get_telegram_login_manager
+                from resolver.providers.telegram_login import get_telegram_login_manager
                 tg_auth = await get_telegram_login_manager().get_status(check_live=False)
             except Exception as exc:
                 logger.debug("Could not fetch local Telegram auth status for sources list: %s", exc)
@@ -186,20 +186,10 @@ def _route_get_source_settings(router, admin):
         if admin._admin_blocked(request):
             return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
         try:
-            import yaml
-            from pathlib import Path
+            from common.config_loader import read_base_config
             from common.managed_sources import apply_overrides, read_overrides
 
-            def read_base():
-                p = Path(admin.CONFIG_PATH)
-                if not p.is_file():
-                    return {}
-                with p.open(encoding="utf-8") as stream:
-                    return yaml.safe_load(stream) or {}
-
-            base = await admin.asyncio.to_thread(read_base)
-            if base is None:
-                base = {}
+            base = await admin.asyncio.to_thread(read_base_config, admin.CONFIG_PATH)
             audit_pending = not await flush_source_audit(admin)
             overlay = await admin.asyncio.to_thread(read_overrides)
             await admin.asyncio.to_thread(apply_overrides, base, overlay)
@@ -227,13 +217,11 @@ async def _checked_current_overrides(admin, expected_revision):
 
 async def _existing_channel_ids(admin, current):
     """Return the channel IDs of the first effective Telegram source."""
-    import yaml
-    from pathlib import Path
+    from common.config_loader import read_base_config
     from common.managed_sources import apply_overrides
 
     def read_ids():
-        p = Path(admin.CONFIG_PATH)
-        base = (yaml.safe_load(p.read_text(encoding="utf-8")) or {}) if p.is_file() else {}
+        base = read_base_config(admin.CONFIG_PATH)
         effective = apply_overrides(base, current)
         for source in effective.get("sources", []):
             if source.get("provider") == "telegram":
@@ -366,18 +354,10 @@ def _route_create_source(router, admin):
 
 async def _configured_telegram_channel_ids(admin, current):
     """Return the channel IDs of the first effective Telegram source that are configured."""
-    import yaml
-    from pathlib import Path
+    from common.config_loader import read_base_config
     from common.managed_sources import apply_overrides
 
-    def read_base():
-        p = Path(admin.CONFIG_PATH)
-        if not p.is_file():
-            return {}
-        with p.open(encoding="utf-8") as stream:
-            return yaml.safe_load(stream) or {}
-
-    base = await admin.asyncio.to_thread(read_base) or {}
+    base = await admin.asyncio.to_thread(read_base_config, admin.CONFIG_PATH)
     effective = await admin.asyncio.to_thread(apply_overrides, base, current)
     telegram = next((source for source in effective.get("sources", [])
                      if source.get("provider") == "telegram"), None)
@@ -713,7 +693,7 @@ async def _telegram_channel_configured(admin, channel_id):
 async def _probe_channel_access(admin, channel_id):
     """Return 'accessible', 'inaccessible', or 'unknown' for a configured Telegram channel."""
     try:
-        from providers import get_provider
+        from resolver.providers import get_provider
         provider = get_provider("telegram")
         await admin.asyncio.wait_for(
             provider.check_configured_channel_access(channel_id), timeout=15.0

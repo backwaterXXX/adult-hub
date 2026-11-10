@@ -1,24 +1,19 @@
 """Tests for admin-triggered scene artwork download path selection."""
 
 import os
-import sys
 import logging
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "sync"))
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "tests"))
 
-import scene_scraper_fingerprint_sources
-import scene_scraper_media_files
-import scene_scraper_text_sources
+import sync.scene_scraper_fingerprint_sources as scene_scraper_fingerprint_sources
+import sync.scene_scraper_media_files as scene_scraper_media_files
+import sync.scene_scraper_text_sources as scene_scraper_text_sources
 from pg_helper import PgTestCase
 
-import scene_artwork_download
+import sync.scene_artwork_download as scene_artwork_download
 
 
 class PosterRedirectTests(unittest.TestCase):
@@ -256,7 +251,7 @@ class ArtworkJobQueueTests(PgTestCase):
     def test_generated_artwork_job_runs_and_records_jellyfin_result(self):
         import tempfile
         from common.job_queue import enqueue_job
-        import duplicate_jobs
+        import sync.duplicate_jobs as duplicate_jobs
         import json
 
         with tempfile.TemporaryDirectory() as td:
@@ -287,7 +282,7 @@ class ArtworkJobQueueTests(PgTestCase):
         import tempfile
         import json
         from common.job_queue import enqueue_job
-        import duplicate_jobs
+        import sync.duplicate_jobs as duplicate_jobs
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -335,7 +330,7 @@ class ArtworkJobQueueTests(PgTestCase):
     def test_dispatch_records_progress_and_downloaded_state(self):
         import json
         job_id = self._processing_job({"video_id": "telegram:123"})
-        import duplicate_job_external_handlers
+        import sync.duplicate_job_external_handlers as duplicate_job_external_handlers
         with patch.object(scene_artwork_download, "download_artwork_for_video",
                           return_value={"downloaded": True, "provider": "StashDB"}):
             result, committed = duplicate_job_external_handlers.execute_external_operation(
@@ -355,7 +350,7 @@ class ArtworkJobQueueTests(PgTestCase):
     def test_dispatch_passes_through_not_found_state(self):
         import json
         job_id = self._processing_job({"video_id": "telegram:123"})
-        import duplicate_job_external_handlers
+        import sync.duplicate_job_external_handlers as duplicate_job_external_handlers
         with patch.object(scene_artwork_download, "download_artwork_for_video",
                           return_value={"downloaded": False,
                                         "local_state": "artwork_not_found"}):
@@ -372,7 +367,7 @@ class ArtworkJobQueueTests(PgTestCase):
 
     def test_dispatch_marks_refresh_failure(self):
         job_id = self._processing_job({"video_id": "telegram:123"})
-        import duplicate_job_external_handlers
+        import sync.duplicate_job_external_handlers as duplicate_job_external_handlers
         with patch.object(scene_artwork_download, "download_artwork_for_video",
                           return_value={"downloaded": True, "provider": "StashDB"}):
             result, _ = duplicate_job_external_handlers.execute_external_operation(
@@ -382,7 +377,7 @@ class ArtworkJobQueueTests(PgTestCase):
         self.assertEqual(result["jellyfin_refresh"], "failed")
 
     def test_dispatch_rejects_invalid_video_id(self):
-        import duplicate_job_external_handlers
+        import sync.duplicate_job_external_handlers as duplicate_job_external_handlers
         for payload in ({}, {"video_id": ""}, {"video_id": 5}, {"video_id": "x" * 1001}):
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 duplicate_job_external_handlers.execute_external_operation(

@@ -2,13 +2,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-import sys
 import logging
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sync"))
-from telegram_unavailable import _quarantine_files, _ref, _restore_files, reconcile_telegram_channel
+from sync.telegram_unavailable import _quarantine_files, _ref, _restore_files, reconcile_telegram_channel
 from pg_helper import PgTestCase
 
 

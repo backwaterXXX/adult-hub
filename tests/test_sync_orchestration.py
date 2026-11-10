@@ -9,23 +9,28 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from test_support import flat_sync_binding, load_flat_sync_module
+from test_support import load_sync_module
 
-with flat_sync_binding():
-    import sync_orchestration
-sync_orchestration._core = load_flat_sync_module()
-if "sync" in sys.modules and hasattr(sys.modules["sync"], "__file__") and not hasattr(sys.modules["sync"], "__path__"):
-    sys.modules["sync"].__path__ = [str(Path(__file__).resolve().parents[1] / "sync")]
+import sync.sync_orchestration as sync_orchestration
+sync_orchestration._core = load_sync_module()
 from common.config_loader import AppConfig, SourceConfig, TelegramChannelConfig
-from sync_metrics import observe_sync_stage
+from sync.sync_metrics import observe_sync_stage
 
 MEDIA_DIR = Path("/srv/media")
 DATA_DIR = Path("/srv/data")
-CONN = object()
+
+
+class _Connection:
+    """Stand-in for the hub connection; records whether the pass closed it."""
+
+    closed = False
+
+    def close(self):
+        self.closed = True
+
+
+CONN = _Connection()
 
 # Everything the pass reaches through the sync module facade.
 CORE_CALLS = (
@@ -55,13 +60,13 @@ CORE_CALLS = (
 
 # Imported lazily inside the pass, so they are reached through sys.modules.
 LAZY_FUNCTIONS = {
-    "performer_catalog_sync": "sync_catalog_if_due",
-    "scene_scrapers": "backfill_scenes",
-    "pbc": "backfill_pbc",
-    "theporndb": "backfill_tpdb",
-    "stashdb": "backfill_stashdb",
-    "telegram_title_cleanup": "cleanup_telegram_titles",
-    "jellyfin_people": "sync_jellyfin_people",
+    "sync.performer_catalog_sync": "sync_catalog_if_due",
+    "sync.scene_scrapers": "backfill_scenes",
+    "sync.pbc": "backfill_pbc",
+    "sync.theporndb": "backfill_tpdb",
+    "sync.stashdb": "backfill_stashdb",
+    "sync.telegram_title_cleanup": "cleanup_telegram_titles",
+    "sync.jellyfin_people": "sync_jellyfin_people",
 }
 
 
@@ -358,7 +363,7 @@ class TestPassOpeningAndClosing(SyncPassHarness):
             self.assertTrue(self.core.logger.has(needle, "info"), needle)
 
     def test_resumable_history_warning_is_recorded_and_excluded_from_cleanup(self):
-        from telegram_pipeline import TelegramSyncResult
+        from sync.telegram_pipeline import TelegramSyncResult
         original = self.sink("sync_telegram_channel_pipeline").side_effect
         def scan(channel, *args, **kwargs):
             result = original(channel, *args, **kwargs)
@@ -379,6 +384,22 @@ class TestPassOpeningAndClosing(SyncPassHarness):
         self.assertEqual((report["started_at"], report["ended_at"]), (1000, 1060))
         self.assertEqual(report["duration_seconds"], 60)
         self.assertEqual(report["stages"]["metadata_scenes"]["calls"], 1)
+
+    def test_the_connection_is_closed_when_the_pass_ends(self):
+        CONN.closed = False
+
+        self.sync()
+
+        self.assertTrue(CONN.closed)
+
+    def test_the_connection_is_closed_when_a_stage_raises(self):
+        CONN.closed = False
+        self.explode("_video_id_snapshot")
+
+        with self.assertRaises(RuntimeError):
+            self.sync()
+
+        self.assertTrue(CONN.closed)
 
     def test_a_clock_that_moves_backwards_still_reports_a_non_negative_duration(self):
         self.core.time.wall_values = [1_060, 1_000]
@@ -821,7 +842,7 @@ class TestEnrichmentStages(SyncPassHarness):
         self.assertTrue(self.history()["success"])
 
     def test_an_uninstalled_optional_module_is_skipped_quietly(self):
-        for module in ("scene_scrapers", "pbc", "theporndb", "stashdb"):
+        for module in ("sync.scene_scrapers", "sync.pbc", "sync.theporndb", "sync.stashdb"):
             self.absent(module)
 
         self.assertTrue(self.sync())
@@ -1115,11 +1136,10 @@ class TestShutdownInTheEnvironmentChannelLoop(SyncPassHarness):
 
 
 class TestTheCoreFacadeImport(unittest.TestCase):
-    """Both deployment layouts must reach the same sync facade.
+    """The orchestration binds the sync facade from the sync package.
 
-    The module is imported either as ``sync.sync_orchestration`` inside the
-    image or as a top-level file next to ``sync.py`` when the sync directory is
-    the working tree; its body picks the matching import for that layout.
+    ``sync_orchestration`` imports ``sync.sync`` as ``_core``. Loading its source
+    against a stub ``sync`` package must hand back the stub's ``sync`` attribute.
     """
 
     SOURCE = Path(sync_orchestration.__file__)
@@ -1139,26 +1159,6 @@ class TestTheCoreFacadeImport(unittest.TestCase):
             module = self.load("sync.sync_orchestration")
 
         self.assertIs(module._core, facade)
-
-    def test_the_script_layout_reaches_the_facade_as_a_top_level_module(self):
-        facade = types.ModuleType("sync")
-
-        with patch.dict(sys.modules, {"sync": facade}):
-            module = self.load("sync_orchestration_in_a_script_layout")
-
-        self.assertIs(module._core, facade)
-
-    def test_the_package_layout_never_loads_the_real_sync_module(self):
-        facade = types.ModuleType("sync.sync")
-        package = types.ModuleType("sync")
-        package.sync = facade
-
-        with patch.dict(sys.modules, {"sync": package}):
-            module = self.load("sync.sync_orchestration")
-
-            self.assertIs(module._core, facade)
-            self.assertNotIn("sync.sync", sys.modules)
-        self.assertNotIn("sync.sync_orchestration", sys.modules)
 
 
 class TestTelegramAuthorizationSyncGating(SyncPassHarness):
@@ -1266,8 +1266,8 @@ class TestIsTelegramAuthorizedFunction(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".session") as f:
             f.write(b"session_bytes")
             f.flush()
-            fake_pkg = types.ModuleType("providers")
-            fake_session_mod = types.ModuleType("providers.telegram_session")
+            fake_pkg = types.ModuleType("resolver.providers")
+            fake_session_mod = types.ModuleType("resolver.providers.telegram_session")
             fake_session_mod.is_session_authorized = AsyncMock(return_value=True)
             fake_pkg.telegram_session = fake_session_mod
             with patch.dict(os.environ, {
@@ -1275,7 +1275,7 @@ class TestIsTelegramAuthorizedFunction(unittest.TestCase):
                 "TELEGRAM_API_ID": "123456",
                 "TELEGRAM_API_HASH": "0123456789abcdef0123456789abcdef",
                 "TELEGRAM_SESSION_PATH": f.name,
-            }, clear=True), patch.dict(sys.modules, {"providers": fake_pkg, "providers.telegram_session": fake_session_mod}):
+            }, clear=True), patch.dict(sys.modules, {"resolver.providers": fake_pkg, "resolver.providers.telegram_session": fake_session_mod}):
                 self.assertTrue(self.sync_mod.is_telegram_authorized())
 
     def test_defensible_fallback_when_resolver_absent_unauthorized(self):
@@ -1285,8 +1285,8 @@ class TestIsTelegramAuthorizedFunction(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".session") as f:
             f.write(b"session_bytes")
             f.flush()
-            fake_pkg = types.ModuleType("providers")
-            fake_session_mod = types.ModuleType("providers.telegram_session")
+            fake_pkg = types.ModuleType("resolver.providers")
+            fake_session_mod = types.ModuleType("resolver.providers.telegram_session")
             fake_session_mod.is_session_authorized = AsyncMock(return_value=False)
             fake_pkg.telegram_session = fake_session_mod
             with patch.dict(os.environ, {
@@ -1294,7 +1294,7 @@ class TestIsTelegramAuthorizedFunction(unittest.TestCase):
                 "TELEGRAM_API_ID": "123456",
                 "TELEGRAM_API_HASH": "0123456789abcdef0123456789abcdef",
                 "TELEGRAM_SESSION_PATH": f.name,
-            }, clear=True), patch.dict(sys.modules, {"providers": fake_pkg, "providers.telegram_session": fake_session_mod}):
+            }, clear=True), patch.dict(sys.modules, {"resolver.providers": fake_pkg, "resolver.providers.telegram_session": fake_session_mod}):
                 self.assertFalse(self.sync_mod.is_telegram_authorized())
 
 

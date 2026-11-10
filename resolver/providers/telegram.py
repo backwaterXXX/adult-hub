@@ -18,7 +18,7 @@ Session login (session must be authenticated BEFORE using the provider):
 
        python3 -c "
        import asyncio
-       from providers.telegram import login
+       from resolver.providers.telegram import login
        print(asyncio.run(login('+48123456789')))"
 
      Returns "code_sent:<phone>" after sending the code.
@@ -26,7 +26,7 @@ Session login (session must be authenticated BEFORE using the provider):
 
        python3 -c "
        import asyncio
-       from providers.telegram import login
+       from resolver.providers.telegram import login
        print(asyncio.run(login('+48123456789', code='12345')))"
 
      Returns "authorized" upon successful login. The session file is written
@@ -53,14 +53,14 @@ import time
 from collections import OrderedDict
 from typing import Any, AsyncIterator, Callable, List, Optional, Tuple
 
-from .base import BaseProvider, CategoryItem, VideoItem
-from .telegram_metadata import (
+from resolver.providers.base import BaseProvider, CategoryItem, VideoItem
+from resolver.providers.telegram_metadata import (
     _ALIAS_MAP_CACHE,  # noqa: F401 - compatibility export
     _KNOWN_PERFORMERS_CACHE,  # noqa: F401 - compatibility export
     load_known_performers, load_alias_map, load_performer_catalog,
     match_known_performers,  # noqa: F401 - compatibility export
 )
-from .telegram_config import (
+from resolver.providers.telegram_config import (
     _entity_ref,
     _get_api_hash,
     _get_api_id,
@@ -72,7 +72,7 @@ from .telegram_config import (
     is_channel_authorized,
     passes_duration_filter,
 )
-from .telegram_download import (
+from resolver.providers.telegram_download import (
     LEGAL_REQUEST_SIZES,  # noqa: F401 - compatibility export
     _close_global_stream_manager,
     _download_block,
@@ -81,13 +81,13 @@ from .telegram_download import (
     _is_parallel_stream_enabled,
     _legal_request_size,  # noqa: F401 - compatibility export
 )
-from .telegram_thumbnails import (
+from resolver.providers.telegram_thumbnails import (
     _cache_thumb_impl, download_thumb_impl as _download_thumb_impl,
     _download_thumb_uncached_impl,
     _fetch_and_cache_thumb_impl,
 )
 
-from .telegram_messages import (
+from resolver.providers.telegram_messages import (
     _caption_of,  # noqa: F401 - compatibility export
     _duration_of,  # noqa: F401 - compatibility export
     _filter_caption_for_title,  # noqa: F401 - compatibility export
@@ -102,22 +102,22 @@ from .telegram_messages import (
     parse_caption_title,  # noqa: F401 - compatibility export
     thumb_api_path,  # noqa: F401 - compatibility export
 )
-from .telegram_item_mapping import (
+from resolver.providers.telegram_item_mapping import (
     message_to_video_impl as _message_to_video_impl,
     prepare_legacy_catalog as _prepare_legacy_catalog_impl,
 )
-from .telegram_message_cache import (
+from resolver.providers.telegram_message_cache import (
     _evict_cached_message,
     _get_cached_message,
     _message_cache_size_bytes,  # noqa: F401 - compatibility export
 )
-from .telegram_retry import is_retryable, retry_call, retry_stream
-from .telegram_history import (
+from resolver.providers.telegram_retry import is_retryable, retry_call, retry_stream
+from resolver.providers.telegram_history import (
     channel_title as _channel_title_impl,
     fetch_history as _fetch_history_impl,
     passes_tag_filter,
 )
-from .telegram_session import (
+from resolver.providers.telegram_session import (
     interactive_login,  # noqa: F401 - compatibility export
     is_session_authorized,  # noqa: F401 - compatibility export
     login as _login_impl,
@@ -125,7 +125,7 @@ from .telegram_session import (
     validate_api_credentials,  # noqa: F401 - compatibility export
     validate_phone_number,  # noqa: F401 - compatibility export
 )
-from .telegram_variants import (
+from resolver.providers.telegram_variants import (
     extract_message_variants,
     extract_variant_info,  # noqa: F401 - compatibility export
     find_variant_document,
@@ -153,7 +153,7 @@ async def reset_telegram_client(account_id: Optional[str] = None) -> None:
     global _client, _client_lock
     if account_id and account_id != "default":
         try:
-            from .telegram_router import get_telegram_router
+            from resolver.providers.telegram_router import get_telegram_router
             await get_telegram_router().reset_account_client(account_id)
         except Exception as exc:
             logger.debug("Error resetting telegram router client for %s: %s", account_id, exc)
@@ -269,7 +269,7 @@ def _parse_ref(ref: str) -> Tuple[str, int, str]:
 
 async def _require_client():
     """Singleton klienta Telethon managed by router pool to prevent duplicate sessions."""
-    from .telegram_router import get_telegram_router
+    from resolver.providers.telegram_router import get_telegram_router
     return await get_telegram_router().get_client_for_account("default")
 
 
@@ -289,7 +289,7 @@ async def _acquire_client_lease(
             yield res
         return
 
-    from .telegram_router import get_telegram_router
+    from resolver.providers.telegram_router import get_telegram_router
 
     router = get_telegram_router()
     if channel_ref:
@@ -621,7 +621,7 @@ class TelegramProvider(BaseProvider):
             return affinity_account
         if _CLIENT_LEASE_SEAM is not None:
             return "default"
-        from .telegram_router import get_telegram_router
+        from resolver.providers.telegram_router import get_telegram_router
         router = get_telegram_router()
         return await router.select_eligible_account(channel_ref)
 
@@ -646,7 +646,7 @@ class TelegramProvider(BaseProvider):
 
         first_chunk = True
         t_start = time.monotonic()
-        from .telegram_router import get_telegram_router
+        from resolver.providers.telegram_router import get_telegram_router
         router = get_telegram_router()
 
         def _handle_stream_exc(exc: BaseException) -> bool:
@@ -757,10 +757,10 @@ class TelegramProvider(BaseProvider):
         """Close provider resources including shared parallel stream manager and router pool."""
         await _close_global_stream_manager()
         try:
-            from .telegram_router import reset_telegram_router
+            from resolver.providers.telegram_router import reset_telegram_router
             await reset_telegram_router()
         except Exception:
-            pass
+            logger.warning("Could not reset Telegram router during provider close", exc_info=True)
 
     async def file_size(self, ref: str) -> Optional[int]:
         """Rozmiar pliku z metadanych wiadomosci albo None, gdy nieznany."""

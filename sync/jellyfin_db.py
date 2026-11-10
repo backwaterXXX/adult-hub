@@ -13,35 +13,11 @@ _LOGGER = logging.getLogger("sync")
 
 
 def _load_jellyfin_sibling(module_name):
-    """Load a sibling module both as a package and from direct-file imports."""
+    """Load a sibling ``sync`` module by its package name, on every call."""
     import importlib
-    import importlib.util
-    import sys
 
-    if __package__:
-        return importlib.import_module(f".{module_name}", __package__)
-    try:
-        return importlib.import_module(module_name)
-    except ModuleNotFoundError as error:
-        if error.name != module_name:
-            raise
-    cache_name = f"_adult_hub_{module_name}"
-    cached = sys.modules.get(cache_name)
-    if cached is not None:
-        return cached
-    spec = importlib.util.spec_from_file_location(
-        cache_name, Path(__file__).with_name(f"{module_name}.py"),
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load Jellyfin module {module_name!r}")
-    loaded = importlib.util.module_from_spec(spec)
-    sys.modules[cache_name] = loaded
-    try:
-        spec.loader.exec_module(loaded)
-    except Exception:
-        sys.modules.pop(cache_name, None)
-        raise
-    return loaded
+    return importlib.import_module(f"sync.{module_name}")
+
 _LAST_LIBRARY_REFRESH_TIME = 0.0
 _LAST_LIBRARY_REFRESH_RESULT = False
 

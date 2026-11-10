@@ -143,7 +143,7 @@ def rewrite_all_stream_files(
     try:
         rows = conn.execute("SELECT file_path, video_id FROM synced_files").fetchall()
     except Exception as exc:
-        services.logger.warning(f"Stream rewrite: could not list synced files: {exc}")
+        services.logger.warning("Stream rewrite: could not list synced files: %s", exc)
         return 0, 0
     for file_path, video_id in rows:
         if not video_id or not services.is_cleanup_allowed(
@@ -160,9 +160,9 @@ def rewrite_all_stream_files(
             if write_stream_file_fn(target, video_id):
                 rewritten += 1
         except Exception as exc:
-            services.logger.warning(f"Stream rewrite failed for {video_id}: {exc}")
+            services.logger.warning("Stream rewrite failed for %s: %s", video_id, exc)
     if rewritten:
         services.logger.info(
-            f"Stream rewrite: {rewritten}/{checked} files updated to current mode"
+            "Stream rewrite: %s/%s files updated to current mode", rewritten, checked
         )
     return checked, rewritten

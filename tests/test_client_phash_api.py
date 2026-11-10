@@ -3,24 +3,18 @@ from __future__ import annotations
 import base64
 import asyncio
 import os
-import sys
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
-from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "tests"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "resolver"))
-sys.path.insert(0, str(ROOT))
 
 from PIL import Image
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-import admin_v2_phash as phash_api
+import resolver.admin_v2_phash as phash_api
 from common.migrations.m0028_phash_provenance import apply as apply_phash_provenance
 from pg_helper import PgTestCase
 

@@ -6,16 +6,12 @@ startup sweep a restarting worker runs must only reclaim jobs whose heartbeat
 went stale - never a lease another worker is still renewing.
 """
 
-import sys
 import threading
 import time
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common import video_visual_jobs
 

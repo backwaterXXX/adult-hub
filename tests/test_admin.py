@@ -1,17 +1,14 @@
-import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase, TEST_URL, reset_db
 
 import tempfile
 import unittest
 from unittest.mock import patch
 from test_support import optional_import_failed
+from tests.helpers.db_session import db_session
 
 try:
-    sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
-    import admin
-    from common import db
+    import resolver.admin as admin
     ADMIN_AVAILABLE = True
 except ImportError as exc:
     optional_import_failed(exc)
@@ -41,13 +38,11 @@ sources:
         )
 
     def _insert_videos(self, rows):
-        conn = db.connect(TEST_URL)
-        with conn:
+        with db_session(TEST_URL) as conn:
             conn.executemany(
                 "INSERT INTO videos (id, provider, studio, last_seen) VALUES (%s, %s, %s, %s)",
                 rows,
             )
-        conn.close()
 
     def tearDown(self):
         pass
@@ -147,7 +142,7 @@ class TestManagedCollections(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
         from pg_helper import init_test_db
-        init_test_db()
+        init_test_db().close()
 
     def setUp(self):
         reset_db()
@@ -178,8 +173,7 @@ class TestManagedCollections(unittest.IsolatedAsyncioTestCase):
             return TestManagedCollections.Response()
 
     async def test_creates_newest_studio_performer_and_tag_collections(self):
-        conn = db.connect(TEST_URL)
-        with conn:
+        with db_session(TEST_URL) as conn:
             for index in range(3):
                 conn.execute(
                     "INSERT INTO videos (id, title, studio, performers, tags, first_seen, duration) "
@@ -187,7 +181,6 @@ class TestManagedCollections(unittest.IsolatedAsyncioTestCase):
                     (f"telegram:{index}", f"Title {index}", "Studio", '["Performer"]', '["Theme"]', 100 + index))
                 conn.execute("INSERT INTO synced_files (video_id, file_path) VALUES (%s, %s)",
                              (f"telegram:{index}", f"file-{index}.strm"))
-        conn.close()
         client = self.Client()
         from common.managed_collections import refresh_managed_collections
         result = await refresh_managed_collections(
@@ -196,8 +189,7 @@ class TestManagedCollections(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(client.created), 4)
 
     async def test_ambiguous_jellyfin_basenames_are_not_mapped_to_the_wrong_video(self):
-        conn = db.connect(TEST_URL)
-        with conn:
+        with db_session(TEST_URL) as conn:
             conn.executemany(
                 "INSERT INTO videos (id, title, first_seen, duration) VALUES (%s, %s, %s, 600)",
                 [("telegram:shared", "Shared", 300), ("telegram:unique-a", "Unique A", 200),
@@ -208,7 +200,6 @@ class TestManagedCollections(unittest.IsolatedAsyncioTestCase):
                 [("telegram:shared", "shared.strm"), ("telegram:unique-a", "unique-a.strm"),
                  ("telegram:unique-b", "unique-b.strm")],
             )
-        conn.close()
 
         class CollidingClient(self.Client):
             async def get(self, url, params=None, headers=None):
@@ -235,8 +226,7 @@ class TestManagedCollections(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(recently_added["ids"].split(",")), {"jf-unique-a", "jf-unique-b"})
 
     async def test_stale_managed_group_membership_is_cleared_below_group_threshold(self):
-        conn = db.connect(TEST_URL)
-        with conn:
+        with db_session(TEST_URL) as conn:
             conn.execute(
                 "INSERT INTO videos (id, title, studio, first_seen, duration) VALUES (%s, %s, %s, %s, 600)",
                 ("telegram:one", "One", "Renamed Studio", 300),
@@ -245,7 +235,6 @@ class TestManagedCollections(unittest.IsolatedAsyncioTestCase):
                 "INSERT INTO synced_files (video_id, file_path) VALUES (%s, %s)",
                 ("telegram:one", "one.strm"),
             )
-        conn.close()
 
         class ExistingCollectionClient(self.Client):
             def __init__(self):

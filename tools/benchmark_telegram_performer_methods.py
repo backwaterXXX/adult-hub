@@ -37,12 +37,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Callable
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
-from common.performer_catalog import match_catalog, normalize_name  # noqa: E402
-from common.performer_titles import parse_title_performers_with_known_map  # noqa: E402
+from common.performer_catalog import match_catalog, normalize_name
+from common.performer_titles import parse_title_performers_with_known_map
 
 
 def _ids(values) -> set[str]:

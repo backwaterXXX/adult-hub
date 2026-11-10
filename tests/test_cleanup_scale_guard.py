@@ -8,18 +8,16 @@ leaves ordinary single losses deletable.
 """
 
 import shutil
-import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
-from test_support import load_flat_sync_module, optional_import_failed
+from test_support import load_sync_module, optional_import_failed
 
 try:
-    sync_module = load_flat_sync_module()
+    sync_module = load_sync_module()
     from common.config_loader import AppConfig, SourceConfig, SyncConfig
     SYNC_AVAILABLE = True
 except ImportError as exc:

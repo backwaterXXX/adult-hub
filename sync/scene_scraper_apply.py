@@ -8,15 +8,9 @@ from typing import Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-try:
-    from .scene_scraper_models import ScrapedScene
-except ImportError:
-    from scene_scraper_models import ScrapedScene
+from sync.scene_scraper_models import ScrapedScene  # noqa: E402
 
-if __package__:
-    from . import scene_scrapers as _core
-else:
-    import scene_scrapers as _core
+from sync import scene_scrapers as _core  # noqa: E402
 
 def _scene_match_provenance(scene: ScrapedScene) -> Tuple[str, str, str, float]:
     """Return safe, bounded provenance fields for persistence on the video row."""
@@ -301,14 +295,9 @@ def _fetch_linked_artwork_rows(conn: Any, attempt_source: str, limit: int):
 def _import_linked_scene_lookups():
     """(stashdb lookup, tpdb lookup), or None when the scene text sources are unavailable."""
     try:
-        if __package__:
-            from .scene_scraper_text_sources import (
-                fetch_stashdb_scene_by_id, fetch_tpdb_scene_by_id,
-            )
-        else:
-            from scene_scraper_text_sources import (
-                fetch_stashdb_scene_by_id, fetch_tpdb_scene_by_id,
-            )
+        from sync.scene_scraper_text_sources import (
+            fetch_stashdb_scene_by_id, fetch_tpdb_scene_by_id,
+        )
     except ImportError as exc:
         _core.logger.warning("Linked scene artwork lookup unavailable (%s)", type(exc).__name__)
         return None

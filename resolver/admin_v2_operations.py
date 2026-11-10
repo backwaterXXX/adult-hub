@@ -6,7 +6,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Query, Request
-from admin_v2_errors import V2ErrorRoute
+from resolver.admin_v2_errors import V2ErrorRoute
 
 logger = logging.getLogger(__name__)
 

@@ -6,7 +6,7 @@ Rule (weak): >=2 shared performers, but duration unknown or diff exceeds limit
   (for manual review).
 
 Usage:
-    python3 find_dupes.py [--min-shared 2] [--max-dur-diff 60]
+    python3 -m sync.find_dupes [--min-shared 2] [--max-dur-diff 60]
         [--db-url DATABASE_URL] [--output dupes.csv] [--format csv|txt]
 """
 

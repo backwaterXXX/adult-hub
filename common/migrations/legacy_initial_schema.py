@@ -1,4 +1,9 @@
-"""Migration 0001: Initial core schema for videos, files, categories, and streams."""
+"""Legacy pre-baseline step 1: initial core schema for videos, files, categories, and streams.
+
+This is not the fresh-install baseline (`m0001_baseline.py`, version 1). It is
+used only by `legacy.py` as the first step of the pre-baseline chain, and it
+runs only for databases whose recorded history predates the baseline.
+"""
 
 from __future__ import annotations
 
@@ -75,6 +80,7 @@ def apply(conn: Any, **kwargs) -> None:
 
 migration = Migration(
     version=1,
+    # Stored in schema_migrations for legacy databases. Do not change it.
     name="0001_initial_schema",
     description="Core metadata tables: videos, dead_streams, synced_files, video_categories, meta",
     apply_fn=apply,

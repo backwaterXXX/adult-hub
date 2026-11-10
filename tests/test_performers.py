@@ -1,21 +1,16 @@
 """Performer extraction (listing cards + video pages) and NFO/DB passthrough."""
 import json
-import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase, TEST_URL, reset_db
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 try:
-    from providers.base import (
+    from resolver.providers.base import (
         parse_title_performers,
         is_valid_performer_name,
         clean_display_title,
@@ -36,8 +31,8 @@ except ImportError as exc:
     PROVIDERS_AVAILABLE = False
 
 try:
-    from test_support import load_flat_sync_module
-    sync_module = load_flat_sync_module()
+    from test_support import load_sync_module
+    sync_module = load_sync_module()
     SYNC_AVAILABLE = True
 except ImportError as exc:
     from test_support import optional_import_failed
@@ -517,7 +512,7 @@ class TestPerformerHelpers(unittest.TestCase):
 
     def test_slug_token_hook_mechanism(self):
         # ETAP C: provider-specific slug-token rules arrive via neutral hook.
-        import providers.base as _base
+        import resolver.providers.base as _base
         snapshot = dict(_base._SLUG_TOKEN_HOOKS)
         try:
             self.assertIsNone(get_slug_token_hook("dummyx"))

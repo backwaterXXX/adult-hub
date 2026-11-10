@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from common.config_loader import ConfigError, parse_and_validate_config
+from common.config_loader import ConfigError, parse_and_validate_config, read_base_config
 
 
 MAX_OVERLAY_BYTES = 256 * 1024
@@ -446,8 +446,6 @@ def preview_overrides(
     path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Return a revision-checked, secret-free effective diff without writing."""
-    import yaml
-
     target = overrides_path(path)
     current = read_overrides(target)
     if (isinstance(expected_revision, bool) or not isinstance(expected_revision, int)
@@ -456,16 +454,7 @@ def preview_overrides(
     encoded = json.dumps(overrides, ensure_ascii=False, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > MAX_OVERLAY_BYTES:
         raise ConfigError("Managed source settings exceed the permitted size.")
-    bp = Path(base_config_path) if base_config_path else None
-    if bp and bp.is_file():
-        try:
-            base = yaml.safe_load(bp.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, yaml.YAMLError):
-            raise ConfigError("Base source configuration could not be read.") from None
-    else:
-        base = {}
-    if base is None:
-        base = {}
+    base = read_base_config(base_config_path) if base_config_path else {}
     before = _safe_sources(apply_overrides(base, current))
     next_overlay = validate_overlay({"revision": current["revision"] + 1, "overrides": overrides})
     after = _safe_sources(apply_overrides(base, next_overlay))
@@ -544,8 +533,6 @@ def update_overrides(
     The complete effective config is validated before any bytes are replaced.
     Omitting an override restores inheritance from the read-only base YAML.
     """
-    import yaml
-
     target = overrides_path(path)
     # Wait for a running channel deletion before taking the config lock. The deletion
     # job holds the channel lock and then needs the config lock, so waiting while holding
@@ -561,16 +548,7 @@ def update_overrides(
         _check_pending_audit(target, current, allow_compensation)
         candidate = validate_overlay({"revision": current["revision"] + 1, "overrides": patch})
         outbox_event = _audit_outbox_event(audit_event, candidate["revision"])
-        bp = Path(base_config_path) if base_config_path else None
-        if bp and bp.is_file():
-            try:
-                base = yaml.safe_load(bp.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, yaml.YAMLError):
-                raise ConfigError("Base source configuration could not be read.") from None
-        else:
-            base = {}
-        if base is None:
-            base = {}
+        base = read_base_config(base_config_path) if base_config_path else {}
         apply_overrides(base, candidate)
         if outbox_event is not None:
             _publish_overlay(audit_outbox_path(target), outbox_event)

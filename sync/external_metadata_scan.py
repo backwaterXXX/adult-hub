@@ -17,10 +17,10 @@ def run_external_metadata_backfill(
     logger: Any,
 ) -> dict:
     """Run all bounded metadata passes, continuing when an individual provider fails."""
-    from pbc import backfill_pbc
-    from theporndb import backfill_tpdb
-    from stashdb import backfill_stashdb
-    from scene_scrapers import backfill_scenes
+    from sync.pbc import backfill_pbc
+    from sync.theporndb import backfill_tpdb
+    from sync.stashdb import backfill_stashdb
+    from sync.scene_scrapers import backfill_scenes
 
     passes = (
         ("metadata_pbc", lambda: backfill_pbc(conn, limit=pbc_limit)),

@@ -3,18 +3,15 @@
 import json
 import os
 from common import db
-import sys
-import time
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BASE_DIR))
-sys.path.insert(0, str(BASE_DIR / "sync"))
-sys.path.insert(0, str(BASE_DIR / "resolver"))
 
+from common.json_helpers import json_list_or_empty
+from common.performer_cleanup_support import build_video_nfo
 from common.performers import is_valid_performer_name, NATIONALITY_PREFIXES
 from common.performer_titles import parse_title_performers_with_known_map
-import sync as S
+from sync import sync as S
 
 DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None
 MEDIA_DIR = BASE_DIR / "media" / "adult"
@@ -27,20 +24,6 @@ def _name_is_word_subset(short_name: str, long_name: str) -> bool:
         long_words[index:index + len(short_words)] == short_words
         for index in range(len(long_words) - len(short_words) + 1)
     )
-
-
-def _json_list(raw) -> list:
-    try:
-        return json.loads(raw or "[]")
-    except Exception:
-        return []
-
-
-def _json_set(raw) -> set:
-    try:
-        return set(json.loads(raw)) if raw else set()
-    except Exception:
-        return set()
 
 
 def _load_known_map(conn) -> dict:
@@ -98,35 +81,7 @@ def _should_update(old_perfs: list, new_perfs: list) -> bool:
 
 
 def _regenerate_nfo(conn, row, new_perfs: list, nfo_path: Path) -> bool:
-    (
-        vid_id,
-        prov,
-        title,
-        slug,
-        dur,
-        thumb,
-        _perfs_raw,
-        cats_raw,
-        tags_raw,
-        studio,
-        first_seen,
-    ) = row
-    tag_set = _json_set(tags_raw)
-    genres = _json_set(cats_raw)
-
-    video_dict = {
-        "id": vid_id,
-        "provider": prov,
-        "provider_video_id": vid_id.split(":", 1)[-1],
-        "title": title or vid_id,
-        "slug": slug or "",
-        "duration": dur or 0,
-        "thumbnail": thumb or "",
-        "performers": new_perfs,
-        "performer_thumbs": S.load_performer_thumbs(conn, new_perfs),
-        "studio": studio or "",
-        "dateadded": S.format_dateadded(first_seen or time.time()),
-    }
+    video_dict, genres, tag_set = build_video_nfo(conn, row, new_perfs, sync_api=S)
     try:
         S.create_nfo_file(video_dict, genres, tag_set, nfo_path)
         return True
@@ -137,7 +92,7 @@ def _regenerate_nfo(conn, row, new_perfs: list, nfo_path: Path) -> bool:
 def _process_row(conn, row, known_map: dict) -> tuple[bool, bool]:
     """Reparse one Telegram video; return (video_updated, nfo_updated)."""
     vid_id, title, perfs_raw = row[0], row[2], row[6]
-    old_perfs = _json_list(perfs_raw)
+    old_perfs = json_list_or_empty(perfs_raw)
 
     raw_title = title or ""
     new_perfs = parse_title_performers_with_known_map(raw_title, known_map)

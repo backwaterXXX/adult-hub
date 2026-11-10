@@ -9,20 +9,10 @@ import time
 from psycopg.types.json import Jsonb
 
 from common import db
+from common.json_helpers import json_object as _json_object
 from common.video_metadata import (
     MetadataValidationError, metadata_source_fingerprint, load_metadata_states, validate_override_patch,
 )
-
-
-def _json_object(value) -> dict:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except (TypeError, ValueError):
-            value = {}
-    return value if isinstance(value, dict) else {}
 
 
 def store_metadata_review_proposal(conn, video_id: str, changes: dict, *, source: str,

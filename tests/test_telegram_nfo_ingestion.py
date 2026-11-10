@@ -1,24 +1,13 @@
 """Telegram metadata must remain ingestible when its preview service is down."""
 
-import importlib.util
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def load_module(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-nfo = load_module("nfo_ingestion", ROOT / "sync/nfo.py")
-migration = load_module("telegram_nfo_migration", ROOT / "tools/migrate_telegram_nfo.py")
+import sync.nfo as nfo
+import tools.migrate_telegram_nfo as migration
 
 
 class TelegramNfoIngestionTests(unittest.TestCase):

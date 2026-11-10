@@ -7,7 +7,7 @@ import re
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from video_fingerprints import FingerprintBudget
+    from sync.video_fingerprints import FingerprintBudget
 
 
 TELEGRAM_BLOCK_BYTES = 64 * 1024

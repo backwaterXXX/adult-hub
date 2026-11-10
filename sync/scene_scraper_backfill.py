@@ -9,42 +9,23 @@ from typing import Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-try:
-    from .scene_scraper_models import ScrapedScene
-except ImportError:
-    from scene_scraper_models import ScrapedScene
+from sync.scene_scraper_models import ScrapedScene  # noqa: E402
 
-if __package__:
-    from . import scene_scrapers as _core
-else:
-    import scene_scrapers as _core
+from sync import scene_scrapers as _core  # noqa: E402
 
 
 
-if __package__:
-    from .scene_scraper_apply import (
-        _apply_matched_scene,
-        _backfill_linked_scene_artwork,
-        _scene_match_provenance,
-    )
-    from .scene_scraper_caption_matches import (
-        _backfill_caption_title_matches,
-        _backfill_stashdb_caption_matches,
-        _load_official_stashdb_performers,
-    )
-    from .scene_scraper_split_parts import _backfill_split_part_matches
-else:
-    from scene_scraper_apply import (
-        _apply_matched_scene,
-        _backfill_linked_scene_artwork,
-        _scene_match_provenance,
-    )
-    from scene_scraper_caption_matches import (
-        _backfill_caption_title_matches,
-        _backfill_stashdb_caption_matches,
-        _load_official_stashdb_performers,
-    )
-    from scene_scraper_split_parts import _backfill_split_part_matches
+from sync.scene_scraper_apply import (  # noqa: E402
+    _apply_matched_scene,
+    _backfill_linked_scene_artwork,
+    _scene_match_provenance,
+)
+from sync.scene_scraper_caption_matches import (  # noqa: E402
+    _backfill_caption_title_matches,
+    _backfill_stashdb_caption_matches,
+    _load_official_stashdb_performers,
+)
+from sync.scene_scraper_split_parts import _backfill_split_part_matches  # noqa: E402
 
 
 
@@ -201,10 +182,7 @@ def _resolve_stop_fn(stop_requested: Any) -> Any:
     if stop_requested is not None:
         return stop_requested
     try:
-        if __package__:
-            from .sync_shutdown import stop_requested as default_stop_requested
-        else:
-            from sync_shutdown import stop_requested as default_stop_requested
+        from sync.sync_shutdown import stop_requested as default_stop_requested
         return default_stop_requested
     except ImportError:
         return _never_stop
@@ -302,10 +280,7 @@ def backfill_scenes(
 
 
 def _fingerprint_backfill_module():
-    if __package__:
-        from . import scene_scraper_fingerprint_backfill as implementation
-    else:
-        import scene_scraper_fingerprint_backfill as implementation
+    from sync import scene_scraper_fingerprint_backfill as implementation
     return implementation
 
 
@@ -364,9 +339,6 @@ def _update_media_files(
     strict: bool = False,
 ) -> None:
     """Compatibility facade for matched NFO and artwork persistence."""
-    if __package__:
-        from .scene_scraper_media_files import _update_media_files as implementation
-    else:
-        from scene_scraper_media_files import _update_media_files as implementation
+    from sync.scene_scraper_media_files import _update_media_files as implementation
     return implementation(media_dir, video_id, matched, performers, http_client, conn, strict)
 

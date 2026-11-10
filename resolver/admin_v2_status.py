@@ -11,7 +11,7 @@ import logging
 
 import httpx
 from fastapi import APIRouter, Request
-from admin_v2_errors import V2ErrorRoute
+from resolver.admin_v2_errors import V2ErrorRoute
 
 logger = logging.getLogger(__name__)
 

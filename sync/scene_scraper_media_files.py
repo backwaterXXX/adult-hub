@@ -12,15 +12,9 @@ from common.http_rate_limit import request_with_host_limit
 logger = logging.getLogger(__name__)
 
 
-try:
-    from sync.scene_scraper_models import ScrapedScene
-except ImportError:
-    from scene_scraper_models import ScrapedScene
+from sync.scene_scraper_models import ScrapedScene  # noqa: E402
 
-if __package__:
-    from . import scene_scrapers as _core
-else:
-    import scene_scrapers as _core
+from sync import scene_scrapers as _core  # noqa: E402
 
 
 class _MediaTargets:
@@ -34,10 +28,7 @@ class _MediaTargets:
 
 def _collect_registered_nfos(conn: Any, video_id: str, media_dir: Path, strict: bool,
                              targets: _MediaTargets) -> None:
-    if __package__:
-        from .media_files import resolve_media_path
-    else:
-        from media_files import resolve_media_path
+    from sync.media_files import resolve_media_path
     file_rows = conn.execute(
         "SELECT file_path FROM synced_files WHERE video_id=%s ORDER BY file_path", (video_id,)
     ).fetchall()
@@ -181,10 +172,7 @@ def _load_actor_links(conn: Optional[Any], root: Any, matched: ScrapedScene) -> 
     if conn is None:
         return {}
     try:
-        try:
-            from sync.nfo import load_performer_links
-        except ImportError:
-            from nfo import load_performer_links
+        from sync.nfo import load_performer_links
         all_actor_names = [a.findtext("name") for a in root.findall("actor") if a.findtext("name")]
         if matched.performers:
             all_actor_names.extend(matched.performers)

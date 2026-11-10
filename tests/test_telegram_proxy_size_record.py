@@ -2,19 +2,13 @@
 
 import asyncio
 import inspect as inspect_module
-import sys
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "resolver"))
-sys.path.insert(0, str(ROOT / "tests"))
 
-import telegram_proxy
-from telegram_proxy import TelegramProxyServices, proxy_telegram_response
+import resolver.telegram_proxy as telegram_proxy
+from resolver.telegram_proxy import TelegramProxyServices, proxy_telegram_response
 
 REF = "-1001140295673:4613:5325555053841380087"
 

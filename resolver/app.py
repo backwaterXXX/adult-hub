@@ -17,23 +17,23 @@ from fastapi.responses import RedirectResponse, StreamingResponse, Response, JSO
 from fastapi.staticfiles import StaticFiles
 import httpx
 
-from providers import (
+from resolver.providers import (
     get_provider,
     list_providers,
     ensure_config_providers_registered,
 )
-from providers._http import get_shared_client, aclose_shared_client
-import admin as admin_module
-from admin import router as admin_router
-from admin_v2_errors import configure_activity_database, v2_error_response
+from resolver.providers._http import get_shared_client, aclose_shared_client
+from resolver import admin as admin_module
+from resolver.admin import router as admin_router
+from resolver.admin_v2_errors import configure_activity_database, v2_error_response
 from common.app_version import __version__ as APP_VERSION
-from metrics import resolver_metrics
-from catalog_api import (
+from resolver.metrics import resolver_metrics
+from resolver.catalog_api import (
     router as catalog_api_router,
 )
-from proxy_utils import looks_like_playlist, _parse_range_request, rewrite_m3u8_playlist  # noqa: F401
-from telegram_proxy import TelegramProxyServices, proxy_telegram_response as _proxy_telegram_response_impl
-from stream_cache import (
+from resolver.proxy_utils import looks_like_playlist, _parse_range_request, rewrite_m3u8_playlist  # noqa: F401
+from resolver.telegram_proxy import TelegramProxyServices, proxy_telegram_response as _proxy_telegram_response_impl
+from resolver.stream_cache import (
     PersistentLRUCache,
     cache_ttl_for_provider,
 )
@@ -119,20 +119,20 @@ try:
             try:
                 p = get_provider(prov_name)
                 p.set_address(src.address)
-                logger.info(f"Initialized provider '{prov_name}' with address {src.address}")
+                logger.info("Initialized provider '%s' with address %s", prov_name, src.address)
             except KeyError:
                 pass
     ensure_config_providers_registered(app_config)
 except ConfigError as ce:
-    logger.critical(f"FATAL CONFIG ERROR: {ce}")
+    logger.critical("FATAL CONFIG ERROR: %s", ce)
     raise SystemExit(f"FATAL CONFIG ERROR: {ce}")
 except (RuntimeError, ValueError) as ext_e:
-    logger.critical(f"FATAL PROVIDER ERROR: {ext_e}")
+    logger.critical("FATAL PROVIDER ERROR: %s", ext_e)
     raise
 except SystemExit:
     raise
 except Exception as e:
-    logger.critical(f"FATAL CONFIG ERROR: configuration loader failed unexpectedly: {e}")
+    logger.critical("FATAL CONFIG ERROR: configuration loader failed unexpectedly: %s", e)
     raise SystemExit(1)
 
 # Wszystkie endpointy resolvera mieszkaja pod /admin (panel, api, play, px).
@@ -453,7 +453,7 @@ async def performer_bio(request: Request, name: str = ""):
         raise
     except Exception as exc:
         # Drivers can echo hosts, credentials or SQL in their messages.
-        logger.warning(f"Performer bio lookup failed ({type(exc).__name__}).")
+        logger.warning("Performer bio lookup failed (%s).", type(exc).__name__)
         raise HTTPException(status_code=502, detail="HUB DB lookup failed.")
 
 
@@ -499,7 +499,7 @@ def _get_stream_candidate_ids(requested_id: str) -> list[str]:
         finally:
             conn.close()
     except Exception as exc:
-        logger.debug(f"Source candidate lookup error for {requested_id}: {exc}")
+        logger.debug("Source candidate lookup error for %s: %s", requested_id, exc)
         return [requested_id]
 
 
@@ -532,7 +532,7 @@ async def _telegram_variants(cand_id: str, raw_id: str):
     except ValueError:
         return None, HTTPException(status_code=404, detail="Video variants are unavailable")
     except Exception as exc:
-        logger.warning(f"Failed to fetch variants for {cand_id}: {exc}")
+        logger.warning("Failed to fetch variants for %s: %s", cand_id, exc)
         return None, exc
 
 
@@ -568,7 +568,7 @@ async def get_video_variants(video_id: str):
     if last_error is not None:
         if isinstance(last_error, HTTPException):
             raise last_error
-        logger.error(f"Failed to resolve variants for {video_id}: {last_error}")
+        logger.error("Failed to resolve variants for %s: %s", video_id, last_error)
         raise HTTPException(status_code=502, detail="Failed to resolve video variants")
 
     raise HTTPException(status_code=404, detail=f"No video found for {video_id}")
@@ -590,7 +590,7 @@ async def _live_cached_stream(cache_key: str) -> Optional[str]:
     if not cand_stream or cand_stream.startswith("tg://"):
         return cand_stream or None
     if await upstream_url_alive(cand_stream) is False:
-        logger.info(f"Cached stream for {cache_key} is dead, re-resolving")
+        logger.info("Cached stream for %s is dead, re-resolving", cache_key)
         await asyncio.to_thread(cache.invalidate, cache_key)
         return None
     return cand_stream
@@ -629,10 +629,10 @@ async def _resolve_play_candidate(cand_id: str, chosen_variant: Optional[str]):
                     provider_name, raw_id, cache_key, chosen_variant, use_cache,
                 )
     except HTTPException as e:
-        logger.warning(f"Failed to resolve {cache_key}: {e}")
+        logger.warning("Failed to resolve %s: %s", cache_key, e)
         return cache_key, None, e
     except Exception as e:
-        logger.warning(f"Failed to resolve {cache_key}: {e}")
+        logger.warning("Failed to resolve %s: %s", cache_key, e)
         if chosen_variant and "not found" in str(e).lower():
             return cache_key, None, HTTPException(status_code=404, detail="Video not found")
         return cache_key, None, e
@@ -649,13 +649,13 @@ async def _resolve_fresh_stream(provider_name: str, raw_id: str, cache_key: str,
     if not cand_stream:
         raise ValueError(f"Empty stream URL resolved for {cache_key}")
     if cand_stream.startswith("tg://"):
-        logger.info(f"Resolved new telegram stream for {cache_key}")
+        logger.info("Resolved new telegram stream for %s", cache_key)
         return cand_stream
     if await upstream_url_alive(cand_stream) is False:
         raise ValueError(f"Freshly resolved URL is dead for {cache_key}")
     if use_cache:
         await asyncio.to_thread(cache.set, cache_key, cand_stream, ttl_seconds=cache_ttl_for_provider(provider_name))
-    logger.info(f"Resolved new stream for {cache_key}")
+    logger.info("Resolved new stream for %s", cache_key)
     return cand_stream
 
 
@@ -687,13 +687,13 @@ async def play_stream(
             stream_url = cand_stream
             active_cache_key = cache_key
             if cand_id != video_id:
-                logger.info(f"Multi-source failover active for {video_id}: playing fallback {cand_id}")
+                logger.info("Multi-source failover active for %s: playing fallback %s", video_id, cand_id)
             break
 
     if not stream_url:
         if isinstance(last_error, HTTPException):
             raise last_error
-        logger.error(f"Failed to resolve stream for {video_id}: {last_error}")
+        logger.error("Failed to resolve stream for %s: %s", video_id, last_error)
         raise HTTPException(status_code=502, detail="Failed to resolve stream")
 
     if (stream_url or "").startswith("tg://"):
@@ -732,7 +732,7 @@ async def upstream_url_alive(url: str) -> Optional[bool]:
                 return False
             return None
     except Exception as e:
-        logger.debug(f"Stream liveness check failed (treating as unknown): {e}")
+        logger.debug("Stream liveness check failed (treating as unknown): %s", e)
         return None
 
 

@@ -1,6 +1,5 @@
 """Database-free contracts for V2 job actions and duplicate review reads."""
 
-import sys
 import json
 import re
 import unittest
@@ -13,14 +12,12 @@ from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
-sys.path.insert(0, str(ROOT / "sync"))
 
-import admin_v2_jobs
-import admin_v2_tasks
+import resolver.admin_v2_jobs as admin_v2_jobs
+import resolver.admin_v2_tasks as admin_v2_tasks
 from common.job_queue import ALL_ACTIONS
-from admin_services import _JOB_PROGRESS_STAGES, _public_job, _safe_job_progress
-import duplicate_jobs
+from resolver.admin_services import _JOB_PROGRESS_STAGES, _public_job, _safe_job_progress
+import sync.duplicate_jobs as duplicate_jobs
 
 
 def request(path, method="GET", body=b""):
@@ -215,7 +212,7 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
         routes = {route.path: route.endpoint for route in admin_v2_jobs.build_router(make_admin()).routes}
         endpoint = routes["/api/v2/jobs"]
         page = {"available": True, "jobs": [], "total": 0, "active_total": 0}
-        with patch("admin_services.job_listing", return_value=page) as listing:
+        with patch("resolver.admin_services.job_listing", return_value=page) as listing:
             response = await endpoint(
                 request("/admin/api/v2/jobs?action=performer_refresh"),
                 state="all", action="performer_refresh", offset=0, limit=50,
@@ -241,7 +238,7 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
             "available": True, "tasks": [{"queue": "phash", "id": "p-1", "state": "processing"}],
             "total": 1, "active_total": 1, "offset": 0, "limit": 50, "truncated": False,
         }
-        with patch("admin_v2_tasks._list_tasks", return_value=page) as list_tasks, \
+        with patch("resolver.admin_v2_tasks._list_tasks", return_value=page) as list_tasks, \
              patch("common.worker_capabilities.read_worker_capabilities", return_value={"available": True}):
             response = await listing(
                 request("/admin/api/v2/tasks?queue=all"), queue="all", state="", action="",
@@ -262,7 +259,7 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
 
         denied_listing = {route.path: route.endpoint for route in admin_v2_tasks.build_router(
             make_admin(blocked=True)).routes}["/api/v2/tasks"]
-        with patch("admin_v2_tasks._list_tasks") as list_tasks:
+        with patch("resolver.admin_v2_tasks._list_tasks") as list_tasks:
             denied = await denied_listing(
                 request("/admin/api/v2/tasks"), queue="all", state="", action="",
                 offset=0, limit=50, job_id="",
@@ -270,7 +267,7 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(denied.status_code, 403)
         list_tasks.assert_not_called()
 
-        with patch("admin_v2_tasks._list_tasks", return_value=page) as list_tasks:
+        with patch("resolver.admin_v2_tasks._list_tasks", return_value=page) as list_tasks:
             detail_result = await detail(request("/admin/api/v2/tasks/phash/p-1"), "phash", "p-1")
         self.assertEqual(detail_result["task"]["id"], "p-1")
         list_tasks.assert_called_once_with(
@@ -368,14 +365,14 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
         routes = {route.path: route.endpoint for route in admin_v2_jobs.build_router(make_admin()).routes}
         endpoint = routes["/api/v2/duplicates"]
         expected = {"pairs": [], "total": 0, "scanned": 0, "complete": True}
-        with patch("video_duplicates.find_duplicate_candidates", return_value=expected) as scan:
+        with patch("resolver.video_duplicates.find_duplicate_candidates", return_value=expected) as scan:
             response = await endpoint(request("/admin/api/v2/duplicates"), 25, 0, "review")
         self.assertEqual(response["pairs"], [])
         scan.assert_called_once_with("postgresql://test.invalid/catalog", 25, 0, "review",
                                      include_same_telegram_file=True)
 
         # A caller can ask for the automatically merged Telegram pairs to be left out.
-        with patch("video_duplicates.find_duplicate_candidates", return_value=expected) as scan:
+        with patch("resolver.video_duplicates.find_duplicate_candidates", return_value=expected) as scan:
             await endpoint(request("/admin/api/v2/duplicates"), 200, 0, "", False)
         scan.assert_called_once_with("postgresql://test.invalid/catalog", 200, 0, "",
                                      include_same_telegram_file=False)
@@ -417,8 +414,8 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
         routes = {route.path: route.endpoint for route in admin_v2_jobs.build_router(make_admin()).routes}
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = (1,)
-        with patch('video_duplicates.scan_duplicate_index', return_value={'pairs': []}), \
-             patch('video_duplicates.enqueue_job', return_value='job-1') as enqueue, \
+        with patch('resolver.video_duplicates.scan_duplicate_index', return_value={'pairs': []}), \
+             patch('resolver.video_duplicates.enqueue_job', return_value='job-1') as enqueue, \
              patch('common.db.connect', return_value=conn):
             response = await routes['/api/v2/duplicates/actions'](request(
                 '/api/v2/duplicates/actions', 'POST',

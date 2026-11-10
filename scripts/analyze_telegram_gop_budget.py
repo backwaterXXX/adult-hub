@@ -2,7 +2,7 @@
 """Fetch only a Telegram MP4 moov index and estimate sample GOP packet bytes.
 
 Example (inside a container with the resolver reachable):
-    python scripts/analyze_telegram_gop_budget.py telegram:-100...:...
+    python -m scripts.analyze_telegram_gop_budget telegram:-100...:...
 
 The default index-transfer cap is 16 MiB. This script never fetches media
 packets and never computes or stores a pHash.
@@ -21,7 +21,7 @@ import httpx
 try:
     from sync.mp4_gop_budget import MP4IndexError, estimate_video_gops, union_bytes
 except ModuleNotFoundError:
-    from mp4_gop_budget import MP4IndexError, estimate_video_gops, union_bytes
+    from sync.mp4_gop_budget import MP4IndexError, estimate_video_gops, union_bytes
 
 
 class BoundedRangeReader:

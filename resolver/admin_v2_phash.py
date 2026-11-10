@@ -11,7 +11,7 @@ import re
 
 import httpx
 from fastapi import APIRouter, Request, Response
-from admin_v2_errors import V2ErrorRoute
+from resolver.admin_v2_errors import V2ErrorRoute
 from common import db
 from common.http_rate_limit import wait_for_host_slot
 

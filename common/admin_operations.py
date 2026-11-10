@@ -359,10 +359,7 @@ def preview_performer_merge_plan(db_url: str | None, alias: str, canonical: str)
             or not alias.strip() or not canonical.strip() or len(alias) > 200 or len(canonical) > 200
             or alias.strip().lower() == canonical.strip().lower()):
         return {"outcome": "invalid", "message": "Specify two distinct performer names of at most 200 characters."}
-    try:
-        from common.fuzzy_performers import preview_performer_merge
-    except ImportError:
-        from fuzzy_performers import preview_performer_merge
+    from common.fuzzy_performers import preview_performer_merge
     preview = preview_performer_merge(db_url, alias.strip(), canonical.strip())
     if not preview.get("valid_canonical"):
         return {"outcome": "invalid", "message": "Choose a valid canonical performer name."}

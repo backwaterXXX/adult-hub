@@ -13,10 +13,7 @@ from typing import Any, Callable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-if __package__:
-    from .performer_data_migrations import REDUNDANT_PERFORMERS_VERSION
-else:
-    from performer_data_migrations import REDUNDANT_PERFORMERS_VERSION
+from sync.performer_data_migrations import REDUNDANT_PERFORMERS_VERSION  # noqa: E402
 
 
 CATEGORY_MAPPING_VERSION = 3
@@ -44,50 +41,30 @@ class DataMigrationServices:
 
 
 def _import_map_categories():
-    try:
-        from category_mapping import map_categories as _map_categories
-    except ImportError:
-        from sync.category_mapping import map_categories as _map_categories
+    from sync.category_mapping import map_categories as _map_categories
     return _map_categories
 
 
 def _import_media_helpers():
-    try:
-        from media_files import (
-            resolve_media_path as _resolve_media_path,
-            stable_media_basename as _stable_media_basename,
-            write_stream_file as _write_stream_file,
-        )
-    except ImportError:
-        from sync.media_files import (
-            resolve_media_path as _resolve_media_path,
-            stable_media_basename as _stable_media_basename,
-            write_stream_file as _write_stream_file,
-        )
+    from sync.media_files import (
+        resolve_media_path as _resolve_media_path,
+        stable_media_basename as _stable_media_basename,
+        write_stream_file as _write_stream_file,
+    )
     return _resolve_media_path, _stable_media_basename, _write_stream_file
 
 
 def _import_nfo_helpers():
-    try:
-        from nfo import (
-            load_performer_thumbs as _load_performer_thumbs,
-            format_dateadded as _format_dateadded,
-            create_nfo_file as _create_nfo_file,
-        )
-    except ImportError:
-        from sync.nfo import (
-            load_performer_thumbs as _load_performer_thumbs,
-            format_dateadded as _format_dateadded,
-            create_nfo_file as _create_nfo_file,
-        )
+    from sync.nfo import (
+        load_performer_thumbs as _load_performer_thumbs,
+        format_dateadded as _format_dateadded,
+        create_nfo_file as _create_nfo_file,
+    )
     return _load_performer_thumbs, _format_dateadded, _create_nfo_file
 
 
 def _import_provider_info():
-    try:
-        from provider_registry import get_provider_info as _get_provider_info
-    except ImportError:
-        from sync.provider_registry import get_provider_info as _get_provider_info
+    from sync.provider_registry import get_provider_info as _get_provider_info
     return _get_provider_info
 
 
@@ -98,7 +75,7 @@ def _import_clean_display_title():
     except ImportError:
         pass
     try:
-        from providers.base import clean_display_title as _clean_display_title
+        from resolver.providers.base import clean_display_title as _clean_display_title
         return _clean_display_title
     except ImportError:
         pass
@@ -108,7 +85,7 @@ def _import_clean_display_title():
     except ImportError:
         pass
     try:
-        from sync import clean_display_title as _clean_display_title
+        from sync.sync import clean_display_title as _clean_display_title
         return _clean_display_title
     except ImportError:
         pass
@@ -119,10 +96,7 @@ def _import_clean_display_title():
 
 
 def _import_normalize_performers():
-    try:
-        from performers import normalize_performers as _normalize_performers
-    except ImportError:
-        from common.performers import normalize_performers as _normalize_performers
+    from common.performers import normalize_performers as _normalize_performers
     return _normalize_performers
 
 
@@ -286,7 +260,7 @@ def _migrate_video_category_rows(conn: db.Connection, cur, svc: DataMigrationSer
             logger.debug("Ignored exception in migrate_categories", exc_info=True)
 
     if updated_videos > 0:
-        svc.logger.info(f"Updated categories for {updated_videos} videos in database.")
+        svc.logger.info("Updated categories for %s videos in database.", updated_videos)
 
 
 def _rebuild_video_categories_junction(conn: db.Connection) -> None:
@@ -347,7 +321,7 @@ def _migrate_nfo_file_genres(nfo_file: Path, svc: DataMigrationServices) -> bool
             return True
         return False
     except Exception as e:
-        svc.logger.debug(f"Error migrating NFO {nfo_file.name}: {e}")
+        svc.logger.debug("Error migrating NFO %s: %s", nfo_file.name, e)
         return False
 
 
@@ -358,7 +332,7 @@ def _migrate_nfo_directory_genres(media_dir: Path, svc: DataMigrationServices) -
             updated_nfos += 1
 
     if updated_nfos > 0:
-        svc.logger.info(f"Migrated {updated_nfos} NFO files to unified genres.")
+        svc.logger.info("Migrated %s NFO files to unified genres.", updated_nfos)
 
 
 def _record_category_mapping_version(conn: db.Connection, category_mapping_version: int) -> None:
@@ -394,10 +368,7 @@ def migrate_categories(conn: db.Connection, media_dir: Path, *,
 
 def break_alias_cycles_and_flatten(conn: db.Connection) -> Tuple[int, int]:
     """Compatibility facade for performer alias graph cleanup."""
-    try:
-        from .performer_data_migrations import break_alias_cycles_and_flatten as implementation
-    except ImportError:
-        from performer_data_migrations import break_alias_cycles_and_flatten as implementation
+    from sync.performer_data_migrations import break_alias_cycles_and_flatten as implementation
     return implementation(conn)
 
 
@@ -407,10 +378,7 @@ def migrate_redundant_performers(
     redundant_performers_version: int = REDUNDANT_PERFORMERS_VERSION,
 ) -> int:
     """Compatibility facade for performer metadata and NFO cleanup."""
-    try:
-        from .performer_data_migrations import migrate_redundant_performers as implementation
-    except ImportError:
-        from performer_data_migrations import migrate_redundant_performers as implementation
+    from sync.performer_data_migrations import migrate_redundant_performers as implementation
     return implementation(
         conn, media_dir, services=services,
         redundant_performers_version=redundant_performers_version,
@@ -480,7 +448,7 @@ def _record_display_title_version(conn: db.Connection, display_title_version: in
                 (str(display_title_version),),
             )
     except Exception as e:
-        svc.logger.warning(f"Could not update display_title_version in meta: {e}")
+        svc.logger.warning("Could not update display_title_version in meta: %s", e)
 
 
 def migrate_display_titles(conn: db.Connection, media_dir: Path, *,
@@ -505,5 +473,5 @@ def migrate_display_titles(conn: db.Connection, media_dir: Path, *,
     _record_display_title_version(conn, display_title_version, svc)
 
     if updated > 0:
-        svc.logger.info(f"Updated {updated} NFO files with clean display titles.")
+        svc.logger.info("Updated %s NFO files with clean display titles.", updated)
     return updated

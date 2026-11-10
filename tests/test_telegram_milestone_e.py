@@ -3,22 +3,18 @@
 from __future__ import annotations
 
 import os
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
-RESOLVER_DIR = ROOT / "resolver"
-if str(RESOLVER_DIR) not in sys.path:
-    sys.path.insert(0, str(RESOLVER_DIR))
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-import admin_v2_telegram_auth
-from providers.telegram_account_store import (
+import resolver.admin_v2_telegram_auth as admin_v2_telegram_auth
+from resolver.providers.telegram_account_store import (
     _MEMORY_ACCOUNTS,
     _MEMORY_CHANNEL_ACCESS,
     list_channel_access,
@@ -26,7 +22,7 @@ from providers.telegram_account_store import (
     set_memory_only_mode,
     upsert_account,
 )
-from providers.telegram_router import TelegramAccountRouter, get_telegram_router, reset_telegram_router
+from resolver.providers.telegram_router import TelegramAccountRouter, get_telegram_router, reset_telegram_router
 
 
 class MockAdmin:
@@ -195,7 +191,7 @@ class TestMilestoneEMetrics(unittest.IsolatedAsyncioTestCase):
     async def test_download_stream_flood_wait_counted_exactly_once(self):
         """Verify that download_stream encountering FloodWait inside channel_lease counts error & flood exactly once."""
         import tempfile
-        import providers.telegram as tg
+        import resolver.providers.telegram as tg
         account_id = "acc_stream_flood"
         with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as f:
             f.write(b"data")
@@ -212,9 +208,9 @@ class TestMilestoneEMetrics(unittest.IsolatedAsyncioTestCase):
             router = get_telegram_router()
             router._client_factory = lambda *args: mock_client
 
-            with patch("providers.telegram._get_cached_message", side_effect=SimulatedFloodWait("Rate limit")), \
-                 patch("providers.telegram.is_channel_authorized", return_value=True), \
-                 patch("providers.telegram._parse_ref", return_value=("-100123", 42, "unique1")):
+            with patch("resolver.providers.telegram._get_cached_message", side_effect=SimulatedFloodWait("Rate limit")), \
+                 patch("resolver.providers.telegram.is_channel_authorized", return_value=True), \
+                 patch("resolver.providers.telegram._parse_ref", return_value=("-100123", 42, "unique1")):
                 prov = tg.TelegramProvider()
                 with self.assertRaises(SimulatedFloodWait):
                     async for _ in prov.download_range("-100123:42:unique1", 0, 1024, affinity_account=account_id):
@@ -254,8 +250,8 @@ class TestMilestoneEApiAndSecrecy(unittest.IsolatedAsyncioTestCase):
         router.record_bytes("acc1", 5242880)
         router.record_buffer_init_latency("acc1", 45.2)
 
-        with patch("providers.telegram_router.get_telegram_router", return_value=router), \
-             patch("admin_v2_telegram_auth.get_telegram_login_manager") as mock_mgr_getter:
+        with patch("resolver.providers.telegram_router.get_telegram_router", return_value=router), \
+             patch("resolver.admin_v2_telegram_auth.get_telegram_login_manager") as mock_mgr_getter:
             mock_mgr = AsyncMock()
             mock_mgr.get_status = AsyncMock(return_value={"status": "authorized", "authorized": True})
             mock_mgr_getter.return_value = mock_mgr

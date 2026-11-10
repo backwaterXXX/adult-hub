@@ -226,7 +226,7 @@ The installer executes `scripts/setup.sh` and performs the following steps:
 9. **Interactive Telegram Authentication**:
    - Prompts for your Telegram `API ID` and `API Hash` (from [my.telegram.org](https://my.telegram.org)).
    - Checks if resolver or sync containers are running to prevent SQLite session locking.
-   - Runs `python3 -m providers.telegram_auth auth` in an interactive container. Enter your phone number (international format, e.g. `+1234567890`), login code received in Telegram, and 2FA password (if enabled).
+   - Runs `python3 -m resolver.providers.telegram_auth auth` in an interactive container. Enter your phone number (international format, e.g. `+1234567890`), login code received in Telegram, and 2FA password (if enabled).
 10. **Application Stack Startup**: Starts `resolver` and `sync` services once authorization succeeds. If authentication is postponed, core database and Jellyfin services remain running while resolver and sync remain withheld until authorization is completed.
 
 ### Setup Options, Prebuilt Consumption, and Source Build

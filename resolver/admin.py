@@ -17,8 +17,8 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-import admin_data
-import admin_security
+from resolver import admin_data
+from resolver import admin_security
 from common.app_version import __version__ as APP_VERSION
 from common.config import (
     DEFAULT_ADMIN_WORKER_CAPABILITIES_PATH,
@@ -85,7 +85,7 @@ def _backup_status() -> dict:
 def _attention_summary() -> dict:
     """Counts answering "what needs action?" for the Overview."""
     try:
-        from admin_services import job_listing, sync_backlog, unresolved_failed_task_summary
+        from resolver.admin_services import job_listing, sync_backlog, unresolved_failed_task_summary
         active = job_listing(HUB_DB_URL, limit=1, state="active")
         failed = unresolved_failed_task_summary(HUB_DB_URL)
         backlog = sync_backlog(HUB_DB_URL)
@@ -209,25 +209,25 @@ async def admin_v2_page(request: Request):
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
 
-import admin_library_v2  # noqa: E402
-import admin_v2_issues  # noqa: E402
-import admin_v2_jobs  # noqa: E402
-import admin_v2_operations  # noqa: E402
-import admin_v2_metadata  # noqa: E402
-import admin_v2_organize  # noqa: E402
-import admin_v2_availability  # noqa: E402
-import admin_v2_backups  # noqa: E402
-import admin_v2_diagnostics  # noqa: E402
-import admin_v2_schedules  # noqa: E402
-import admin_v2_sources  # noqa: E402
-import admin_v2_performers  # noqa: E402
-import admin_v2_maintenance  # noqa: E402
-import admin_v2_status  # noqa: E402
-import admin_v2_quality  # noqa: E402
-import admin_v2_phash  # noqa: E402
-import admin_v2_phash_jobs  # noqa: E402
-import admin_v2_tasks  # noqa: E402
-import admin_v2_telegram_auth  # noqa: E402
+from resolver import admin_library_v2  # noqa: E402
+from resolver import admin_v2_issues  # noqa: E402
+from resolver import admin_v2_jobs  # noqa: E402
+from resolver import admin_v2_operations  # noqa: E402
+from resolver import admin_v2_metadata  # noqa: E402
+from resolver import admin_v2_organize  # noqa: E402
+from resolver import admin_v2_availability  # noqa: E402
+from resolver import admin_v2_backups  # noqa: E402
+from resolver import admin_v2_diagnostics  # noqa: E402
+from resolver import admin_v2_schedules  # noqa: E402
+from resolver import admin_v2_sources  # noqa: E402
+from resolver import admin_v2_performers  # noqa: E402
+from resolver import admin_v2_maintenance  # noqa: E402
+from resolver import admin_v2_status  # noqa: E402
+from resolver import admin_v2_quality  # noqa: E402
+from resolver import admin_v2_phash  # noqa: E402
+from resolver import admin_v2_phash_jobs  # noqa: E402
+from resolver import admin_v2_tasks  # noqa: E402
+from resolver import admin_v2_telegram_auth  # noqa: E402
 
 _self = sys.modules[__name__]
 router.include_router(admin_library_v2.build_router(_self))

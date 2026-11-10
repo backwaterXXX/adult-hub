@@ -12,12 +12,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
-ROOT = Path(__file__).resolve().parents[1]
-import sys
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "common"))
-sys.path.insert(0, str(ROOT / "sync"))
-sys.path.insert(0, str(ROOT / "resolver"))
 
 # Isolate environment to prevent touching production config or /data
 _ORIG_CONFIG_PATH = os.environ.get("CONFIG_PATH")
@@ -42,11 +36,11 @@ def tearDownModule():
 
 from common.config_loader import load_config, parse_and_validate_config
 from common.managed_sources import preview_overrides, update_overrides
-from jellyfin_db import trigger_library_refresh
-from jellyfin_titles import sync_jellyfin_titles
-from jellyfin_people import sync_jellyfin_people
-from jellyfin_telegram_metadata import sync_jellyfin_telegram_metadata
-from library_cleanup import _media_root_is_safe_for_cleanup, cleanup_orphaned_records, cleanup_retention, LibraryCleanupServices
+from sync.jellyfin_db import trigger_library_refresh
+from sync.jellyfin_titles import sync_jellyfin_titles
+from sync.jellyfin_people import sync_jellyfin_people
+from sync.jellyfin_telegram_metadata import sync_jellyfin_telegram_metadata
+from sync.library_cleanup import _media_root_is_safe_for_cleanup, cleanup_orphaned_records, cleanup_retention, LibraryCleanupServices
 
 
 class TestFirstSourceReadiness(unittest.TestCase):
@@ -207,12 +201,7 @@ class TestJellyfinIntegrationOptionalAuth(unittest.TestCase):
 
     def test_performer_refresh_skips_jellyfin_when_credentials_absent(self):
         """_performer_refresh safely records jellyfin_refresh as skipped instead of failing."""
-        from tests.test_support import load_flat_sync_module
-        flat = load_flat_sync_module()
-        import sync
-        if not hasattr(sync, "stable_media_basename"):
-            sync.stable_media_basename = flat.stable_media_basename
-        from duplicate_jobs import _performer_refresh
+        from sync.duplicate_jobs import _performer_refresh
 
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = (
@@ -235,7 +224,7 @@ class TestJellyfinIntegrationOptionalAuth(unittest.TestCase):
 
     def test_collections_refresh_surfaces_useful_error_when_credentials_required(self):
         """_action_collections_refresh raises ValueError when credentials are required for actual API task."""
-        from duplicate_job_external_handlers import _action_collections_refresh
+        from sync.duplicate_job_external_handlers import _action_collections_refresh
 
         conn = MagicMock()
         with patch.dict(os.environ, {"JELLYFIN_URL": "http://jellyfin:8096", "JELLYFIN_API_KEY": ""}):

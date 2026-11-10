@@ -36,7 +36,7 @@ Adult Hub reads configuration from multiple layers, prioritizing operator runtim
 
 ## 2. Advanced Configuration Knobs
 
-Configure these settings in `.env` or Compose only when tuning specific performance characteristics.
+Configure these settings in `.env` or Compose only when tuning specific performance characteristics. A `.env` value reaches a container only if `docker-compose.yml` passes that variable through; otherwise the container uses the code default.
 
 ### 2.1 Concurrency & Cache Tuning
 

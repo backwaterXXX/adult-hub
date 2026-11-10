@@ -20,7 +20,6 @@ import hashlib
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import time
 import unittest
@@ -28,8 +27,6 @@ from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
 
 from common import backup, db, schedule_stages, system_schedules
 from sync import runner, runner_helpers

@@ -7,10 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-if __package__:
-    from . import duplicate_jobs as _core
-else:
-    import duplicate_jobs as _core
+from sync import duplicate_jobs as _core
 
 
 @dataclass(frozen=True)

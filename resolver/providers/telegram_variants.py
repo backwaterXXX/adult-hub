@@ -54,7 +54,7 @@ def _env_alt_documents_override() -> Optional[bool]:
 def _config_ignores_alt_documents() -> bool:
     """Return True when the telegram config source sets video_ignore_alt_documents."""
     try:
-        from .telegram_config import _get_config
+        from resolver.providers.telegram_config import _get_config
         cfg = _get_config()
         if cfg:
             tg_src = cfg.get_source("telegram")

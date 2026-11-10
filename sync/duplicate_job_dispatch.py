@@ -7,12 +7,8 @@ duplicate_jobs facade through ``_core``, so test patches on the facade keep appl
 from __future__ import annotations
 import uuid
 
-if __package__:
-    from . import duplicate_jobs as _core
-    from . import duplicate_job_external_handlers as _external_handlers
-else:
-    import duplicate_jobs as _core
-    import duplicate_job_external_handlers as _external_handlers
+from sync import duplicate_jobs as _core
+from sync import duplicate_job_external_handlers as _external_handlers
 
 
 def _catalog_result(run, result):

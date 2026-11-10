@@ -157,10 +157,7 @@ def _production_studio_names(video: Dict[str, Any], tags: Set[str], raw_title: s
             prod_studios.add(st.split("Studio: ", 1)[1].strip())
 
     try:
-        try:
-            from sync.studio_tags import detect_production_studio_names
-        except ImportError:
-            from studio_tags import detect_production_studio_names
+        from sync.studio_tags import detect_production_studio_names
         existing_for_detection = list(tags)
         if video.get("studio"):
             existing_for_detection.append(str(video.get("studio")))

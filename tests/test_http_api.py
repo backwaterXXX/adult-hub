@@ -4,7 +4,6 @@ import asyncio
 from contextlib import ExitStack
 import json
 import os
-import sys
 import tempfile
 import re
 import time
@@ -14,18 +13,15 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import TEST_URL, reset_db
-from test_support import load_flat_sync_module
+from test_support import load_sync_module
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
-sys.path.insert(0, str(ROOT))
 
-import admin as admin_module
-import app as resolver_app
+import resolver.admin as admin_module
+import resolver.app as resolver_app
 from common import db
 from common.job_queue import read_job
+from tests.helpers.db_session import db_session
 
 
 BAD_URL = "postgresql://127.0.0.1:1/missing"
@@ -532,7 +528,6 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(self._job_count(), 0)
 
 
-
     def test_admin_page_referenced_assets_are_served_with_correct_types(self):
         with self.admin_config():
             page = self.request("GET", "/admin/", base_url="http://localhost")
@@ -547,8 +542,6 @@ class TestResolverHttpApi(unittest.TestCase):
                     self.assertTrue(asset.content)
                     expected = "text/css" if path.endswith(".css") else "javascript"
                     self.assertIn(expected, asset.headers["content-type"])
-
-
 
 
     def test_admin_v2_jobs_return_active_count_or_explicit_unknown(self):
@@ -575,7 +568,7 @@ class TestResolverHttpApi(unittest.TestCase):
         async def unexpected_failure():
             raise RuntimeError("private source /srv/library token=secret")
 
-        from admin_v2_errors import V2ErrorRoute
+        from resolver.admin_v2_errors import V2ErrorRoute
         route_class = resolver_app.app.router.route_class
         resolver_app.app.router.route_class = V2ErrorRoute
         try:
@@ -607,17 +600,10 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertNotIn("secret", response.text)
 
 
-
-
-
-
-
     def test_v2_quarantine_plan_preview_execute_and_replay(self):
         with tempfile.TemporaryDirectory(), self.admin_config():
-            conn = db.connect(TEST_URL)
-            with conn:
+            with db_session(TEST_URL) as conn:
                 conn.execute("INSERT INTO videos (id,provider,title,performers,categories,tags,duration) VALUES ('telegram:99:plan','telegram','Plan video','[]','[]','[]',600)")
-            conn.close()
             with patch.object(admin_module, "HUB_DB_URL", TEST_URL):
                 base_headers = {"Origin": "http://localhost"}
                 denied = self.request("POST", "/admin/api/v2/operations/preview", base_url="http://localhost",
@@ -648,14 +634,12 @@ class TestResolverHttpApi(unittest.TestCase):
         snapshot = {"video": {"id": "telegram:99:restore", "title": "Restorable"},
                     "synced_files": [], "categories": [], "files": []}
         with self.admin_config():
-            conn = db.connect(TEST_URL)
-            with conn:
+            with db_session(TEST_URL) as conn:
                 conn.execute(
                     "INSERT INTO video_duplicate_decisions (loser_id,keeper_id,operation_id,state,created_at,snapshot) "
                     "VALUES ('telegram:99:restore','keeper',%s,'active',%s,%s)",
                     (operation_id, int(time.time()), json.dumps(snapshot)),
                 )
-            conn.close()
             base_headers = {"Origin": "http://localhost"}
             with patch.object(admin_module, "HUB_DB_URL", TEST_URL):
                 denied = self.request("POST", "/admin/api/v2/operations/preview", base_url="http://localhost",
@@ -676,14 +660,14 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(job["payload"], {"operation_id": operation_id})
 
     def test_v2_duplicate_hide_uses_authorized_persisted_operation_plan(self):
-        sync = load_flat_sync_module()
+        sync = load_sync_module()
 
         keeper, loser = "telegram:99:keeper", "telegram:99:hide"
         with tempfile.TemporaryDirectory(prefix="adult_hub_v2_hide_undo_") as directory, self.admin_config():
             root = Path(directory)
             media = root / "library"
             media.mkdir()
-            with db.connect(TEST_URL) as conn:
+            with db_session(TEST_URL) as conn:
                 for video_id, title in ((keeper, "Keeper"), (loser, "Hide me")):
                     sync.sync_unique_video({
                         "id": video_id, "provider": "telegram", "provider_video_id": video_id.split(":", 1)[1],
@@ -708,10 +692,10 @@ class TestResolverHttpApi(unittest.TestCase):
             with patch.object(sync, "DATA_DIR", root / "data"), \
                  patch.object(sync, "trigger_jellyfin_refresh", return_value=True) as refresh, \
                  patch.dict("os.environ", {"DATABASE_URL": TEST_URL, "JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "test-key"}):
-                with db.connect(TEST_URL) as conn:
+                with db_session(TEST_URL) as conn:
                     self.assertEqual(sync.process_video_duplicate_jobs(conn, media), 1)
             refresh.assert_called_once_with()
-            with db.connect(TEST_URL) as conn:
+            with db_session(TEST_URL) as conn:
                 self.assertIsNone(conn.execute("SELECT 1 FROM videos WHERE id=%s", (loser,)).fetchone())
             hidden = get_job(TEST_URL, job_id)
             self.assertEqual(hidden["state"], "done")
@@ -735,9 +719,9 @@ class TestResolverHttpApi(unittest.TestCase):
             with patch.object(sync, "DATA_DIR", root / "data"), \
                  patch.object(sync, "trigger_jellyfin_refresh", return_value=True), \
                  patch.dict("os.environ", {"DATABASE_URL": TEST_URL, "JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "test-key"}):
-                with db.connect(TEST_URL) as conn:
+                with db_session(TEST_URL) as conn:
                     self.assertEqual(sync.process_video_duplicate_jobs(conn, media), 1)
-            with db.connect(TEST_URL) as conn:
+            with db_session(TEST_URL) as conn:
                 self.assertIsNotNone(conn.execute("SELECT 1 FROM videos WHERE id=%s", (loser,)).fetchone())
             loser_base = sync.stable_media_basename(loser)
             self.assertTrue((media / f"{loser_base}.strm").exists())
@@ -762,7 +746,7 @@ class TestResolverHttpApi(unittest.TestCase):
 
     def test_v2_metadata_editor_uses_persisted_operation_plan(self):
         with self.admin_config():
-            with db.connect(TEST_URL) as conn:
+            with db_session(TEST_URL) as conn:
                 conn.execute(
                     "INSERT INTO videos (id,provider,title,performers,categories,tags,duration) "
                     "VALUES ('telegram:99:metadata-plan','telegram','Source title','[]','[]','[]',600)"
@@ -783,7 +767,7 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertIn("expected_source_fingerprint", job["payload"])
 
     def test_v2_auto_merge_exact_requires_complete_bounded_preview(self):
-        sync = load_flat_sync_module()
+        sync = load_sync_module()
 
         keeper = "telegram:-1001:10:exactplanfid"
         loser = "telegram:-1002:20:exactplanfid"
@@ -791,7 +775,7 @@ class TestResolverHttpApi(unittest.TestCase):
             root = Path(directory)
             media = root / "library"
             media.mkdir()
-            with db.connect(TEST_URL) as conn:
+            with db_session(TEST_URL) as conn:
                 for video_id, title, performers, studio in (
                     (keeper, "Keeper", ["Actor 1", "Actor 2"], "Studio"),
                     (loser, "Loser", ["Actor 1"], ""),
@@ -829,10 +813,10 @@ class TestResolverHttpApi(unittest.TestCase):
             with patch.object(sync, "DATA_DIR", root / "data"), \
                  patch.object(sync, "trigger_jellyfin_refresh", return_value=True) as refresh, \
                  patch.dict("os.environ", {"DATABASE_URL": TEST_URL, "JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "test-key"}):
-                with db.connect(TEST_URL) as conn:
+                with db_session(TEST_URL) as conn:
                     self.assertEqual(sync.process_video_duplicate_jobs(conn, media), 1)
             refresh.assert_called_once_with()
-            with db.connect(TEST_URL) as conn:
+            with db_session(TEST_URL) as conn:
                 self.assertIsNotNone(conn.execute("SELECT 1 FROM videos WHERE id=%s", (keeper,)).fetchone())
                 self.assertIsNone(conn.execute("SELECT 1 FROM videos WHERE id=%s", (loser,)).fetchone())
                 active = conn.execute(
@@ -853,7 +837,7 @@ class TestResolverHttpApi(unittest.TestCase):
         keeper = "telegram:-1001:10:stalemergefid"
         loser = "telegram:-1002:20:stalemergefid"
         with self.admin_config():
-            with db.connect(TEST_URL) as conn, conn:
+            with db_session(TEST_URL) as conn, conn:
                 conn.execute(
                     "INSERT INTO videos (id,provider,title,slug,duration,performers,studio,categories,tags) "
                     "VALUES (%s,'telegram','Keeper','stalemergefid',600,'[\"Actor 1\",\"Actor 2\"]','Studio','[]','[]'),"
@@ -875,13 +859,13 @@ class TestResolverHttpApi(unittest.TestCase):
                                        headers=headers, json={"type": "auto_merge_exact"})
                 self.assertEqual(preview.status_code, 200, preview.text)
                 self.assertEqual(preview.json()["items"][0]["video_id"], loser)
-                with db.connect(TEST_URL) as conn:
+                with db_session(TEST_URL) as conn:
                     with conn:
                         conn.execute("UPDATE videos SET title='Changed after preview' WHERE id=%s", (loser,))
                 before = self._job_count()
                 execute = self.request("POST", "/admin/api/v2/operations/execute", base_url="http://localhost",
                                        headers=headers, json={"plan_id": preview.json()["plan_id"]})
-            with db.connect(TEST_URL) as conn:
+            with db_session(TEST_URL) as conn:
                 plan_state = conn.execute(
                     "SELECT state FROM admin_operation_plans WHERE plan_id=%s", (preview.json()["plan_id"],)
                 ).fetchone()[0]
@@ -893,7 +877,7 @@ class TestResolverHttpApi(unittest.TestCase):
 
     def test_v2_metadata_preview_and_authorized_execute_queue_durable_job(self):
         with tempfile.TemporaryDirectory(), self.admin_config():
-            with db.connect(TEST_URL) as conn:
+            with db_session(TEST_URL) as conn:
                 conn.execute(
                     "INSERT INTO videos (id,provider,title,plot,performers,categories,tags) "
                     "VALUES ('telegram:99:metadata','telegram','Source title','Source plot','[]','[]','[]')"
@@ -917,8 +901,7 @@ class TestResolverHttpApi(unittest.TestCase):
 
     def test_v2_people_catalog_paginates_and_exposes_safe_filmography(self):
         with tempfile.TemporaryDirectory(), self.admin_config():
-            conn = db.connect(TEST_URL)
-            with conn:
+            with db_session(TEST_URL) as conn:
                 conn.execute(
                     "INSERT INTO videos (id,provider,title,performers,categories,tags,studio) "
                     "VALUES ('telegram:99:actor','telegram','Actor scene','[\"Alex Actor\"]','[]','[]','Studio')"
@@ -932,7 +915,6 @@ class TestResolverHttpApi(unittest.TestCase):
                     "VALUES ('telegram:99:actor','telegram:99:actor','operation-safe','active',1,%s)",
                     (json.dumps({"video": {"title": "Actor scene", "provider": "telegram"}, "files": ["private/path"]}),)
                 )
-            conn.close()
             with patch.object(admin_module, "HUB_DB_URL", TEST_URL):
                 page = self.request("GET", "/admin/api/v2/organize/people?q=Alex&limit=10", base_url="http://localhost")
                 bio_alias_search = self.request("GET", "/admin/api/v2/organize/people?q=Alexandra%20Stage", base_url="http://localhost")
@@ -962,8 +944,7 @@ class TestResolverHttpApi(unittest.TestCase):
     def test_v2_people_catalog_loads_mapped_aliases_once_per_page(self):
         """Aggregating aliases inside the grouped page query makes cost grow with OFFSET."""
         with tempfile.TemporaryDirectory(), self.admin_config():
-            conn = db.connect(TEST_URL)
-            with conn:
+            with db_session(TEST_URL) as conn:
                 for index in range(3):
                     name = f"Paginated Actor {index}"
                     conn.execute(
@@ -977,7 +958,6 @@ class TestResolverHttpApi(unittest.TestCase):
                     )
                     conn.execute("INSERT INTO performer_aliases (alias,canonical) VALUES (%s,%s)",
                                  (f"{name} alias", name))
-            conn.close()
 
             executed = []
             real_connect = admin_module.admin_v2_organize.db.connect
@@ -1016,7 +996,7 @@ class TestResolverHttpApi(unittest.TestCase):
 
     def test_v2_person_filmography_paginates_large_catalog_with_stable_order(self):
         with tempfile.TemporaryDirectory(), self.admin_config():
-            with db.connect(TEST_URL) as conn:
+            with db_session(TEST_URL) as conn:
                 for index in range(105):
                     video_id = f"telegram:99:filmography-{index:03d}"
                     conn.execute(
@@ -1046,11 +1026,11 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(too_large.status_code, 400)
 
     def test_v2_availability_preview_is_read_only_and_execute_is_authorized(self):
-        sync = load_flat_sync_module()
+        sync = load_sync_module()
 
         with tempfile.TemporaryDirectory() as directory, self.admin_config():
             root = Path(directory)
-            with db.connect(TEST_URL) as conn:
+            with db_session(TEST_URL) as conn:
                 conn.execute("INSERT INTO videos (id,provider,title,performers,categories,tags,duration) VALUES ('v-check','test','Check me','[]','[]','[]',600)")
                 conn.execute("INSERT INTO dead_streams (video_id,reason,detected_at) VALUES ('v-check','old failure',1)")
             with patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
@@ -1066,10 +1046,10 @@ class TestResolverHttpApi(unittest.TestCase):
                 after = self._job_count()
             with patch.object(sync, "DATA_DIR", root / "data"), \
                  patch.object(sync, "probe_stream_via_resolver_outcome", return_value="available") as probe:
-                with db.connect(TEST_URL) as conn:
+                with db_session(TEST_URL) as conn:
                     processed = sync.process_video_duplicate_jobs(conn, root / "media")
             completed = get_job(TEST_URL, job["id"])
-            with db.connect(TEST_URL) as evidence:
+            with db_session(TEST_URL) as evidence:
                 check = evidence.execute(
                     "SELECT status,evidence FROM video_availability_checks WHERE job_id=%s AND video_id='v-check'",
                     (job["id"],),
@@ -1093,13 +1073,10 @@ class TestResolverHttpApi(unittest.TestCase):
 
     def test_v2_backup_inventory_and_verification_are_read_only_and_path_safe(self):
         import hashlib
-        import sqlite3
         with tempfile.TemporaryDirectory() as directory, self.admin_config():
             root = Path(directory)
             backup = root / "adult_hub-test.db"
-            with sqlite3.connect(backup) as conn:
-                conn.execute("CREATE TABLE sample (id INTEGER)")
-                conn.execute("INSERT INTO sample VALUES (1)")
+            backup.write_bytes(b"legacy sqlite snapshot")
             digest = hashlib.sha256(backup.read_bytes()).hexdigest()
             (root / f"{backup.name}.sha256").write_text(f"{digest}  {backup.name}\n", encoding="ascii")
             with patch.object(admin_module, "BACKUP_DIR", root), \
@@ -1112,7 +1089,7 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertNotIn("DATABASE_URL", inventory.text)
         self.assertEqual(inventory.json()["items"][0]["scope"], "Legacy database snapshot; media and settings are not included")
         self.assertEqual(valid.status_code, 200, valid.text)
-        self.assertEqual(valid.json()["archive_status"], "valid")
+        self.assertEqual(valid.json()["archive_status"], "unsupported_format")
         self.assertEqual(valid.json()["checksum_status"], "valid")
         self.assertEqual(traversal.status_code, 404)
 
@@ -1230,7 +1207,7 @@ class TestResolverHttpApi(unittest.TestCase):
         clear.assert_called_once_with()
 
     def test_v2_cache_clear_empties_real_persistent_resolver_cache(self):
-        from stream_cache import PersistentLRUCache
+        from resolver.stream_cache import PersistentLRUCache
 
         cache = PersistentLRUCache(db_url=TEST_URL, max_entries=4, ttl_seconds=60)
         cache.set("v2-clear-one", "https://cdn.example/one")
@@ -1252,7 +1229,7 @@ class TestResolverHttpApi(unittest.TestCase):
             self.assertEqual(response.json(), {"ok": True, "cleared": 2})
             self.assertEqual(len(cache), 0)
             self.assertIsNone(cache.get("v2-clear-one"))
-            with db.connect(TEST_URL) as conn:
+            with db_session(TEST_URL) as conn:
                 self.assertEqual(conn.execute(
                     "SELECT count(*) FROM stream_cache WHERE cache_key LIKE 'v2-clear-%'"
                 ).fetchone()[0], 0)
@@ -1269,7 +1246,7 @@ class TestResolverHttpApi(unittest.TestCase):
             )
             with patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
                  patch.object(admin_module, "CONFIG_PATH", config), \
-                 patch("video_duplicates.enqueue_job", side_effect=["job-global", "job-scheduled", "job-backfill"]) as enqueue, \
+                 patch("resolver.video_duplicates.enqueue_job", side_effect=["job-global", "job-scheduled", "job-backfill"]) as enqueue, \
                  patch.object(admin_module, "_wake_worker") as wake:
                 headers = {"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}
                 global_sync = self.request("POST", "/admin/api/v2/maintenance/sync", base_url="http://localhost",
@@ -1362,7 +1339,7 @@ class TestResolverHttpApi(unittest.TestCase):
 
     def test_v2_job_retry_and_cancel_use_durable_queue_lifecycle(self):
         from common.job_queue import claim_job, enqueue_job, finish_job, read_job
-        sync = load_flat_sync_module()
+        sync = load_sync_module()
 
         failed_id = enqueue_job(TEST_URL, "collections_refresh", {})
         claimed = claim_job(TEST_URL, "collections_refresh")
@@ -1390,7 +1367,7 @@ class TestResolverHttpApi(unittest.TestCase):
                                                  "JELLYFIN_API_KEY": "test-key"}), \
                      patch("common.managed_collections.refresh_managed_collections",
                            new=AsyncMock(return_value=worker_result)) as refresh:
-                    with db.connect(TEST_URL) as conn:
+                    with db_session(TEST_URL) as conn:
                         self.assertEqual(sync.process_video_duplicate_jobs(conn, root / "media"), 1)
                     refresh.assert_awaited_once()
                 completed = read_job(TEST_URL, retry_id)
@@ -1415,7 +1392,7 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertEqual(wake.call_args_list[0].args, ("jobs",))
 
     def test_v2_collections_refresh_persists_real_queue_job(self):
-        sync = load_flat_sync_module()
+        sync = load_sync_module()
 
         result = {"collections": [{"name": "Adult Hub · Test", "items": 2}], "matched_videos": 2}
         with tempfile.TemporaryDirectory(prefix="adult_hub_collections_flow_") as directory, self.admin_config(), \
@@ -1445,7 +1422,7 @@ class TestResolverHttpApi(unittest.TestCase):
                                              "JELLYFIN_API_KEY": "test-key"}), \
                  patch("common.managed_collections.refresh_managed_collections",
                        new=AsyncMock(return_value=result)) as refresh:
-                with db.connect(TEST_URL) as conn:
+                with db_session(TEST_URL) as conn:
                     completed = sync.process_video_duplicate_jobs(conn, media)
 
             self.assertEqual(completed, 1)
@@ -1487,7 +1464,7 @@ class TestResolverHttpApi(unittest.TestCase):
 
     def test_v2_collections_refresh_is_durable_and_authorized(self):
         with self.admin_config(), patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
-             patch("video_duplicates.enqueue_job", return_value="job-collections") as enqueue, \
+             patch("resolver.video_duplicates.enqueue_job", return_value="job-collections") as enqueue, \
              patch.object(admin_module, "_wake_worker") as wake:
             denied = self.request("POST", "/admin/api/v2/maintenance/collections/refresh", base_url="http://localhost",
                                   headers={"Origin": "http://localhost"}, json={})
@@ -1521,9 +1498,6 @@ class TestResolverHttpApi(unittest.TestCase):
         self.assertIn(f"v{resolver_app.APP_VERSION}", page.text)
 
 
-
-
-
     def test_source_access_check_uses_existing_provider_and_sanitizes_failures(self):
         async def oversized_stream():
             yield b'{"source_id":"-100111","padding":"'
@@ -1542,7 +1516,7 @@ class TestResolverHttpApi(unittest.TestCase):
             provider.check_configured_channel_access = AsyncMock(return_value=None)
             headers = {"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}
             with patch.object(admin_module, "CONFIG_PATH", config), \
-                 patch("providers.get_provider", return_value=provider):
+                 patch("resolver.providers.get_provider", return_value=provider):
                 checked = self.request("POST", "/admin/api/v2/sources/check",
                     base_url="http://localhost", headers=headers, json={"source_id": "-100111"})
                 missing = self.request("POST", "/admin/api/v2/sources/check",
@@ -1755,7 +1729,7 @@ class TestResolverHttpApi(unittest.TestCase):
             for index in range(1001)
         ]
         with self.admin_config():
-            with db.connect(TEST_URL) as conn:
+            with db_session(TEST_URL) as conn:
                 with conn:
                     conn.executemany(
                         "INSERT INTO video_duplicate_decisions "
@@ -1780,7 +1754,7 @@ class TestResolverHttpApi(unittest.TestCase):
                     "GET", "/admin/api/v2/organize/quarantine?limit=100&offset=0",
                     base_url="http://localhost",
                 ).json()
-                with db.connect(TEST_URL) as conn:
+                with db_session(TEST_URL) as conn:
                     with conn:
                         conn.execute(
                             "UPDATE video_duplicate_decisions SET state='undone' WHERE loser_id=%s",

@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 import tempfile
 import unittest
 import asyncio
@@ -10,20 +9,18 @@ from unittest.mock import patch
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase, TEST_URL
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
-from video_duplicates import (
+from resolver.video_duplicates import (
     find_duplicate_candidates, scan_duplicate_index, _score, _dismissals_for_group, _index_dismissals,
 )
-import video_duplicates
+import resolver.video_duplicates as video_duplicates
 from common import db
-import admin_v2_jobs
+from tests.helpers.db_session import db_session
+import resolver.admin_v2_jobs as admin_v2_jobs
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "sync"))
-import duplicate_files
-import video_duplicate_automation
+import sync.duplicate_files as duplicate_files
+import sync.video_duplicate_automation as video_duplicate_automation
 
 
 class TestAutomaticDuplicateRules(unittest.TestCase):
@@ -130,7 +127,7 @@ class TestAutomaticDuplicateRules(unittest.TestCase):
                         return (100,)
                 return Result()
 
-        with patch("video_duplicates.scan_duplicate_index", return_value=scan_mock), \
+        with patch("resolver.video_duplicates.scan_duplicate_index", return_value=scan_mock), \
              patch.object(video_duplicate_automation, "_reconcile_visual", return_value={}), \
              patch("common.db.connect", return_value=MockConn()), \
              patch("common.duplicate_evidence.pair_evidence", return_value={"type": "telegram_file_id", "file_id": "doc999"}), \
@@ -157,7 +154,7 @@ class TestAutomaticDuplicateRules(unittest.TestCase):
             {"evidence": "telegram_file_id", "category": "Same file", "reasons": ["Same Telegram file, different messages"]},
             {"evidence": "oshash", "category": "Strong suggestion", "reasons": ["Matching OSHASH fingerprint"]},
         ]
-        with patch("video_duplicates._collect_duplicate_candidates", return_value=(found_mock, 2, True)):
+        with patch("resolver.video_duplicates._collect_duplicate_candidates", return_value=(found_mock, 2, True)):
             panel_res = video_duplicates.find_duplicate_candidates(None, include_same_telegram_file=False)
             self.assertEqual(panel_res["total"], 1)
             self.assertEqual(panel_res["pairs"][0]["evidence"], "oshash")
@@ -170,7 +167,7 @@ class TestAutomaticDuplicateRules(unittest.TestCase):
             {"evidence": "telegram_file_id", "category": "Same file", "reasons": ["Same Telegram file, different messages"]},
             {"evidence": "oshash", "category": "Strong suggestion", "reasons": ["Matching OSHASH fingerprint"]},
         ]
-        with patch("video_duplicates._collect_duplicate_candidates", return_value=(found_mock, 2, True)):
+        with patch("resolver.video_duplicates._collect_duplicate_candidates", return_value=(found_mock, 2, True)):
             self.assertEqual(video_duplicates.find_duplicate_candidates(None)["total"], 2)
             same_file = video_duplicates.find_duplicate_candidates(
                 None, category="same_file", include_same_telegram_file=False)
@@ -624,16 +621,16 @@ class TestDuplicateDismissalIndex(unittest.TestCase):
                 pass
 
         connection = Connection()
-        with (patch("video_duplicates.db.connect", return_value=connection),
-              patch("video_duplicates.db.table_columns", return_value={
+        with (patch("resolver.video_duplicates.db.connect", return_value=connection),
+              patch("resolver.video_duplicates.db.table_columns", return_value={
                   "id", "provider", "title", "slug", "duration", "performers",
                   "studio", "thumbnail", "url",
               }),
-              patch("video_duplicates.db.table_names", return_value={
+              patch("resolver.video_duplicates.db.table_names", return_value={
                   "videos", "performer_aliases", "video_duplicate_decisions",
                   "video_duplicate_dismissals",
               }),
-              patch("video_duplicates._dismissals_for_group",
+              patch("resolver.video_duplicates._dismissals_for_group",
                     wraps=_dismissals_for_group) as group_lookup):
             result = find_duplicate_candidates("fixture", limit=100)
 
@@ -645,15 +642,13 @@ class TestDuplicateDismissalIndex(unittest.TestCase):
 class TestVideoDuplicateCandidates(PgTestCase):
     def add_video(self, video_id, title, *, provider="source", slug="", duration=600,
                   performers=None, studio=""):
-        conn = db.connect(TEST_URL)
-        with conn:
+        with db_session(TEST_URL) as conn:
             conn.execute(
                 "INSERT INTO videos (id, provider, title, slug, duration, performers, studio) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (video_id, provider, title, slug, duration,
                  json.dumps(performers or []), studio),
             )
-        conn.close()
 
     def test_identical_title_does_not_create_suggestion(self):
         self.add_video("a:1", "A Very Specific Scene With Alex", provider="a",
@@ -789,7 +784,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
         second = "telegram:-1002:2:file-b"
         self.add_video(first, "First upload", provider="telegram", slug="file-a")
         self.add_video(second, "Second upload", provider="telegram", slug="file-b")
-        with db.connect(TEST_URL) as conn:
+        with db_session(TEST_URL) as conn:
             with conn:
                 conn.executemany(
                     "INSERT INTO video_fingerprints (video_id,algorithm,fingerprint) VALUES (%s,'OSHASH',%s)",
@@ -865,7 +860,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
                 (f"telegram:-1001000:{index * 2}:{file_id}", f"First copy {index}", file_id),
                 (f"telegram:-1002000:{index * 2 + 1}:{file_id}", f"Second copy {index}", file_id),
             ))
-        with db.connect(TEST_URL) as conn:
+        with db_session(TEST_URL) as conn:
             with conn:
                 conn.executemany(
                     "INSERT INTO videos (id,provider,title,slug,duration,performers,studio) "
@@ -899,7 +894,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
             videos.extend(((left, f"First {index}", file_id), (right, f"Second {index}", file_id)))
             dismissals.append((left, right, 1, f"dismiss-{index}", 1))
 
-        with db.connect(TEST_URL) as conn:
+        with db_session(TEST_URL) as conn:
             with conn:
                 conn.executemany(
                     "INSERT INTO videos (id,provider,title,slug,duration,performers,studio) "
@@ -952,10 +947,8 @@ class TestVideoDuplicateCandidates(PgTestCase):
     def test_handles_null_performers_and_caps_results(self):
         self.add_video("a:1", "This Is A Very Specific Scene", duration=600, performers=["Alex", "Blake"])
         self.add_video("b:2", "Different title", duration=602, performers=["Alex", "Blake"])
-        conn = db.connect(TEST_URL)
-        with conn:
+        with db_session(TEST_URL) as conn:
             conn.execute("UPDATE videos SET performers = NULL WHERE id = 'a:1'")
-        conn.close()
 
         result = find_duplicate_candidates(TEST_URL, limit=0)
 
@@ -978,7 +971,7 @@ class TestVideoDuplicateCandidates(PgTestCase):
             (f"catalog-padding:{index:05d}", "other", f"Unrelated item {index}", "")
             for index in range(padding_count)
         )
-        with db.connect(TEST_URL) as conn:
+        with db_session(TEST_URL) as conn:
             with conn:
                 conn.executemany(
                     "INSERT INTO videos (id,provider,title,slug,duration,performers,studio) "

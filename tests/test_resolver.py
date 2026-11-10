@@ -1,19 +1,14 @@
 import asyncio
-import sys
 import time
-from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase, reset_db
 
 try:
-    import app as resolver_app
-    from app import parse_composite_id, PersistentLRUCache
+    import resolver.app as resolver_app
+    from resolver.app import parse_composite_id, PersistentLRUCache
 except ImportError as exc:
     from test_support import optional_import_failed
     optional_import_failed(exc)
@@ -42,8 +37,8 @@ class TestResolver(PgTestCase):
     def test_parse_composite_id_registered_prefix(self):
         # With a provider registered (e.g. via the web extension), its
         # historical provider:id values split stably on the first colon.
-        import providers as _providers_pkg
-        from providers.base import BaseProvider
+        import resolver.providers as _providers_pkg
+        from resolver.providers.base import BaseProvider
         snapshot = dict(_providers_pkg._PROVIDERS)
         try:
             class _Stub(BaseProvider):
@@ -82,13 +77,13 @@ class TestResolver(PgTestCase):
         self.assertEqual(cache2.get("item4"), "https://cdn.example.com/4.m3u8")
 
     def test_cache_clear_removes_persistent_and_memory_entries_and_counts_uniquely(self):
-        from common import db
+        from tests.helpers.db_session import db_session
 
         cache = PersistentLRUCache(db_url=self.db_url, max_entries=4, ttl_seconds=60)
         try:
             cache.set("shared", "https://cdn.example/shared")
             cache.set("persistent", "https://cdn.example/persistent")
-            with db.connect(self.db_url) as conn:
+            with db_session(self.db_url) as conn:
                 conn.execute(
                     "INSERT INTO stream_cache(cache_key,stream_url,expire_at,last_accessed) "
                     "VALUES ('expired','https://cdn.example/expired',%s,%s)",
@@ -97,7 +92,7 @@ class TestResolver(PgTestCase):
             self.assertEqual(cache.clear(), 2)
             self.assertEqual(len(cache), 0)
             self.assertIsNone(cache.get("shared"))
-            with db.connect(self.db_url) as conn:
+            with db_session(self.db_url) as conn:
                 self.assertEqual(conn.execute("SELECT count(*) FROM stream_cache").fetchone()[0], 0)
         finally:
             cache.close()
@@ -108,7 +103,7 @@ class TestResolver(PgTestCase):
         cache = PersistentLRUCache(db_url=self.db_url, max_entries=4, ttl_seconds=60)
         try:
             cache.set("keep-on-error", "https://cdn.example/keep")
-            with patch("stream_cache.db.connect", side_effect=RuntimeError("database unavailable")):
+            with patch("resolver.stream_cache.db.connect", side_effect=RuntimeError("database unavailable")):
                 with self.assertRaisesRegex(RuntimeError, "database unavailable"):
                     cache.clear()
                 self.assertEqual(cache.get("keep-on-error"), "https://cdn.example/keep")

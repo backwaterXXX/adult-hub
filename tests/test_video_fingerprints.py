@@ -3,13 +3,11 @@ import sys
 import tempfile
 import types
 from unittest import mock
-from pathlib import Path
 
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sync"))
-from video_fingerprints import FingerprintBudget, PREFETCH_BYTES, _stash_phash, _stash_sample_times
-from fingerprint_mp4 import _FaststartMP4, _top_level_layout
+from sync.video_fingerprints import FingerprintBudget, PREFETCH_BYTES, _stash_phash, _stash_sample_times
+from sync.fingerprint_mp4 import _FaststartMP4, _top_level_layout
 
 
 class TestVideoFingerprints(unittest.TestCase):

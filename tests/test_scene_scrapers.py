@@ -1,19 +1,15 @@
 import json
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import nfo
-from scene_scrapers import (
+import sync.nfo as nfo
+from sync.scene_scrapers import (
     ScrapedScene,
     backfill_scenes,
     backfill_telegram_fingerprints,
@@ -97,13 +93,13 @@ class TestBackfillScenes(PgTestCase):
 
     def test_trusted_proposals_are_applied_once_and_preserve_overrides(self):
         from common.metadata_review import store_metadata_review_proposal
-        from scene_scraper_backfill import apply_pending_fingerprint_proposals
+        from sync.scene_scraper_backfill import apply_pending_fingerprint_proposals
         video_id = 'telegram:-1001:99:999'
         self.conn.execute("INSERT INTO videos (id,provider,title,plot,studio,first_seen,last_seen,scene_match_source,scene_match_external_id) VALUES (%s,'telegram','Old','Old plot','Old studio',1,1,'stashdb:phash','scene-1')", (video_id,))
         self.conn.execute("INSERT INTO video_metadata_overrides (video_id,fields,revision) VALUES (%s,%s::jsonb,1)", (video_id, json.dumps({'studio': 'My studio'})))
         store_metadata_review_proposal(self.conn, video_id, {'plot': 'New plot', 'studio': 'New studio'}, source='stashdb:phash', external_id='scene-1', source_url='', confidence=0.9)
         self.conn.commit()
-        with patch('scene_scrapers._update_media_files'):
+        with patch('sync.scene_scrapers._update_media_files'):
             self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (1, 1))
             self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (0, 0))
         row = self.conn.execute('SELECT plot,studio FROM videos WHERE id=%s', (video_id,)).fetchone()
@@ -112,20 +108,20 @@ class TestBackfillScenes(PgTestCase):
 
     def test_text_proposals_apply_but_do_not_replace_hash_matches(self):
         from common.metadata_review import store_metadata_review_proposal
-        from scene_scraper_backfill import apply_pending_fingerprint_proposals
+        from sync.scene_scraper_backfill import apply_pending_fingerprint_proposals
         for suffix, source in [('101', 'stashdb:title_exact'), ('102', 'stashdb:phash')]:
             video_id = f'telegram:-1001:{suffix}:999'
             self.conn.execute("INSERT INTO videos (id,provider,title,plot,first_seen,last_seen,scene_match_source,scene_match_external_id) VALUES (%s,'telegram','Old','Old plot',1,1,%s,'scene-1')", (video_id, source))
             store_metadata_review_proposal(self.conn, video_id, {'plot': 'New plot'}, source='stashdb:title_exact', external_id='scene-1', source_url='', confidence=0.9)
         self.conn.commit()
-        with patch('scene_scrapers._update_media_files'):
+        with patch('sync.scene_scrapers._update_media_files'):
             self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (2, 1))
         rows = self.conn.execute("SELECT v.plot,p.status FROM videos v JOIN metadata_review_proposals p ON p.video_id=v.id ORDER BY v.id").fetchall()
         self.assertEqual([tuple(row) for row in rows], [('New plot', 'accepted'), ('Old plot', 'rejected')])
 
     def test_pending_proposal_without_registered_media_is_deferred(self):
         from common.metadata_review import store_metadata_review_proposal
-        from scene_scraper_backfill import apply_pending_fingerprint_proposals
+        from sync.scene_scraper_backfill import apply_pending_fingerprint_proposals
         video_id = 'telegram:-1001:104:999'
         self.conn.execute("INSERT INTO videos (id,provider,title,plot,first_seen,last_seen,scene_match_source,scene_match_external_id) VALUES (%s,'telegram','Old','Old plot',1,1,'stashdb:title_exact','scene-2')", (video_id,))
         store_metadata_review_proposal(self.conn, video_id, {'plot': 'New plot'}, source='stashdb:title_exact', external_id='scene-2', source_url='', confidence=0.9)
@@ -137,7 +133,7 @@ class TestBackfillScenes(PgTestCase):
 
     def test_pending_proposal_updates_every_registered_nfo_and_retries_missing(self):
         from common.metadata_review import store_metadata_review_proposal
-        from scene_scraper_backfill import apply_pending_fingerprint_proposals
+        from sync.scene_scraper_backfill import apply_pending_fingerprint_proposals
         video_id = 'telegram:-1001:103:999'
         self.conn.execute("INSERT INTO videos (id,provider,title,plot,first_seen,last_seen,scene_match_source,scene_match_external_id) VALUES (%s,'telegram','Old','Old plot',1,1,'stashdb:title_exact','scene-1')", (video_id,))
         for name in ('first', 'second'):
@@ -196,9 +192,9 @@ class TestBackfillScenes(PgTestCase):
             url="https://stashdb.org/scenes/stash-uuid-12345",
         )
 
-        with patch("scene_scraper_text_sources.search_scene_by_exact_title", return_value=mock_scene), \
-             patch("scene_scrapers.backfill_telegram_fingerprints", return_value=(0, 0)), \
-             patch("scene_scrapers.backfill_missing_telegram_oshashes", return_value=(0, 0)):
+        with patch("sync.scene_scraper_text_sources.search_scene_by_exact_title", return_value=mock_scene), \
+             patch("sync.scene_scrapers.backfill_telegram_fingerprints", return_value=(0, 0)), \
+             patch("sync.scene_scrapers.backfill_missing_telegram_oshashes", return_value=(0, 0)):
             checked, updated = backfill_scenes(self.conn, self.media_dir, limit=10, sleep_sec=0)
 
         # The title lookup and official performer-alias pass both inspect this row.
@@ -251,8 +247,8 @@ class TestBackfillScenes(PgTestCase):
             poster_url="", external_id="scene-1",
         )
         with patch.dict(os.environ, {"TELEGRAM_FINGERPRINTS_ENABLED": "true"}), \
-             patch("scene_scrapers._telegram_oshash", return_value=("0123456789abcdef", 131072)), \
-             patch("scene_scrapers._search_tpdb_scene_by_oshash", return_value=scene):
+             patch("sync.scene_scrapers._telegram_oshash", return_value=("0123456789abcdef", 131072)), \
+             patch("sync.scene_scrapers._search_tpdb_scene_by_oshash", return_value=scene):
             self.assertEqual(backfill_telegram_fingerprints(
                 self.conn, self.media_dir, limit=1, sleep_sec=0, video_ids=[vid_id],
             ), (1, 1))
@@ -307,8 +303,8 @@ class TestBackfillScenes(PgTestCase):
             url="https://stashdb.org/scenes/stash-uuid-1", source="stashdb:phash",
         )
         with patch.dict(os.environ, {"TELEGRAM_FINGERPRINTS_ENABLED": "true"}), \
-             patch("scene_scrapers._telegram_oshash", return_value=("0123456789abcdef", 131072)), \
-             patch("scene_scrapers._search_stashdb_scene_by_fingerprint", return_value=scene):
+             patch("sync.scene_scrapers._telegram_oshash", return_value=("0123456789abcdef", 131072)), \
+             patch("sync.scene_scrapers._search_stashdb_scene_by_fingerprint", return_value=scene):
             self.assertEqual(backfill_telegram_fingerprints(
                 self.conn, self.media_dir, limit=1, sleep_sec=0, video_ids=[vid_id],
             ), (1, 1))
@@ -341,7 +337,7 @@ class TestBackfillScenes(PgTestCase):
         self.conn.commit()
 
         with patch.dict(os.environ, {"TELEGRAM_FINGERPRINTS_ENABLED": "true", "TELEGRAM_PHASH_ENABLED": "false"}), \
-             patch("scene_scrapers.search_scene_by_oshash", return_value=None):
+             patch("sync.scene_scrapers.search_scene_by_oshash", return_value=None):
             self.assertEqual(backfill_telegram_fingerprints(
                 self.conn, self.media_dir, limit=10, sleep_sec=0,
             ), (2, 0))
@@ -407,9 +403,9 @@ class TestBackfillScenes(PgTestCase):
             titles.append(title)
             return None
 
-        with patch("scene_scraper_text_sources.search_scene_by_exact_title", side_effect=no_match), \
-             patch("scene_scrapers.backfill_telegram_fingerprints", return_value=(0, 0)), \
-             patch("scene_scrapers.backfill_missing_telegram_oshashes", return_value=(0, 0)):
+        with patch("sync.scene_scraper_text_sources.search_scene_by_exact_title", side_effect=no_match), \
+             patch("sync.scene_scrapers.backfill_telegram_fingerprints", return_value=(0, 0)), \
+             patch("sync.scene_scrapers.backfill_missing_telegram_oshashes", return_value=(0, 0)):
             self.assertEqual(backfill_scenes(self.conn, self.media_dir, limit=1, sleep_sec=0), (1, 0))
             self.assertEqual(backfill_scenes(self.conn, self.media_dir, limit=1, sleep_sec=0), (1, 0))
         self.assertEqual(titles, ["No listing for Alice", "No listing for Bob"])

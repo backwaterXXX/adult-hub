@@ -7,8 +7,8 @@ upstream breakage (embed changes, new anti-leech, dead CDN) is caught before
 it matters at playback time.
 
 Usage (inside the sync container, resolver reachable as http://resolver:8090):
-    docker compose exec sync python linkcheck.py
-    docker compose exec sync python linkcheck.py --sample 5 --provider telegram
+    docker compose exec sync python -m sync.linkcheck
+    docker compose exec sync python -m sync.linkcheck --sample 5 --provider telegram
 
 Exit code 0 = all providers healthy, 1 = at least one provider fully broken
 or failure rate above --max-fail-rate.

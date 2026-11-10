@@ -5,7 +5,7 @@ from __future__ import annotations
 from urllib.parse import quote
 import logging
 
-from admin_v2_issue_builder import (
+from resolver.admin_v2_issue_builder import (
     _issue,
     _latest_source_failures,
     _latest_source_ids,

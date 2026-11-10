@@ -1,19 +1,15 @@
 import unittest
-import sys
 import tempfile
 import time
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.config_loader import AppConfig, SourceConfig, TelegramChannelConfig, SyncConfig
-sys.path.append(str(Path(__file__).resolve().parents[1] / "resolver"))
-from test_support import load_flat_sync_module, optional_import_failed
+from test_support import load_sync_module, optional_import_failed
 try:
-    sync_module = load_flat_sync_module()
+    sync_module = load_sync_module()
 except ImportError as exc:
     optional_import_failed(exc)
     sync_module = None
@@ -394,7 +390,7 @@ class TestProviderConfig(unittest.TestCase):
     def test_provider_set_address(self):
         """Task 3: Changing provider address updates BASE_URL."""
         try:
-            from providers import get_provider
+            from resolver.providers import get_provider
         except ImportError as exc:
             from test_support import optional_import_failed
             optional_import_failed(exc)

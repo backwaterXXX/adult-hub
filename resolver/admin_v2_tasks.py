@@ -8,8 +8,8 @@ import logging
 from typing import NamedTuple
 
 from fastapi import APIRouter, Query, Request
-from admin_v2_errors import V2ErrorRoute
-from admin_v2_jobs import JOB_ACTIONS
+from resolver.admin_v2_errors import V2ErrorRoute
+from resolver.admin_v2_jobs import JOB_ACTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +128,8 @@ def _task_rows(conn, scope: _TaskScope, limit: int, offset: int) -> list:
 
 
 def _hydrate_jobs(conn, job_ids: list) -> dict:
-    from admin_services import _job_undo_available, _public_job
-    from admin_v2_jobs import _safe_job
+    from resolver.admin_services import _job_undo_available, _public_job
+    from resolver.admin_v2_jobs import _safe_job
 
     general = {}
     if not job_ids:
@@ -198,7 +198,7 @@ def _hydrate_visual(conn, job_ids: list) -> dict:
 
 def _list_tasks(db_url: str | None, *, queue: str, state: str, action: str,
                 offset: int, limit: int, job_id: str | None = None) -> dict:
-    from admin_services import _jobs_connection
+    from resolver.admin_services import _jobs_connection
     from common import db
 
     conn = _jobs_connection(db_url)

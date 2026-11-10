@@ -17,13 +17,9 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-for source_root in (ROOT / "resolver", ROOT):
-    if str(source_root) not in sys.path:
-        sys.path.insert(0, str(source_root))
 
-from common.db import connect  # noqa: E402
-from video_duplicates import scan_duplicate_index  # noqa: E402
+from common.db import connect
+from resolver.video_duplicates import scan_duplicate_index
 
 
 FIELDS = (

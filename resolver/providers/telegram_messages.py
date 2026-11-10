@@ -9,7 +9,7 @@ from typing import Any, List, Optional, Tuple
 
 from common.title_cleaning import clean_title_text, extract_title_hashtags
 
-from .base import CategoryItem
+from resolver.providers.base import CategoryItem
 
 
 _CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")

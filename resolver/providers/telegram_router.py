@@ -11,14 +11,14 @@ import time
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Callable, Dict, Optional, Tuple
 
-from .telegram_account import TelegramAccountContext, validate_account_id
-from .telegram_account_store import (
+from resolver.providers.telegram_account import TelegramAccountContext, validate_account_id
+from resolver.providers.telegram_account_store import (
     get_account,
     list_accounts,
     list_channel_access,
     set_channel_access,
 )
-from .telegram_config import _entity_ref
+from resolver.providers.telegram_config import _entity_ref
 
 logger = logging.getLogger(__name__)
 
@@ -285,7 +285,7 @@ class TelegramAccountRouter:
             try:
                 setattr(client, "_account_id", valid_id)
             except Exception:
-                pass
+                logger.debug("Could not tag Telegram client with account %s", valid_id, exc_info=True)
         return client
 
     def _validate_affinity_account(
@@ -640,7 +640,7 @@ class TelegramAccountRouter:
             try:
                 setattr(exc, "_router_handled", True)
             except Exception:
-                pass
+                logger.debug("Could not mark exception as handled by Telegram router", exc_info=True)
         valid_id = validate_account_id(account_id)
         clean_channel = str(channel_id).strip()
         exc_type = type(exc).__name__

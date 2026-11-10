@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
 from common.performers import normalize_performers
-from providers import get_provider
+from resolver.providers import get_provider
 
 logger = logging.getLogger("resolver")
 THUMB_API_TIMEOUT_SECONDS = 10.0
@@ -30,7 +30,7 @@ async def get_categories(provider: str = "telegram"):
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Provider '{provider}' not found")
     except Exception as e:
-        logger.error(f"Error fetching categories for {provider}: {e}")
+        logger.error("Error fetching categories for %s: %s", provider, e)
         raise HTTPException(status_code=502, detail="Could not load categories")
 
 
@@ -43,7 +43,7 @@ async def browse(section: str = Query("trending"), page: int = 1, provider: str 
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Provider '{provider}' not found")
     except Exception as e:
-        logger.error(f"Error browsing {section} ({provider}): {e}")
+        logger.error("Error browsing %s (%s): %s", section, provider, e)
         raise HTTPException(status_code=502, detail="Could not browse videos")
 
 
@@ -78,7 +78,7 @@ async def get_category_videos(
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Provider '{provider}' not found")
     except Exception as e:
-        logger.error(f"Error fetching category {category_id} ({provider}): {e}")
+        logger.error("Error fetching category %s (%s): %s", category_id, provider, e)
         raise HTTPException(status_code=502, detail="Could not load category videos")
 
 
@@ -128,7 +128,7 @@ async def search_videos(q: str, page: int = 1, provider: str = "telegram"):
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Provider '{provider}' not found")
     except Exception as e:
-        logger.error(f"Error searching for '{sanitized_q}' ({provider}): {e}")
+        logger.error("Error searching for '%s' (%s): %s", sanitized_q, provider, e)
         raise HTTPException(status_code=502, detail="Search failed")
 
 
@@ -162,7 +162,7 @@ async def video_performers(provider: str, pid: str, slug: str = ""):
     try:
         names = normalize_performers(await fetch_fn(page_url))
     except Exception as e:
-        logger.error(f"Performer lookup failed for {provider}:{pid}: {e}")
+        logger.error("Performer lookup failed for %s:%s: %s", provider, pid, e)
         raise HTTPException(status_code=502, detail="Performer lookup failed")
     return {"provider": provider, "id": pid, "performers": names}
 
@@ -199,8 +199,8 @@ def _require_authorized_thumb_channel(prov, ref: str) -> None:
 async def _local_artwork_response(ref: str):
     """Serve artwork already synced next to the STRM file, or None."""
     try:
-        import admin as admin_mod
-        from admin_catalog_queries import _get_video_artwork_path
+        from resolver import admin as admin_mod
+        from resolver.admin_catalog_queries import _get_video_artwork_path
         from fastapi.responses import FileResponse
         local_art = await asyncio.to_thread(_get_video_artwork_path, getattr(admin_mod, "HUB_DB_URL", None), f"telegram:{ref}", getattr(admin_mod, "MEDIA_DIR", "/media/adult"))
         if local_art is not None and local_art.is_file():
@@ -226,7 +226,7 @@ async def _download_preview(prov, provider: str, ref: str):
     except ValueError:
         raise HTTPException(status_code=404, detail="Invalid preview reference")
     except Exception as e:
-        logger.error(f"Thumb fetch failed for {provider}:{ref[:40]}: {e}")
+        logger.error("Thumb fetch failed for %s:%s: %s", provider, ref[:40], e)
         raise HTTPException(status_code=502, detail="Preview download failed")
     if not data:
         raise HTTPException(status_code=404, detail="No preview available")

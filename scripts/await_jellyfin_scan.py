@@ -10,13 +10,9 @@ key rather than its localized name.
 import argparse
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
-for _candidate in (Path("/app"), Path.cwd()):
-    if _candidate.is_dir() and str(_candidate) not in sys.path:
-        sys.path.insert(0, str(_candidate))
 
 
 def _log(message: str) -> None:

@@ -1,10 +1,7 @@
 """Durable retry windows for external metadata work."""
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 
 from common.external_metadata import (

@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 import tempfile
 import time
 import unittest
@@ -8,13 +7,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
 try:
-    from test_support import load_flat_sync_module
-    sync_module = load_flat_sync_module()
+    from test_support import load_sync_module
+    sync_module = load_sync_module()
 except ImportError as exc:
     from test_support import optional_import_failed
     optional_import_failed(exc)
@@ -253,7 +250,7 @@ class SyncIntegrityTests(PgTestCase):
         self.assertEqual(self.conn.execute("SELECT count(*) FROM videos").fetchone()[0], 1)
 
     def test_category_mapping_and_provider_exclusion(self):
-        from category_mapping import map_category, map_categories, ALL_TARGET_CATEGORIES
+        from sync.category_mapping import map_category, map_categories, ALL_TARGET_CATEGORIES
         self.assertEqual(len(ALL_TARGET_CATEGORIES), 24)
         self.assertIsNone(map_category("Secondweb"))
         self.assertIsNone(map_category("Exampleweb"))

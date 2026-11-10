@@ -23,9 +23,6 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 RESOLVER_DIR = ROOT / "resolver"
-for _entry in (str(RESOLVER_DIR), str(ROOT)):
-    if _entry not in sys.path:
-        sys.path.insert(0, _entry)
 
 from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -467,9 +464,9 @@ class ResolverHarness(unittest.TestCase):
             patches.append(patch("common.config_loader.load_config",
                                  side_effect=[config_error] if config_error else [config]))
         if get_provider is not _UNSET:
-            patches.append(patch("providers.get_provider", get_provider))
+            patches.append(patch("resolver.providers.get_provider", get_provider))
         if ensure_registered is not _UNSET:
-            patches.append(patch("providers.ensure_config_providers_registered", ensure_registered))
+            patches.append(patch("resolver.providers.ensure_config_providers_registered", ensure_registered))
         with contextlib.ExitStack() as import_stack:
             # The app still registers its shutdown hook through the deprecated
             # on_event decorator; that is a production concern, not a test one.
@@ -532,7 +529,7 @@ class ResolverHarness(unittest.TestCase):
         ``len(cache)`` opens a connection while the persistent store is live, so
         a health route that touches it cannot hide behind a stubbed cache.
         """
-        stream_cache = sys.modules["stream_cache"]
+        stream_cache = sys.modules["resolver.stream_cache"]
         database = FakeDb(answers=[("count(*) FROM stream_cache", [(entries,)])])
         self.stack.enter_context(patch.object(stream_cache, "db", database))
         cache = stream_cache.PersistentLRUCache(db_url="postgresql://hub.invalid/adulthub")

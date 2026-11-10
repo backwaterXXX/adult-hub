@@ -7,7 +7,6 @@ import importlib.util
 import os
 import signal
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -17,7 +16,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
 RUNNER_PATH = ROOT / "sync" / "runner.py"
 
 from common.config_loader import ConfigError
@@ -828,7 +826,7 @@ class TestJobsWorker(RunnerHarness):
 
         self.assertEqual(module.run_jobs_worker(), 0)
 
-        self.assertEqual(popen.argv()[1:], ["sync.py", "--jobs-only"])
+        self.assertEqual(popen.argv()[1:], ["-m", "sync.sync", "--jobs-only"])
         self.assertEqual(module.time.slept, [0.2, 0.2])
         self.assertIsNone(module.current_process)
         self.assertEqual(self.logs.text("warning"), [])
@@ -884,7 +882,7 @@ class TestFullSync(RunnerHarness):
 
         module.run_full_sync("Chan", "backfill")
 
-        self.assertEqual(popen.argv()[1:], ["sync.py", "--source", "Chan", "--sync-mode", "backfill"])
+        self.assertEqual(popen.argv()[1:], ["-m", "sync.sync", "--source", "Chan", "--sync-mode", "backfill"])
         self.assertTrue(self.logs.has("Executing sync for Chan...", "info"))
 
     def test_a_scheduled_sync_needs_no_mode_argument(self):
@@ -894,7 +892,7 @@ class TestFullSync(RunnerHarness):
 
         module.run_full_sync("Chan", "scheduled")
 
-        self.assertEqual(popen.argv()[1:], ["sync.py", "--source", "Chan"])
+        self.assertEqual(popen.argv()[1:], ["-m", "sync.sync", "--source", "Chan"])
 
     def test_a_failing_child_is_warned_about_while_the_failures_are_still_new(self):
         module = self.load()

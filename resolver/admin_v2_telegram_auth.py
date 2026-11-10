@@ -8,9 +8,9 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from admin_v2_errors import V2ErrorRoute
-from providers.telegram_account import DEFAULT_ACCOUNT_ID, validate_account_id
-from providers.telegram_login import get_telegram_login_manager
+from resolver.admin_v2_errors import V2ErrorRoute
+from resolver.providers.telegram_account import DEFAULT_ACCOUNT_ID, validate_account_id
+from resolver.providers.telegram_login import get_telegram_login_manager
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ def _verify_write_access(admin: Any, request: Request):
             status_code=403,
         )
 
-    import admin_security
+    from resolver import admin_security
 
     if not admin_security.write_authorized(
         request,
@@ -184,8 +184,8 @@ async def _handle_list_accounts(admin: Any, manager: Any, request: Request) -> A
     if admin._admin_blocked(request):
         return _json_resp(admin, {"error": "Admin is only available locally."}, status_code=403)
 
-    from providers.telegram_account_store import list_accounts, list_channel_access
-    from providers.telegram_router import get_telegram_router
+    from resolver.providers.telegram_account_store import list_accounts, list_channel_access
+    from resolver.providers.telegram_router import get_telegram_router
 
     router = get_telegram_router()
     check_live = request.query_params.get("check_live", "false").lower() in ("true", "1", "yes")
@@ -246,7 +246,7 @@ async def _handle_add_account(admin: Any, request: Request) -> Any:
     if err:
         return err
 
-    from providers.telegram_account_store import create_account
+    from resolver.providers.telegram_account_store import create_account
     label = str(data.get("label") or "").strip() or account
     record = create_account(account, label=label, enabled=True)
     if not record:
@@ -266,7 +266,7 @@ async def _handle_update_account(admin: Any, request: Request, account_id: str) 
     if err:
         return err
 
-    from providers.telegram_account_store import get_account, update_account
+    from resolver.providers.telegram_account_store import get_account, update_account
     existing = get_account(account)
     if not existing:
         return _json_resp(admin,
@@ -319,8 +319,8 @@ async def _handle_delete_account(admin: Any, request: Request, account_id: str) 
             status_code=400,
         )
 
-    from providers.telegram_account_store import delete_account
-    from providers.telegram_router import get_telegram_router
+    from resolver.providers.telegram_account_store import delete_account
+    from resolver.providers.telegram_router import get_telegram_router
 
     router = get_telegram_router()
     await router.reset_account_client(account)
@@ -347,8 +347,8 @@ async def _handle_test_account(admin: Any, manager: Any, request: Request, accou
     if err:
         return err
 
-    from providers.telegram_config import _get_channels
-    from providers.telegram_router import get_telegram_router
+    from resolver.providers.telegram_config import _get_channels
+    from resolver.providers.telegram_router import get_telegram_router
 
     router = get_telegram_router()
     status = await manager.get_status(account, check_live=True)
@@ -372,7 +372,7 @@ async def _handle_channels_access(admin: Any, request: Request) -> Any:
     if admin._admin_blocked(request):
         return _json_resp(admin, {"error": "Admin is only available locally."}, status_code=403)
 
-    from providers.telegram_account_store import list_channel_access
+    from resolver.providers.telegram_account_store import list_channel_access
     records = list_channel_access()
     return _json_resp(admin, {"ok": True, "channels": [r.to_dict() for r in records]})
 

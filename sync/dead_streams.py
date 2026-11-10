@@ -138,7 +138,7 @@ def probe_stream_via_resolver(comp_id: str, *,
                         chunk = c
                         break
     except Exception as e:
-        services.logger.debug(f"Stream probe failed for {comp_id}: {e}")
+        services.logger.debug("Stream probe failed for %s: %s", comp_id, e)
         return None
     if mode == "redirect":
         if r_status == 302 and r_headers.get("location"):

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 
 from common import admin_schedules, db
+
+logger = logging.getLogger(__name__)
 
 _RUN_LOCKS = {
     "library-sync": 0x41485501,
@@ -594,6 +597,7 @@ def recover_system_schedules(db_url, *, now=None) -> None:
                             (instant.timestamp(),),
                         )
     except Exception:
-        pass
+        logger.warning("Could not recover queued or processing database-backup schedule rows",
+                       exc_info=True)
     finally:
         conn.close()

@@ -14,11 +14,8 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
-from common.db import connect  # noqa: E402
+from common.db import connect
 
 
 def export_catalog(db_url: str | None) -> dict:

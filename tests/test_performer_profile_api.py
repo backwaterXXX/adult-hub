@@ -1,19 +1,15 @@
 """Database-free API and validation contracts for performer profile editing."""
 
 import json
-import sys
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
 
-import admin_v2_organize
+import resolver.admin_v2_organize as admin_v2_organize
 from common.performer_profiles import PerformerProfileError, validate_profile, validate_photo_url
 
 
@@ -77,7 +73,7 @@ class TestPerformerProfileRoutes(unittest.IsolatedAsyncioTestCase):
         denied = JSONResponse({"ok": False, "error": "Read-only"}, status_code=403)
         routes = self.make_routes(denied=denied)
         path = "/api/v2/organize/people/Canonical%20Name/profile"
-        with patch("admin_v2_organize.db.connect") as connect:
+        with patch("resolver.admin_v2_organize.db.connect") as connect:
             response = await routes["/api/v2/organize/people/{name}/profile"](
                 request(path, {"expected_revision": 0, "bio": "x", "photo": "", "aliases": []}, method="PUT"),
                 "Canonical Name",
@@ -89,7 +85,7 @@ class TestPerformerProfileRoutes(unittest.IsolatedAsyncioTestCase):
         routes = self.make_routes()
         endpoint = routes["/api/v2/organize/people/{name}/profile"]
         path = "/api/v2/organize/people/Canonical%20Name/profile"
-        with patch("admin_v2_organize.db.connect") as connect:
+        with patch("resolver.admin_v2_organize.db.connect") as connect:
             incomplete = await endpoint(request(path, {"expected_revision": 0, "reset_fields": ["bio"]}, method="PUT"), "Canonical Name")
             self.assertEqual(incomplete.status_code, 400)
             connect.assert_not_called()

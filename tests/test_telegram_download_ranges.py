@@ -18,7 +18,6 @@ Verifies:
 
 import asyncio
 import os
-import sys
 import threading
 import time
 import unittest
@@ -29,10 +28,8 @@ os.environ.setdefault(
     str(Path(__file__).parent / "fixtures" / "config_telegram_only.yaml"),
 )
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from providers.telegram import (
+from resolver.providers.telegram import (
     LEGAL_REQUEST_SIZES,
     _download_block,
     _download_sequential,

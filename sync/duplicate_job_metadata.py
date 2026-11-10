@@ -1,10 +1,7 @@
 """Metadata-related durable duplicate job handlers."""
 from __future__ import annotations
 
-if __package__:
-    from . import duplicate_jobs as _core
-else:
-    import duplicate_jobs as _core
+from sync import duplicate_jobs as _core
 
 def _validate_metadata_request(payload: dict) -> tuple:
     from common.video_metadata import validate_override_patch

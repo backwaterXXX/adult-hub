@@ -274,9 +274,9 @@ def _build_issues(admin, now):
         "incomplete": True,
     }
 
-    from admin_v2_issue_sources import collect_source_issues
-    from admin_v2_issue_database import collect_database_issues, collect_quality_issues
-    from admin_v2_issue_backup import collect_backup_issues
+    from resolver.admin_v2_issue_sources import collect_source_issues
+    from resolver.admin_v2_issue_database import collect_database_issues, collect_quality_issues
+    from resolver.admin_v2_issue_backup import collect_backup_issues
 
     collect_source_issues(admin, now, health, issues)
     db_available = collect_database_issues(admin, now, health, issues)

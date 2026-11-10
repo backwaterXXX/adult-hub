@@ -9,6 +9,7 @@ Verifies:
 6. Preservation of media, backups, and data.
 """
 
+import os
 import shutil
 import stat
 import subprocess
@@ -17,6 +18,8 @@ import unittest
 from pathlib import Path
 
 import yaml
+
+from tests.helpers.docker_stub import make_docker_stub
 
 ROOT = Path(__file__).resolve().parents[1]
 STANDALONE_COMPOSE = ROOT / "compose.standalone.yml"
@@ -144,8 +147,12 @@ class TestStandaloneComposeConfigValidation(unittest.TestCase):
         shutil.copy(ROOT / "VERSION", self.isolated_root / "VERSION")
         shutil.copy(STANDALONE_COMPOSE, self.isolated_root / "compose.standalone.yml")
         shutil.copytree(ROOT / "common", self.isolated_root / "common")
+        # setup.sh must not depend on the host's running containers, so it gets a Docker CLI stub.
+        self.stub_dir = tempfile.TemporaryDirectory(prefix="adulthub_docker_stub_")
+        self.setup_env = {**os.environ, "DOCKER_BIN": make_docker_stub(Path(self.stub_dir.name))}
 
     def tearDown(self):
+        self.stub_dir.cleanup()
         self.temp_dir.cleanup()
 
     def test_compose_config_validation_with_generated_env(self):
@@ -156,6 +163,7 @@ class TestStandaloneComposeConfigValidation(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=15,
+            env=self.setup_env,
         )
         self.assertEqual(setup_res.returncode, 0, f"Installer failed:\n{setup_res.stderr}")
 
@@ -204,6 +212,7 @@ class TestStandaloneComposeConfigValidation(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=15,
+            env=self.setup_env,
         )
         self.assertEqual(setup_res.returncode, 0)
 
@@ -235,8 +244,12 @@ class TestStandalonePersistenceAndIsolation(unittest.TestCase):
         shutil.copy(ROOT / "VERSION", self.isolated_root / "VERSION")
         shutil.copy(STANDALONE_COMPOSE, self.isolated_root / "compose.standalone.yml")
         shutil.copytree(ROOT / "common", self.isolated_root / "common")
+        # setup.sh must not depend on the host's running containers, so it gets a Docker CLI stub.
+        self.stub_dir = tempfile.TemporaryDirectory(prefix="adulthub_docker_stub_")
+        self.setup_env = {**os.environ, "DOCKER_BIN": make_docker_stub(Path(self.stub_dir.name))}
 
     def tearDown(self):
+        self.stub_dir.cleanup()
         self.temp_dir.cleanup()
 
     def test_media_and_backup_data_preservation_across_repeated_runs(self):
@@ -247,6 +260,7 @@ class TestStandalonePersistenceAndIsolation(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=15,
+            env=self.setup_env,
         )
         self.assertEqual(setup_res.returncode, 0)
 
@@ -269,6 +283,7 @@ class TestStandalonePersistenceAndIsolation(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=15,
+            env=self.setup_env,
         )
         self.assertEqual(repeat_res.returncode, 0)
 
@@ -289,6 +304,7 @@ class TestStandalonePersistenceAndIsolation(unittest.TestCase):
             capture_output=True,
             text=True,
             timeout=15,
+            env=self.setup_env,
         )
         self.assertEqual(res.returncode, 1)
         self.assertIn("Existing production deployment detected", res.stderr)

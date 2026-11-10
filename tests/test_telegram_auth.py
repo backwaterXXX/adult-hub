@@ -10,9 +10,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
-RESOLVER_DIR = ROOT / "resolver"
-if str(RESOLVER_DIR) not in sys.path:
-    sys.path.insert(0, str(RESOLVER_DIR))
 
 
 def _make_telethon_stubs():
@@ -68,7 +65,7 @@ except ImportError:
     sys.modules["telethon.tl.functions"] = _stub_tl.tl.functions
     _SYS_TELETHON_STUBBED = True
 
-from providers.telegram_session import (
+from resolver.providers.telegram_session import (
     get_pending_session_file_path,
     get_sqlite_session_file_path,
     interactive_login,
@@ -76,7 +73,7 @@ from providers.telegram_session import (
     validate_api_credentials,
     validate_phone_number,
 )
-from providers.telegram_auth import main as cli_main
+from resolver.providers.telegram_auth import main as cli_main
 
 
 class TestTelegramValidation(unittest.TestCase):
@@ -566,7 +563,7 @@ class TestTelegramAuthCli(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_cli_check_authorized(self):
-        with patch("providers.telegram_auth.is_session_authorized", new=AsyncMock(return_value=True)):
+        with patch("resolver.providers.telegram_auth.is_session_authorized", new=AsyncMock(return_value=True)):
             ret = cli_main([
                 "check",
                 "--session-path", str(self.session_path),
@@ -576,7 +573,7 @@ class TestTelegramAuthCli(unittest.TestCase):
             self.assertEqual(ret, 0)
 
     def test_cli_check_not_authorized(self):
-        with patch("providers.telegram_auth.is_session_authorized", new=AsyncMock(return_value=False)):
+        with patch("resolver.providers.telegram_auth.is_session_authorized", new=AsyncMock(return_value=False)):
             ret = cli_main([
                 "check",
                 "--session-path", str(self.session_path),
@@ -586,7 +583,7 @@ class TestTelegramAuthCli(unittest.TestCase):
             self.assertEqual(ret, 1)
 
     def test_cli_auth_success(self):
-        with patch("providers.telegram_auth.interactive_login", new=AsyncMock(return_value="authorized")):
+        with patch("resolver.providers.telegram_auth.interactive_login", new=AsyncMock(return_value="authorized")):
             ret = cli_main([
                 "auth",
                 "--session-path", str(self.session_path),
@@ -596,7 +593,7 @@ class TestTelegramAuthCli(unittest.TestCase):
             self.assertEqual(ret, 0)
 
     def test_cli_auth_failure(self):
-        with patch("providers.telegram_auth.interactive_login", new=AsyncMock(side_effect=RuntimeError("Auth failed"))):
+        with patch("resolver.providers.telegram_auth.interactive_login", new=AsyncMock(side_effect=RuntimeError("Auth failed"))):
             ret = cli_main([
                 "auth",
                 "--session-path", str(self.session_path),

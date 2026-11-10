@@ -325,7 +325,7 @@ def _enqueue_clear_match_refresh(db_url: str | None, refreshed: list, wake_worke
     refresh_error = False
     if refreshed:
         try:
-            from video_duplicates import enqueue_job
+            from resolver.video_duplicates import enqueue_job
             for offset in range(0, len(refreshed), 50):
                 refresh_job_ids.append(enqueue_job(db_url, "performer_refresh", {"video_ids": refreshed[offset:offset + 50]}))
                 refresh_queued += min(50, len(refreshed) - offset)
@@ -537,7 +537,7 @@ def _enqueue_proposal_refresh(db_url: str | None, video_id, wake_worker: Callabl
     """Queue a best-effort performer refresh for the video; return the job id or None."""
     refresh_job_id = None
     try:
-        from video_duplicates import enqueue_job
+        from resolver.video_duplicates import enqueue_job
         refresh_job_id = enqueue_job(db_url, "performer_refresh", {"video_ids": [video_id]})
         wake_worker("jobs")
     except Exception:

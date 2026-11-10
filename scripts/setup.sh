@@ -247,7 +247,7 @@ if [ "${STATUS_ONLY}" -eq 1 ]; then
             SERVICES_STATUS="Running"
         fi
         if [ -f "${STANDALONE_DATA_DIR}/telegram.session" ]; then
-            if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" run --rm --no-deps resolver python3 -m providers.telegram_auth check 2>/dev/null; then
+            if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" run --rm --no-deps resolver python3 -m resolver.providers.telegram_auth check 2>/dev/null; then
                 TG_AUTH_STATE="AUTHORIZED"
             else
                 TG_AUTH_STATE="UNAUTHORIZED (Session check failed)"
@@ -648,11 +648,10 @@ EOF
 else
     echo "==> Validating existing configuration ${STANDALONE_CONFIG_PATH}..."
     if ! python3 -c "
-import yaml, sys
-from common.config_loader import parse_and_validate_config
+import sys
+from common.config_loader import parse_and_validate_config, read_base_config
 try:
-    with open('${STANDALONE_CONFIG_PATH}', 'r', encoding='utf-8') as f:
-        data = yaml.safe_load(f)
+    data = read_base_config('${STANDALONE_CONFIG_PATH}')
     parse_and_validate_config(data)
 except Exception as e:
     sys.exit(str(e))
@@ -815,7 +814,7 @@ with open(fpath, 'w', encoding='utf-8') as f:
         else
             # 4. Check if session is already authorized
             is_authed=0
-            if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" run --rm --no-deps resolver python3 -m providers.telegram_auth check 2>/dev/null; then
+            if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" run --rm --no-deps resolver python3 -m resolver.providers.telegram_auth check 2>/dev/null; then
                 is_authed=1
             fi
 
@@ -855,7 +854,7 @@ with open(fpath, 'w', encoding='utf-8') as f:
                 if [ -t 0 ]; then
                     DOCKER_RUN_TTY="-it"
                 fi
-                if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" run --rm ${DOCKER_RUN_TTY} --no-deps resolver python3 -m providers.telegram_auth auth; then
+                if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" run --rm ${DOCKER_RUN_TTY} --no-deps resolver python3 -m resolver.providers.telegram_auth auth; then
                     auth_ok=1
                 fi
 

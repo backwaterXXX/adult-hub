@@ -69,7 +69,7 @@ def _part(row):
 
 def _telegram_document_id(video_id: str, row: dict | None = None) -> str | None:
     try:
-        from video_duplicate_scoring import _telegram_file_id
+        from resolver.video_duplicate_scoring import _telegram_file_id
         if row is not None:
             return _telegram_file_id(row)
         return _telegram_file_id({"id": video_id, "provider": "telegram"})

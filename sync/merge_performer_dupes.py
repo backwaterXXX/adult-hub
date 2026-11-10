@@ -14,8 +14,8 @@ The script updates:
   6. .nfo files on disk (rewrites <actor>, <set>, <tag> tags)
 
 Usage:
-  python3 merge_performer_dupes.py            # dry-run
-  python3 merge_performer_dupes.py --apply    # apply changes
+  python3 -m sync.merge_performer_dupes            # dry-run
+  python3 -m sync.merge_performer_dupes --apply    # apply changes
 """
 
 import argparse
@@ -31,7 +31,6 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 # Access to sync module
-sys.path.insert(0, str(Path(__file__).parent / "sync"))
 
 DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "./media/adult"))
@@ -326,7 +325,7 @@ def _rewrite_video_nfo(conn: db.Connection, S, vid_id: str, new_perfs, media_dir
 def _rewrite_nfo_files(conn: db.Connection, video_updates, media_dir: Path) -> None:
     logger.info("Updating .nfo files for modified videos...")
     try:
-        import sync as S
+        from sync import sync as S
         nfo_updated = 0
         for vid_id, _, new_perfs in video_updates:
             if _rewrite_video_nfo(conn, S, vid_id, new_perfs, media_dir):

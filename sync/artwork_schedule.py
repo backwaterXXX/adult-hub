@@ -30,10 +30,7 @@ def artwork_needs_generation(path: Path, *, bumper_hashes=None) -> bool:
         return True
 
     if bumper_hashes is None:
-        try:
-            from .thumbnails import known_bumper_hashes
-        except ImportError:
-            from thumbnails import known_bumper_hashes
+        from sync.thumbnails import known_bumper_hashes
         bumper_hashes = known_bumper_hashes()
     if not bumper_hashes:
         return False
@@ -59,10 +56,7 @@ def build_artwork_generation_jobs(conn, media_dir: Path, *, limit: int = MAX_ART
         "JOIN synced_files sf ON sf.video_id=v.id "
         "ORDER BY v.first_seen DESC NULLS LAST,v.last_seen DESC NULLS LAST,sf.file_path"
     ).fetchall()
-    try:
-        from .media_files import resolve_media_path
-    except ImportError:
-        from media_files import resolve_media_path
+    from sync.media_files import resolve_media_path
 
     jobs: list[tuple[str, dict]] = []
     seen: set[str] = set()
@@ -85,10 +79,7 @@ def build_artwork_generation_jobs(conn, media_dir: Path, *, limit: int = MAX_ART
 
 
 def _default_bumper_hashes():
-    try:
-        from .thumbnails import known_bumper_hashes
-    except ImportError:
-        from thumbnails import known_bumper_hashes
+    from sync.thumbnails import known_bumper_hashes
     return known_bumper_hashes()
 
 

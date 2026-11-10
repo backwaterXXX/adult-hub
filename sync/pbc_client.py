@@ -8,6 +8,8 @@ from typing import Optional
 from urllib.parse import quote
 from common.http_rate_limit import request_with_host_limit, wait_for_host_slot
 
+from sync.provider_common import decode_http_payload
+
 try:
     import httpx
 except ImportError:
@@ -34,55 +36,9 @@ def page_title(name: str) -> str:
     return re.sub(r"\s+", "_", name.strip())
 
 
-def _decode_bytes_payload(payload) -> Optional[dict]:
-    try:
-        return json.loads(bytes(payload).decode("utf-8", errors="ignore"))
-    except Exception:
-        logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
-        return None
-
-
-def _decode_str_payload(payload: str) -> Optional[dict]:
-    try:
-        parsed = json.loads(payload)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
-        return None
-
-
-def _decode_response_object(payload) -> Optional[dict]:
-    """Decode a response-like object (httpx / requests / mocks) via .json(), .content or .text."""
-    try:
-        if callable(getattr(payload, "json", None)):
-            data = payload.json()
-            return data if isinstance(data, dict) else None
-    except Exception:
-        logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
-    try:
-        content = getattr(payload, "content", None)
-        if isinstance(content, (bytes, bytearray)):
-            return json.loads(bytes(content).decode("utf-8", errors="ignore"))
-        text = getattr(payload, "text", None)
-        if isinstance(text, str):
-            return json.loads(text)
-    except Exception:
-        logger.debug("Ignored exception in _decode_http_payload", exc_info=True)
-    return None
-
-
 def _decode_http_payload(payload) -> Optional[dict]:
     """Best-effort conversion of an http_get result to parsed JSON."""
-    if payload is None:
-        return None
-    if isinstance(payload, dict):
-        return payload
-    if isinstance(payload, (bytes, bytearray)):
-        return _decode_bytes_payload(payload)
-    if isinstance(payload, str):
-        return _decode_str_payload(payload)
-    # Response-like objects (httpx / requests / mocks).
-    return _decode_response_object(payload)
+    return decode_http_payload(payload, logger)
 
 
 def _api_get_json(url: str, http_get):

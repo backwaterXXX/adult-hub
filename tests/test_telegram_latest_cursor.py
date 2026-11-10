@@ -1,11 +1,9 @@
 import logging
-import sys
 import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 from sync.telegram_pipeline import TelegramSyncServices, sync_telegram_channel_pipeline
 

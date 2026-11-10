@@ -22,39 +22,14 @@ import sys
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
 
 from common import db
-
-
-def _load_dotenv() -> None:
-    if os.getenv("DATABASE_URL"):
-        return
-    env_file = BASE_DIR / ".env"
-    if not env_file.exists():
-        return
-    for line in env_file.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        if key.strip() == "DATABASE_URL":
-            os.environ.setdefault("DATABASE_URL", value.strip())
-
-
-def _normalize_host_url(url: str) -> str:
-    if "@postgres:" in url or "@postgres/" in url:
-        try:
-            import socket
-            socket.gethostbyname("postgres")
-        except Exception:
-            url = url.replace("@postgres:", "@127.0.0.1:").replace("@postgres/", "@127.0.0.1/")
-    return url
+from common.cli_env import load_dotenv_database_url
+from common.cli_env import normalize_host_url as _normalize_host_url
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    _load_dotenv()
+    load_dotenv_database_url(BASE_DIR)
     ap = argparse.ArgumentParser(description="Adult-Hub PostgreSQL database restoration")
     ap.add_argument("--db-url", default=os.getenv("DATABASE_URL", ""),
                     help="Target PostgreSQL connection URL (default: DATABASE_URL env)")

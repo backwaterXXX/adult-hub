@@ -9,8 +9,8 @@ from typing import Any
 import logging
 
 from common import db
-from admin_catalog_serialization import _local_file_status, _resolve_local_artwork_path, _serialize_video
-from admin_catalog_pagination import (
+from resolver.admin_catalog_serialization import _local_file_status, _resolve_local_artwork_path, _serialize_video
+from resolver.admin_catalog_pagination import (
     cursor_condition as _cursor_condition_impl,
     cursor_value_expression as _cursor_value_expression_impl,
     encode_catalog_cursor as _encode_catalog_cursor,

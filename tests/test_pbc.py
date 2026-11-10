@@ -1,18 +1,14 @@
 """PBC (Porn Base Central) enrichment: parsing + backfill."""
 import json
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
 
 
 try:
-    import pbc as pbc_module
+    import sync.pbc as pbc_module
     PBC_AVAILABLE = True
 except ImportError as exc:
     from test_support import optional_import_failed

@@ -1,17 +1,13 @@
 """Resumable Telegram title cleanup and sidecar repair contracts."""
 
 import json
-import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "sync"))
-sys.path.insert(0, str(ROOT))
 
-from telegram_title_cleanup import cleanup_telegram_titles
+from sync.telegram_title_cleanup import cleanup_telegram_titles
 
 
 class Cursor:

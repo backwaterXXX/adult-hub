@@ -1,21 +1,18 @@
 """Database-free tests for bounded external metadata provider passes."""
 
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "sync"))
-sys.path.insert(0, str(Path(__file__).parent))
 
-import pbc
-import scene_scrapers
-import stashdb
-import theporndb
-from test_support import load_flat_sync_module
+import sync.pbc as pbc
+import sync.scene_scrapers as scene_scrapers
+import sync.stashdb as stashdb
+import sync.theporndb as theporndb
+from test_support import load_sync_module
 
-sync = load_flat_sync_module()
+sync = load_sync_module()
 
 
 class TestExternalMetadataScan(unittest.TestCase):

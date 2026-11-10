@@ -8,12 +8,8 @@ from __future__ import annotations
 
 from typing import Callable
 
-try:
-    from common.db import Connection, connect
-    from common.migrations import apply_migrations
-except ImportError:  # local sync/ layout: sync/ itself on sys.path
-    from db import Connection, connect  # type: ignore[no-redef]
-    from migrations import apply_migrations  # type: ignore[no-redef]
+from common.db import Connection, connect
+from common.migrations import apply_migrations
 
 
 def init_db(conn_or_url: Connection | str | None = None, *,

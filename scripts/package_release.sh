@@ -45,7 +45,7 @@ cp "${SOURCE_DIR}/config.example.yaml" "${BUNDLE_DIR}/config.example.yaml"
 cp "${SOURCE_DIR}/README.md" "${BUNDLE_DIR}/README.md"
 
 # Align versions in copied bundle files if needed
-sed -i "s/:0.4.14/:${VERSION}/g" "${BUNDLE_DIR}/docker-compose.yml"
+sed -i "s/:0.4.14/:${VERSION}/g; s/:-0.4.14/:-${VERSION}/g" "${BUNDLE_DIR}/docker-compose.yml"
 sed -i "s/APP_VERSION=0.4.14/APP_VERSION=${VERSION}/g" "${BUNDLE_DIR}/.env.example"
 sed -i "s/:0.4.14/:${VERSION}/g" "${BUNDLE_DIR}/.env.example"
 

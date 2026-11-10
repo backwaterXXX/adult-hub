@@ -70,15 +70,7 @@ _global_stream_manager = None
 def _get_global_stream_manager():
     global _global_stream_manager
     if _global_stream_manager is None:
-        try:
-            # Deployed layout: resolver/ contents are the app root, so the
-            # manager module is top-level.
-            from telegram_stream import ParallelTelegramStreamManager
-        except ImportError:
-            try:
-                from ..telegram_stream import ParallelTelegramStreamManager
-            except (ImportError, ValueError):
-                from resolver.telegram_stream import ParallelTelegramStreamManager
+        from resolver.telegram_stream import ParallelTelegramStreamManager
         cfg = _get_stream_manager_config()
         _global_stream_manager = ParallelTelegramStreamManager(**cfg)
     return _global_stream_manager

@@ -1,8 +1,6 @@
 """Database-free backup route, path-safety, and restore-target contracts."""
 
 import json
-import sqlite3
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,10 +10,8 @@ from unittest.mock import patch
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
 
-import admin_v2_backups
+import resolver.admin_v2_backups as admin_v2_backups
 
 
 def request(path, payload=None, *, method="GET"):
@@ -122,8 +118,7 @@ class TestAdminV2Backups(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
             root = Path(directory)
             backup = root / "adult_hub-good.db"
-            with sqlite3.connect(backup) as connection:
-                connection.execute("CREATE TABLE sample (value TEXT)")
+            backup.write_bytes(b"legacy sqlite snapshot")
             (root / "adult_hub-link.db").symlink_to(Path(outside) / "adult_hub-good.db")
             admin = make_admin(root)
             verify = next(route.endpoint for route in admin_v2_backups.build_router(admin).routes
@@ -133,7 +128,7 @@ class TestAdminV2Backups(unittest.IsolatedAsyncioTestCase):
             traversal = await verify(request("/admin/api/v2/backups/verify"), "../adult_hub-good.db")
             symlink = await verify(request("/admin/api/v2/backups/verify"), "adult_hub-link.db")
 
-        self.assertEqual(valid["archive_status"], "valid")
+        self.assertEqual(valid["archive_status"], "unsupported_format")
         self.assertEqual(traversal.status_code, 404)
         self.assertEqual(symlink.status_code, 404)
 
@@ -146,14 +141,14 @@ class TestAdminV2Backups(unittest.IsolatedAsyncioTestCase):
                            if route.path == "/api/v2/backups/restore-test")
             payload = {"filename": backup.name}
 
-            with patch("admin_v2_backups.db.restore_test_target_available", return_value=False), \
+            with patch("resolver.admin_v2_backups.db.restore_test_target_available", return_value=False), \
                  patch("common.job_queue.enqueue_job") as enqueue:
                 unavailable = await restore(request("/admin/api/v2/backups/restore-test", payload, method="POST"))
             self.assertEqual(unavailable.status_code, 503)
             enqueue.assert_not_called()
             self.assertNotIn("restore.invalid", unavailable.body.decode())
 
-            with patch("admin_v2_backups.db.restore_test_target_available", return_value=True), \
+            with patch("resolver.admin_v2_backups.db.restore_test_target_available", return_value=True), \
                  patch("common.job_queue.enqueue_job", return_value="restore-job-1") as enqueue:
                 queued = await restore(request("/admin/api/v2/backups/restore-test", payload, method="POST"))
             self.assertEqual(queued.status_code, 202)
@@ -168,7 +163,7 @@ class TestAdminV2Backups(unittest.IsolatedAsyncioTestCase):
             restore = next(route.endpoint for route in admin_v2_backups.build_router(admin).routes
                            if route.path == "/api/v2/backups/restore-test")
 
-            with patch("admin_v2_backups.db.restore_test_target_available", return_value=True), \
+            with patch("resolver.admin_v2_backups.db.restore_test_target_available", return_value=True), \
                  patch("common.job_queue.enqueue_job", side_effect=RuntimeError(
                      "database unavailable: postgresql://restore:secret@db/maintenance")) as enqueue:
                 response = await restore(request(
@@ -198,7 +193,7 @@ class TestAdminV2Backups(unittest.IsolatedAsyncioTestCase):
             enqueue.assert_not_called()
 
             admin._write_denied = lambda _request: None
-            with patch("admin_v2_backups.db.restore_test_target_available") as target:
+            with patch("resolver.admin_v2_backups.db.restore_test_target_available") as target:
                 legacy = await restore(request("/admin/api/v2/backups/restore-test",
                                                {"filename": old_snapshot.name}, method="POST"))
             self.assertEqual(legacy.status_code, 404)

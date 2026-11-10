@@ -49,7 +49,7 @@ try:
     raw_hide = os.getenv("HIDE_DEAD_STREAMS")
     HIDE_DEAD_STREAMS = False if (raw_hide is not None and not raw_hide.strip()) else parse_bool(raw_hide, True, name="HIDE_DEAD_STREAMS")
 except ConfigurationError as ce:
-    logger.critical(f"FATAL CONFIG ERROR: {ce}")
+    logger.critical("FATAL CONFIG ERROR: %s", ce)
     raise SystemExit(f"FATAL CONFIG ERROR: {ce}")
 
 # Configuration from config.yaml (PLAN_KONFIGURACJI.md)
@@ -58,10 +58,10 @@ try:
     from common.config_loader import load_config, ConfigError
     CONFIG = load_config()
 except ConfigError as ce:
-    logger.critical(f"FATAL CONFIG ERROR: {ce}")
+    logger.critical("FATAL CONFIG ERROR: %s", ce)
     raise SystemExit(f"FATAL CONFIG ERROR: {ce}")
 except Exception as e:
-    logger.critical(f"FATAL: could not load config: {e}")
+    logger.critical("FATAL: could not load config: %s", e)
     raise SystemExit(f"FATAL: could not load config: {e}") from e
 
 RETENTION_DAYS = CONFIG.sync.retention_days

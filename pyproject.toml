@@ -4,9 +4,8 @@ line-length = 100
 
 [tool.ruff.lint]
 # Correctness rules plus the whitespace/comprehension families that the
-# repository now satisfies. Import sorting (I001) stays off: entry points and
-# tests must mutate sys.path before importing project modules, so reordering
-# their imports would break them.
+# repository now satisfies. Import sorting (I001) stays off: entry points keep
+# their import order, which matters for the circular imports in sync/.
 select = ["E4", "E7", "E9", "F", "B023", "W", "C4", "PIE790", "RUF100", "C90", "T20", "G", "LOG"]
 
 [tool.ruff.lint.mccabe]
@@ -14,39 +13,19 @@ select = ["E4", "E7", "E9", "F", "B023", "W", "C4", "PIE790", "RUF100", "C90", "
 max-complexity = 10
 
 [tool.ruff.lint.per-file-ignores]
-# These entry points deliberately add repository directories to sys.path
-# before importing project modules; test modules use the same bootstrap.
-# sync.py remains a compatibility facade for scripts that import its helpers.
+# Root tools and scripts keep the E402 allowance: some import after setup code.
+# sync/sync.py remains a compatibility facade for scripts that import its helpers.
 # T201: command-line tools print their results to stdout.
-# G004: existing violations, recorded per file. Remove an entry once its
-# file no longer has the violation, so the file is gated again.
 "backup_db.py" = ["T201"]
-"common/config_loader.py" = ["G004"]
 "common/fuzzy_performers.py" = ["T201"]
 "migrate_db.py" = ["E402", "T201"]
-"resolver/app.py" = ["G004"]
-"resolver/catalog_api.py" = ["G004"]
-"resolver/providers/telegram_config.py" = ["G004"]
-"resolver/stream_cache.py" = ["G004"]
 "restore_db.py" = ["E402", "T201"]
 "scripts/*.py" = ["E402", "T201"]
-"sync/data_migrations.py" = ["G004"]
-"sync/dead_streams.py" = ["G004"]
 "sync/find_dupes.py" = ["T201"]
-"sync/http_client.py" = ["G004"]
 "sync/jellyfin_db.py" = ["T201"]
-"sync/library_cleanup.py" = ["G004"]
-"sync/media_files.py" = ["G004"]
-"sync/media_maintenance.py" = ["G004"]
 "sync/merge_dupes.py" = ["T201"]
 "sync/merge_performer_dupes.py" = ["T201"]
-"sync/performer_data_migrations.py" = ["G004"]
-"sync/performer_enrichment.py" = ["G004"]
-"sync/runner.py" = ["G004"]
 "sync/sync.py" = ["F401"]
-"sync/sync_settings.py" = ["G004"]
-"sync/thumbnails.py" = ["G004"]
-"sync/video_flush.py" = ["G004"]
 "tests/*.py" = ["E402"]
 "tests/test_resolver_http.py" = ["LOG001"]
 "tools/*.py" = ["T201"]

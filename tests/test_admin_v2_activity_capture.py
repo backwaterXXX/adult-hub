@@ -4,16 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-import sys
 import unittest
 from unittest.mock import patch
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
-sys.path.insert(0, str(ROOT))
 
-import admin_v2_errors
+import resolver.admin_v2_errors as admin_v2_errors
 
 
 class TestAdminActivityCapture(unittest.TestCase):

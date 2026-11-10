@@ -2,16 +2,12 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import json
-import sys
 import threading
 import time
 import unittest
 import uuid
-from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
 from pg_helper import PgTestCase
 
 from common.admin_audit_events import list_change_events
@@ -303,7 +299,7 @@ class TestAdminOperations(PgTestCase):
         self.assertEqual(set(payload["expected_revisions"]), {keeper, loser})
 
     def test_exact_file_merge_refuses_incomplete_candidate_scan(self):
-        with patch("video_duplicates.scan_duplicate_index", return_value={"complete": False, "pairs": []}):
+        with patch("resolver.video_duplicates.scan_duplicate_index", return_value={"complete": False, "pairs": []}):
             result = preview_exact_merge_plan(self.db_url)
         self.assertEqual(result["outcome"], "conflict")
         self.assertIn("incomplete", result["message"])

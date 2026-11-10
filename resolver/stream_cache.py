@@ -94,9 +94,9 @@ class PersistentLRUCache:
                         self._memory[key] = (url, exp, accessed)
             finally:
                 conn.close()
-            logger.info(f"Initialized persistent stream cache in PostgreSQL ({len(self._memory)} loaded)")
+            logger.info("Initialized persistent stream cache in PostgreSQL (%d loaded)", len(self._memory))
         except Exception as e:
-            logger.warning(f"Failed to initialize PostgreSQL persistent cache: {e}. Falling back to memory LRU.")
+            logger.warning("Failed to initialize PostgreSQL persistent cache: %s. Falling back to memory LRU.", e)
             self._pg_ok = False
 
     def _pg_write(self, sql: str, params=()):

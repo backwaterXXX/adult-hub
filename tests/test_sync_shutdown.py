@@ -10,16 +10,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SYNC_DIR = ROOT / "sync"
-sys.path.insert(0, str(SYNC_DIR))
-sys.path.insert(0, str(ROOT))
 
-import sync_shutdown
+import sync.sync_shutdown as sync_shutdown
 
 # A pass that is between checkpoints, waiting for the stop request to be honoured.
 CHILD = """
 import sys, time
-sys.path.insert(0, {directory!r})
-import sync_shutdown
+import sync.sync_shutdown as sync_shutdown
 {install}
 print("ready", flush=True)
 deadline = time.monotonic() + 10
@@ -60,11 +57,10 @@ class ChildProcessTest(unittest.TestCase):
 
     def run_child(self, install_handler: bool) -> tuple[int, str]:
         script = CHILD.format(
-            directory=str(SYNC_DIR),
             install="sync_shutdown.install_signal_handlers()" if install_handler else "pass",
         )
         child = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE,
-                                 text=True, cwd=str(SYNC_DIR))
+                                 text=True, cwd=str(ROOT))
         try:
             self.assertEqual(child.stdout.readline().strip(), "ready")
             child.send_signal(signal.SIGTERM)

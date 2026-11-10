@@ -1,12 +1,9 @@
 """Unit tests for production studio detection into tags."""
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
 
 try:
-    import studio_tags
+    import sync.studio_tags as studio_tags
     STUDIO_TAGS_AVAILABLE = True
 except ImportError as exc:
     from test_support import optional_import_failed

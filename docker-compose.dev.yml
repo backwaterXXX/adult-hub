@@ -24,7 +24,7 @@ services:
     command:
       - python
       - -c
-      - from db_schema import init_db; conn = init_db(); conn.close()
+      - from sync.db_schema import init_db; conn = init_db(); conn.close()
     environment:
       DATABASE_URL: postgresql://adult_hub_dev:adult_hub_dev@database:5432/adult_hub_dev
       CONFIG_PATH: /config/config.yaml
@@ -43,7 +43,7 @@ services:
         APP_VERSION: dev
     command:
       - uvicorn
-      - app:app
+      - resolver.app:app
       - --host
       - 0.0.0.0
       - --port
@@ -51,13 +51,15 @@ services:
       - --reload
       - --reload-dir
       - /workspace/resolver
-    working_dir: /workspace/resolver
+      - --reload-dir
+      - /workspace/sync
+    working_dir: /workspace
     ports:
       - "127.0.0.1:18090:8090"
     environment:
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
-      PYTHONPATH: /workspace/resolver:/workspace
+      PYTHONPATH: /workspace
       DATABASE_URL: postgresql://adult_hub_dev:adult_hub_dev@database:5432/adult_hub_dev
       CONFIG_PATH: /config/config.yaml
       DATA_DIR: /data
@@ -87,6 +89,7 @@ services:
     volumes:
       - ./resolver:/workspace/resolver:ro
       - ./common:/workspace/common:ro
+      - ./sync:/workspace/sync:ro
       - ./config.example.yaml:/config/config.yaml:ro
     tmpfs:
       - /cache:rw,noexec,nosuid,size=32m,mode=1777

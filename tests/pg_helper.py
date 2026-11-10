@@ -6,33 +6,12 @@ between tests. Every DB-touching test module should use this.
 """
 
 import os
-import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) in sys.path:
-    sys.path.remove(str(ROOT))
-sys.path.insert(0, str(ROOT))
-
-# sync/ holds the package (`sync.video_visual`, …) and sync.py, the flat entry
-# point the sync image runs under the name `sync`. With that directory on sys.path
-# the file wins the name for any fresh import, and whichever import happens first
-# owns it for the whole process: later `from sync.video_visual import …` then fails
-# with "'sync' is not a package". Pin the package here, with the directory hidden
-# from the search, so the two identities never collide. Flat consumers get sync.py
-# under an alias from test_support.load_flat_sync_module.
-_SYNC_PACKAGE = str(ROOT / "sync")
-if getattr(sys.modules.get("sync"), "__file__", None) == str(Path(_SYNC_PACKAGE) / "sync.py"):
-    del sys.modules["sync"]
-_search_path = sys.path[:]
-sys.path[:] = [entry for entry in _search_path if entry != _SYNC_PACKAGE]
-try:
-    import sync  # noqa: F401
-finally:
-    sys.path[:] = _search_path
-
 from common import db
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_dotenv() -> None:

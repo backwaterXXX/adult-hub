@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 def _telegram_module():
     # Resolve helper functions and tunables at call time to keep the provider
     # facade patchable and avoid importing it during module initialization.
-    from . import telegram
+    from resolver.providers import telegram
     return telegram
 
 async def download_thumb_impl(provider, ref: str) -> Optional[bytes]:

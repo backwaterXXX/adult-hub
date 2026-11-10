@@ -25,12 +25,13 @@ def cleanup_old_transcodes(transcodes_dir: Optional[Path] = None, max_age_hours:
                         f.unlink()
                         cleaned += 1
                         total_bytes += sz
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Could not remove stale transcode file %s: %s",
+                                   f.name, type(exc).__name__, exc_info=True)
         if cleaned > 0:
-            logger.info(f"Cleaned {cleaned} stale transcode files ({total_bytes // 1024 // 1024} MB) older than {max_age_hours}h from SSD")
+            logger.info("Cleaned %s stale transcode files (%s MB) older than %sh from SSD", cleaned, total_bytes // 1024 // 1024, max_age_hours)
     except Exception as e:
-        logger.debug(f"Transcode cleanup notice: {e}")
+        logger.debug("Transcode cleanup notice: %s", e)
 
 
 def cleanup_legacy_folders(media_dir: Path, *, logger):

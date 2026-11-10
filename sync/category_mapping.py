@@ -11,10 +11,7 @@ from typing import Optional, Set, Iterable
 # are rejected by the static exclusion tables below; there is no runtime
 # registration hook (the retired web extension was its only caller).
 
-if __package__:
-    from .category_mapping_data import ALL_TARGET_CATEGORIES, EXCLUDED_TAGS, RAW_TO_MAPPED_CATEGORY
-else:
-    from category_mapping_data import ALL_TARGET_CATEGORIES, EXCLUDED_TAGS, RAW_TO_MAPPED_CATEGORY
+from sync.category_mapping_data import ALL_TARGET_CATEGORIES, EXCLUDED_TAGS, RAW_TO_MAPPED_CATEGORY
 
 
 def _clean_slug(raw: str) -> str:

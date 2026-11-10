@@ -2,7 +2,7 @@
 
 import time
 
-from admin_v2_tasks import _list_tasks
+from resolver.admin_v2_tasks import _list_tasks
 from pg_helper import PgTestCase
 
 
@@ -129,7 +129,7 @@ class TestAdminTaskProjection(PgTestCase):
         self.assertEqual(self.conn.execute("SELECT state FROM video_visual_jobs WHERE id='visual-failed'").fetchone()[0], "failed")
 
     def test_interrupted_sync_history_preserves_its_recorded_outcome(self):
-        from admin_v2_sync_history import safe_sync_history
+        from resolver.admin_v2_sync_history import safe_sync_history
         report = safe_sync_history({"runs": [{"started_at": 1700000000, "success": False,
                                                "interrupted": True, "sources": []}]})
         self.assertTrue(report["runs"][0]["interrupted"])

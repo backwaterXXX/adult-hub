@@ -12,20 +12,17 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
-from tools.generate_missing_artwork import (  # noqa: E402
+from tools.generate_missing_artwork import (
     _load_all_env,
     process_single_video,
     record_job_entry,
     update_job_jellyfin_result,
 )
-from common import db  # noqa: E402
-from common.image_utils import is_black_image  # noqa: E402
-from sync.jellyfin_db import trigger_library_refresh  # noqa: E402
-from migrate_db import _normalize_host_url  # noqa: E402
+from common import db
+from common.image_utils import is_black_image
+from sync.jellyfin_db import trigger_library_refresh
+from migrate_db import _normalize_host_url
 
 
 def _build_parser() -> argparse.ArgumentParser:

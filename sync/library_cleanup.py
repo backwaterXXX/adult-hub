@@ -120,7 +120,7 @@ def cleanup_orphaned_records(media_dir: Path, conn: db.Connection,
         return
 
     services.logger.info(
-        f"Removing {len(survivors)} missing file records from database..."
+        "Removing %d missing file records from database...", len(survivors)
     )
     with conn:
         for file_path_str, video_id, _source in survivors:
@@ -172,7 +172,7 @@ def _purge_expired_videos(conn: db.Connection, media_dir: Path, expired: list, r
         return
 
     services.logger.info(
-        f"Retention policy: purging {len(expired)} videos older than {retention_days} days..."
+        "Retention policy: purging %d videos older than %s days...", len(expired), retention_days
     )
     # Per-item transactions: a DB error must not roll back deletions that
     # already committed, leaving catalog rows pointing at deleted files.
@@ -185,10 +185,10 @@ def _purge_expired_videos(conn: db.Connection, media_dir: Path, expired: list, r
                 conn.execute("DELETE FROM videos WHERE id = %s", (vid_id,))
         except Exception as exc:
             services.logger.warning(
-                f"Retention: keeping catalog rows for {vid_id} after a DB error: {exc}"
+                "Retention: keeping catalog rows for %s after a DB error: %s", vid_id, exc
             )
             continue
-        services.logger.info(f"Retention: purged video {vid_id} ('{title}')")
+        services.logger.info("Retention: purged video %s ('%s')", vid_id, title)
 
 
 def _delete_retention_files(conn: db.Connection, media_dir: Path, vid_id, services) -> None:
@@ -206,10 +206,10 @@ def _delete_retention_files(conn: db.Connection, media_dir: Path, vid_id, servic
             if file_to_delete.exists():
                 try:
                     file_to_delete.unlink()
-                    services.logger.info(f"Retention: deleted {file_to_delete.name}")
+                    services.logger.info("Retention: deleted %s", file_to_delete.name)
                 except Exception as exc:
                     services.logger.warning(
-                        f"Retention: error deleting {file_to_delete}: {exc}"
+                        "Retention: error deleting %s: %s", file_to_delete, exc
                     )
 
 
@@ -248,6 +248,6 @@ def purge_videos(conn: db.Connection, media_dir: Path, comp_ids: List[str], reas
                 conn.execute("DELETE FROM videos WHERE id = %s", (video_id,))
             purged += 1
         except Exception as exc:
-            services.logger.warning(f"Purge failed for {video_id}: {exc}")
-    services.logger.info(f"Purged {purged} videos ({reason})")
+            services.logger.warning("Purge failed for %s: %s", video_id, exc)
+    services.logger.info("Purged %s videos (%s)", purged, reason)
     return purged

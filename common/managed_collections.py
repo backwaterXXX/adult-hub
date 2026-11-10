@@ -89,6 +89,7 @@ async def _jellyfin_file_index(client, base_url: str, headers: dict) -> dict[str
 
 
 def _json_list(raw) -> list:
+    # Also decodes bytes input. common.fuzzy_performers._json_list returns [] for bytes, so the two stay separate.
     if isinstance(raw, list):
         return raw
     try:

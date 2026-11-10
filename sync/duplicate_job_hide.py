@@ -6,20 +6,12 @@ duplicate_jobs facade through ``_core``, so test patches on the facade keep appl
 
 from __future__ import annotations
 
-if __package__:
-    from . import duplicate_jobs as _core
-    from .duplicate_job_files import (
-        _append_sidecar_moves, _check_journal_ids, _load_recovery_snapshots,
-        _move_hidden_files,
-    )
-    from .duplicate_job_merge import _merge_keeper_metadata
-else:
-    import duplicate_jobs as _core
-    from duplicate_job_files import (
-        _append_sidecar_moves, _check_journal_ids, _load_recovery_snapshots,
-        _move_hidden_files,
-    )
-    from duplicate_job_merge import _merge_keeper_metadata
+from sync import duplicate_jobs as _core
+from sync.duplicate_job_files import (
+    _append_sidecar_moves, _check_journal_ids, _load_recovery_snapshots,
+    _move_hidden_files,
+)
+from sync.duplicate_job_merge import _merge_keeper_metadata
 
 
 def _require_pair_evidence(conn, pair_evidence, keeper: str, losers: list, manual_review: bool) -> None:

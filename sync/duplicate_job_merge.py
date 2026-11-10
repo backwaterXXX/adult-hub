@@ -8,10 +8,7 @@ from __future__ import annotations
 
 import logging
 
-if __package__:
-    from . import duplicate_jobs as _core
-else:
-    import duplicate_jobs as _core
+from sync import duplicate_jobs as _core
 
 logger = logging.getLogger(__name__)
 

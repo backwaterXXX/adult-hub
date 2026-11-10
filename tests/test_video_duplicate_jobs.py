@@ -14,17 +14,14 @@ from dataclasses import replace
 from unittest.mock import patch, AsyncMock, MagicMock
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
 
-from test_support import load_flat_sync_module
-sync = load_flat_sync_module()
-import duplicate_jobs
-from duplicate_jobs import _heartbeat_processing_job
-from video_duplicates import enqueue_job
+from test_support import load_sync_module
+sync = load_sync_module()
+import sync.duplicate_jobs as duplicate_jobs
+from sync.duplicate_jobs import _heartbeat_processing_job
+from resolver.video_duplicates import enqueue_job
 from common.job_queue import retry_job
 from common.admin_operations import (execute_operation, preview_audit_import_refresh, preview_audit_repair,
                                      preview_orphan_file_quarantine, preview_orphan_file_restore)
@@ -1480,7 +1477,7 @@ class TestVideoDuplicateJobs(PgTestCase):
         self.assertEqual(old_result["jellyfin_import"], "not_confirmed")
 
     def test_quarantine_restart_after_catalog_commit_preserves_undo(self):
-        from admin_services import job_listing
+        from resolver.admin_services import job_listing
         job_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
         with patch.object(sync, "trigger_jellyfin_refresh", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
@@ -1654,7 +1651,7 @@ class TestVideoDuplicateJobs(PgTestCase):
                 "SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0], "processing")
             fcntl.flock(other_worker.fileno(), fcntl.LOCK_UN)
 
-        with patch("fuzzy_performers.execute_performer_merges", return_value={
+        with patch("sync.fuzzy_performers.execute_performer_merges", return_value={
                 "ok": True, "videos_updated": 1, "nfos_updated": 1, "message": "merged"}) as execute:
             self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         execute.assert_called_once_with(self.db_path, self.media, [("Alias Name", "Canonical Name")])
@@ -1668,7 +1665,7 @@ class TestVideoDuplicateJobs(PgTestCase):
             "expected_revision": "0" * 64,
             "merges": [{"alias": "Alias Name", "canonical": "Canonical Name"}],
         })
-        with patch("fuzzy_performers.execute_performer_merges") as execute:
+        with patch("sync.fuzzy_performers.execute_performer_merges") as execute:
             self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
         execute.assert_not_called()
         state, result = self.conn.execute(
@@ -1686,7 +1683,7 @@ class TestVideoDuplicateJobs(PgTestCase):
                 "UPDATE video_duplicate_jobs SET state='processing',result=%s WHERE id=%s",
                 (json.dumps({"progress": {"stage": "merging_performers"}}), job_id),
             )
-        with patch("fuzzy_performers.execute_performer_merges", return_value={
+        with patch("sync.fuzzy_performers.execute_performer_merges", return_value={
                 "ok": True, "videos_updated": 1, "nfos_updated": 1, "message": "merged"}) as execute:
             self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         execute.assert_called_once_with(
@@ -1768,7 +1765,7 @@ class TestVideoDuplicateJobs(PgTestCase):
         trigger_path.write_text(json.dumps({"action": "jobs"}))
 
         with patch.dict(os.environ, {"SYNC_TRIGGER_FILE": str(trigger_path)}):
-            with patch("fuzzy_performers.execute_performer_merges", return_value={"ok": True, "videos_updated": 1, "nfos_updated": 1, "message": "merged"}):
+            with patch("sync.fuzzy_performers.execute_performer_merges", return_value={"ok": True, "videos_updated": 1, "nfos_updated": 1, "message": "merged"}):
                 completed = sync.safe_process_duplicate_jobs_checkpoint(self.conn, self.media, collected={})
                 self.assertEqual(completed, 1)
 
@@ -1801,7 +1798,7 @@ class TestVideoDuplicateJobs(PgTestCase):
         with patch.object(sync, "DATA_DIR", self.root), \
              patch.object(sync, "DB_URL", self.db_path), \
              patch.object(sync, "MEDIA_DIR", self.media), \
-             patch("fuzzy_performers.execute_performer_merges", return_value={"ok": True, "videos_updated": 1, "nfos_updated": 1, "message": "merged"}):
+             patch("sync.fuzzy_performers.execute_performer_merges", return_value={"ok": True, "videos_updated": 1, "nfos_updated": 1, "message": "merged"}):
             res = sync.run_jobs_only()
             self.assertEqual(res, 1)
 
@@ -1836,8 +1833,8 @@ class TestScheduledReconcileMergeGate(unittest.TestCase):
     """A scheduled reconciliation queues hides only after an explicit opt-in."""
 
     def execute_merges_argument(self) -> tuple[bool, bool]:
-        import duplicate_job_external_handlers
-        import video_duplicate_automation
+        import sync.duplicate_job_external_handlers as duplicate_job_external_handlers
+        import sync.video_duplicate_automation as video_duplicate_automation
 
         with patch.object(video_duplicate_automation, "reconcile",
                           return_value={"outcome": "completed"}) as reconcile:
@@ -1857,7 +1854,7 @@ class TestScheduledReconcileMergeGate(unittest.TestCase):
             self.assertFalse(execute_merges)
             self.assertTrue(merge_tg)
 
-        import video_duplicate_automation
+        import sync.video_duplicate_automation as video_duplicate_automation
         fake_scan = {
             "complete": True,
             "scanned": 2,
@@ -1877,7 +1874,7 @@ class TestScheduledReconcileMergeGate(unittest.TestCase):
                 "evidence": "telegram_file_id",
             }
         }
-        with patch("video_duplicates.scan_duplicate_index", return_value=fake_scan), \
+        with patch("resolver.video_duplicates.scan_duplicate_index", return_value=fake_scan), \
              patch.object(video_duplicate_automation, "_reconcile_visual", return_value={}), \
              patch.object(video_duplicate_automation, "_load_reconcile_state", return_value=({}, {}, set(), [])), \
              patch.object(video_duplicate_automation, "_enqueue_missing_phashes", return_value=0), \

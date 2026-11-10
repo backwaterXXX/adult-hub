@@ -9,14 +9,10 @@ catches that statically for every file.
 
 import ast
 import importlib
-import sys
 import unittest
 from pathlib import Path
 
-from test_support import load_flat_sync_module
-
 SYNC_DIR = Path(__file__).resolve().parents[1] / "sync"
-FLAT_SYNC_ALIAS = "sync_facade_names_check"
 
 
 def _core_binding(tree: ast.Module) -> str | None:
@@ -40,11 +36,7 @@ def _core_references(tree: ast.Module) -> set[str]:
 
 
 def _load_target(name: str):
-    if name == "sync":
-        return load_flat_sync_module(FLAT_SYNC_ALIAS)
-    if str(SYNC_DIR) not in sys.path:
-        sys.path.append(str(SYNC_DIR))
-    return importlib.import_module(name)
+    return importlib.import_module(f"sync.{name}")
 
 
 class SyncFacadeNamesTest(unittest.TestCase):

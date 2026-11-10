@@ -220,7 +220,7 @@ def _collect_exact_merge_groups(conn, candidates, config):
 
 def preview_exact_merge_plan(db_url: str | None, config_path: str | None = None) -> dict:
     """Preview a bounded set of complete exact-file duplicate groups."""
-    from video_duplicates import scan_duplicate_index
+    from resolver.video_duplicates import scan_duplicate_index
     scan = scan_duplicate_index(db_url)
     if not scan.get("complete"):
         return {"outcome": "conflict", "message": "The duplicate scan is incomplete. Narrow the catalog and try again."}

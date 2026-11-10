@@ -5,12 +5,8 @@ duplicate_jobs compatibility facade (``_core``), as they were before the move.
 """
 from __future__ import annotations
 
-if __package__:
-    from . import duplicate_jobs as _core
-    from .duplicate_job_files import _append_sidecar_moves, _check_journal_ids, _load_recovery_snapshots, _move_snapshot_files
-else:
-    import duplicate_jobs as _core
-    from duplicate_job_files import _append_sidecar_moves, _check_journal_ids, _load_recovery_snapshots, _move_snapshot_files
+from sync import duplicate_jobs as _core
+from sync.duplicate_job_files import _append_sidecar_moves, _check_journal_ids, _load_recovery_snapshots, _move_snapshot_files
 
 
 def _check_quarantine_target(conn, video_id: str, services) -> None:

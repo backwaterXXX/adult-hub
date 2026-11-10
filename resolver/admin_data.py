@@ -17,7 +17,7 @@ import logging
 
 from common import db
 from common.config_loader import ConfigError, load_config
-import admin_data_runtime_files as runtime_files
+from resolver import admin_data_runtime_files as runtime_files
 
 logger = logging.getLogger(__name__)
 

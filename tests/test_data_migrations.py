@@ -1,17 +1,13 @@
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pg_helper import PgTestCase
-from category_mapping import map_categories
+from sync.category_mapping import map_categories
 from common.performers import prune_redundant_performers
-from data_migrations import (
+from sync.data_migrations import (
     CATEGORY_MAPPING_VERSION,
     DISPLAY_TITLE_VERSION,
     REDUNDANT_PERFORMERS_VERSION,
@@ -22,7 +18,7 @@ from data_migrations import (
     migrate_redundant_performers,
     migrate_synced_files,
 )
-from media_files import resolve_media_path, stable_media_basename
+from sync.media_files import resolve_media_path, stable_media_basename
 
 
 class TestDataMigrations(PgTestCase):
@@ -194,7 +190,7 @@ class TestDataMigrations(PgTestCase):
         self.assertEqual(migrate_redundant_performers(self.conn, self.media, services=self.services, redundant_performers_version=REDUNDANT_PERFORMERS_VERSION), 0)
 
     def test_break_alias_cycles_and_flatten(self):
-        from data_migrations import break_alias_cycles_and_flatten
+        from sync.data_migrations import break_alias_cycles_and_flatten
 
         with self.conn:
             self.conn.execute("CREATE TABLE IF NOT EXISTS performer_aliases (alias TEXT PRIMARY KEY, canonical TEXT NOT NULL)")

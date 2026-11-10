@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from common import db
-from video_duplicate_scoring import _prepare
+from resolver.video_duplicate_scoring import _prepare
 
 
 def _load_page_videos(conn, db_api, page_ids) -> dict[str, dict]:

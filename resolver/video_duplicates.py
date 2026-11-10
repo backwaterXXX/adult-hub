@@ -11,12 +11,12 @@ from urllib.parse import urlsplit
 from common.duplicate_evidence import extract_part_identity
 from common.job_queue import enqueue_job, retry_job  # noqa: F401 - compatibility export used by Admin routes
 
-from video_duplicate_merge_history import (
+from resolver.video_duplicate_merge_history import (
     _decision_conn as _decision_conn_impl,
     find_active_oshash_merges as _find_active_oshash_merges_impl,
 )
 
-from video_duplicate_scoring import (
+from resolver.video_duplicate_scoring import (
     EPISODE_PART_SCORE_PENALTY as EPISODE_PART_SCORE_PENALTY,
     MAX_HEURISTIC_CANDIDATES as MAX_HEURISTIC_CANDIDATES,
     MIN_SCORE as MIN_SCORE,
@@ -57,7 +57,7 @@ def _public_row(row: dict) -> dict:
     except ValueError:
         source_url = ""
     try:
-        from admin_library_v2 import _safe_thumbnail
+        from resolver.admin_library_v2 import _safe_thumbnail
         thumbnail = _safe_thumbnail(row.get("thumbnail"))
     except Exception:
         thumbnail = None

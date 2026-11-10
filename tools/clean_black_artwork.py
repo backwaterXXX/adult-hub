@@ -7,18 +7,15 @@ import sys
 import time
 from pathlib import Path
 
-# Add project root to sys.path
-REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from common.image_utils import (  # noqa: E402
+from common.image_utils import (
     compute_dhash,
     find_bumper_clusters,
     is_black_image,
     save_bumper_hashes,
 )
-from common import db  # noqa: E402
+from common import db
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def scan_artwork(media_dir: Path):
@@ -118,8 +115,8 @@ def _hash_valid_files(valid_files: list[Path]) -> dict[Path, str]:
         try:
             h = compute_dhash(path)
             file_hashes[path] = h
-        except Exception:
-            pass
+        except Exception as err:
+            print(f"  Could not hash {path.name}: {type(err).__name__}: {err}", file=sys.stderr)
 
     elapsed = time.time() - start_time
     print(f"\nHashing completed in {elapsed:.2f}s.")
@@ -256,10 +253,7 @@ def backfill_stashdb_oshash(db_url: str, media_dir: Path, limit: int = 200):
     print(f"\nStarting StashDB OSHASH backfill (batch limit: {limit})...")
     conn = db.connect(db_url)
     try:
-        try:
-            from sync.scene_scraper_fingerprint_backfill import backfill_telegram_fingerprints
-        except ImportError:
-            from scene_scraper_fingerprint_backfill import backfill_telegram_fingerprints
+        from sync.scene_scraper_fingerprint_backfill import backfill_telegram_fingerprints
         checked, enriched = backfill_telegram_fingerprints(
             conn, media_dir, limit=limit, sleep_sec=0.2
         )

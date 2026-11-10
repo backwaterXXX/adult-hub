@@ -28,10 +28,7 @@ class ThumbnailServices:
 def _resolve_default_services(services: Optional[ThumbnailServices]) -> ThumbnailServices:
     if services is not None:
         return services
-    try:
-        from http_client import http_get as _http_get
-    except ImportError:
-        from sync.http_client import http_get as _http_get
+    from sync.http_client import http_get as _http_get
     return ThumbnailServices(
         http_get=_http_get,
         logger=logging.getLogger("sync.thumbnails"),
@@ -87,10 +84,7 @@ def _get_cached_bumper_hashes() -> Set[int]:
     try:
         mtime = cache_file.stat().st_mtime
         if _BUMPER_HASHES_CACHE is None or mtime > _BUMPER_HASHES_MTIME:
-            try:
-                from common.image_utils import load_bumper_hashes
-            except ImportError:
-                from sync.image_utils import load_bumper_hashes  # type: ignore
+            from common.image_utils import load_bumper_hashes
             _BUMPER_HASHES_CACHE = load_bumper_hashes(cache_file)
             _BUMPER_HASHES_MTIME = mtime
         return _BUMPER_HASHES_CACHE or set()
@@ -128,10 +122,7 @@ def _is_too_small_image(data: bytes, minimum_size: Tuple[int, int]) -> bool:
 def _is_blank_or_bumper_image(data: bytes, bumper_hashes: Optional[Set[int]]) -> bool:
     """True for black frames and known studio bumpers/logos."""
     try:
-        try:
-            from common.image_utils import compute_dhash, is_black_image, is_bumper_hash
-        except ImportError:
-            from sync.image_utils import compute_dhash, is_black_image, is_bumper_hash  # fallback
+        from common.image_utils import compute_dhash, is_black_image, is_bumper_hash
         if is_black_image(data):
             return True
 
@@ -185,7 +176,7 @@ def _recently_failed(dest_path: Path, svc: ThumbnailServices) -> bool:
     try:
         marker = _thumb_fail_marker(dest_path)
         if marker.exists() and (svc.time.time() - marker.stat().st_mtime) < svc.fail_ttl_seconds:
-            svc.logger.debug(f"Skipping thumbnail retry (recent permanent failure): {dest_path.name}")
+            svc.logger.debug("Skipping thumbnail retry (recent permanent failure): %s", dest_path.name)
             return True
     except OSError:
         pass
@@ -208,9 +199,9 @@ def _log_download_failure(svc: ThumbnailServices, url: str, dest_path: Path, exc
             _thumb_fail_marker(dest_path).touch(exist_ok=True)
         except OSError:
             pass
-        svc.logger.warning(f"Thumbnail permanently unavailable (404, will skip for 7d): {url} -> {dest_path.name}")
+        svc.logger.warning("Thumbnail permanently unavailable (404, will skip for 7d): %s -> %s", url, dest_path.name)
     else:
-        svc.logger.warning(f"Could not download thumb {url} -> {dest_path.name}: {exc}")
+        svc.logger.warning("Could not download thumb %s -> %s: %s", url, dest_path.name, exc)
 
 
 def _remove_partial_download(tmp_path: Path) -> None:
@@ -235,7 +226,7 @@ def download_image(url: str, dest_path: Path, *,
         if _valid_thumbnail_bytes(data, url):
             _persist_thumbnail(tmp_path, dest_path, data)
         else:
-            svc.logger.warning(f"Downloaded thumbnail too small ({len(data)} bytes) for {url}")
+            svc.logger.warning("Downloaded thumbnail too small (%d bytes) for %s", len(data), url)
     except Exception as e:
         _remove_partial_download(tmp_path)
         _log_download_failure(svc, url, dest_path, e)

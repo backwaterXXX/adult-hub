@@ -166,7 +166,7 @@ def fetch_json_with_retry(
                     logger.debug("Could not record HTTP retry telemetry", exc_info=True)
             if retrying:
                 logger.warning(
-                    f"{desc}: attempt {attempt}/{max_retries} failed ({error}), retrying in {backoff}s..."
+                    "%s: attempt %s/%s failed (%s), retrying in %ss...", desc, attempt, max_retries, error, backoff
                 )
                 sleep_fn(backoff)
                 continue

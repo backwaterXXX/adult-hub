@@ -6,10 +6,10 @@ import json
 from pathlib import PurePosixPath
 import logging
 from fastapi import APIRouter, Request
-from admin_v2_errors import V2ErrorRoute
+from resolver.admin_v2_errors import V2ErrorRoute
 
 from common import db
-from admin_library_v2 import _safe_thumbnail
+from resolver.admin_library_v2 import _safe_thumbnail
 
 logger = logging.getLogger(__name__)
 

@@ -48,7 +48,7 @@ def _get_config():
         from common.config_loader import load_config
         return load_config()
     except Exception as e:
-        logger.debug(f"Could not load config_loader in telegram provider: {e}")
+        logger.debug("Could not load config_loader in telegram provider: %s", e)
         return None
 
 

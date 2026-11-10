@@ -1,17 +1,11 @@
 """Tests for the durable videos.file_size_bytes column and its fill paths."""
 
-import sys
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "sync"))
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "tests"))
 
 from pg_helper import PgTestCase
 
-import scene_scrapers
+import sync.scene_scrapers as scene_scrapers
 from common.migrations.m0047_video_file_size import apply as apply_migration
 
 

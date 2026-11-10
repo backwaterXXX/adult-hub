@@ -1,10 +1,7 @@
 """Handlers for duplicate-job actions backed by external services or tools."""
 from __future__ import annotations
 
-if __package__:
-    from . import duplicate_jobs as _core
-else:
-    import duplicate_jobs as _core
+from sync import duplicate_jobs as _core
 
 import copy
 import math
@@ -93,10 +90,7 @@ def _resolve_config_path(payload: dict) -> str:
 def _action_source_remove(conn, job_id, payload, media_dir, services):
     if not isinstance(payload.get("channel_id"), str):
         raise ValueError("Channel removal requires a valid Telegram channel ID.")
-    if __package__:
-        from .source_removal import remove_telegram_channel
-    else:
-        from source_removal import remove_telegram_channel
+    from sync.source_removal import remove_telegram_channel
     result = remove_telegram_channel(
         conn, media_dir, payload["channel_id"], job_id, services,
         _core._record_job_progress,
@@ -187,10 +181,7 @@ def _action_backup_restore_test(conn, job_id, payload, media_dir, services):
 
 
 def _action_duplicate_reconcile(conn, job_id, payload, media_dir, services):
-    try:
-        from .video_duplicate_automation import reconcile
-    except ImportError:
-        from video_duplicate_automation import reconcile
+    from sync.video_duplicate_automation import reconcile
     # Automatic merges hide library entries, so a scheduled pass only reports
     # candidates until the operator opts in.
     execute_merges = _core.os.getenv("DUPLICATE_AUTO_MERGE_ENABLED", "false").strip().lower() == "true"
@@ -293,10 +284,7 @@ def _artwork_destination(conn, video_id: str, payload: dict, media_dir, resolve_
 
 
 def _artwork_already_valid(dest) -> bool:
-    try:
-        from .artwork_schedule import artwork_needs_generation
-    except ImportError:
-        from artwork_schedule import artwork_needs_generation
+    from sync.artwork_schedule import artwork_needs_generation
     return not artwork_needs_generation(dest)
 
 
@@ -323,10 +311,7 @@ def _action_artwork_generate(conn, job_id, payload, media_dir, services):
         DEFAULT_ARTWORK_EXTRACTION_TIMEOUT,
         extract_video_frame,
     )
-    if __package__:
-        from .media_files import resolve_media_path
-    else:
-        from media_files import resolve_media_path
+    from sync.media_files import resolve_media_path
 
     video_id, offset, timeout = _artwork_generate_request(payload, DEFAULT_ARTWORK_EXTRACTION_TIMEOUT)
     _core._record_job_progress(conn, job_id, "generating_artwork")
@@ -356,10 +341,7 @@ def _action_artwork_download(conn, job_id, payload, media_dir, services):
     if not isinstance(video_id, str) or not video_id or len(video_id) > 1000:
         raise ValueError("Artwork download requires one valid video ID.")
     _core._record_job_progress(conn, job_id, "downloading_artwork")
-    try:
-        from .scene_artwork_download import download_artwork_for_video
-    except ImportError:
-        from scene_artwork_download import download_artwork_for_video
+    from sync.scene_artwork_download import download_artwork_for_video
     result = download_artwork_for_video(conn, media_dir, video_id)
     if result.get("downloaded") is True:
         result["local_state"] = "artwork_downloaded"
@@ -425,7 +407,7 @@ def _check_performer_merge_revision(conn, fuzzy_performers, pairs: list, expecte
 
 def _action_performer_merge(conn, job_id, payload, media_dir, services):
     pairs = _performer_merge_pairs(payload.get("merges"))
-    import fuzzy_performers
+    from sync import fuzzy_performers
 
     db_url = getattr(conn, "_url", None) or _core.os.getenv("DATABASE_URL")
     expected_revision = payload.get("expected_revision")
@@ -448,10 +430,7 @@ def _action_history_cleanup(conn, job_id, payload, media_dir, services):
 
 def _action_performer_catalog(conn, job_id, payload, media_dir, services):
     _core._record_job_progress(conn, job_id, "syncing_performer_catalog")
-    try:
-        from .performer_catalog_sync import sync_catalog
-    except ImportError:
-        from performer_catalog_sync import sync_catalog
+    from sync.performer_catalog_sync import sync_catalog
     performers, aliases = sync_catalog(conn)
     return {
         "catalogue_performers": performers,
@@ -462,7 +441,7 @@ def _action_performer_catalog(conn, job_id, payload, media_dir, services):
 
 def _action_scene_backfill(conn, job_id, payload, media_dir, services):
     try:
-        from scene_scrapers import backfill_scenes  # type: ignore
+        from sync.scene_scrapers import backfill_scenes  # type: ignore
     except ImportError:
         raise RuntimeError("Scene identification is not installed in this worker.")
     limit = payload.get("limit")
@@ -494,10 +473,7 @@ def _jellyfin_reconciliation_summary(reconcile) -> dict:
 
 
 def _action_telegram_title_cleanup(conn, job_id, payload, media_dir, services):
-    try:
-        from .telegram_title_cleanup import cleanup_telegram_titles
-    except ImportError:
-        from telegram_title_cleanup import cleanup_telegram_titles
+    from sync.telegram_title_cleanup import cleanup_telegram_titles
     _core._record_job_progress(conn, job_id, "cleaning_telegram_titles")
     result = cleanup_telegram_titles(conn, media_dir, logger=services.logger)
     reconcile = getattr(services, "sync_jellyfin_telegram_metadata", None)

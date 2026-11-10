@@ -3,22 +3,18 @@
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
-RESOLVER_DIR = ROOT / "resolver"
-if str(RESOLVER_DIR) not in sys.path:
-    sys.path.insert(0, str(RESOLVER_DIR))
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import admin_v2_telegram_auth
-from providers.telegram_account_store import (
+import resolver.admin_v2_telegram_auth as admin_v2_telegram_auth
+from resolver.providers.telegram_account_store import (
     _MEMORY_ACCOUNTS,
     _MEMORY_CHANNEL_ACCESS,
     TelegramAccountRecord,
@@ -230,7 +226,7 @@ class TestTelegramAccountsApi(unittest.TestCase):
                 session_file=session_file,
             )
 
-            with patch("providers.telegram_account_store._is_db_available", return_value=False):
+            with patch("resolver.providers.telegram_account_store._is_db_available", return_value=False):
                 res = self.client.delete(
                     "/api/v2/telegram/accounts/acc_db_fail_api?confirm=true",
                     headers=self.headers,
@@ -256,12 +252,12 @@ class TestTelegramAccountsApi(unittest.TestCase):
         ) as mock_status:
             mock_status.return_value = {"ok": True, "authorized": True, "status": "authorized"}
 
-            with patch("providers.telegram_router.get_telegram_router") as mock_router_getter:
+            with patch("resolver.providers.telegram_router.get_telegram_router") as mock_router_getter:
                 mock_router = AsyncMock()
                 mock_router.verify_channel_access.return_value = "accessible"
                 mock_router_getter.return_value = mock_router
 
-                with patch("providers.telegram_config._get_channels", return_value=["-100999"]):
+                with patch("resolver.providers.telegram_config._get_channels", return_value=["-100999"]):
                     res = self.client.post(
                         "/api/v2/telegram/accounts/acc_test/test",
                         headers=self.headers,

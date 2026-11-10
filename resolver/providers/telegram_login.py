@@ -8,8 +8,8 @@ import os
 import time
 from typing import Any, Dict, Optional
 
-from .telegram_account import DEFAULT_ACCOUNT_ID, TelegramAccountContext
-from .telegram_session import (
+from resolver.providers.telegram_account import DEFAULT_ACCOUNT_ID, TelegramAccountContext
+from resolver.providers.telegram_session import (
     _cleanup_pending_session,
     _promote_pending_session,
     is_session_authorized,
@@ -350,8 +350,8 @@ class TelegramLoginManager:
                     res = client.disconnect()
                     if asyncio.iscoroutine(res):
                         await asyncio.wait_for(res, timeout=DISCONNECT_TIMEOUT_SECONDS)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Could not disconnect Telegram login client (%s)", type(exc).__name__)
 
     async def _safe_disconnect_and_clean(self, client: Any, pending_path: str) -> None:
         await self._safe_disconnect(client)
@@ -887,7 +887,7 @@ class TelegramLoginManager:
 
             # Persist authorized account to storage without overwriting existing label or disabling state
             try:
-                from .telegram_account_store import upsert_account
+                from resolver.providers.telegram_account_store import upsert_account
                 upsert_account(
                     challenge.account_id,
                     phone_mask=challenge.phone_mask,
@@ -912,18 +912,20 @@ class TelegramLoginManager:
 
             # Reset only the target account client in the router pool
             try:
-                from .telegram_router import get_telegram_router
+                from resolver.providers.telegram_router import get_telegram_router
                 await get_telegram_router().reset_account_client(challenge.account_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Could not reset Telegram router client after login for account %s (%s)",
+                               challenge.account_id, type(exc).__name__)
             if challenge.account_id == "default":
                 try:
-                    from .telegram import reset_telegram_client
+                    from resolver.providers.telegram import reset_telegram_client
                     res = reset_telegram_client("default")
                     if asyncio.iscoroutine(res):
                         await res
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Could not reset default Telegram client after login (%s)",
+                                   type(exc).__name__)
 
 
 # Singleton instance for resolver process

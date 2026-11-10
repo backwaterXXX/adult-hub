@@ -1,19 +1,14 @@
 """Only Admin v2 remains mounted as an administrator UI/API."""
 
 import asyncio
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import httpx
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
-sys.path.insert(0, str(ROOT))
 
-import admin as admin_module
-import app as resolver_app
+import resolver.admin as admin_module
+import resolver.app as resolver_app
 
 
 class AdminRouteTests(unittest.TestCase):

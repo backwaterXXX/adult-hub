@@ -16,8 +16,8 @@ try:
     from sync.scene_scraper_models import TelegramOshashResult
     from sync import scene_scrapers as _core
 except ModuleNotFoundError:
-    from scene_scraper_models import TelegramOshashResult
-    import scene_scrapers as _core
+    from sync.scene_scraper_models import TelegramOshashResult
+    from sync import scene_scrapers as _core
 
 
 def _run_ffprobe_on_sparse_file(ffprobe: str, head: bytes, tail: bytes, file_size: int,

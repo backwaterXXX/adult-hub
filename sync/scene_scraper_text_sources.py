@@ -5,10 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 from urllib.parse import quote
 
-if __package__:
-    from . import scene_scrapers as _core
-else:
-    import scene_scrapers as _core
+from sync import scene_scrapers as _core
 
 
 def _title_key(value: str) -> str:

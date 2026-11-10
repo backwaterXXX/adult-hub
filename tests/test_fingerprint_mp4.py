@@ -2,14 +2,11 @@
 
 import email.message
 import struct
-import sys
 import types
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sync"))
 
-from fingerprint_mp4 import (
+from sync.fingerprint_mp4 import (
     TELEGRAM_BLOCK_BYTES,
     _FaststartMP4,
     _RangeHandler,

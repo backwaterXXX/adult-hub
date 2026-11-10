@@ -1,18 +1,14 @@
 """Safe, bounded service-probe diagnostics for Admin V2."""
 
-import sys
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
 
-import admin_v2_diagnostics
+import resolver.admin_v2_diagnostics as admin_v2_diagnostics
 from common import db as db_module
 
 

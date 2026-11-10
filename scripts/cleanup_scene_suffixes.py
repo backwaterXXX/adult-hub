@@ -2,17 +2,19 @@
 """Cleanup trailing scene/season/episode suffixes (e.g. s1, s2, s3) across DB, NFOs, and Jellyfin."""
 import json
 import os
-import shutil
-import sys
-import time
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BASE_DIR))
-sys.path.insert(0, str(BASE_DIR / "sync"))
-sys.path.insert(0, str(BASE_DIR / "resolver"))
 
 from common import db
+from common.json_helpers import json_list_or_empty
+from common.performer_cleanup_support import (
+    build_video_nfo,
+    create_db_backup,
+    iter_jellyfin_person_dirs,
+    remove_person_dir_counted,
+    remove_person_dir_via_docker,
+)
 from common.performers import (
     SCENE_SUFFIX_RE,
     STANDALONE_SCENE_RE,
@@ -20,7 +22,7 @@ from common.performers import (
     normalize_performers,
     strip_scene_suffix,
 )
-import sync as S
+from sync import sync as S
 
 RAW_DB_URL = (os.getenv("DATABASE_URL") or "").strip()
 if not RAW_DB_URL:
@@ -48,32 +50,12 @@ MEDIA_DIR = BASE_DIR / "media" / "adult"
 JF_PEOPLE_DIR = BASE_DIR / "jf-config" / "metadata" / "People"
 
 
-def _docker_pg_dump_backup() -> Path:
-    import gzip
-    import subprocess
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    backup_file = BACKUP_DIR / f"adulthub-pre-suffix-cleanup-{stamp}.sql.gz"
-    res = subprocess.run(
-        ["docker", "exec", "postgres", "pg_dump", "-U", "adulthub", "adulthub"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if res.returncode != 0:
-        raise RuntimeError(f"docker pg_dump failed: {res.stderr.decode()[:300]}")
-    with gzip.open(backup_file, "wb") as f:
-        f.write(res.stdout)
-    return backup_file
-
-
 def _create_backup() -> Path:
-    try:
-        return db.pg_backup(DB_URL, BACKUP_DIR, prefix="adulthub-pre-suffix-cleanup")
-    except RuntimeError:
-        return _docker_pg_dump_backup()
+    return create_db_backup(DB_URL, BACKUP_DIR, "adulthub-pre-suffix-cleanup")
 
 
 def _clean_aliases(conn) -> None:
+    # Drops scene-suffixed aliases. The nationality and performer cleanups use other rules, so they stay separate.
     print("Checking performer_aliases for scene suffixes...")
     aliases = conn.execute("SELECT alias, canonical FROM performer_aliases").fetchall()
     deleted_aliases = 0
@@ -119,96 +101,25 @@ def _clean_suffixed_names(conn, table: str) -> None:
 
 def _remove_person_dir_via_docker(person_dir: Path, error: Exception) -> int:
     """Return how many folders this fallback counts as removed (0 or 1)."""
-    removed = 0
-    try:
-        import subprocess
-        rel = person_dir.relative_to(JF_PEOPLE_DIR)
-        res = subprocess.run(
-            ["docker", "exec", "jellyfin", "rm", "-rf", f"/config/metadata/People/{rel}"],
-            capture_output=True,
-        )
-        if res.returncode == 0:
-            removed += 1
-            print(f"  Removed Jellyfin People folder (via docker): {person_dir.relative_to(BASE_DIR)}")
-            return removed
-        print(f"  Error removing {person_dir}: {error}")
-        return removed
-    except Exception:
-        print(f"  Error removing {person_dir}: {error}")
-        return removed
+    return remove_person_dir_via_docker(person_dir, error, base_dir=BASE_DIR, people_dir=JF_PEOPLE_DIR)
 
 
 def _remove_person_dir(person_dir: Path) -> int:
     """Remove one suffixed Jellyfin People folder; return how many removals to count."""
-    removed = 0
-    try:
-        shutil.rmtree(person_dir)
-        removed += 1
-        print(f"  Removed Jellyfin People folder: {person_dir.relative_to(BASE_DIR)}")
-        return removed
-    except Exception as e:
-        return removed + _remove_person_dir_via_docker(person_dir, e)
+    return remove_person_dir_counted(person_dir, base_dir=BASE_DIR, people_dir=JF_PEOPLE_DIR)
 
 
 def _clean_jellyfin_people() -> None:
     people_deleted = 0
-    if JF_PEOPLE_DIR.exists():
-        for letter_dir in JF_PEOPLE_DIR.iterdir():
-            if not letter_dir.is_dir():
-                continue
-            for person_dir in list(letter_dir.iterdir()):
-                if not person_dir.is_dir():
-                    continue
-                pname = person_dir.name
-                if SCENE_SUFFIX_RE.search(pname) or STANDALONE_SCENE_RE.match(pname):
-                    people_deleted += _remove_person_dir(person_dir)
+    for person_dir in iter_jellyfin_person_dirs(JF_PEOPLE_DIR):
+        pname = person_dir.name
+        if SCENE_SUFFIX_RE.search(pname) or STANDALONE_SCENE_RE.match(pname):
+            people_deleted += _remove_person_dir(person_dir)
     print(f"Total Jellyfin People folders removed: {people_deleted}")
 
 
-def _json_list(raw) -> list:
-    try:
-        return json.loads(raw or "[]")
-    except Exception:
-        return []
-
-
-def _json_set(raw) -> set:
-    try:
-        return set(json.loads(raw)) if raw else set()
-    except Exception:
-        return set()
-
-
 def _regenerate_video_nfo(conn, row, new_perfs: list, nfo_path: Path) -> bool:
-    (
-        vid_id,
-        prov,
-        title,
-        slug,
-        dur,
-        thumb,
-        _perfs_raw,
-        cats_raw,
-        tags_raw,
-        studio,
-        first_seen,
-    ) = row
-    tag_set = _json_set(tags_raw)
-    genres = _json_set(cats_raw)
-
-    video_dict = {
-        "id": vid_id,
-        "provider": prov,
-        "provider_video_id": vid_id.split(":", 1)[-1],
-        "title": title or vid_id,
-        "slug": slug or "",
-        "duration": dur or 0,
-        "thumbnail": thumb or "",
-        "performers": new_perfs,
-        "performer_thumbs": S.load_performer_thumbs(conn, new_perfs),
-        "studio": studio or "",
-        "dateadded": S.format_dateadded(first_seen or time.time()),
-    }
+    video_dict, genres, tag_set = build_video_nfo(conn, row, new_perfs, sync_api=S)
     try:
         S.create_nfo_file(video_dict, genres, tag_set, nfo_path)
         return True
@@ -231,7 +142,7 @@ def _clean_videos(conn) -> tuple[int, int]:
     with conn:
         for row in rows:
             vid_id, perfs_raw = row[0], row[6]
-            old_perfs = _json_list(perfs_raw)
+            old_perfs = json_list_or_empty(perfs_raw)
 
             if not any(SCENE_SUFFIX_RE.search(p) or STANDALONE_SCENE_RE.match(p) for p in old_perfs):
                 continue

@@ -11,15 +11,15 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set, Tuple, Iterable
 
-from category_mapping import map_category, map_categories
-from sync_shutdown import install_signal_handlers, stop_requested
-from db_schema import init_db as _init_db_impl
-from jellyfin_db import sync_jellyfin_titles as _sync_jellyfin_titles
-from jellyfin_db import sync_jellyfin_telegram_metadata as _sync_jellyfin_telegram_metadata
-from jellyfin_db import audit_telegram_import_state as _audit_telegram_import_state
-from jellyfin_db import trigger_library_refresh as _trigger_jellyfin_refresh_impl
-from jellyfin_db import confirm_metadata_import_jobs as _confirm_metadata_import_jobs_impl
-from http_client import (
+from sync.category_mapping import map_category, map_categories
+from sync.sync_shutdown import install_signal_handlers, stop_requested
+from sync.db_schema import init_db as _init_db_impl
+from sync.jellyfin_db import sync_jellyfin_titles as _sync_jellyfin_titles
+from sync.jellyfin_db import sync_jellyfin_telegram_metadata as _sync_jellyfin_telegram_metadata
+from sync.jellyfin_db import audit_telegram_import_state as _audit_telegram_import_state
+from sync.jellyfin_db import trigger_library_refresh as _trigger_jellyfin_refresh_impl
+from sync.jellyfin_db import confirm_metadata_import_jobs as _confirm_metadata_import_jobs_impl
+from sync.http_client import (
     fetch_json_with_retry as _fetch_json_with_retry,
     get_http_client as _get_http_client,
     http_get as _http_get,
@@ -27,22 +27,22 @@ from http_client import (
     parse_retry_after as _parse_retry_after,
     retry_after_from_error as _retry_after_from_error_impl,
 )
-from sync_metrics import (
+from sync.sync_metrics import (
     observe_http_error as _observe_http_error_impl,
     observe_sync_stage as _observe_sync_stage_impl,
 )
-from nfo import (
+from sync.nfo import (
     create_nfo_file as _create_nfo_file_impl,
     format_dateadded as _format_dateadded_impl,
     load_performer_links as _load_performer_links_impl,
     load_performer_thumbs as _load_performer_thumbs_impl,
     video_for_nfo as _video_for_nfo_impl,
 )
-from performer_enrichment import (
+from sync.performer_enrichment import (
     PerformerEnrichmentServices,
     backfill_performers_from_titles as _backfill_performers_from_titles_impl,
 )
-from telegram_pipeline import (
+from sync.telegram_pipeline import (
     TelegramSyncServices,
     safe_error_detail as _safe_error_detail,
     sync_telegram_channel_pipeline as _sync_telegram_channel_pipeline_impl,
@@ -50,8 +50,8 @@ from telegram_pipeline import (
     telegram_tag_set as _telegram_tag_set,
     telegram_video_tags as _telegram_video_tags,
 )
-from telegram_unavailable import reconcile_telegram_channel as _reconcile_telegram_channel_impl
-from media_files import (
+from sync.telegram_unavailable import reconcile_telegram_channel as _reconcile_telegram_channel_impl
+from sync.media_files import (
     MediaFileServices,
     resolve_media_path as _resolve_media_path_impl,
     rewrite_all_stream_files as _rewrite_all_stream_files_impl,
@@ -59,13 +59,13 @@ from media_files import (
     create_stream_file as _create_stream_file_impl,
     write_stream_file as _write_stream_file_impl,
 )
-from library_cleanup import (
+from sync.library_cleanup import (
     LibraryCleanupServices,
     cleanup_orphaned_records as _cleanup_orphaned_records_impl,
     cleanup_retention as _cleanup_retention_impl,
     purge_videos as _purge_videos_impl,
 )
-from data_migrations import (
+from sync.data_migrations import (
     DataMigrationServices,
     CATEGORY_MAPPING_VERSION,
     DISPLAY_TITLE_VERSION,
@@ -76,7 +76,7 @@ from data_migrations import (
     migrate_display_titles as _migrate_display_titles_impl,
     migrate_redundant_performers as _migrate_redundant_performers_impl,
 )
-from dead_streams import (
+from sync.dead_streams import (
     DeadStreamServices,
     RESOLVER_DEAD_MARKERS,
     deadlisted_ids,
@@ -86,7 +86,7 @@ from dead_streams import (
     probe_stream_via_resolver as _probe_stream_via_resolver_impl,
     probe_stream_via_resolver_outcome as _probe_stream_via_resolver_outcome_impl,
 )
-from thumbnails import (
+from sync.thumbnails import (
     THUMB_FAIL_TTL_SECONDS,
     ThumbnailServices,
     _thumb_fail_marker,
@@ -94,7 +94,7 @@ from thumbnails import (
     download_image as _download_image_impl,
     thumbnail_urls as _thumbnail_urls_impl,
 )
-from provider_registry import (
+from sync.provider_registry import (
     STREAM_MODE_DEFAULT,
     _STREAM_MODE_PER_PROVIDER,
     _PROVIDER_INFO,
@@ -106,7 +106,7 @@ from provider_registry import (
     _normalized_success_set as _normalized_success_set_impl,
     is_cleanup_allowed as _is_cleanup_allowed_impl,
 )
-from category_collector import (
+from sync.category_collector import (
     CategoryCollectorServices,
     _CATEGORY_SKIP,
     register_category_skip as _register_category_skip_impl,
@@ -114,7 +114,7 @@ from category_collector import (
     fetch_provider_category_videos as _fetch_provider_category_videos_impl,
     collect_provider_categories as _collect_provider_categories_impl,
 )
-from video_persistence import (
+from sync.video_persistence import (
     VideoPersistenceServices,
     _merge_video_fields as _merge_video_fields_impl,
     persist_prepared_video as _persist_prepared_video_impl,
@@ -122,14 +122,14 @@ from video_persistence import (
     flush_collected as _flush_collected_impl,
     republish_pending_videos as _republish_pending_videos_impl,
 )
-from duplicate_files import (
+from sync.duplicate_files import (
     _write_catalog_backup, _duplicate_file_matches, _duplicate_move_file,
 )
-from duplicate_jobs import (
+from sync.duplicate_jobs import (
     DuplicateJobServices,
     process_video_duplicate_jobs_locked as _process_video_duplicate_jobs_impl,
 )
-from media_maintenance import (
+from sync.media_maintenance import (
     cleanup_old_transcodes as _cleanup_old_transcodes,
     cleanup_legacy_folders as _cleanup_legacy_folders,
 )
@@ -146,19 +146,19 @@ from common.performers import (
 )
 from common.performer_titles import parse_title_performers_with_known_map as _parse_title_performers_with_known_map
 from common.logging_setup import configure_logging
-from display_titles import (
+from sync.display_titles import (
     clean_display_title,
     get_sync_slug_token_hook,
     register_sync_slug_token_hook,
 )
-from external_metadata_scan import run_external_metadata_backfill as _run_external_metadata_backfill_impl
+from sync.external_metadata_scan import run_external_metadata_backfill as _run_external_metadata_backfill_impl
 
 try:
     import httpx
 except ImportError:
     httpx = None
 
-from sync_helpers import (
+from sync.sync_helpers import (
     sanitize_filename,
     format_category_name,
     parse_duration_to_seconds,
@@ -171,7 +171,7 @@ from sync_helpers import (
     load_performer_thumbs,
     load_performer_links,
 )
-from sync_settings import (
+from sync.sync_settings import (
     RESOLVER_PUBLIC_URL,
     RESOLVER_API_URL,
     STREAM_PUBLIC_URL_TELEGRAM,
@@ -262,12 +262,11 @@ def _check_local_session_auth() -> bool:
             return False
 
         try:
-            from providers.telegram_session import is_session_authorized
+            from resolver.providers.telegram_session import is_session_authorized
         except ImportError:
-            try:
-                from providers.telegram_auth import is_session_authorized
-            except ImportError:
-                return False
+            # The sync image has no Telegram client library (telethon), so the
+            # session check fails closed there.
+            return False
 
         import asyncio
         return bool(asyncio.run(is_session_authorized(session_path, api_id_int, str(api_hash_val).strip())))
@@ -554,7 +553,7 @@ def download_image(url: str, dest_path: Path):
 
 
 def download_image_if_missing(url: str, dest_path: Path) -> bool:
-    from thumbnails import download_image_if_missing as _download_if_missing
+    from sync.thumbnails import download_image_if_missing as _download_if_missing
     return _download_if_missing(url, dest_path, services=_thumbnail_services())
 
 
@@ -933,7 +932,7 @@ def _run_external_metadata_backfill(conn: db.Connection, media_dir: Path, report
 
 def _run_telegram_fingerprint_scan(conn: db.Connection, media_dir: Path, video_ids, report_progress):
     """Run a durable targeted Telegram fingerprint job without scanning channels."""
-    from scene_scrapers import backfill_telegram_fingerprints
+    from sync.scene_scrapers import backfill_telegram_fingerprints
     return backfill_telegram_fingerprints(
         conn, media_dir, limit=len(video_ids), sleep_sec=0.5, video_ids=video_ids,
         progress_callback=report_progress,
@@ -1082,10 +1081,7 @@ def run_sync(source_filter: Optional[str] = None, sync_mode: str = "scheduled",
 def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "scheduled",
                      skip_telegram_channels: bool = False):
     """Run one sync pass (compatibility facade)."""
-    try:
-        from .sync_orchestration import _run_sync_locked as implementation
-    except ImportError:
-        from sync_orchestration import _run_sync_locked as implementation
+    from sync.sync_orchestration import _run_sync_locked as implementation
     return implementation(source_filter, sync_mode, skip_telegram_channels)
 
 

@@ -1,13 +1,10 @@
 """Unit tests for bounded Telegram retry helpers (no telethon required)."""
 
 import asyncio
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "resolver" / "providers"))
 
-import telegram_retry
+import resolver.providers.telegram_retry as telegram_retry
 
 
 class FloodWaitError(Exception):

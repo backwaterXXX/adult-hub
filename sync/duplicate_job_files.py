@@ -5,10 +5,7 @@ duplicate_jobs compatibility facade (``_core``), as they were before the move.
 """
 from __future__ import annotations
 
-if __package__:
-    from . import duplicate_jobs as _core
-else:
-    import duplicate_jobs as _core
+from sync import duplicate_jobs as _core
 
 
 def _append_sidecar_moves(services, relative: str, media_dir, op_dir, file_snapshots: list) -> None:

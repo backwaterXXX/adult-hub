@@ -1,19 +1,15 @@
 import json
 import logging
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pg_helper import PgTestCase
 from common import db
-from video_persistence import (
+from sync.video_persistence import (
     VideoPersistenceServices,
     _merge_video_fields,
     persist_prepared_video,
@@ -356,8 +352,8 @@ class TestVideoPersistence(PgTestCase):
 
     def test_catalog_title_reaches_the_written_nfo(self):
         try:
-            from test_support import load_flat_sync_module
-            sync_module = load_flat_sync_module()
+            from test_support import load_sync_module
+            sync_module = load_sync_module()
         except ImportError:
             self.skipTest("sync module not available")
         video_id = "telegram:-1001:45:996"
@@ -564,7 +560,7 @@ class TestVideoPersistenceChannelHints(unittest.TestCase):
             self.assertEqual(prep_no_hint.get("studio"), "CustomChannel")
 
     def test_telegram_channel_name_hints_downstream_nfo_behavior(self):
-        from nfo import create_nfo_file
+        from sync.nfo import create_nfo_file
         services = self._make_services()
         video_base = {
             "provider": "telegram",
@@ -703,7 +699,7 @@ class TestVideoPersistenceChannelHints(unittest.TestCase):
         reset_channel_hints_warning()
         mock_logger = MagicMock()
         with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": "", "TELEGRAM_API_ID": "", "SYNC_TELEGRAM": "false", "TELEGRAM_CHANNELS": ""}, clear=True):
-            with patch("video_persistence._is_telegram_configured", return_value=False):
+            with patch("sync.video_persistence._is_telegram_configured", return_value=False):
                 warned = warn_if_channel_hints_missing(mock_logger)
                 self.assertFalse(warned)
                 mock_logger.warning.assert_not_called()

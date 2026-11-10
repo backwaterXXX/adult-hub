@@ -1,6 +1,5 @@
 """Database-free contract tests for Admin V2 overview and source reads."""
 
-import sys
 import tempfile
 import unittest
 from decimal import Decimal
@@ -11,12 +10,10 @@ from unittest.mock import Mock, patch
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
 
-import admin_v2_sources
-import admin_v2_status
-import admin_data
+import resolver.admin_v2_sources as admin_v2_sources
+import resolver.admin_v2_status as admin_v2_status
+import resolver.admin_data as admin_data
 
 
 def request(path):
@@ -392,7 +389,6 @@ class TestAdminV2Status(unittest.IsolatedAsyncioTestCase):
         unavailable = await endpoint(request("/admin/api/v2/sources/sync-history"), 50)
         self.assertFalse(unavailable["available"])
         self.assertNotIn("private", str(unavailable))
-
 
 
     async def test_v2_source_reads_obey_admin_read_block(self):

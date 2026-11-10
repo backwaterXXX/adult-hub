@@ -1,15 +1,11 @@
 """Run in the resolver image to verify its actual Uvicorn proxy middleware."""
 import asyncio
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "resolver"))
 
 from starlette.requests import Request
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
-import admin_security
+import resolver.admin_security as admin_security
 
 
 class TestProxyOriginContract(unittest.TestCase):

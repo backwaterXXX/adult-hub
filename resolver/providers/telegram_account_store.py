@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterator, List, Optional
 
 from common import db
-from .telegram_account import DEFAULT_ACCOUNT_ID, TelegramAccountContext, validate_account_id
+from resolver.providers.telegram_account import DEFAULT_ACCOUNT_ID, TelegramAccountContext, validate_account_id
 
 logger = logging.getLogger(__name__)
 
@@ -516,7 +516,7 @@ def _remove_account_session_files(valid_id: str, acc: Optional[TelegramAccountRe
 
 def _check_account_disconnected(valid_id: str) -> None:
     try:
-        from .telegram_router import get_telegram_router
+        from resolver.providers.telegram_router import get_telegram_router
         router = get_telegram_router()
         client = router._clients.get(valid_id)
         if client is not None and hasattr(client, "is_connected") and client.is_connected():

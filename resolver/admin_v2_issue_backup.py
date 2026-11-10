@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from admin_v2_issue_builder import _issue, _timestamp
+from resolver.admin_v2_issue_builder import _issue, _timestamp
 
 
 def collect_backup_issues(admin, now, health, issues):

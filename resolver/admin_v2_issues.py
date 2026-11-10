@@ -9,8 +9,8 @@ from __future__ import annotations
 import time
 
 from fastapi import APIRouter, Query, Request
-from admin_v2_errors import V2ErrorRoute
-from admin_v2_issue_builder import (
+from resolver.admin_v2_errors import V2ErrorRoute
+from resolver.admin_v2_issue_builder import (
     QUALITY_ISSUE_LABELS,
     _build_issues as _build_issues_impl,
     _issue_summary,

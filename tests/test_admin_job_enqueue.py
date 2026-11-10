@@ -1,17 +1,13 @@
 """Durable enqueue deduplication across independent PostgreSQL connections."""
 from concurrent.futures import ThreadPoolExecutor
 import json
-import sys
 import threading
 import unittest
 from unittest.mock import patch
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase, reset_db
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'resolver'))
-from video_duplicates import enqueue_job
+from resolver.video_duplicates import enqueue_job
 from common import db
 
 
@@ -153,7 +149,7 @@ class TestAdminJobEnqueue(PgTestCase):
         self.assertEqual(enqueue_job(self.db_url, 'sync', {'source': 'Chan', 'sync_mode': 'backfill'}), backfill)
 
     def test_retry_requeues_terminal_job_and_missing_returns_none(self):
-        from video_duplicates import retry_job
+        from resolver.video_duplicates import retry_job
         original = enqueue_job(self.db_url, 'performer_merge', {'merges': [{'alias': 'A', 'canonical': 'B'}]})
         with self.conn:
             self.conn.execute("UPDATE video_duplicate_jobs SET state='failed' WHERE id=%s", (original,))

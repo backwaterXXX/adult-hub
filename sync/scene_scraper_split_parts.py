@@ -8,12 +8,8 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Iterable, Optional, Tuple
 
-if __package__:
-    from . import scene_scrapers as _core
-    from .scene_scraper_models import PART_MARKER_SQL
-else:
-    import scene_scrapers as _core
-    from scene_scraper_models import PART_MARKER_SQL
+from sync import scene_scrapers as _core
+from sync.scene_scraper_models import PART_MARKER_SQL
 
 
 _PART_MARKER = re.compile(

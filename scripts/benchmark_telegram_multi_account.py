@@ -17,7 +17,7 @@ All measurements are synthetic execution metrics from mocked MTProto clients und
 simulated network delays.
 
 Usage:
-    python3 scripts/benchmark_telegram_multi_account.py [--accounts N] [--streams M] [--chunks C] [--simulate-floodwait] [--scenario {all,independent,shared}]
+    python3 -m scripts.benchmark_telegram_multi_account [--accounts N] [--streams M] [--chunks C] [--simulate-floodwait] [--scenario {all,independent,shared}]
 """
 
 from __future__ import annotations
@@ -29,13 +29,9 @@ import os
 import sys
 import tempfile
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Ensure repo root is on sys.path
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 from resolver.providers.telegram_account_store import (
     _MEMORY_ACCOUNTS,

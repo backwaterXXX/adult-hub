@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional, Tuple
 import logging
 
 from common import db
+from common.json_helpers import json_set_or_empty as _json_set
 from common.performers import is_safe_alias, is_valid_performer_name
 
 logger = logging.getLogger(__name__)
@@ -28,10 +29,7 @@ _NAME_PURGE_QUERIES = (
 def _resolve_services(services: Optional[Any]) -> Any:
     if services is not None:
         return services
-    if __package__:
-        from .data_migrations import _resolve_default_services
-    else:
-        from data_migrations import _resolve_default_services
+    from sync.data_migrations import _resolve_default_services
     return _resolve_default_services(None)
 
 
@@ -223,13 +221,6 @@ def _restore_known_performers(conn: db.Connection, svc: Any, title_pattern: str,
         svc.logger.warning("Failed to fix performers for %s: %s", label, e)
 
 
-def _json_set(raw) -> set:
-    try:
-        return set(json.loads(raw)) if raw else set()
-    except Exception:
-        return set()
-
-
 def _nfo_genres_and_tags(cats_raw, tags_raw) -> Tuple[set, set]:
     genres = _json_set(cats_raw)
     tags = _json_set(tags_raw)
@@ -338,5 +329,5 @@ def migrate_redundant_performers(conn: db.Connection, media_dir: Path, *,
     _record_redundant_version(conn, redundant_performers_version, svc)
 
     if updated > 0:
-        svc.logger.info(f"Cleaned up redundant performers in {updated} videos and NFO files.")
+        svc.logger.info("Cleaned up redundant performers in %s videos and NFO files.", updated)
     return updated

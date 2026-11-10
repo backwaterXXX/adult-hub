@@ -13,23 +13,15 @@ import argparse
 import collections
 import json
 import os
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "sync"))
 
 from common import db
 from common.performer_catalog import normalize_name
+from common.performer_cleanup_support import regenerate_telegram_nfo
 from common.performers import is_valid_performer_name
-try:
-    import sync as S
-except ImportError:
-    try:
-        from sync import sync as S
-    except ImportError:
-        S = None
+from sync import sync as S
 
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", str(ROOT / "media" / "adult")))
 
@@ -37,27 +29,7 @@ MEDIA_DIR = Path(os.getenv("MEDIA_DIR", str(ROOT / "media" / "adult")))
 def _regenerate_nfo(conn, video_id: str, performers: list[str]) -> bool:
     if S is None:
         return False
-    row = conn.execute("""
-        SELECT provider,title,slug,duration,thumbnail,categories,tags,studio,first_seen,source_text
-        FROM videos WHERE id=%s
-    """, (video_id,)).fetchone()
-    if not row:
-        return False
-    provider, title, slug, duration, thumbnail, categories, tags, studio, first_seen, source_text = row
-    categories = categories if isinstance(categories, list) else json.loads(categories or "[]")
-    tags = tags if isinstance(tags, list) else json.loads(tags or "[]")
-    path = MEDIA_DIR / f"{S.stable_media_basename(video_id)}.nfo"
-    if not path.exists():
-        return False
-    video = {"id": video_id, "provider": provider,
-             "provider_video_id": video_id.split(":", 1)[-1],
-             "title": title or video_id, "slug": slug or "",
-             "duration": duration or 0, "thumbnail": thumbnail or "",
-             "performers": performers, "plot": source_text or "",
-             "performer_thumbs": S.load_performer_thumbs(conn, performers),
-             "studio": studio or "", "dateadded": S.format_dateadded(first_seen or 0)}
-    S.create_nfo_file(video, set(categories), set(tags), path, conn=conn)
-    return True
+    return regenerate_telegram_nfo(conn, video_id, performers, media_dir=MEDIA_DIR, sync_api=S)
 
 
 def _try_regenerate_nfo(conn, video_id: str, performers: list[str]) -> bool:

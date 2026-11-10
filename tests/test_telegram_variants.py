@@ -18,17 +18,13 @@ Verifies:
 import asyncio
 from contextlib import asynccontextmanager
 import os
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from telethon.tl import types
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from providers.telegram_variants import (
+from resolver.providers.telegram_variants import (
     extract_message_variants,
     extract_variant_info,
     find_variant_document,
@@ -36,8 +32,8 @@ from providers.telegram_variants import (
     parse_tl_json,
     should_ignore_alt_documents,
 )
-from providers.telegram import TelegramProvider
-import app as resolver_app
+from resolver.providers.telegram import TelegramProvider
+import resolver.app as resolver_app
 from fastapi.testclient import TestClient
 
 
@@ -250,7 +246,7 @@ class TestTelegramVariantsUnit(unittest.TestCase):
         fake_client.return_value = fake_resp
 
         with patch.dict(os.environ, {}, clear=True):
-            with patch("providers.telegram_variants._APP_CONFIG_CACHE", None):
+            with patch("resolver.providers.telegram_variants._APP_CONFIG_CACHE", None):
                 self.assertTrue(asyncio.run(should_ignore_alt_documents(fake_client)))
 
 
@@ -262,13 +258,13 @@ class TestTelegramProviderVariantsIntegration(unittest.TestCase):
         async def fake_lease(channel_ref=None, affinity_account=None):
             yield ("default", MagicMock())
 
-        patcher_seam = patch("providers.telegram._CLIENT_LEASE_SEAM", fake_lease)
+        patcher_seam = patch("resolver.providers.telegram._CLIENT_LEASE_SEAM", fake_lease)
         patcher_seam.start()
         self.addCleanup(patcher_seam.stop)
 
         self.prov = TelegramProvider()
         self.channel_id = "-1001"
-        self.patcher = patch("providers.telegram.is_channel_authorized", return_value=True)
+        self.patcher = patch("resolver.providers.telegram.is_channel_authorized", return_value=True)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
         self.orig_doc = MockDocument(
@@ -283,8 +279,8 @@ class TestTelegramProviderVariantsIntegration(unittest.TestCase):
         self.message = MockMessage(42, self.media, video_processing_pending=False)
 
     def test_get_video_variants_success(self):
-        with patch("providers.telegram._require_client", new_callable=AsyncMock):
-            with patch("providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
+        with patch("resolver.providers.telegram._require_client", new_callable=AsyncMock):
+            with patch("resolver.providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
                 mock_get_msg.return_value = self.message
 
                 ref = f"{self.channel_id}:42:5001"
@@ -297,13 +293,13 @@ class TestTelegramProviderVariantsIntegration(unittest.TestCase):
                 self.assertEqual(variants_data["variants"][1]["id"], "alt_5002")
 
     def test_get_video_variants_unauthorized_channel_raises(self):
-        with patch("providers.telegram.is_channel_authorized", return_value=False):
+        with patch("resolver.providers.telegram.is_channel_authorized", return_value=False):
             with self.assertRaises(ValueError):
                 asyncio.run(self.prov.get_video_variants("-1009999999999:42:5001"))
 
     def test_resolve_stream_variants(self):
-        with patch("providers.telegram._require_client", new_callable=AsyncMock):
-            with patch("providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
+        with patch("resolver.providers.telegram._require_client", new_callable=AsyncMock):
+            with patch("resolver.providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
                 mock_get_msg.return_value = self.message
 
                 base_id = f"{self.channel_id}:42:5001"
@@ -325,8 +321,8 @@ class TestTelegramProviderVariantsIntegration(unittest.TestCase):
                     asyncio.run(self.prov.resolve_stream(base_id, variant="alt_9999"))
 
     def test_file_size_for_variant(self):
-        with patch("providers.telegram._require_client", new_callable=AsyncMock):
-            with patch("providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
+        with patch("resolver.providers.telegram._require_client", new_callable=AsyncMock):
+            with patch("resolver.providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
                 mock_get_msg.return_value = self.message
 
                 # Original file size
@@ -342,8 +338,8 @@ class TestTelegramProviderVariantsIntegration(unittest.TestCase):
                 self.assertIsNone(none_size)
 
     def test_check_message_metadata_for_variant(self):
-        with patch("providers.telegram._require_client", new_callable=AsyncMock):
-            with patch("providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
+        with patch("resolver.providers.telegram._require_client", new_callable=AsyncMock):
+            with patch("resolver.providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
                 mock_get_msg.return_value = self.message
 
                 self.assertEqual(
@@ -368,13 +364,13 @@ class TestHttpVariantsEndpoints(unittest.TestCase):
         async def fake_lease(channel_ref=None, affinity_account=None):
             yield ("default", MagicMock())
 
-        patcher_seam = patch("providers.telegram._CLIENT_LEASE_SEAM", fake_lease)
+        patcher_seam = patch("resolver.providers.telegram._CLIENT_LEASE_SEAM", fake_lease)
         patcher_seam.start()
         self.addCleanup(patcher_seam.stop)
 
         self.client = TestClient(resolver_app.app)
         self.channel_id = "-1001"
-        self.patcher = patch("providers.telegram.is_channel_authorized", return_value=True)
+        self.patcher = patch("resolver.providers.telegram.is_channel_authorized", return_value=True)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
         self.video_ref = f"{self.channel_id}:42:5001"
@@ -392,8 +388,8 @@ class TestHttpVariantsEndpoints(unittest.TestCase):
         self.message = MockMessage(42, self.media, video_processing_pending=False)
 
     def test_get_variants_http(self):
-        with patch("providers.telegram._require_client", new_callable=AsyncMock):
-            with patch("providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
+        with patch("resolver.providers.telegram._require_client", new_callable=AsyncMock):
+            with patch("resolver.providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
                 mock_get_msg.return_value = self.message
 
                 resp = self.client.get(f"/admin/play/{self.composite_id}/variants")
@@ -423,8 +419,8 @@ class TestHttpVariantsEndpoints(unittest.TestCase):
                 self.assertEqual(alt["estimated_average_bitrate"], 240000)
 
     def test_get_variants_redirect_from_legacy_play(self):
-        with patch("providers.telegram._require_client", new_callable=AsyncMock):
-            with patch("providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
+        with patch("resolver.providers.telegram._require_client", new_callable=AsyncMock):
+            with patch("resolver.providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
                 mock_get_msg.return_value = self.message
 
                 resp = self.client.get(f"/play/{self.composite_id}/variants", follow_redirects=True)
@@ -432,8 +428,8 @@ class TestHttpVariantsEndpoints(unittest.TestCase):
                 self.assertEqual(resp.json()["status"], "ready")
 
     def test_play_stream_with_variant_range_request(self):
-        with patch("providers.telegram._require_client", new_callable=AsyncMock):
-            with patch("providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
+        with patch("resolver.providers.telegram._require_client", new_callable=AsyncMock):
+            with patch("resolver.providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
                 mock_get_msg.return_value = self.message
 
                 # Mock download_range in provider to return bytes
@@ -455,8 +451,8 @@ class TestHttpVariantsEndpoints(unittest.TestCase):
                     self.assertEqual(resp.headers["Accept-Ranges"], "bytes")
 
     def test_play_stream_invalid_variant_returns_404(self):
-        with patch("providers.telegram._require_client", new_callable=AsyncMock):
-            with patch("providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
+        with patch("resolver.providers.telegram._require_client", new_callable=AsyncMock):
+            with patch("resolver.providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
                 mock_get_msg.return_value = self.message
 
                 resp = self.client.get(
@@ -466,8 +462,8 @@ class TestHttpVariantsEndpoints(unittest.TestCase):
                 self.assertIn("not found", resp.json()["detail"].lower())
 
     def test_play_stream_without_variant_preserves_original(self):
-        with patch("providers.telegram._require_client", new_callable=AsyncMock):
-            with patch("providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
+        with patch("resolver.providers.telegram._require_client", new_callable=AsyncMock):
+            with patch("resolver.providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
                 mock_get_msg.return_value = self.message
 
                 prov = resolver_app.get_provider("telegram")
@@ -486,8 +482,8 @@ class TestHttpVariantsEndpoints(unittest.TestCase):
                     self.assertEqual(resp.headers["Content-Range"], "bytes 0-999/10000000")
 
     def test_cache_separation_between_variants(self):
-        with patch("providers.telegram._require_client", new_callable=AsyncMock):
-            with patch("providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
+        with patch("resolver.providers.telegram._require_client", new_callable=AsyncMock):
+            with patch("resolver.providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
                 mock_get_msg.return_value = self.message
 
                 prov = resolver_app.get_provider("telegram")
@@ -496,7 +492,7 @@ class TestHttpVariantsEndpoints(unittest.TestCase):
                     yield b"D" * (length or 50)
 
                 with patch.object(prov, "download_range", side_effect=fake_dl):
-                    with patch("app.proxy_fetch_response", wraps=resolver_app.proxy_fetch_response) as mock_pfr:
+                    with patch("resolver.app.proxy_fetch_response", wraps=resolver_app.proxy_fetch_response) as mock_pfr:
                         # Play original
                         self.client.get(f"/admin/play/{self.composite_id}/stream")
 
@@ -517,8 +513,8 @@ class TestHttpVariantsEndpoints(unittest.TestCase):
 
 
     def test_file_reference_refresh_on_variant_download(self):
-        with patch("providers.telegram._require_client", new_callable=AsyncMock):
-            with patch("providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
+        with patch("resolver.providers.telegram._require_client", new_callable=AsyncMock):
+            with patch("resolver.providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
                 # First attempt raises FileReferenceExpiredError, second succeeds with refreshed doc
                 refreshed_alt_doc = MockDocument(5002, 3000000, "video/mp4")
                 refreshed_media = MockMedia(self.orig_doc, [refreshed_alt_doc])
@@ -540,8 +536,8 @@ class TestHttpVariantsEndpoints(unittest.TestCase):
                         raise FileReferenceExpiredError("file reference expired")
                     yield b"REFRESHED_CHUNK"
 
-                with patch("providers.telegram._download_sequential", side_effect=fake_seq_dl):
-                    with patch("providers.telegram._evict_cached_message") as mock_evict:
+                with patch("resolver.providers.telegram._download_sequential", side_effect=fake_seq_dl):
+                    with patch("resolver.providers.telegram._evict_cached_message") as mock_evict:
                         chunks = []
                         async def run_dl():
                             async for chunk in prov.download_range(f"{self.channel_id}:42:5002", 0, 100):
@@ -553,8 +549,8 @@ class TestHttpVariantsEndpoints(unittest.TestCase):
                         mock_evict.assert_called_with(self.channel_id, 42)
 
     def test_variant_seeking_range_request(self):
-        with patch("providers.telegram._require_client", new_callable=AsyncMock):
-            with patch("providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
+        with patch("resolver.providers.telegram._require_client", new_callable=AsyncMock):
+            with patch("resolver.providers.telegram._get_cached_message", new_callable=AsyncMock) as mock_get_msg:
                 mock_get_msg.return_value = self.message
 
                 prov = resolver_app.get_provider("telegram")

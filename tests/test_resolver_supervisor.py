@@ -1,12 +1,8 @@
-import importlib.util
 import subprocess
 import unittest
-from pathlib import Path
 from unittest.mock import Mock, patch
 
-spec = importlib.util.spec_from_file_location('resolver_supervisor', Path(__file__).resolve().parents[1] / 'resolver' / 'supervisor.py')
-supervisor = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(supervisor)
+import resolver.supervisor as supervisor
 
 
 class SupervisorTests(unittest.TestCase):

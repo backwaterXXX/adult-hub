@@ -26,10 +26,7 @@ from common.telegram_transfer_budget import (
 logger = logging.getLogger(__name__)
 
 
-if __package__:
-    from . import fingerprint_mp4 as _fingerprint_mp4
-else:
-    import fingerprint_mp4 as _fingerprint_mp4
+from sync import fingerprint_mp4 as _fingerprint_mp4  # noqa: E402
 
 # Re-export the previous helper names for callers that import this facade.
 TELEGRAM_BLOCK_BYTES = _fingerprint_mp4.TELEGRAM_BLOCK_BYTES
@@ -313,10 +310,7 @@ def _load_phash_dependencies() -> _PhashDeps:
     from PIL import Image
     from stash_phash.video import combine_images
     from common.image_utils import compute_dhash, is_black_image, is_bumper_hash
-    try:
-        from .thumbnails import _get_cached_bumper_hashes, _valid_thumbnail_bytes
-    except ImportError:
-        from thumbnails import _get_cached_bumper_hashes, _valid_thumbnail_bytes
+    from sync.thumbnails import _get_cached_bumper_hashes, _valid_thumbnail_bytes
     return _PhashDeps(shutil, Image, combine_images, compute_dhash, is_black_image,
                       is_bumper_hash, _get_cached_bumper_hashes, _valid_thumbnail_bytes)
 

@@ -316,62 +316,41 @@ def _json_list_value(value) -> list:
 
 
 def _metadata_update(conn, job_id: str, payload: dict, media_dir: Path, services) -> dict:
-    if __package__:
-        from .duplicate_job_metadata import _metadata_update as implementation
-    else:
-        from duplicate_job_metadata import _metadata_update as implementation
+    from sync.duplicate_job_metadata import _metadata_update as implementation
     return implementation(conn, job_id, payload, media_dir, services)
 
 
 def _availability_check(conn, job_id: str, payload: dict, services) -> dict:
-    if __package__:
-        from .duplicate_job_metadata import _availability_check as implementation
-    else:
-        from duplicate_job_metadata import _availability_check as implementation
+    from sync.duplicate_job_metadata import _availability_check as implementation
     return implementation(conn, job_id, payload, services)
 
 
 def _metadata_quality_audit(conn, job_id: str, payload: dict | None = None) -> dict:
-    try:
-        from .duplicate_job_library_audit import _metadata_quality_audit as implementation
-    except ImportError:
-        from duplicate_job_library_audit import _metadata_quality_audit as implementation
+    from sync.duplicate_job_library_audit import _metadata_quality_audit as implementation
     return implementation(conn, job_id, payload)
 
 
 def _consistency_audit(conn, job_id: str, media_dir: Path, services, payload: dict | None = None) -> dict:
-    try:
-        from .duplicate_job_library_audit import _consistency_audit as implementation
-    except ImportError:
-        from duplicate_job_library_audit import _consistency_audit as implementation
+    from sync.duplicate_job_library_audit import _consistency_audit as implementation
     return implementation(conn, job_id, media_dir, services, payload)
 
 
 
 def _audit_repair_nfo(conn, job_id: str, payload: dict, media_dir: Path, services) -> dict:
-    try:
-        from .duplicate_job_library_audit import _audit_repair_nfo as implementation
-    except ImportError:
-        from duplicate_job_library_audit import _audit_repair_nfo as implementation
+    from sync.duplicate_job_library_audit import _audit_repair_nfo as implementation
     return implementation(conn, job_id, payload, media_dir, services)
 
 
 
 def _audit_import_refresh(conn, job_id: str, payload: dict, services) -> dict:
-    try:
-        from .duplicate_job_library_audit import _audit_import_refresh as implementation
-    except ImportError:
-        from duplicate_job_library_audit import _audit_import_refresh as implementation
+    from sync.duplicate_job_library_audit import _audit_import_refresh as implementation
     return implementation(conn, job_id, payload, services)
 
 
 
 def _orphan_file_operation(conn, job_id: str, payload: dict, media_dir: Path, quarantine_root: Path,
                            services, moved: list[tuple[Path, Path]]) -> dict:
-    try:
-        from .duplicate_job_library_audit import _orphan_file_operation as implementation
-    except ImportError:
-        from duplicate_job_library_audit import _orphan_file_operation as implementation
+    from sync.duplicate_job_library_audit import _orphan_file_operation as implementation
     return implementation(conn, job_id, payload, media_dir, quarantine_root, services, moved)
 
 
@@ -406,7 +385,7 @@ def _performer_refresh(conn: db.Connection, job_id: str, payload: dict,
     ids = payload.get("video_ids")
     if not isinstance(ids, list) or not ids or len(ids) > 100:
         raise ValueError("Performer refresh requires 1–100 video IDs.")
-    import sync as S
+    from sync import sync as S
     updated = 0
     for index, video_id in enumerate(dict.fromkeys(str(value) for value in ids)):
         row = conn.execute("""
@@ -437,8 +416,5 @@ def _performer_refresh(conn: db.Connection, job_id: str, payload: dict,
     return {"videos_refreshed": updated, "jellyfin_refresh": "requested"}
 
 
-if __package__:
-    from .duplicate_job_worker import process_video_duplicate_jobs_locked
-else:
-    from duplicate_job_worker import process_video_duplicate_jobs_locked  # noqa: F401
+from sync.duplicate_job_worker import process_video_duplicate_jobs_locked  # noqa: E402, F401
 

@@ -9,6 +9,7 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from psycopg.types.json import Jsonb
 
+from common.json_helpers import json_object as _json_object
 from common.performers import is_safe_alias, is_valid_performer_name
 
 
@@ -32,6 +33,7 @@ class PerformerProfileConflict(RuntimeError):
 
 
 def _json_list(value) -> list[str]:
+    # Strips strings and drops non-string items, so it is not the shared json_helpers decoder.
     if isinstance(value, list):
         raw = value
     elif isinstance(value, str) and value:
@@ -42,18 +44,6 @@ def _json_list(value) -> list[str]:
     else:
         raw = []
     return [item.strip() for item in raw if isinstance(item, str) and item.strip()] if isinstance(raw, list) else []
-
-
-def _json_object(value) -> dict:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str) and value:
-        try:
-            decoded = json.loads(value)
-            return decoded if isinstance(decoded, dict) else {}
-        except (TypeError, ValueError):
-            return {}
-    return {}
 
 
 def validate_photo_url(value) -> str:

@@ -383,7 +383,7 @@ def _resolve_fresh_performers(video: Dict[str, Any], _row, services: VideoPersis
 def _detect_studio_names(video: Dict[str, Any], title: str, tags) -> Tuple[Any, list]:
     prod_names = []
     try:
-        from studio_tags import detect_production_studios, detect_production_studio_names
+        from sync.studio_tags import detect_production_studios, detect_production_studio_names
         detected_studios = detect_production_studios(title, tags)
         if detected_studios:
             tags = set(tags) | set(detected_studios)
@@ -541,7 +541,4 @@ def write_media_files(services: VideoPersistenceServices, prepared: Dict[str, An
         conn.commit()
 
 
-if __package__:
-    from .video_flush import flush_collected, publication_pending_ids, republish_pending_videos
-else:
-    from video_flush import flush_collected, publication_pending_ids, republish_pending_videos  # noqa: F401
+from sync.video_flush import flush_collected, publication_pending_ids, republish_pending_videos  # noqa: E402, F401

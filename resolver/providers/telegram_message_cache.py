@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 import weakref
 from collections import OrderedDict
 from typing import Any, Dict, Optional, Tuple
 
-from .telegram_config import _entity_ref
+from resolver.providers.telegram_config import _entity_ref
+
+logger = logging.getLogger(__name__)
 
 
 _MESSAGE_CACHE: "OrderedDict[str, Tuple[float, Any, int]]" = OrderedDict()
@@ -79,7 +82,7 @@ def _client_session_key(client: Any, account_id: Optional[str] = None) -> str:
             try:
                 setattr(client, "_stable_id", stable_id)
             except Exception:
-                pass
+                logger.debug("Could not store stable id on Telegram client", exc_info=True)
     return stable_id or "default_client"
 
 

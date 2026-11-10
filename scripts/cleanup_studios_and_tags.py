@@ -14,13 +14,8 @@ from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BASE_DIR))
-sys.path.insert(0, str(BASE_DIR / "sync"))
 
-try:
-    from sync.studio_tags import detect_production_studio_names
-except ImportError:
-    from studio_tags import detect_production_studio_names
+from sync.studio_tags import detect_production_studio_names
 
 MEDIA_DIR = Path("/media/adult") if Path("/media/adult").exists() else BASE_DIR / "media" / "adult"
 BACKUP_DIR = Path("/data/backups") if Path("/data").exists() else BASE_DIR / "data" / "backups"

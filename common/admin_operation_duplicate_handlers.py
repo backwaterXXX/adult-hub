@@ -1,10 +1,7 @@
 """Admin operation handlers for duplicate decisions and video quarantine."""
 from __future__ import annotations
 
-if __package__:
-    from . import admin_operation_execution as _core
-else:
-    import admin_operation_execution as _core
+from common import admin_operation_execution as _core
 
 
 def handle_restore(conn, db_url, plan_id, row, config, scope, revisions, now):
@@ -183,10 +180,7 @@ def handle_performer_merge(conn, db_url, plan_id, row, config, scope, revisions,
         if not alias or not canonical or alias.lower() == canonical.lower() or (not isinstance(expected, str)):
             conn.rollback()
             return {'outcome': 'conflict', 'message': 'The saved performer merge scope is invalid.'}
-        try:
-            from common.fuzzy_performers import performer_merge_revision
-        except ImportError:
-            from fuzzy_performers import performer_merge_revision
+        from common.fuzzy_performers import performer_merge_revision
         if performer_merge_revision(conn, alias, canonical, legacy=not expected.startswith("v2:")) != expected:
             conn.commit()
             return {'outcome': 'stale', 'stale_ids': [alias], 'message': 'Performer records changed after this preview. Create a new preview.'}

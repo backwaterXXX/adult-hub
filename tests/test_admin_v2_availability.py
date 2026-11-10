@@ -1,19 +1,15 @@
 """Database-free allowlist tests for playback availability history."""
 
-import sys
 import unittest
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
 
-import admin_v2_availability
+import resolver.admin_v2_availability as admin_v2_availability
 
 
 def request(path, *, query=b""):
@@ -58,7 +54,7 @@ class TestAdminV2Availability(unittest.IsolatedAsyncioTestCase):
         )
         endpoint = next(route.endpoint for route in admin_v2_availability.build_router(admin).routes
                         if route.path == "/api/v2/availability/history")
-        with patch("admin_v2_availability.db.connect", return_value=connection):
+        with patch("resolver.admin_v2_availability.db.connect", return_value=connection):
             result = await endpoint(request("/admin/api/v2/availability/history",
                                              query=b"video_id=fixture&limit=5"), "fixture", 5)
 
@@ -93,7 +89,7 @@ class TestAdminV2Availability(unittest.IsolatedAsyncioTestCase):
                 self.closed = True
 
         connection = Connection()
-        with patch("admin_v2_availability.db.connect", return_value=connection):
+        with patch("resolver.admin_v2_availability.db.connect", return_value=connection):
             preview = admin_v2_availability._preview("postgresql://fixture.invalid/catalog", ["video-1"])
         self.assertEqual(preview["items"][0]["last_check"], "unknown")
         self.assertEqual(preview["items"][0]["current"], "available")

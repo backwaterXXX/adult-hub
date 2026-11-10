@@ -5,13 +5,10 @@ before migration 0056: the per-row alias filter read all 3,628 alias rows every
 time, and searching by alias repeated that for every candidate row.
 """
 
-import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(ROOT))
 from pg_helper import PgTestCase
 
 # The per-row shape of resolver/admin_v2_organize.py's alias search; the second

@@ -3,28 +3,10 @@
 from __future__ import annotations
 
 import os
-import sys
-import types
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "resolver"))
-
-# The resolver image copies two sync modules under these names
-# (resolver/Dockerfile), so they do not resolve on the host. The flag behaviour
-# under test never reaches them: the worker only binds them at import time, and
-# the jobs that use them are patched here.
-for _alias, _symbol in (("resolver_video_visual", "compare_pair"),
-                        ("resolver_video_fingerprints", "telegram_phash")):
-    if _alias not in sys.modules:
-        _stub = types.ModuleType(_alias)
-        setattr(_stub, _symbol, lambda *_args, **_kwargs: None)
-        sys.modules[_alias] = _stub
-
-import video_visual_worker
+import resolver.video_visual_worker as video_visual_worker
 
 
 class VisualWorkerFlagTests(unittest.TestCase):

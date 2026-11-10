@@ -2,7 +2,6 @@
 import asyncio
 from contextlib import asynccontextmanager
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +9,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import TEST_URL
 
 # PostgreSQL-only: resolver cache/diagnostics read DATABASE_URL (no SQLite
@@ -20,10 +18,8 @@ if TEST_URL:
 else:
     os.environ.setdefault("DATABASE_URL", "")
 
-sys.path.insert(0, str(ROOT / "resolver"))
-sys.path.insert(0, str(ROOT))
 
-from providers import telegram as telegram
+from resolver.providers import telegram as telegram
 
 
 class TestTelegramThumbnails(unittest.IsolatedAsyncioTestCase):
@@ -132,12 +128,12 @@ class TestTelegramThumbnails(unittest.IsolatedAsyncioTestCase):
 class TestThumbnailHttpApi(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_is_fast_gateway_response_and_missing_preview_stays_404(self):
         import httpx
-        import catalog_api
+        import resolver.catalog_api as catalog_api
         with tempfile.TemporaryDirectory(), patch.dict(os.environ, {
             "CONFIG_PATH": str(ROOT / "tests/fixtures/config_telegram_only.yaml"),
             "DATABASE_URL": TEST_URL or os.environ.get("DATABASE_URL", ""),
         }):
-            import app
+            import resolver.app as app
         async def blocked(ref):
             await asyncio.Event().wait()
         fake = SimpleNamespace(download_thumb=AsyncMock(side_effect=blocked))

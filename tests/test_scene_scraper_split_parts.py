@@ -1,18 +1,12 @@
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-SYNC_DIR = ROOT / "sync"
-if str(SYNC_DIR) not in sys.path:
-    sys.path.insert(0, str(SYNC_DIR))
 
-import scene_scraper_split_parts as split_parts
-import scene_scraper_backfill as backfill
-from scene_scrapers import ScrapedScene
+import sync.scene_scraper_split_parts as split_parts
+import sync.scene_scraper_backfill as backfill
+from sync.scene_scrapers import ScrapedScene
 
 
 class _Cursor:

@@ -10,21 +10,16 @@ logger = logging.getLogger("sync.scene_artwork_download")
 
 def _import_scene_sources():
     """Load provider lookups and the poster downloader at call time."""
-    try:
-        from .scene_scraper_fingerprint_sources import (
-            search_stashdb_scene_by_oshash,
-            search_tpdb_scene_by_oshash,
-        )
-        from .scene_scraper_media_files import _download_scene_poster
-        from .scene_scraper_text_sources import (
-            fetch_stashdb_scene_by_id,
-            fetch_tpdb_scene_by_id,
-            search_scene_by_exact_title,
-        )
-    except ImportError:
-        from scene_scraper_fingerprint_sources import search_stashdb_scene_by_oshash, search_tpdb_scene_by_oshash
-        from scene_scraper_media_files import _download_scene_poster
-        from scene_scraper_text_sources import fetch_stashdb_scene_by_id, fetch_tpdb_scene_by_id, search_scene_by_exact_title
+    from sync.scene_scraper_fingerprint_sources import (
+        search_stashdb_scene_by_oshash,
+        search_tpdb_scene_by_oshash,
+    )
+    from sync.scene_scraper_media_files import _download_scene_poster
+    from sync.scene_scraper_text_sources import (
+        fetch_stashdb_scene_by_id,
+        fetch_tpdb_scene_by_id,
+        search_scene_by_exact_title,
+    )
     return SimpleNamespace(
         search_stashdb_scene_by_oshash=search_stashdb_scene_by_oshash,
         search_tpdb_scene_by_oshash=search_tpdb_scene_by_oshash,
@@ -37,10 +32,7 @@ def _import_scene_sources():
 
 def _artwork_target(conn, media_dir: Path, video_id: str) -> Path:
     """Return the ``.jpg`` path beside the first safe stream file of the video."""
-    try:
-        from .media_files import resolve_media_path
-    except ImportError:
-        from media_files import resolve_media_path
+    from sync.media_files import resolve_media_path
     file_rows = conn.execute(
         "SELECT file_path FROM synced_files WHERE video_id=%s ORDER BY file_path",
         (video_id,),

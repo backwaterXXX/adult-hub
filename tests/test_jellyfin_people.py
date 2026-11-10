@@ -1,12 +1,8 @@
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-from jellyfin_people import format_pbc_overview, sync_jellyfin_people
+from sync.jellyfin_people import format_pbc_overview, sync_jellyfin_people
 
 
 class Response:

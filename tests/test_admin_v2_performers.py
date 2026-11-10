@@ -1,19 +1,15 @@
 """Focused, database-free tests for the Admin v2 fuzzy performer scan."""
 
-import sys
 import unittest
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
 
-import admin_v2_performers
+import resolver.admin_v2_performers as admin_v2_performers
 
 
 def make_request(method="GET", path="/admin/api/v2/performers/fuzzy", body=None):
@@ -163,7 +159,6 @@ class TestAdminV2FuzzyPerformers(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(large.status_code, 413)
         self.assertEqual(extra.status_code, 400)
         review.assert_not_called()
-
 
 
 if __name__ == "__main__":

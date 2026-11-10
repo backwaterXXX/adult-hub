@@ -1,20 +1,16 @@
 """Behavior tests for the Admin V2 issue center's operator-facing signals."""
 
-import sys
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "resolver"))
 
-import admin_v2_issue_builder
-import admin_v2_issues
-import admin_services
+import resolver.admin_v2_issue_builder as admin_v2_issue_builder
+import resolver.admin_v2_issues as admin_v2_issues
+import resolver.admin_services as admin_services
 
 
 NOW = 2_000_000_000
@@ -91,7 +87,7 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
             {"kind": "quality_finding", "object_id": "nfo_metadata_mismatch", "severity": "medium", "status": "open", "last_seen": NOW},
             {"kind": "quality_finding", "object_id": "missing_artwork", "severity": "medium", "status": "open", "last_seen": NOW},
         ]
-        with patch("admin_v2_issues._build_issues", return_value=(issue_rows, {})):
+        with patch("resolver.admin_v2_issues._build_issues", return_value=(issue_rows, {})):
             result = self._run(endpoint(
                 request("/admin/api/v2/issues?kind=missing_nfo"), severity="", kind="missing_nfo",
                 status="open", offset=0, limit=50,
@@ -110,10 +106,10 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
                 "nfo_metadata_mismatch": 7, "missing_artwork": 0,
             }, "latest_audit": {"created_at": NOW - 120},
         })
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [], "total": 0, "truncated": False,
-             }), patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+             }), patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             issues, health = admin_v2_issues._build_issues(admin, NOW)
 
         quality = [issue for issue in issues if issue["kind"] == "quality_finding"]
@@ -129,10 +125,10 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
 
     def test_missing_complete_quality_audit_is_actionable_without_claiming_findings(self):
         admin = make_admin(quality={"available": True, "status": "no_complete_audit", "counts": {}})
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [], "total": 0, "truncated": False,
-             }), patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+             }), patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             issues, health = admin_v2_issues._build_issues(admin, NOW)
 
         audit = next(issue for issue in issues if issue["kind"] == "quality_audit")
@@ -192,11 +188,11 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
 
     def test_latest_source_failure_and_never_run_are_distinct_and_disabled_sources_are_ignored(self):
         admin = make_admin()
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [], "total": 0, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             issues, health = admin_v2_issues._build_issues(admin, NOW)
 
         source_issues = [item for item in issues if item["object_type"] == "source"]
@@ -215,11 +211,11 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
             {"source": "telegram:removed", "success": False, "error": "old failure"},
             {"source": "telegram:4", "success": False, "error": "disabled failure"},
         ]}]})
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [], "total": 0, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             issues, _health = admin_v2_issues._build_issues(admin, NOW)
 
         self.assertFalse(any(issue["kind"] == "sync_failure" for issue in issues))
@@ -237,11 +233,11 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
                 {"source": "knownsite", "success": False, "error": "current failure"},
             ]}]},
         )
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [], "total": 0, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             issues, _health = admin_v2_issues._build_issues(admin, NOW)
 
         source_failures = [issue for issue in issues if issue["kind"] == "sync_failure"]
@@ -254,11 +250,11 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
                 {"source": "telegram:unknown", "success": False, "error": "old failure"},
             ]}]},
         )
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [], "total": 0, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             issues, _health = admin_v2_issues._build_issues(admin, NOW)
 
         self.assertTrue(any(
@@ -268,11 +264,11 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
 
     def test_unavailable_sync_history_has_explicit_issue_and_stable_health_shape(self):
         admin = make_admin(history={"error": "private backend detail"})
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [], "total": 0, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             issues, health = admin_v2_issues._build_issues(admin, NOW)
 
         history_issue = next(issue for issue in issues if issue.get("object_id") == "sync-history")
@@ -319,11 +315,11 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
 
     def test_truncated_history_does_not_create_false_never_run_issue(self):
         admin = make_admin(history={"runs": [], "truncated": True})
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [], "total": 0, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             issues, health = admin_v2_issues._build_issues(admin, NOW)
 
         self.assertFalse(any(item["kind"] == "sync_never_run" for item in issues))
@@ -332,11 +328,11 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
 
     def test_old_queue_is_high_severity_and_reports_age_and_count(self):
         admin = make_admin()
-        with patch("admin_services.sync_backlog", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={
             "available": True, "queued": 3, "oldest_queued_age_seconds": 7200,
-        }), patch("admin_services.unresolved_failed_task_listing", return_value={
+        }), patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
             "available": True, "jobs": [], "total": 0, "truncated": False,
-        }), patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+        }), patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             issues, _ = admin_v2_issues._build_issues(admin, NOW)
 
         issue = next(item for item in issues if item["kind"] == "sync_backlog")
@@ -350,11 +346,11 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
         admin = make_admin()
         only_open = {"id": "only-b", "action": "backup_create", "created_at": NOW - 100,
                      "updated_at": NOW - 100, "attempts": 1}
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [only_open], "total": 1, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             issues, _ = admin_v2_issues._build_issues(admin, NOW)
 
         failures = [item for item in issues if item["kind"] == "job_failure"]
@@ -367,11 +363,11 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
         admin = make_admin()
         failure = {"id": "latest-failure", "action": "sync", "created_at": NOW - 200,
                    "updated_at": NOW - 100, "attempts": 2}
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [failure], "total": 1, "truncated": False,
              }) as reconcile:
-            with patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+            with patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
                 issues, health = admin_v2_issues._build_issues(admin, NOW)
 
         reconcile.assert_called_once_with(admin.HUB_DB_URL, limit=1000)
@@ -386,11 +382,11 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
         admin = make_admin()
         row = {"id": "failure-1", "action": "private-token-injected-action",
                "created_at": NOW - 100, "updated_at": NOW - 50, "attempts": 2}
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [row], "total": 1, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             issues, _ = admin_v2_issues._build_issues(admin, NOW)
 
         issue = next(item for item in issues if item["kind"] == "job_failure")
@@ -401,22 +397,22 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
         admin = make_admin()
         row = {"id": "failure-1", "action": "sync", "created_at": NOW - 100,
                "updated_at": NOW - 100, "attempts": 1}
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [row], "total": 1001, "truncated": True,
              }), \
-             patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             _, health = admin_v2_issues._build_issues(admin, NOW)
         self.assertTrue(health["truncated"]["failed_jobs"])
         self.assertTrue(health["incomplete"])
 
     def test_unavailable_full_failure_history_is_never_reported_as_empty(self):
         admin = make_admin()
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": False, "jobs": [], "total": None, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             issues, health = admin_v2_issues._build_issues(admin, NOW)
 
         self.assertFalse(any(issue["kind"] == "job_failure" for issue in issues))
@@ -427,14 +423,14 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
 
     def test_identical_failed_attempts_count_once_and_database_failure_is_explicit(self):
         admin = make_admin(library={"available": False, "total": 0})
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True,
                  "jobs": [{"id": "retry-2", "action": "sync", "created_at": NOW - 100,
                            "updated_at": NOW - 50, "attempts": 2}],
                  "total": 1, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": False}):
             issues, health = admin_v2_issues._build_issues(admin, NOW)
 
         job_issue = next(item for item in issues if item["kind"] == "job_failure")
@@ -454,11 +450,11 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
              "updated_at": NOW - 20},
             {"id": "legacy-3", "action": "sync", "state": "processing"},
         ]
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [], "total": 0, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"jobs": processing, "truncated": False}):
+             patch("resolver.admin_services.job_listing", return_value={"jobs": processing, "truncated": False}):
             issues, health = admin_v2_issues._build_issues(admin, NOW)
 
         stalled = [item for item in issues if item["kind"] == "job_stalled"]
@@ -473,11 +469,11 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
         self.assertFalse(health["incomplete"])
 
     def test_truncated_processing_history_marks_issue_feed_incomplete(self):
-        with patch("admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
-             patch("admin_services.unresolved_failed_task_listing", return_value={
+        with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
+             patch("resolver.admin_services.unresolved_failed_task_listing", return_value={
                  "available": True, "jobs": [], "total": 0, "truncated": False,
              }), \
-             patch("admin_services.job_listing", return_value={"jobs": [], "truncated": True}):
+             patch("resolver.admin_services.job_listing", return_value={"jobs": [], "truncated": True}):
             _, health = admin_v2_issues._build_issues(make_admin(), NOW)
         self.assertTrue(health["truncated"]["processing_jobs"])
         self.assertTrue(health["incomplete"])

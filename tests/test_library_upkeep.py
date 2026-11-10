@@ -1,20 +1,15 @@
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "resolver"))
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common import db
 from pg_helper import PgTestCase, require_url, reset_db
 
 try:
-    from test_support import load_flat_sync_module
-    sync_module = load_flat_sync_module()
+    from test_support import load_sync_module
+    sync_module = load_sync_module()
     SYNC_AVAILABLE = True
 except ImportError as exc:
     from test_support import optional_import_failed

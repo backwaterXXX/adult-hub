@@ -6,13 +6,12 @@ import gzip
 import hashlib
 import re
 import shutil
-import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
 import logging
 from fastapi import APIRouter, Request
-from admin_v2_errors import V2ErrorRoute
+from resolver.admin_v2_errors import V2ErrorRoute
 from common import db
 
 logger = logging.getLogger(__name__)
@@ -72,16 +71,9 @@ def _verify(path: Path) -> dict:
                                     stderr=subprocess.DEVNULL, timeout=30, check=False)
         archive_status = "valid" if result.returncode == 0 else "invalid"
     else:
-        conn = None
-        try:
-            uri = f"file:{path.resolve()}?mode=ro"
-            conn = sqlite3.connect(uri, uri=True, timeout=5)
-            archive_status = "valid" if conn.execute("PRAGMA quick_check").fetchone()[0] == "ok" else "invalid"
-        except (sqlite3.Error, OSError):
-            archive_status = "invalid"
-        finally:
-            if conn is not None:
-                conn.close()
+        # Only PostgreSQL custom-format dumps are verifiable. Legacy SQLite snapshots stay listed
+        # but are reported as unsupported.
+        archive_status = "unsupported_format"
     return {"checksum": actual, "checksum_status": checksum_status, "archive_status": archive_status}
 
 

@@ -5,7 +5,6 @@ import argparse
 import json
 import logging
 import os
-import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,19 +12,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
 # These imports require the repository root when the tool is run as a script.
-from common import db  # noqa: E402
-from common.image_utils import (  # noqa: E402
+from common import db
+from common.image_utils import (
     DEFAULT_ARTWORK_EXTRACTION_TIMEOUT,
     extract_video_frame,
     is_black_image,
 )
-from common.video_variants import fetch_and_select_best_variant  # noqa: E402
-from sync.jellyfin_db import trigger_library_refresh  # noqa: E402
+from common.video_variants import fetch_and_select_best_variant
+from sync.jellyfin_db import trigger_library_refresh
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _load_all_env() -> None:

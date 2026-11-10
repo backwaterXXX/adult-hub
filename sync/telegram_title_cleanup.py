@@ -12,6 +12,7 @@ from xml.dom import minidom
 import logging
 
 from common import db
+from common.json_helpers import json_object as _json_object
 from common.title_cleaning import clean_title_text, extract_title_hashtags
 
 logger = logging.getLogger(__name__)
@@ -44,17 +45,6 @@ def _write_state(path: Path, state: dict) -> None:
     temporary.write_text(json.dumps(state, ensure_ascii=False, sort_keys=True) + "\n",
                          encoding="utf-8")
     os.replace(temporary, path)
-
-
-def _json_object(value) -> dict:
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except (TypeError, ValueError):
-            return {}
-    return value if isinstance(value, dict) else {}
 
 
 def _text_list(value) -> list[str]:
@@ -95,10 +85,7 @@ def _fallback_title(source_filename: str, video_id: str) -> str:
 
 def _display_title(title: str, performers: list[str], slug: str) -> str:
     try:
-        if __package__:
-            from .display_titles import clean_display_title
-        else:
-            from display_titles import clean_display_title
+        from sync.display_titles import clean_display_title
         return clean_display_title(title, performers=performers,
                                    provider="telegram", slug=slug) or title
     except Exception:
@@ -246,14 +233,8 @@ def cleanup_telegram_titles(conn: db.Connection, media_dir: Path, *,
     """Clean one bounded batch and persist a keyset cursor for the next sync."""
     state = _read_state(status_path)
     try:
-        if __package__:
-            from .category_mapping import map_category
-        else:
-            from category_mapping import map_category
-        if __package__:
-            from .media_files import resolve_media_path
-        else:
-            from media_files import resolve_media_path
+        from sync.category_mapping import map_category
+        from sync.media_files import resolve_media_path
 
         if int(state.get("version") or 0) != TASK_VERSION:
             state = {

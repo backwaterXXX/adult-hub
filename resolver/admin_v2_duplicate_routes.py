@@ -140,7 +140,7 @@ def _route_duplicate_candidates(router, admin):
         if category not in {"", "same_file", "strong", "review"}:
             return admin.JSONResponse({"error": "Invalid category filter."}, status_code=400)
         try:
-            from video_duplicates import find_duplicate_candidates
+            from resolver.video_duplicates import find_duplicate_candidates
             result = await admin.asyncio.to_thread(
                 find_duplicate_candidates, admin.HUB_DB_URL, limit, offset, category,
                 include_same_telegram_file=include_same_telegram_file,
@@ -163,7 +163,7 @@ def _route_linked_oshash_duplicates(router, admin):
         if admin._admin_blocked(request):
             return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
         try:
-            from video_duplicates import find_active_oshash_merges
+            from resolver.video_duplicates import find_active_oshash_merges
             result = await admin.asyncio.to_thread(
                 find_active_oshash_merges, admin.HUB_DB_URL, limit, offset
             )
@@ -277,7 +277,7 @@ def _enqueue_undo(admin, action, body, enqueue_job):
 async def _execute_duplicate_action(admin, body):
     action = body["action"]
     try:
-        from video_duplicates import enqueue_job, scan_duplicate_index
+        from resolver.video_duplicates import enqueue_job, scan_duplicate_index
         if action == "dismiss":
             job_id, rejection = await _enqueue_dismiss(admin, body, enqueue_job, scan_duplicate_index)
         elif action in {"undo", "undismiss"}:

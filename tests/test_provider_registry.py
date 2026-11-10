@@ -1,12 +1,8 @@
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "sync"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from provider_registry import (
+from sync.provider_registry import (
     _PROVIDER_INFO,
     stream_mode_for_provider,
     get_provider_info,

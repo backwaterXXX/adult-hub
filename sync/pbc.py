@@ -7,121 +7,74 @@ Contract for the (separately implemented) provider:
 Polite by design: single MediaWiki API request per performer, 15s timeout,
 caller-controlled sleep between requests.
 """
+import importlib
 import json
 import logging
-import re
 from common import db
 from common.external_metadata import entity_key, record_attempt  # noqa: F401
 import time  # noqa: F401 - retained as a patchable compatibility dependency
 from typing import Callable, Dict, List, Optional, Tuple
 
-try:
-    from common.performers import is_safe_alias, is_valid_performer_name
-except ImportError:
-    try:
-        from performers import is_safe_alias, is_valid_performer_name
-    except ImportError:
-        def is_safe_alias(a, c):
-            return bool(a and c and (len(a.split()) >= 2 or re.search(r'[\d._\-]', a) or a.endswith(('xxx', 'xx', 'vip', 'ofc')) or len(a) >= 12))
-        def is_valid_performer_name(n):
-            return bool(n and len(n.strip()) >= 2)
+from common.performers import is_safe_alias, is_valid_performer_name  # noqa: F401 - is_safe_alias re-exported to pbc_backfill
 
 logger = logging.getLogger("pbc")
 
+
+def _sibling(module_name: str):
+    """Import a sibling ``sync`` module by its package name.
+
+    Resolved on every call, so a patch on the implementation module (for
+    example ``pbc_client``) is seen through this facade.
+    """
+    return importlib.import_module("sync." + module_name)
+
+
 def page_title(name: str) -> str:
-    if __package__:
-        from .pbc_client import page_title as implementation
-    else:
-        from pbc_client import page_title as implementation
-    return implementation(name)
+    return _sibling("pbc_client").page_title(name)
 
 
 def _decode_http_payload(payload) -> Optional[dict]:
-    if __package__:
-        from .pbc_client import _decode_http_payload as implementation
-    else:
-        from pbc_client import _decode_http_payload as implementation
-    return implementation(payload)
+    return _sibling("pbc_client")._decode_http_payload(payload)
 
 
 def fetch_wikitext(title, http_get=None, *, strict: bool = False) -> Optional[str]:
-    if __package__:
-        from .pbc_client import fetch_wikitext as implementation
-    else:
-        from pbc_client import fetch_wikitext as implementation
-    return implementation(title, http_get, strict=strict)
+    return _sibling("pbc_client").fetch_wikitext(title, http_get, strict=strict)
 
 
 def search_page_title(name: str, http_get=None, *, strict: bool = False) -> Optional[str]:
-    if __package__:
-        from .pbc_client import search_page_title as implementation
-    else:
-        from pbc_client import search_page_title as implementation
-    return implementation(name, http_get, strict=strict)
+    return _sibling("pbc_client").search_page_title(name, http_get, strict=strict)
 
 
 def _strip_templates(text: str) -> str:
-    if __package__:
-        from .pbc_parsing import _strip_templates as implementation
-    else:
-        from pbc_parsing import _strip_templates as implementation
-    return implementation(text)
+    return _sibling("pbc_parsing")._strip_templates(text)
 
 
 def _clean_inline(text: str) -> str:
-    if __package__:
-        from .pbc_parsing import _clean_inline as implementation
-    else:
-        from pbc_parsing import _clean_inline as implementation
-    return implementation(text)
+    return _sibling("pbc_parsing")._clean_inline(text)
 
 
 def _split_aliases(value: str) -> List[str]:
-    if __package__:
-        from .pbc_parsing import _split_aliases as implementation
-    else:
-        from pbc_parsing import _split_aliases as implementation
-    return implementation(value)
+    return _sibling("pbc_parsing")._split_aliases(value)
 
 
 def _infobox_field(wikitext: str, field: str) -> str:
-    if __package__:
-        from .pbc_parsing import _infobox_field as implementation
-    else:
-        from pbc_parsing import _infobox_field as implementation
-    return implementation(wikitext, field)
+    return _sibling("pbc_parsing")._infobox_field(wikitext, field)
 
 
 def _first_paragraph_raw(wikitext: str) -> str:
-    if __package__:
-        from .pbc_parsing import _first_paragraph_raw as implementation
-    else:
-        from pbc_parsing import _first_paragraph_raw as implementation
-    return implementation(wikitext)
+    return _sibling("pbc_parsing")._first_paragraph_raw(wikitext)
 
 
 def _aka_aliases(paragraph_raw: str) -> List[str]:
-    if __package__:
-        from .pbc_parsing import _aka_aliases as implementation
-    else:
-        from pbc_parsing import _aka_aliases as implementation
-    return implementation(paragraph_raw)
+    return _sibling("pbc_parsing")._aka_aliases(paragraph_raw)
 
 
 def parse_person(wikitext) -> Dict[str, object]:
-    if __package__:
-        from .pbc_parsing import parse_person as implementation
-    else:
-        from pbc_parsing import parse_person as implementation
-    return implementation(wikitext)
+    return _sibling("pbc_parsing").parse_person(wikitext)
 
 
 def profile_matches_name(name: str, parsed: Dict[str, object]) -> bool:
-    if __package__:
-        from .pbc_parsing import profile_matches_name as implementation
-    else:
-        from pbc_parsing import profile_matches_name as implementation
-    return implementation(name, parsed)
+    return _sibling("pbc_parsing").profile_matches_name(name, parsed)
 
 
 def ensure_tables(conn: db.Connection) -> None:
@@ -191,8 +144,4 @@ def backfill_pbc(
     search: Callable = None,
 ) -> Tuple[int, int]:
     """Compatibility facade for the PBC backfill workflow."""
-    if __package__:
-        from .pbc_backfill import backfill_pbc as implementation
-    else:
-        from pbc_backfill import backfill_pbc as implementation
-    return implementation(conn, limit=limit, sleep=sleep, fetch=fetch, search=search)
+    return _sibling("pbc_backfill").backfill_pbc(conn, limit=limit, sleep=sleep, fetch=fetch, search=search)

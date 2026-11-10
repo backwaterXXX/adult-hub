@@ -8,7 +8,7 @@ from pathlib import Path
 import logging
 
 from fastapi import APIRouter, Request, Query
-from admin_v2_errors import V2ErrorRoute
+from resolver.admin_v2_errors import V2ErrorRoute
 from common import admin_schedules
 from common import schedule_stages
 from common import system_schedules
@@ -61,7 +61,7 @@ _FINGERPRINTS_DESCRIPTION = (
 async def _library_sync_fields(admin, base_problem: bool):
     """Return (status, details, problem, running) for the library sync system row."""
     try:
-        from admin_v2_status import _sanitized_sync_status, _sync_stale_after_seconds
+        from resolver.admin_v2_status import _sanitized_sync_status, _sync_stale_after_seconds
         raw_status = await admin.asyncio.to_thread(admin._sync_status)
         safe = _sanitized_sync_status(
             raw_status, await admin.asyncio.to_thread(

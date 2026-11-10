@@ -8,10 +8,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-if __package__:
-    from . import duplicate_jobs as _core
-else:
-    import duplicate_jobs as _core
+from sync import duplicate_jobs as _core  # noqa: E402
 
 
 def _restore_list(value):

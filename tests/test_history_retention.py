@@ -6,14 +6,10 @@ halves of its contract: expired, already-reversed history goes, while active
 decisions, running jobs and anything a quarantine still points at are retained.
 """
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
 from pg_helper import PgTestCase
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common.history_retention import BATCH_SIZE, prune_history
 

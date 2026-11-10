@@ -481,6 +481,30 @@ def _read_config_data(file_path: Optional[Path]) -> dict:
         raise ConfigError(f"Failed to read/parse YAML in {file_path}: {e}") from e
 
 
+def read_base_config(config_path: Optional[str | Path] = None) -> dict:
+    """Return the raw base configuration mapping, before managed overrides are applied.
+
+    With ``config_path`` None the file is resolved as ``load_config`` resolves it.
+    With a path, that file is read. A missing file and an empty document both give ``{}``.
+    Read or parse failures raise ``ConfigError`` without file contents in the message.
+    """
+    if config_path is None:
+        file_path = find_config_file(optional=True)
+    else:
+        file_path = Path(config_path)
+    if file_path is None or not file_path.is_file():
+        return {}
+    try:
+        loaded = yaml.safe_load(file_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError):
+        raise ConfigError(f"Base configuration file {file_path} could not be read or parsed.") from None
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ConfigError(f"Base configuration file {file_path} must contain a YAML mapping.")
+    return loaded
+
+
 def load_config(
     config_path: Optional[str] = None,
     force_reload: bool = False,
@@ -520,7 +544,7 @@ def load_config(
         _CACHED_CONFIG = config
         _CACHED_CONFIG_KEY = cache_key
     if file_path is not None:
-        logger.info(f"Loaded and validated configuration from {file_path}")
+        logger.info("Loaded and validated configuration from %s", file_path)
     else:
         logger.info("Loaded built-in configuration defaults (no config.yaml found)")
     return config
