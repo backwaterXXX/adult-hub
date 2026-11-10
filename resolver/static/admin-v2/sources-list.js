@@ -88,7 +88,7 @@
         state.historyPage = Math.max(0, Math.ceil(payload.total / 10) - 1); return loadHistoryPage();
       }
       renderSyncRuns(payload);
-    } catch (error) { if (sequence === state.historySeq && isSourcesRoute() && sourcesTab() === 'history') renderSyncRuns(null); }
+    } catch { if (sequence === state.historySeq && isSourcesRoute() && sourcesTab() === 'history') renderSyncRuns(null); }
   }
 
   async function loadSources() {
@@ -115,7 +115,7 @@
       const settingsPayload = settingsResult.status === 'fulfilled' ? settingsResult.value : null;
       state.configAvailable = !(sourcesPayload && sourcesPayload.available === false);
       state.telegramAuth = sourcesPayload?.telegram_auth || null;
-      renderTelegramAccountCard(state.telegramAuth);
+      renderTelegramAccountCard();
       state.configRevision = Number.isInteger(sourcesPayload && sourcesPayload.managed_revision)
         ? sourcesPayload.managed_revision : null;
       state.settingsAvailable = Boolean(settingsPayload

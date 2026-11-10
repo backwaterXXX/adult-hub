@@ -367,12 +367,23 @@ class Cursor:
 
 
 class Connection:
-    """Connection facade with explicit commit/rollback context semantics."""
+    """Connection facade with explicit commit/rollback context semantics.
 
-    def __init__(self, raw: psycopg.Connection, url: str | None = None):
+    If the server drops the session (for example after a database restart), the next call
+    opens a fresh session to the same URL. Work from the lost session was rolled back by the
+    server, and callers re-select their pending work, so the wrapper does not replay statements.
+    """
+
+    def __init__(self, raw: psycopg.Connection, url: str | None = None,
+                 connect_timeout: int = 10):
         self._raw = raw
         self._url = url
+        self._connect_timeout = connect_timeout
         self._row_factory: Any = None
+
+    def _ensure_open(self) -> None:
+        if self._raw.closed and self._url:
+            self._raw = _open_raw(self._url, self._connect_timeout)
 
     @property
     def row_factory(self):
@@ -397,18 +408,23 @@ class Connection:
         self._raw.autocommit = bool(value)
 
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> Cursor:
+        self._ensure_open()
         return Cursor(self, self._raw.cursor()).execute(sql, params)
 
     def executemany(self, sql: str, seq: Iterable[Sequence[Any]]) -> Cursor:
+        self._ensure_open()
         return Cursor(self, self._raw.cursor()).executemany(sql, seq)
 
     def cursor(self) -> Cursor:
+        self._ensure_open()
         return Cursor(self, self._raw.cursor())
 
     def commit(self) -> None:
+        self._ensure_open()
         self._raw.commit()
 
     def rollback(self) -> None:
+        self._ensure_open()
         self._raw.rollback()
 
     def close(self) -> None:
@@ -418,10 +434,21 @@ class Connection:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        self._ensure_open()
         if exc_type is None:
             self._raw.commit()
         else:
             self._raw.rollback()
+
+
+def _open_raw(conninfo: str, connect_timeout: int) -> psycopg.Connection:
+    raw = psycopg.connect(conninfo, connect_timeout=connect_timeout)
+    # Preserve the database layer's long-standing JSON-as-text interface while
+    # JSON/JSONB columns are introduced. Callers can continue using json.loads.
+    set_json_loads(lambda value: value.decode("utf-8") if isinstance(value, bytes) else value, raw)
+    raw.execute("SET TIME ZONE 'UTC'")
+    raw.commit()
+    return raw
 
 
 def connect(url: str | None = None, *, connect_timeout: int = 10) -> Connection:
@@ -429,13 +456,7 @@ def connect(url: str | None = None, *, connect_timeout: int = 10) -> Connection:
     conninfo = (url or "").strip() or database_url()
     if not conninfo.startswith(("postgresql://", "postgres://")):
         raise ValueError("A PostgreSQL connection URL is required")
-    raw = psycopg.connect(conninfo, connect_timeout=connect_timeout)
-    # Preserve the database layer's long-standing JSON-as-text interface while
-    # JSON/JSONB columns are introduced. Callers can continue using json.loads.
-    set_json_loads(lambda value: value.decode("utf-8") if isinstance(value, bytes) else value, raw)
-    raw.execute("SET TIME ZONE 'UTC'")
-    raw.commit()
-    return Connection(raw, url=conninfo)
+    return Connection(_open_raw(conninfo, connect_timeout), url=conninfo, connect_timeout=connect_timeout)
 
 
 @contextmanager

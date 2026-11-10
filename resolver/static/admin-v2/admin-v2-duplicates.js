@@ -206,7 +206,7 @@
     hashes.append(video?.phash ? create('code', '', video.phash) : document.createTextNode('Not calculated (subset)'));
     host.append(hashes);
   }
-  function renderDuplicateCandidates(payload) {
+  function renderDuplicateCandidates() {
     const rows = $('#duplicateRows'); rows.replaceChildren();
     $('#duplicateState').hidden = state.duplicateItems.length > 0;
     if (!state.duplicateItems.length) $('#duplicateState').textContent = $('#duplicateCategory').value === 'oshash_linked'

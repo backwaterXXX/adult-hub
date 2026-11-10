@@ -128,17 +128,16 @@
     return requestTelegramAuth(url, payload, 'POST');
   }
 
-  async function renderTelegramAccountCard(authStatus) {
+  async function renderTelegramAccountCard() {
     const card = $('#telegramAccountCard');
     if (!card) return;
     const intro = $('#telegramAccountIntro');
     const container = $('#telegramAccountsContainer');
-    const banner = $('#telegramAccountBanner');
 
     let accountsPayload = null;
     try {
       accountsPayload = await window.AdminV2.getJson(TELEGRAM_ACCOUNTS_URL);
-    } catch (e) {
+    } catch {
       // Offline fallback
     }
     const accounts = Array.isArray(accountsPayload?.accounts) ? accountsPayload.accounts : [];
@@ -348,7 +347,9 @@
       } else {
         defaultId = `account_${list.accounts.length + 1}`;
       }
-    } catch (e) {}
+    } catch {
+      // Keep the fallback identifier when the account list cannot be read.
+    }
 
     if (sequence !== state.wizardSeq || state.activeWizardMode !== 'add_account') return;
     renderWizardAddAccountStep(defaultId, opener);
@@ -691,7 +692,7 @@
 
     body.replaceChildren(create('p', 'detail-note', `Checking Telegram authorization status for ${target}…`));
 
-    let statusPayload = null;
+    let statusPayload;
     try {
       statusPayload = await window.AdminV2.getJson(`${TELEGRAM_AUTH_STATUS_URL}?account_id=${encodeURIComponent(target)}&check_live=false`);
     } catch (err) {
@@ -716,7 +717,7 @@
       if (statusPayload.login_state === 'password_needed') {
         renderWizardPasswordStep(body);
       } else {
-        renderWizardCodeStep(body, statusPayload.phone_mask, statusPayload.expires_in_seconds);
+        renderWizardCodeStep(body, statusPayload.phone_mask);
       }
     } else {
       renderWizardPhoneStep(body);
@@ -768,7 +769,7 @@
           return;
         }
         state.telegramAuth = liveStatus;
-        renderTelegramAccountCard(liveStatus);
+        renderTelegramAccountCard();
         if (liveStatus.status === 'authorized') {
           renderWizardAuthorized(body);
         } else if (liveStatus.status === 'unauthorized_session_present') {
@@ -867,7 +868,7 @@
           if (result.state === 'authorized') {
             renderWizardSuccess(body);
           } else {
-            renderWizardCodeStep(body, result.phone_mask || phoneVal, result.expires_in_seconds || 600);
+            renderWizardCodeStep(body, result.phone_mask || phoneVal);
           }
         } else {
           setWizardBanner('error', extractErrorMessage(result, 'Failed to send verification code.'));
@@ -886,7 +887,7 @@
     });
   }
 
-  function renderWizardCodeStep(body, phoneMask, expiresIn) {
+  function renderWizardCodeStep(body, phoneMask) {
     const wrap = create('div', 'telegram-auth-view');
     wrap.appendChild(createStepIndicator(2, false));
 
@@ -912,7 +913,9 @@
     cancelBtn.addEventListener('click', async () => {
       try {
         await postTelegramAuth(TELEGRAM_AUTH_CANCEL_URL, {});
-      } catch (e) {}
+      } catch {
+        // A failed cancel is not shown; the wizard returns to the phone step either way.
+      }
       renderWizardPhoneStep(body);
     });
 
@@ -1033,7 +1036,9 @@
     cancelBtn.addEventListener('click', async () => {
       try {
         await postTelegramAuth(TELEGRAM_AUTH_CANCEL_URL, {});
-      } catch (e) {}
+      } catch {
+        // A failed cancel is not shown; the wizard returns to the phone step either way.
+      }
       renderWizardPhoneStep(body);
     });
 

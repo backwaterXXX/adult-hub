@@ -8,11 +8,6 @@
     if (value !== undefined) node.textContent = String(value);
     return node;
   };
-  const setActionFeedback = message => {
-    const feedback = $('#auditActionFeedback');
-    feedback.textContent = message;
-    feedback.hidden = !message;
-  };
   const when = value => value ? new Date(value).toLocaleString('en-US') : '—';
   async function loadBackups() {
     const requestId = ++backupListRequestId;

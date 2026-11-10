@@ -24,7 +24,7 @@
     tablist.addEventListener('keydown', event => {
       const current = tabs.indexOf(document.activeElement);
       if (current < 0) return;
-      let next = current;
+      let next;
       if (event.key === 'ArrowRight') next = (current + 1) % tabs.length;
       else if (event.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
       else if (event.key === 'Home') next = 0;

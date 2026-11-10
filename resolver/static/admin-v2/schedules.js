@@ -36,19 +36,6 @@
     return time;
   }
 
-  function finishedCell(item, scheduleZone) {
-    const cell = node('td', 'schedule-time-cell');
-    cell.dataset.label = 'Finished';
-    cell.append(timeNode(item.last_finished_at, scheduleZone));
-    if (!item.last_finished_at && item.last_run_at
-        && ['queued', 'processing', 'running'].includes(item.last_result)) {
-      const started = node('small', 'schedule-task-kind', 'Started ');
-      started.append(timeNode(item.last_run_at, scheduleZone));
-      cell.append(started);
-    }
-    return cell;
-  }
-
   function cadence(item) {
     if (item.cron_expression) return item.cron_expression;
     if (item.needs_conversion || item.schedule_type === 'interval' || item.schedule_type === 'daily') return 'Requires cron conversion';
@@ -71,21 +58,6 @@
       }
     }
     return '';
-  }
-
-  function statusName(item) {
-    if (item.enabled === false) return 'Disabled';
-    if (item.status === 'running') return 'Running';
-    return resultNames[item.last_result] || resultNames[item.status] || 'No runs yet';
-  }
-
-  function statusClass(item) {
-    if (item.enabled === false) return 'is-disabled';
-    const value = item.status === 'running' ? item.status : (item.last_result || item.status);
-    if (value === 'failed' || item.problem) return 'is-failed';
-    if (value === 'processing' || value === 'processing_manual' || value === 'queued' || value === 'running') return 'is-running';
-    if (value === 'done' || value === 'fresh') return 'is-ok';
-    return 'is-unknown';
   }
 
   function makeScheduleEditor(item, feedback, editorRow, editButton) {

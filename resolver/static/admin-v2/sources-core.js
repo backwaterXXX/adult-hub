@@ -23,7 +23,6 @@
   const TELEGRAM_AUTH_RESEND_URL = `${V2_API}/telegram/auth/resend`;
   const TELEGRAM_AUTH_CANCEL_URL = `${V2_API}/telegram/auth/cancel`;
   const TELEGRAM_ACCOUNTS_URL = `${V2_API}/telegram/accounts`;
-  const TELEGRAM_CHANNELS_ACCESS_URL = `${V2_API}/telegram/channels/access`;
   const TELEGRAM_ACCOUNT_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
   function isValidTelegramAccountId(id) {

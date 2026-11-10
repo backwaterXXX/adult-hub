@@ -85,11 +85,15 @@ js-check:
 	(( $${#script_files[@]} > 0 )) || { echo 'No Admin v2 JavaScript files found' >&2; exit 1; }; \
 	for script_file in "$${script_files[@]}"; do $(NODE) --check "$$script_file"; done
 
+js-lint:
+	npx --no-install eslint resolver/static/admin-v2
+
 proxy-origin:
 	$(PYTHON) tests/proxy_origin_contract.py
 
 lint:
 	$(RUFF) check .
+	$(MAKE) js-lint
 
 setup:
 	@scripts/setup.sh

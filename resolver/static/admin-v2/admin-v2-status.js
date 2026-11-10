@@ -112,7 +112,7 @@
         if (issues.value) renderIssues(issues.value);
         else renderIssues(null, issues.error);
       }
-      renderStatus(status, capabilityData);
+      renderStatus(status);
       renderWriteAccessNotice(capabilityData, capabilityResult.error);
       banner.hidden = !capabilityResult.error;
       if (capabilityResult.error) {
@@ -204,7 +204,7 @@
       metric('pHash coverage', coverageLabel(db.phash_total, videos), '', '')
     );
   }
-  function renderStatus(data, capabilities) {
+  function renderStatus(data) {
     renderOverviewCards(data);
   }
   function renderIssues(payload, error, append = false) {

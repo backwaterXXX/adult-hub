@@ -383,7 +383,6 @@
     const request = metadataPayloadFromEditor();
     if (!Object.keys(request.changes).length && !request.reset_fields.length) { announce('No metadata changes to preview.'); return; }
     const actions = $('#metadataDialogActions');
-    const focusedAction = actions.contains(document.activeElement) ? document.activeElement : null;
     actions.querySelectorAll('button').forEach(button => { button.disabled = true; });
     try {
       const payload = await window.AdminV2.postJson(`${V2_API}/operations/preview`, { type: 'metadata_update', ...request });

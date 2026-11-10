@@ -3,7 +3,7 @@
   // Admin V2 review actions: orphan file quarantine and duplicate suggestions.
   const AV = window.AdminV2;
   const { $, V2_API, announce, beginOperationRequest, create, duplicateGroupIsVisible, getJson, openDialog,
-    operationRequestIsCurrent, responseError, setText, showQueued, state, taskLink } = AV;
+    operationRequestIsCurrent, responseError, setText, showQueued, state } = AV;
   const loadDuplicateCandidates = (...args) => AV.loadDuplicateCandidates(...args);
   const loadVisualDuplicateResults = (...args) => AV.loadVisualDuplicateResults(...args);
   const renderOperationPreview = (...args) => AV.renderOperationPreview(...args);

@@ -697,6 +697,8 @@ class TestTelegramAccountStore(unittest.TestCase):
         events: list[str] = []
 
         class TrackingRawConn:
+            closed = False
+
             def commit(self):
                 events.append("commit")
 
@@ -726,6 +728,8 @@ class TestTelegramAccountStore(unittest.TestCase):
         events: list[str] = []
 
         class TrackingRawConn:
+            closed = False
+
             def commit(self):
                 events.append("commit")
 

@@ -133,7 +133,7 @@
     actions.append(previewButton, reject); card.append(actions, previewHost);
     return card;
   }
-  function renderProposalPagination(result, requestId) {
+  function renderProposalPagination(result) {
     const nav = $('#metadataProposalsPagination'); nav.replaceChildren();
     nav.hidden = result.total <= result.limit;
     const previous = el('button', 'button button-quiet', '← Previous'); previous.type = 'button';
@@ -162,7 +162,7 @@
       for (const proposal of result.items || []) host.append(renderProposal(proposal));
       if (!result.items?.length) host.append(el('p', 'catalog-empty', 'No metadata suggestions are waiting for review.'));
       $('#metadataProposalsFeedback').textContent = `${Number(result.total || 0).toLocaleString('en-US')} suggestion${result.total === 1 ? '' : 's'} waiting for review.`;
-      renderProposalPagination(result, requestId);
+      renderProposalPagination(result);
     } catch (error) {
       if (requestId !== state.proposalRequestId || !suggestionsVisible()) return;
       host.replaceChildren(el('p', 'catalog-state', `Metadata suggestions are unavailable. ${error.message}`));

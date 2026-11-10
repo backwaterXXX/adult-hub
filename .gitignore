@@ -55,6 +55,10 @@ dist/
 coverage.xml
 htmlcov/
 
+# Node dependencies for the ESLint gate (npm ci installs the locked versions)
+node_modules/
+
 # Docker bind-mount artifacts for VERSION
 resolver/VERSION
 sync/VERSION
+

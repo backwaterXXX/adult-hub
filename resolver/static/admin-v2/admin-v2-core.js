@@ -446,7 +446,9 @@
         select.value = currentValue;
       }
       channelFilterLoaded = true;
-    } catch (_) {}
+    } catch {
+      // A failed load keeps the current options; channelFilterLoaded stays false so the next call retries.
+    }
   }
   document.addEventListener('adminv2:sources-changed', () => {
     channelFilterLoaded = false;
@@ -775,9 +777,9 @@
   // Never surface raw errors, secrets, URLs, or filesystem paths in the panel.
   function scrub(value) {
     let text = value === null || value === undefined ? '' : String(value);
-    text = text.replace(/\b[a-zA-Z][a-zA-Z0-9+.\-]*:\/\/[^\s"'<>)]+/g, '[link hidden]');
+    text = text.replace(/\b[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s"'<>)]+/g, '[link hidden]');
     text = text.replace(/\b[A-Za-z]:\\[^\s"'<>]*/g, '[path hidden]');
-    text = text.replace(/(^|[\s("'=:])\/(?:[\w.\-]+\/)+[\w.\-]*/g, (match, prefix) => `${prefix}[path hidden]`);
+    text = text.replace(/(^|[\s("'=:])\/(?:[\w.-]+\/)+[\w.-]*/g, (match, prefix) => `${prefix}[path hidden]`);
     text = text.replace(/\b(pass(?:word|wd)?|secret|token|api[_-]?key|credentials?|authorization)\b\s*[:=]\s*\S+/gi, '$1: [hidden]');
     return text.trim();
   }

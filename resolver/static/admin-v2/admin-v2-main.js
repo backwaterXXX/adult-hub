@@ -3,7 +3,7 @@
   // Admin V2 theme, event wiring, and page start-up.
   const AV = window.AdminV2;
   const { $, $$, DUPLICATE_PAGE_SIZE, LIMIT, applySavedView, beginOperationRequest, closeDialog,
-    commitFilterUrl, deleteSavedView, duplicateGroupIsVisible, first, go, loadChannelFilterOptions,
+    commitFilterUrl, deleteSavedView, duplicateGroupIsVisible, go, loadChannelFilterOptions,
     renderLocation, renderSavedViews, resetCatalogPage, routeInfo, saveCurrentView, selectDuplicateMatch,
     state, writeIssueFiltersToUrl } = AV;
   const clearLibrarySelection = (...args) => AV.clearLibrarySelection(...args);
