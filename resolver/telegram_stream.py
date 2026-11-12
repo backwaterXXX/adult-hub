@@ -126,6 +126,7 @@ class ParallelTelegramStreamManager:
         max_cache_bytes: int = 134217728,
         cache_ttl_seconds: float = 120,
         account_workers: Optional[int] = None,
+        download_timeout_seconds: float = 300.0,
     ):
         if workers <= 0:
             raise ValueError(f"workers must be > 0, got {workers}")
@@ -143,6 +144,8 @@ class ParallelTelegramStreamManager:
             raise ValueError(f"cache_ttl_seconds must be > 0, got {cache_ttl_seconds}")
         if account_workers is not None and account_workers <= 0:
             raise ValueError(f"account_workers must be > 0, got {account_workers}")
+        if download_timeout_seconds <= 0:
+            raise ValueError(f"download_timeout_seconds must be > 0, got {download_timeout_seconds}")
 
         self.workers: int = min(workers, global_workers)
         self.global_workers: int = global_workers
@@ -154,6 +157,7 @@ class ParallelTelegramStreamManager:
         # Cap read ahead to cache budget
         self.read_ahead_bytes: int = min(read_ahead_bytes, max_cache_bytes)
         self.cache_ttl_seconds: float = float(cache_ttl_seconds)
+        self.download_timeout_seconds: float = float(download_timeout_seconds)
 
         self._cache: OrderedDict[Tuple[str, int], _CacheEntry] = OrderedDict()
         self._current_cache_bytes: int = 0
@@ -292,8 +296,11 @@ class ParallelTelegramStreamManager:
         exc: Optional[BaseException] = None
         start_time = time.monotonic()
         try:
-            data = await fetch_task
+            timeout_seconds = getattr(self, 'download_timeout_seconds', 300.0)
+            data = await asyncio.wait_for(fetch_task, timeout=timeout_seconds)
             data = _validate_fetched_block(job, data)
+        except asyncio.TimeoutError:
+            exc = asyncio.TimeoutError(f"Block fetch timed out after {timeout_seconds}s")
         except asyncio.CancelledError:
             exc = asyncio.CancelledError()
         except BaseException as e:

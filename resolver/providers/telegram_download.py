@@ -1,10 +1,25 @@
 """Telegram MTProto download sizing and optional parallel stream helpers."""
+import asyncio
 import inspect
 import os
 from typing import Optional
 import logging
+import time
 
 logger = logging.getLogger(__name__)
+
+
+def _get_download_timeout_seconds() -> float:
+    """Return download timeout from config or default."""
+    from common.config import DEFAULT_TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT
+    raw = (os.getenv("TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return DEFAULT_TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT
+    try:
+        val = float(raw)
+        return max(5.0, val) if val > 0 else DEFAULT_TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT
+    except ValueError:
+        return DEFAULT_TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT
 
 
 def _is_parallel_stream_enabled() -> bool:
@@ -61,6 +76,7 @@ def _get_stream_manager_config() -> dict:
         "max_cache_bytes": _int_env("TELEGRAM_STREAM_CACHE_BYTES", 134217728),
         "cache_ttl_seconds": _float_env("TELEGRAM_STREAM_CACHE_TTL_SECONDS", 120.0),
         "account_workers": account_workers,
+        "download_timeout_seconds": _float_env("TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT_SECONDS", 300.0),
     }
 
 
@@ -135,6 +151,8 @@ async def _download_sequential(
 
     remaining = length
     skip = prefix_skip
+    timeout_seconds = _get_download_timeout_seconds()
+    start_time = time.monotonic()
     try:
         # Telethon's DirectDownloadIter implements both async iteration and
         # async context management, but __aexit__ calls close() directly. If
@@ -143,6 +161,13 @@ async def _download_sequential(
         # finally block below already performs best-effort cleanup, so iterate
         # directly and keep cleanup failures from replacing the real outcome.
         async for chunk in iterator:
+            elapsed = time.monotonic() - start_time
+            if elapsed > timeout_seconds:
+                logger.warning(
+                    "Telegram download timeout after %.1fs (limit: %.1fs)",
+                    elapsed, timeout_seconds)
+                raise asyncio.TimeoutError(
+                    f"Telegram download exceeded {timeout_seconds}s timeout")
             if not chunk:
                 break
             data = bytes(chunk)
@@ -209,10 +234,19 @@ async def _download_block(client, media, block_offset: int, block_length: int) -
     if block_length <= 0:
         return b""
     chunks = []
-    async for chunk in _download_sequential(
-        client, media, offset=block_offset, length=block_length
-    ):
-        chunks.append(chunk)
+    try:
+        async for chunk in _download_sequential(
+            client, media, offset=block_offset, length=block_length
+        ):
+            chunks.append(chunk)
+    except asyncio.TimeoutError:
+        raise
+    except Exception as exc:
+        if isinstance(exc, asyncio.TimeoutError):
+            raise
+        raise asyncio.TimeoutError(
+            f"Telegram block download failed: {type(exc).__name__}: {exc}"
+        ) from exc
     return b"".join(chunks)
 
 

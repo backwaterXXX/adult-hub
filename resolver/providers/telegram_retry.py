@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger("telegram.retry")
@@ -18,6 +19,7 @@ BACKOFF_BASE_SECONDS = 0.5
 MAX_BACKOFF_SECONDS = 4.0
 MAX_FLOOD_WAIT_SECONDS = 15.0
 MAX_TOTAL_WAIT_SECONDS = 20.0
+MAX_TOTAL_RETRY_DEADLINE_SECONDS = 300.0  # 5 minutes max for entire retry cycle
 
 # Matched against exception class names so this module imports without telethon.
 _RETRYABLE_TYPE_NAMES = frozenset({
@@ -70,6 +72,7 @@ async def retry_stream(factory: Callable[[], "object"], *,
     """Yield chunks from factory(); rerun from scratch only while nothing was yielded."""
     yielded = False
     total_wait = 0.0
+    start_time = time.monotonic()
     is_allowed = retryable or is_retryable
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
@@ -85,6 +88,11 @@ async def retry_stream(factory: Callable[[], "object"], *,
             delay = retry_delay(exc, attempt)
             if _gives_up(exc, delay) or total_wait + delay > MAX_TOTAL_WAIT_SECONDS:
                 raise
+            # Check overall deadline
+            elapsed = time.monotonic() - start_time
+            if elapsed + delay > MAX_TOTAL_RETRY_DEADLINE_SECONDS:
+                raise asyncio.TimeoutError(
+                    f"Telegram download retry deadline exceeded ({elapsed:.1f}s + {delay:.1f}s > {MAX_TOTAL_RETRY_DEADLINE_SECONDS}s)")
             logger.warning(
                 "Telegram download attempt %d failed (%s: %s); retrying in %.1fs",
                 attempt, type(exc).__name__, exc, delay)
@@ -99,6 +107,7 @@ async def retry_call(func: Callable[[], Awaitable], *,
                      retryable: Optional[Callable[[BaseException], bool]] = None):
     """Await func() with bounded retries for glitchy Telegram failures."""
     total_wait = 0.0
+    start_time = time.monotonic()
     is_allowed = retryable or is_retryable
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
@@ -111,6 +120,11 @@ async def retry_call(func: Callable[[], Awaitable], *,
             delay = retry_delay(exc, attempt)
             if _gives_up(exc, delay) or total_wait + delay > MAX_TOTAL_WAIT_SECONDS:
                 raise
+            # Check overall deadline
+            elapsed = time.monotonic() - start_time
+            if elapsed + delay > MAX_TOTAL_RETRY_DEADLINE_SECONDS:
+                raise asyncio.TimeoutError(
+                    f"Telegram fetch retry deadline exceeded ({elapsed:.1f}s + {delay:.1f}s > {MAX_TOTAL_RETRY_DEADLINE_SECONDS}s)")
             logger.warning(
                 "Telegram fetch attempt %d failed (%s: %s); retrying in %.1fs",
                 attempt, type(exc).__name__, exc, delay)
