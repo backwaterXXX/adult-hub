@@ -376,7 +376,8 @@ def unavailable_videos(db_url: str | None, limit: int = 100, offset: int = 0) ->
             "offset": offset, "available": True,
         }
     except db.OperationalError:
-        return empty
+        logger.debug("Database operational error in unavailable_videos", exc_info=True)
+        return {**empty, "available": False}
     finally:
         conn.close()
 
@@ -426,6 +427,7 @@ def quarantine_report(db_url: str | None, limit: int = 200, offset: int = 0) -> 
         return {"items": items, "total": total, "truncated": offset + len(items) < total,
                 "offset": offset, "available": True}
     except db.OperationalError:
-        return empty
+        logger.debug("Database operational error in quarantine_report", exc_info=True)
+        return {**empty, "available": False}
     finally:
         conn.close()
