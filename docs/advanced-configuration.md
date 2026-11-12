@@ -64,7 +64,7 @@ Configure these settings in `.env` or Compose only when tuning specific performa
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `TELEGRAM_FINGERPRINTS_ENABLED` | `true` | Enable automated OSHASH and pHash fingerprinting for metadata matching. |
-| `TELEGRAM_OSHASH_BACKFILL_PER_RUN` | `200` | Maximum unhashed videos probed with OSHASH per sync run. |
+| `TELEGRAM_OSHASH_BACKFILL_PER_RUN` | `500` | Maximum unhashed videos probed with OSHASH per sync run. |
 | `TELEGRAM_PHASH_ENABLED` | `true` | Fallback to visual pHash when OSHASH yields no duration match. |
 | `TELEGRAM_PHASH_BYTE_BUDGET` | `268435456` | Byte limit for remote sample extraction when computing pHash (256 MB). |
 | `TELEGRAM_PHASH_TIMEOUT_SECONDS` | `1200` | Timeout per pHash calculation task (20 minutes). |
@@ -88,7 +88,7 @@ Configure these settings in `.env` or Compose only when tuning specific performa
 | :--- | :--- | :--- |
 | `RESOLVER_WATCHDOG_INTERVAL_SECONDS` | `10` | Healthcheck poll interval in seconds. |
 | `RESOLVER_WATCHDOG_TIMEOUT_SECONDS` | `4` | Timeout per healthcheck request before marking a failure. |
-| `RESOLVER_WATCHDOG_FAILURES` | `12` | Consecutive failed checks before the supervisor restarts resolver (2 minutes). |
+| `RESOLVER_WATCHDOG_FAILURES` | `3` | Consecutive failed checks before the supervisor restarts resolver (~30 seconds). |
 | `RESOLVER_WATCHDOG_STARTUP_GRACE_SECONDS`| `45` | Grace period after container boot before watchdog enforcement begins. |
 | `ADMIN_V2_MONITOR_BACKUPS` | `false` | Report missing database backups as an alarm in the Admin UI. |
 | `ADMIN_V2_QUEUE_WARNING_SECONDS` | `3600` | Queue delay threshold triggering a warning issue (1 hour). |
