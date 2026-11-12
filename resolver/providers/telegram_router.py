@@ -268,7 +268,24 @@ class TelegramAccountRouter:
                 raise RuntimeError("Telegram API credentials missing from environment.")
             api_id, api_hash = ctx.get_api_credentials()
             from telethon import TelegramClient
-            client = TelegramClient(session_path, api_id, api_hash)
+            import os
+            from common.config import (
+                DEFAULT_TELEGRAM_CONNECTION_TIMEOUT_SECONDS,
+                DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS,
+                DEFAULT_TELEGRAM_CONNECTION_RETRIES,
+                DEFAULT_TELEGRAM_REQUEST_RETRIES,
+                DEFAULT_TELEGRAM_FLOOD_SLEEP_THRESHOLD,
+            )
+            client = TelegramClient(
+                session_path, api_id, api_hash,
+                connection_retries=DEFAULT_TELEGRAM_CONNECTION_RETRIES,
+                request_retries=DEFAULT_TELEGRAM_REQUEST_RETRIES,
+                flood_sleep_threshold=DEFAULT_TELEGRAM_FLOOD_SLEEP_THRESHOLD,
+                request_timeout=(
+                    DEFAULT_TELEGRAM_CONNECTION_TIMEOUT_SECONDS,
+                    DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS
+                ),
+            )
 
         if hasattr(client, "connect"):
             res = client.connect()
