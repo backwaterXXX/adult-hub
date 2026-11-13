@@ -294,7 +294,7 @@ const syncFixture = {
   available: true, running: false, freshness: 'fresh', last_success: true, history_available: true,
   last_run: { started_at: '2026-10-14T09:40:00+00:00', ended_at: '2026-10-14T10:00:00+00:00', success: true },
 };
-let activeJobsFixture = { ok: true, jobs: [], total: 0, active_total: 4, data: { available: true } };
+let activeJobsFixture = { ok: true, jobs: [], total: 0, active_total: 4, available: true };
 async function fetch(url) {
   calls.push(String(url));
   if (failCapabilities && String(url).endsWith('/capabilities')) return { ok: false, status: 503, json: async () => ({ detail: 'unavailable' }) };
@@ -347,7 +347,7 @@ async function fetch(url) {
       data: { available: true, stale: false, incomplete: false },
     };
   }
-  else if (String(url).includes('/jobs?state=active')) {
+  else if (String(url).includes('/jobs/counts')) {
     if (failJobs) return { ok: false, status: 503, json: async () => ({ detail: 'unavailable' }) };
     payload = activeJobsFixture;
   }
@@ -622,7 +622,7 @@ const context = {
 
   // Unhiding triggers visibilitychange and transitions from checking to count
   document.hidden = false;
-  activeJobsFixture = { ok: true, jobs: [], total: 0, active_total: 4, data: { available: true } };
+  activeJobsFixture = { ok: true, jobs: [], total: 0, active_total: 4, available: true };
   documentListeners.get('visibilitychange')();
   await flush();
   assert.equal(activeTasksChip.dataset.state, 'ready', 'transitions from checking to count on unhide');
@@ -630,14 +630,14 @@ const context = {
 
   // Active tasks independently updates when payload changes, including zero and unavailable
   const tasksWritesBefore = tasksLabelWrites;
-  activeJobsFixture = { ok: true, jobs: [], total: 0, active_total: 0, data: { available: true } };
+  activeJobsFixture = { ok: true, jobs: [], total: 0, active_total: 0, available: true };
   documentListeners.get('visibilitychange')();
   await flush();
   assert.equal(activeTasksChip.dataset.state, 'ready');
   assert.equal(tasksLabelText, 'Active tasks: 0', 'active tasks updates to exact zero count');
   assert.equal(tasksLabelWrites, tasksWritesBefore + 1);
 
-  activeJobsFixture = { ok: false, data: { available: false } };
+  activeJobsFixture = { ok: false, available: false };
   documentListeners.get('visibilitychange')();
   await flush();
   assert.equal(activeTasksChip.dataset.state, 'unknown');
@@ -654,7 +654,7 @@ const context = {
   failJobs = false;
 
   // Restore fixture
-  activeJobsFixture = { ok: true, jobs: [], total: 0, active_total: 4, data: { available: true } };
+  activeJobsFixture = { ok: true, jobs: [], total: 0, active_total: 4, available: true };
   documentListeners.get('visibilitychange')();
   await flush();
   assert.equal(tasksLabelText, 'Active tasks: 4');

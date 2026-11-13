@@ -26,12 +26,12 @@ assert.deepEqual({ ...status.activeTasks({ checking: true }) }, {
 assert.deepEqual({ ...status.activeTasks(null) }, {
   state: 'unknown', label: 'Active tasks unavailable', count: null
 });
-assert.deepEqual({ ...status.activeTasks({ data: { available: true }, active_total: 0 }) }, {
+assert.deepEqual({ ...status.activeTasks({ available: true, active_total: 0 }) }, {
   state: 'ready', label: 'Active tasks: 0', count: 0
 });
-assert.equal(status.activeTasks({ data: { available: true }, active_total: 7 }).label, 'Active tasks: 7');
-assert.equal(status.activeTasks({ data: { available: false }, active_total: 0 }).state, 'unknown');
-assert.equal(status.activeTasks({ data: { available: true }, active_total: null }).label, 'Active tasks unavailable');
+assert.equal(status.activeTasks({ available: true, active_total: 7 }).label, 'Active tasks: 7');
+assert.equal(status.activeTasks({ available: false, active_total: 0 }).state, 'unknown');
+assert.equal(status.activeTasks({ available: true, active_total: null }).label, 'Active tasks unavailable');
 
 assert.equal(status.syncStatusText({ available: false, running: false, status_text: 'Waiting for next run' }), 'No data');
 assert.equal(status.syncStatusText({ available: true, running: true, last_success: false }), 'Sync in progress');
@@ -45,7 +45,7 @@ assert.equal(status.syncStatusText({ available: true, running: false, freshness:
 
 // The header keeps one aggregate control, so its combined state must never
 // read healthier than the weakest source it hides.
-const healthy = { capabilities: { actions_enabled: true }, sync: { available: true, freshness: 'fresh', last_success: true }, activeTasks: { data: { available: true }, active_total: 2 } };
+const healthy = { capabilities: { actions_enabled: true }, sync: { available: true, freshness: 'fresh', last_success: true }, activeTasks: { available: true, active_total: 2 } };
 assert.deepEqual({ ...status.serviceStatus({ checking: true }) }, {
   state: 'checking', label: 'Checking services…', title: 'Service status is still loading.',
 });
@@ -97,7 +97,7 @@ const failedSyncWithTasks = {
   ...healthy,
   connection: true,
   sync: { available: true, freshness: 'fresh', last_success: false },
-  activeTasks: { data: { available: true }, active_total: 5 },
+  activeTasks: { available: true, active_total: 5 },
 };
 assert.equal(status.serviceStatus(failedSyncWithTasks).label, 'Attention needed');
 assert.equal(status.serviceStatus(failedSyncWithTasks).state, 'attention');
@@ -108,7 +108,7 @@ const failedSyncZeroTasks = {
   ...healthy,
   connection: true,
   sync: { available: true, freshness: 'fresh', last_success: false },
-  activeTasks: { data: { available: true }, active_total: 0 },
+  activeTasks: { available: true, active_total: 0 },
 };
 assert.equal(status.serviceStatus(failedSyncZeroTasks).label, 'Attention needed');
 assert.equal(status.activeTasks(failedSyncZeroTasks.activeTasks).label, 'Active tasks: 0',
@@ -118,7 +118,7 @@ const failedSyncUnavailableTasks = {
   ...healthy,
   connection: true,
   sync: { available: true, freshness: 'fresh', last_success: false },
-  activeTasks: { data: { available: false } },
+  activeTasks: { available: false },
 };
 assert.equal(status.serviceStatus(failedSyncUnavailableTasks).label, 'Attention needed');
 assert.equal(status.activeTasks(failedSyncUnavailableTasks.activeTasks).label, 'Active tasks unavailable',

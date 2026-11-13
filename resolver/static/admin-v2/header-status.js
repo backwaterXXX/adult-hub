@@ -25,8 +25,7 @@
       return { state: 'checking', label: 'Checking tasks…', count: null };
     }
     const count = payload && payload.active_total;
-    if (!payload || !payload.data || payload.data.available !== true
-        || !Number.isSafeInteger(count) || count < 0) {
+    if (!payload || !payload.available || !Number.isSafeInteger(count) || count < 0) {
       return { state: 'unknown', label: 'Active tasks unavailable', count: null };
     }
     return { state: 'ready', label: `Active tasks: ${count}`, count };
