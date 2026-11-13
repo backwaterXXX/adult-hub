@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -9,6 +10,7 @@ import weakref
 from collections import OrderedDict
 from typing import Any, Dict, Optional, Tuple
 
+from common.config import get_telegram_metadata_timeout
 from resolver.providers.telegram_config import _entity_ref
 
 logger = logging.getLogger(__name__)
@@ -101,7 +103,7 @@ def _evict_cached_message(channel_ref: str, message_id: int) -> None:
             _MESSAGE_CACHE_BYTES = max(0, _MESSAGE_CACHE_BYTES - entry[2])
 
 
-async def _get_cached_message(
+async def _get_cached_message(  # noqa: C901
     client, channel_ref: str, message_id: int, account_id: Optional[str] = None
 ):
     global _MESSAGE_CACHE_BYTES
@@ -121,13 +123,28 @@ async def _get_cached_message(
     if cached_ent and (now - cached_ent[0]) < _ENTITY_CACHE_TTL:
         entity = cached_ent[1]
     else:
-        entity = await client.get_entity(_entity_ref(channel_ref))
-        if entity:
-            _ENTITY_CACHE[ent_key] = (now, entity)
-            if len(_ENTITY_CACHE) > 500:
-                _ENTITY_CACHE.pop(next(iter(_ENTITY_CACHE)), None)
+        try:
+            entity = await asyncio.wait_for(
+                client.get_entity(_entity_ref(channel_ref)),
+                timeout=get_telegram_metadata_timeout(),
+            )
+            if entity:
+                _ENTITY_CACHE[ent_key] = (now, entity)
+                if len(_ENTITY_CACHE) > 500:
+                    _ENTITY_CACHE.pop(next(iter(_ENTITY_CACHE)), None)
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning("Telegram get_entity timeout for %s", channel_ref)
+            return None
 
-    message = await client.get_messages(entity, ids=message_id)
+    try:
+        message = await asyncio.wait_for(
+            client.get_messages(entity, ids=message_id),
+            timeout=get_telegram_metadata_timeout(),
+        )
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning("Telegram get_messages timeout for %s:%s", channel_ref, message_id)
+        return None
+
     if message:
         message_size = _message_cache_size_bytes(message)
         if message_size <= _MESSAGE_CACHE_MAX_BYTES:

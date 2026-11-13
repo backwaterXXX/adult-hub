@@ -197,8 +197,39 @@ class TestUnavailableVideos(PgTestCase):
 
     def test_query_error_returns_unavailable(self):
         """A database error during introspection returns available=False."""
-        data = admin_data.unavailable_videos(TEST_URL)
-        self.assertTrue(data["available"])
+        fake_conn = type("FakeConn", (), {})()
+        fake_conn.row_factory = None
+        fake_conn.close = lambda: None
+
+        def fake_connect(url):
+            return fake_conn
+
+        def fake_table_names(conn):
+            raise db.OperationalError("connection failed")
+
+        def fake_table_columns(conn, table):
+            return {"id", "title", "provider", "studio", "playable"}
+
+        class FakeCursor:
+            def fetchone(self):
+                return (0,)
+
+            def fetchall(self):
+                return []
+
+        def fake_execute(query, *args):
+            if "count(*)" in query:
+                return FakeCursor()
+            return FakeCursor()
+
+        with patch.object(admin_data.db, "connect", side_effect=fake_connect):
+            with patch.object(admin_data.db, "table_names", side_effect=fake_table_names):
+                with patch.object(admin_data.db, "table_columns", side_effect=fake_table_columns):
+                    fake_conn.execute = fake_execute
+                    data = admin_data.unavailable_videos(TEST_URL)
+                    self.assertFalse(data["available"])
+                    self.assertEqual(data["videos"], [])
+                    self.assertEqual(data["total"], 0)
 
     def test_query_error_returns_unavailable_with_patch(self):
         """A database error during query returns available=False."""
@@ -274,6 +305,34 @@ class TestUnavailableVideos(PgTestCase):
 
 
 class TestQuarantineReport(PgTestCase):
+    def test_database_error_returns_unavailable(self):
+        """A database error returns available=False."""
+        fake_conn = type("FakeConn", (), {})()
+        fake_conn.row_factory = None
+        fake_conn.close = lambda: None
+
+        def fake_connect(url):
+            return fake_conn
+
+        class FakeCursor:
+            def fetchone(self):
+                return (0,)
+
+            def fetchall(self):
+                raise db.OperationalError("connection failed")
+
+        def fake_execute(query, *args):
+            if "count(*)" in query:
+                return FakeCursor()
+            raise db.OperationalError("connection failed")
+
+        with patch.object(admin_data.db, "connect", side_effect=fake_connect):
+            fake_conn.execute = fake_execute
+            data = admin_data.quarantine_report(TEST_URL)
+            self.assertFalse(data["available"])
+            self.assertEqual(data["items"], [])
+            self.assertEqual(data["total"], 0)
+
     def _seed(self):
         snapshot = json.dumps({
             "video": {"id": "v1", "title": "V1", "provider": "p"},

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Optional
 import logging
+import asyncio
 
+from common.config import get_telegram_history_timeout
 from resolver.providers.base import VideoItem
 
 logger = logging.getLogger(__name__)
@@ -51,20 +53,34 @@ async def fetch_history(
         kwargs = {"limit": batch_limit, "filter": media_filter}
         if offset_id is not None:
             kwargs["offset_id"] = offset_id
-        messages = await client.get_messages(entity, **kwargs)
-        return list(messages or [])
+        try:
+            messages = await asyncio.wait_for(
+                client.get_messages(entity, **kwargs),
+                timeout=get_telegram_history_timeout(),
+            )
+            return list(messages or [])
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning("Telegram fetch_history (cursor) timeout for entity %s", entity.id if hasattr(entity, 'id') else entity)
+            return []
 
     page = max(1, int(page or 1))
     pages = max_pages if max_pages is not None else max_history_fn()
     start = (page - 1) * PAGE_SIZE * pages
     messages: list = []
     for index in range(pages):
-        batch = await client.get_messages(
-            entity,
-            limit=PAGE_SIZE,
-            add_offset=start + index * PAGE_SIZE,
-            filter=media_filter,
-        )
+        try:
+            batch = await asyncio.wait_for(
+                client.get_messages(
+                    entity,
+                    limit=PAGE_SIZE,
+                    add_offset=start + index * PAGE_SIZE,
+                    filter=media_filter,
+                ),
+                timeout=get_telegram_history_timeout(),
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning("Telegram fetch_history (page %s) timeout for entity %s", index + 1, entity.id if hasattr(entity, 'id') else entity)
+            break
         if not batch:
             break
         messages.extend(batch)

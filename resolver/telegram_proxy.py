@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from common.config import get_telegram_metadata_timeout
 from fastapi import HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from common import telegram_playback_activity
@@ -48,10 +50,20 @@ async def _probe_total_size(
     try:
         res = fs(ref)
         if services.inspect.isawaitable(res):
-            res = await res
+            res = await asyncio.wait_for(res, timeout=get_telegram_metadata_timeout())
         return int(res) if res is not None else None
     except HTTPException:
         raise
+    except asyncio.TimeoutError:
+        _LOGGER.warning("Telegram file_size timeout for %s", ref)
+        if required:
+            raise HTTPException(status_code=504, detail="Telegram size lookup timed out")
+        return None
+    except TimeoutError:
+        _LOGGER.warning("Telegram file_size timeout for %s", ref)
+        if required:
+            raise HTTPException(status_code=504, detail="Telegram size lookup timed out")
+        return None
     except Exception as fs_error:
         _LOGGER.warning("Telegram file_size lookup failed for %s: %s", ref, fs_error)
         if required:
@@ -197,7 +209,7 @@ async def _open_download(services: TelegramProxyServices, prov, ref: str, offset
         raise HTTPException(status_code=502, detail=f"Telegram download failed: {e}")
 
 
-async def proxy_telegram_response(
+async def proxy_telegram_response(  # noqa: C901
     request: Request, url: str, cache_key: Optional[str] = None,
     *, services: TelegramProxyServices,
 ):
@@ -214,7 +226,15 @@ async def proxy_telegram_response(
     prov = _resolve_provider(services, ref)
     rng_raw = request.headers.get("range")
     # File-size probe is only required when the client requests a range; normal playback streams safely without it.
-    total = await _probe_total_size(services, prov, ref, required=bool(rng_raw))
+    try:
+        total = await asyncio.wait_for(
+            _probe_total_size(services, prov, ref, required=bool(rng_raw)),
+            timeout=get_telegram_metadata_timeout(),
+        )
+    except (asyncio.TimeoutError, TimeoutError):
+        _LOGGER.warning("Telegram total size probe timeout for %s", ref)
+        raise HTTPException(status_code=504, detail="Telegram size lookup timed out")
+
     rng = services.parse_range_request(rng_raw, total)
     offset = rng[0] if rng else 0
     length = rng[1] if rng else None
@@ -230,7 +250,20 @@ async def proxy_telegram_response(
                             media_type="application/octet-stream")
     elif is_head:
         return _head_response(total)
-    stream = await _open_download(services, prov, ref, offset, length)
+
+    try:
+        stream = await asyncio.wait_for(
+            _open_download(services, prov, ref, offset, length),
+            timeout=get_telegram_metadata_timeout(),
+        )
+    except (asyncio.TimeoutError, TimeoutError):
+        _LOGGER.warning("Telegram download open timeout for %s", ref)
+        raise HTTPException(status_code=504, detail="Telegram download timed out")
+    except HTTPException:
+        raise
+    except Exception as e:
+        _LOGGER.warning("Telegram download open failed for %s: %s", ref, e)
+        raise HTTPException(status_code=502, detail=f"Telegram download failed: {e}")
 
     playback_handle = None
     if not is_head and not _is_worker_request(request):

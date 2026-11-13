@@ -83,9 +83,11 @@ DEFAULT_TELEGRAM_FLOOD_SLEEP_THRESHOLD = 60
 
 # Telegram download timeouts (seconds)
 DEFAULT_TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT = 300
-DEFAULT_TELEGRAM_AVAILABILITY_CHECKS_PER_RUN = 20
-DEFAULT_TELEGRAM_MIN_DURATION_SECONDS = 420
-DEFAULT_TELEGRAM_MAX_HISTORY = 1
+
+# Telegram metadata/history timeouts (seconds)
+DEFAULT_TELEGRAM_METADATA_TIMEOUT_SECONDS = 10
+DEFAULT_TELEGRAM_HISTORY_TIMEOUT_SECONDS = 30
+DEFAULT_TELEGRAM_LOGIN_TIMEOUT_SECONDS = 25
 
 # Fingerprint & pHash Budgets
 DEFAULT_TELEGRAM_FINGERPRINTS_ENABLED = True
@@ -419,3 +421,35 @@ def get_backup_daily_at(env: Mapping[str, str] | None = None) -> str:
     """Return daily backup time string in HH:MM format."""
     env_map = os.environ if env is None else env
     return parse_daily_at(env_map.get("BACKUP_DAILY_AT"), DEFAULT_BACKUP_DAILY_AT, name="BACKUP_DAILY_AT")
+
+def get_telegram_metadata_timeout(env: Mapping[str, str] | None = None) -> int:
+    """Return timeout for Telegram metadata lookups (get_entity, file_size etc.)."""
+    env_map = os.environ if env is None else env
+    return parse_int(
+        env_map.get("TELEGRAM_METADATA_TIMEOUT"),
+        DEFAULT_TELEGRAM_METADATA_TIMEOUT_SECONDS,
+        minimum=1,
+        name="TELEGRAM_METADATA_TIMEOUT",
+    )
+
+
+def get_telegram_history_timeout(env: Mapping[str, str] | None = None) -> int:
+    """Return timeout for Telegram history/fetch operations."""
+    env_map = os.environ if env is None else env
+    return parse_int(
+        env_map.get("TELEGRAM_HISTORY_TIMEOUT"),
+        DEFAULT_TELEGRAM_HISTORY_TIMEOUT_SECONDS,
+        minimum=5,
+        name="TELEGRAM_HISTORY_TIMEOUT",
+    )
+
+
+def get_telegram_login_timeout(env: Mapping[str, str] | None = None) -> int:
+    """Return timeout for Telegram login operations (is_session_authorized etc.)."""
+    env_map = os.environ if env is None else env
+    return parse_int(
+        env_map.get("TELEGRAM_LOGIN_TIMEOUT"),
+        DEFAULT_TELEGRAM_LOGIN_TIMEOUT_SECONDS,
+        minimum=5,
+        name="TELEGRAM_LOGIN_TIMEOUT",
+    )

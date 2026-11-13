@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from common.config import get_telegram_login_timeout
 from resolver.providers.telegram_account import DEFAULT_ACCOUNT_ID, TelegramAccountContext
 from resolver.providers.telegram_authorization import invalidate as invalidate_account_authorization
 from resolver.providers.telegram_session import (
@@ -235,9 +236,10 @@ class TelegramLoginManager:
 
         try:
             api_id, api_hash = ctx.get_api_credentials()
+            login_timeout = get_telegram_login_timeout()
             authorized = await asyncio.wait_for(
                 is_session_authorized(target_path, api_id, api_hash, raise_on_error=True),
-                timeout=LOGIN_NETWORK_TIMEOUT_SECONDS,
+                timeout=login_timeout,
             )
         except ValueError:
             # Not a SQLite session file, so Telegram cannot accept it as a session.
@@ -359,9 +361,10 @@ class TelegramLoginManager:
             if ctx.has_api_credentials():
                 try:
                     api_id, api_hash = ctx.get_api_credentials()
+                    login_timeout = get_telegram_login_timeout()
                     authorized = await asyncio.wait_for(
                         is_session_authorized(target_path, api_id, api_hash),
-                        timeout=LOGIN_NETWORK_TIMEOUT_SECONDS,
+                        timeout=login_timeout,
                     )
                     self._cached_auth[ctx.account_id] = bool(authorized)
                     if authorized:
@@ -427,8 +430,9 @@ class TelegramLoginManager:
         )
 
         try:
-            await asyncio.wait_for(client.connect(), timeout=LOGIN_NETWORK_TIMEOUT_SECONDS)
-            if await asyncio.wait_for(client.is_user_authorized(), timeout=LOGIN_NETWORK_TIMEOUT_SECONDS):
+            login_timeout = get_telegram_login_timeout()
+            await asyncio.wait_for(client.connect(), timeout=login_timeout)
+            if await asyncio.wait_for(client.is_user_authorized(), timeout=login_timeout):
                 await self._safe_disconnect(client)
                 _promote_pending_session(pending_path, target_path)
                 self._cached_auth[ctx.account_id] = True
@@ -643,6 +647,7 @@ class TelegramLoginManager:
         )
 
         try:
+            login_timeout = get_telegram_login_timeout()
             if challenge.phone_code_hash:
                 await asyncio.wait_for(
                     challenge.client.sign_in(
@@ -650,7 +655,7 @@ class TelegramLoginManager:
                         code=code_str,
                         phone_code_hash=challenge.phone_code_hash,
                     ),
-                    timeout=LOGIN_NETWORK_TIMEOUT_SECONDS,
+                    timeout=login_timeout,
                 )
             else:
                 await asyncio.wait_for(
@@ -658,10 +663,10 @@ class TelegramLoginManager:
                         phone=challenge.phone,
                         code=code_str,
                     ),
-                    timeout=LOGIN_NETWORK_TIMEOUT_SECONDS,
+                    timeout=login_timeout,
                 )
 
-            if await asyncio.wait_for(challenge.client.is_user_authorized(), timeout=LOGIN_NETWORK_TIMEOUT_SECONDS):
+            if await asyncio.wait_for(challenge.client.is_user_authorized(), timeout=login_timeout):
                 await self._finalize_authorization(challenge)
                 return {
                     "ok": True,
@@ -788,11 +793,12 @@ class TelegramLoginManager:
             )
 
             try:
+                login_timeout = get_telegram_login_timeout()
                 await asyncio.wait_for(
                     challenge.client.sign_in(password=pwd_str),
-                    timeout=LOGIN_NETWORK_TIMEOUT_SECONDS,
+                    timeout=login_timeout,
                 )
-                if await asyncio.wait_for(challenge.client.is_user_authorized(), timeout=LOGIN_NETWORK_TIMEOUT_SECONDS):
+                if await asyncio.wait_for(challenge.client.is_user_authorized(), timeout=login_timeout):
                     await self._finalize_authorization(challenge)
                     return {
                         "ok": True,

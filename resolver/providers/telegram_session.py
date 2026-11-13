@@ -8,7 +8,7 @@ import os
 import sys
 from typing import Any, Callable, Optional, Tuple
 
-from common.config import DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS, telegram_client_kwargs
+from common.config import get_telegram_login_timeout, telegram_client_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -104,13 +104,19 @@ async def is_session_authorized(
         actual_path, api_id_int, api_hash_str,
         **telegram_client_kwargs(),
     )
+    login_timeout = get_telegram_login_timeout()
     try:
         await asyncio.wait_for(
-            client.connect(), timeout=DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS
+            client.connect(), timeout=login_timeout
         )
         return bool(await asyncio.wait_for(
-            client.is_user_authorized(), timeout=DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS
+            client.is_user_authorized(), timeout=login_timeout
         ))
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.debug("Session authorization check timed out for %s", actual_path)
+        if raise_on_error:
+            raise
+        return False
     except Exception:
         if raise_on_error:
             raise
