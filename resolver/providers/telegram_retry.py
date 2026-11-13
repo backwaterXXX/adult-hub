@@ -91,8 +91,10 @@ async def retry_stream(factory: Callable[[], "object"], *,
             # Check overall deadline
             elapsed = time.monotonic() - start_time
             if elapsed + delay > MAX_TOTAL_RETRY_DEADLINE_SECONDS:
-                raise asyncio.TimeoutError(
-                    f"Telegram download retry deadline exceeded ({elapsed:.1f}s + {delay:.1f}s > {MAX_TOTAL_RETRY_DEADLINE_SECONDS}s)")
+                logger.warning(
+                    "Telegram download retry deadline reached after %.1fs; giving up on %s: %s",
+                    elapsed, type(exc).__name__, exc)
+                raise
             logger.warning(
                 "Telegram download attempt %d failed (%s: %s); retrying in %.1fs",
                 attempt, type(exc).__name__, exc, delay)
@@ -123,8 +125,10 @@ async def retry_call(func: Callable[[], Awaitable], *,
             # Check overall deadline
             elapsed = time.monotonic() - start_time
             if elapsed + delay > MAX_TOTAL_RETRY_DEADLINE_SECONDS:
-                raise asyncio.TimeoutError(
-                    f"Telegram fetch retry deadline exceeded ({elapsed:.1f}s + {delay:.1f}s > {MAX_TOTAL_RETRY_DEADLINE_SECONDS}s)")
+                logger.warning(
+                    "Telegram fetch retry deadline reached after %.1fs; giving up on %s: %s",
+                    elapsed, type(exc).__name__, exc)
+                raise
             logger.warning(
                 "Telegram fetch attempt %d failed (%s: %s); retrying in %.1fs",
                 attempt, type(exc).__name__, exc, delay)

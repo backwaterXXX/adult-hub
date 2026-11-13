@@ -9,17 +9,35 @@ import time
 logger = logging.getLogger(__name__)
 
 
-def _get_download_timeout_seconds() -> float:
-    """Return download timeout from config or default."""
-    from common.config import DEFAULT_TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT
-    raw = (os.getenv("TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT_SECONDS") or "").strip()
+def _int_env(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
     if not raw:
-        return DEFAULT_TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT
+        return default
+    try:
+        val = int(raw)
+        return val if val > 0 else default
+    except ValueError:
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
     try:
         val = float(raw)
-        return max(5.0, val) if val > 0 else DEFAULT_TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT
+        return val if val > 0 else default
     except ValueError:
-        return DEFAULT_TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT
+        return default
+
+
+def _get_download_timeout_seconds() -> float:
+    """Return the per-block download deadline in seconds (never below 5)."""
+    from common.config import DEFAULT_TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT
+    return max(5.0, _float_env(
+        "TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT_SECONDS",
+        float(DEFAULT_TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT),
+    ))
 
 
 def _is_parallel_stream_enabled() -> bool:
@@ -28,26 +46,6 @@ def _is_parallel_stream_enabled() -> bool:
 
 
 def _get_stream_manager_config() -> dict:
-    def _int_env(name: str, default: int) -> int:
-        raw = (os.getenv(name) or "").strip()
-        if not raw:
-            return default
-        try:
-            val = int(raw)
-            return val if val > 0 else default
-        except ValueError:
-            return default
-
-    def _float_env(name: str, default: float) -> float:
-        raw = (os.getenv(name) or "").strip()
-        if not raw:
-            return default
-        try:
-            val = float(raw)
-            return val if val > 0 else default
-        except ValueError:
-            return default
-
     raw_acc_workers = (os.getenv("TELEGRAM_DOWNLOAD_ACCOUNT_WORKERS") or "").strip()
     account_workers: Optional[int] = None
     if raw_acc_workers:
@@ -76,7 +74,7 @@ def _get_stream_manager_config() -> dict:
         "max_cache_bytes": _int_env("TELEGRAM_STREAM_CACHE_BYTES", 134217728),
         "cache_ttl_seconds": _float_env("TELEGRAM_STREAM_CACHE_TTL_SECONDS", 120.0),
         "account_workers": account_workers,
-        "download_timeout_seconds": _float_env("TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT_SECONDS", 300.0),
+        "download_timeout_seconds": _get_download_timeout_seconds(),
     }
 
 
@@ -230,23 +228,19 @@ def _consume_chunk(data: bytes, skip: int, remaining: Optional[int]) -> tuple[by
 
 
 async def _download_block(client, media, block_offset: int, block_length: int) -> bytes:
-    """Fetch an aligned or custom block using _download_sequential and properly close iterator."""
+    """Fetch an aligned or custom block using _download_sequential and properly close iterator.
+
+    Errors propagate unchanged so callers keep their original type: retry logic
+    classifies Telegram failures by exception class, and a blanket rewrap would
+    hide e.g. FileReferenceExpiredError behind a generic timeout.
+    """
     if block_length <= 0:
         return b""
     chunks = []
-    try:
-        async for chunk in _download_sequential(
-            client, media, offset=block_offset, length=block_length
-        ):
-            chunks.append(chunk)
-    except asyncio.TimeoutError:
-        raise
-    except Exception as exc:
-        if isinstance(exc, asyncio.TimeoutError):
-            raise
-        raise asyncio.TimeoutError(
-            f"Telegram block download failed: {type(exc).__name__}: {exc}"
-        ) from exc
+    async for chunk in _download_sequential(
+        client, media, offset=block_offset, length=block_length
+    ):
+        chunks.append(chunk)
     return b"".join(chunks)
 
 

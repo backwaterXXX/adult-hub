@@ -398,6 +398,17 @@ class TestTelegramDownloadRanges(unittest.TestCase):
         asyncio.run(run())
 
 
+    def test_download_block_preserves_original_error_type(self):
+        """A block failure keeps its own type so retry classification still works."""
+        async def run():
+            client = FakeTelegramClient(total_file_size=10000000, fail_after=1)
+            with self.assertRaises(RuntimeError):
+                await _download_block(client, None, block_offset=0, block_length=1048576)
+            self.assertTrue(client.iterators[0].closed)
+
+        asyncio.run(run())
+
+
 class TestBenchmarkCorrectness(unittest.TestCase):
 
     def test_consumer_producer_concurrency_race(self):

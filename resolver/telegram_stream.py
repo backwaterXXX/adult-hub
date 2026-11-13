@@ -296,7 +296,7 @@ class ParallelTelegramStreamManager:
         exc: Optional[BaseException] = None
         start_time = time.monotonic()
         try:
-            timeout_seconds = getattr(self, 'download_timeout_seconds', 300.0)
+            timeout_seconds = self.download_timeout_seconds
             data = await asyncio.wait_for(fetch_task, timeout=timeout_seconds)
             data = _validate_fetched_block(job, data)
         except asyncio.TimeoutError:
