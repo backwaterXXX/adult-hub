@@ -22,6 +22,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault(
     "CONFIG_PATH",
@@ -35,6 +36,7 @@ from resolver.providers.telegram import (
     _download_sequential,
     _legal_request_size,
 )
+import resolver.providers.telegram_download as telegram_download
 
 
 def pattern_byte(offset: int) -> int:
@@ -405,6 +407,33 @@ class TestTelegramDownloadRanges(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 await _download_block(client, None, block_offset=0, block_length=1048576)
             self.assertTrue(client.iterators[0].closed)
+
+        asyncio.run(run())
+
+
+    def test_stalled_stream_fails_after_the_stall_timeout(self):
+        """A read that never yields fails instead of holding the response open."""
+        async def run():
+            client = FakeTelegramClient(total_file_size=10000000, slow_delay=10.0)
+            with patch.object(telegram_download, "_get_download_timeout_seconds", return_value=0.05):
+                with self.assertRaises(asyncio.TimeoutError):
+                    async for _ in _download_sequential(client, None, offset=0, length=2097152):
+                        pass
+            self.assertTrue(client.iterators[0].closed)
+
+        asyncio.run(run())
+
+    def test_stall_timeout_is_per_chunk_not_a_total_budget(self):
+        """A long stream whose total time exceeds the budget still completes while chunks flow."""
+        async def run():
+            client = FakeTelegramClient(total_file_size=10000000, slow_delay=0.03)
+            total = 0
+            with patch.object(telegram_download, "_get_download_timeout_seconds", return_value=0.05):
+                async for chunk in _download_sequential(
+                    client, None, offset=0, length=5 * 524288
+                ):
+                    total += len(chunk)
+            self.assertEqual(total, 5 * 524288)
 
         asyncio.run(run())
 

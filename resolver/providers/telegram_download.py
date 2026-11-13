@@ -4,7 +4,6 @@ import inspect
 import os
 from typing import Optional
 import logging
-import time
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +149,7 @@ async def _download_sequential(
     remaining = length
     skip = prefix_skip
     timeout_seconds = _get_download_timeout_seconds()
-    start_time = time.monotonic()
+    chunks = iterator.__aiter__()
     try:
         # Telethon's DirectDownloadIter implements both async iteration and
         # async context management, but __aexit__ calls close() directly. If
@@ -158,14 +157,19 @@ async def _download_sequential(
         # AttributeError and masks the original Telegram/network error. The
         # finally block below already performs best-effort cleanup, so iterate
         # directly and keep cleanup failures from replacing the real outcome.
-        async for chunk in iterator:
-            elapsed = time.monotonic() - start_time
-            if elapsed > timeout_seconds:
+        while True:
+            # The deadline is a stall detector, not a total budget: a long
+            # playback stream stays valid as long as chunks keep arriving, while
+            # a hung connection fails in the configured time.
+            try:
+                chunk = await asyncio.wait_for(chunks.__anext__(), timeout=timeout_seconds)
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError as exc:
                 logger.warning(
-                    "Telegram download timeout after %.1fs (limit: %.1fs)",
-                    elapsed, timeout_seconds)
+                    "Telegram download stalled for %.1fs; aborting the stream", timeout_seconds)
                 raise asyncio.TimeoutError(
-                    f"Telegram download exceeded {timeout_seconds}s timeout")
+                    f"Telegram download produced no data for {timeout_seconds}s") from exc
             if not chunk:
                 break
             data = bytes(chunk)
