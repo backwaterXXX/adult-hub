@@ -25,7 +25,6 @@ LOGIN_TTL_SECONDS = 600.0
 LOGIN_RESEND_TTL_SECONDS = 300.0
 MAX_ATTEMPTS = 5
 MAX_RESENDS = 3
-LOGIN_NETWORK_TIMEOUT_SECONDS = 25.0
 DISCONNECT_TIMEOUT_SECONDS = 5.0
 MAX_ACCOUNT_STARTS = 5
 ACCOUNT_COOLDOWN_SECONDS = 300.0
@@ -373,6 +372,23 @@ class TelegramLoginManager:
                             "code": "already_authorized",
                             "error": "Telegram session is already authorized. Re-authentication is not permitted.",
                         }
+                except (asyncio.TimeoutError, TimeoutError):
+                    # A timeout is not a verdict on the session file, so do not report it as unauthorized.
+                    logger.info("Precondition session check timed out for account %s", ctx.account_id)
+                    if self._cached_auth.get(ctx.account_id) is True:
+                        return {
+                            "ok": False,
+                            "code": "already_authorized",
+                            "error": "Telegram session is already authorized. Re-authentication is not permitted.",
+                        }
+                    return {
+                        "ok": False,
+                        "code": "session_check_failed",
+                        "error": (
+                            "Could not verify the existing Telegram session right now. "
+                            "The session file was not changed. Try again in a moment."
+                        ),
+                    }
                 except Exception as exc:
                     logger.debug("Precondition session check failed: %s", exc)
                     if self._cached_auth.get(ctx.account_id) is True:
@@ -447,7 +463,7 @@ class TelegramLoginManager:
 
             sent_code = await asyncio.wait_for(
                 client.send_code_request(normalized_phone),
-                timeout=LOGIN_NETWORK_TIMEOUT_SECONDS,
+                timeout=get_telegram_login_timeout(),
             )
             phone_code_hash = getattr(sent_code, "phone_code_hash", None)
 
@@ -873,7 +889,7 @@ class TelegramLoginManager:
             try:
                 sent_code = await asyncio.wait_for(
                     challenge.client.send_code_request(challenge.phone),
-                    timeout=LOGIN_NETWORK_TIMEOUT_SECONDS,
+                    timeout=get_telegram_login_timeout(),
                 )
                 challenge.phone_code_hash = getattr(sent_code, "phone_code_hash", None)
                 challenge.resends += 1
@@ -969,7 +985,7 @@ class TelegramLoginManager:
                 api_id, api_hash = ctx.get_api_credentials()
                 authorized = await asyncio.wait_for(
                     is_session_authorized(target_path, api_id, api_hash, raise_on_error=True),
-                    timeout=LOGIN_NETWORK_TIMEOUT_SECONDS,
+                    timeout=get_telegram_login_timeout(),
                 )
             except Exception as exc:
                 logger.warning("Live session check failed for account %s (%s)", ctx.account_id, type(exc).__name__)

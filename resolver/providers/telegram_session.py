@@ -77,6 +77,7 @@ async def is_session_authorized(
 
     By default a network or Telegram error returns False. With raise_on_error=True the
     error propagates, so a caller can tell "not authorized" apart from "could not check".
+    A timeout is always raised: it means the check did not finish, so it is never a False verdict.
     """
     actual_path = get_sqlite_session_file_path(session_path)
     if not os.path.isfile(actual_path) or os.path.getsize(actual_path) == 0:
@@ -114,9 +115,7 @@ async def is_session_authorized(
         ))
     except (asyncio.TimeoutError, TimeoutError):
         logger.debug("Session authorization check timed out for %s", actual_path)
-        if raise_on_error:
-            raise
-        return False
+        raise
     except Exception:
         if raise_on_error:
             raise

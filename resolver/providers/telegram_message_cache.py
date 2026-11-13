@@ -132,18 +132,19 @@ async def _get_cached_message(  # noqa: C901
                 _ENTITY_CACHE[ent_key] = (now, entity)
                 if len(_ENTITY_CACHE) > 500:
                     _ENTITY_CACHE.pop(next(iter(_ENTITY_CACHE)), None)
-        except (asyncio.TimeoutError, TimeoutError):
+        except (asyncio.TimeoutError, TimeoutError) as exc:
             logger.warning("Telegram get_entity timeout for %s", channel_ref)
-            return None
+            # None means "message does not exist" to callers, so a timeout must surface as an error.
+            raise TimeoutError("Telegram get_entity timed out") from exc
 
     try:
         message = await asyncio.wait_for(
             client.get_messages(entity, ids=message_id),
             timeout=get_telegram_metadata_timeout(),
         )
-    except (asyncio.TimeoutError, TimeoutError):
+    except (asyncio.TimeoutError, TimeoutError) as exc:
         logger.warning("Telegram get_messages timeout for %s:%s", channel_ref, message_id)
-        return None
+        raise TimeoutError("Telegram get_messages timed out") from exc
 
     if message:
         message_size = _message_cache_size_bytes(message)

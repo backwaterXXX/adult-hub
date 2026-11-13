@@ -47,8 +47,7 @@ async def _probe_account(account_id: str) -> Optional[bool]:
     file that is not a database). Returns None when the check could not be completed, such as a
     network timeout or a locked database. None is never cached as "not authorized".
     """
-    # Imported here: telegram_login imports this module to call invalidate().
-    from resolver.providers.telegram_login import LOGIN_NETWORK_TIMEOUT_SECONDS
+    from common.config import get_telegram_login_timeout
 
     try:
         record = get_account(account_id)
@@ -59,7 +58,7 @@ async def _probe_account(account_id: str) -> Optional[bool]:
         api_id, api_hash = ctx.get_api_credentials()
         authorized = await asyncio.wait_for(
             is_session_authorized(session_path, api_id, api_hash, raise_on_error=True),
-            timeout=LOGIN_NETWORK_TIMEOUT_SECONDS,
+            timeout=get_telegram_login_timeout(),
         )
         return bool(authorized)
     except ValueError:

@@ -347,7 +347,7 @@ async function fetch(url) {
       data: { available: true, stale: false, incomplete: false },
     };
   }
-  else if (String(url).includes('/jobs/counts')) {
+  else if (String(url).includes('/status/job-counts')) {
     if (failJobs) return { ok: false, status: 503, json: async () => ({ detail: 'unavailable' }) };
     payload = activeJobsFixture;
   }

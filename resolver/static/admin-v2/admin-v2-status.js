@@ -60,7 +60,7 @@
     try {
       const [capabilityResult, jobsResult] = await Promise.allSettled([
         getJson(`${V2_API}/capabilities`),
-        getJson(`${V2_API}/jobs/counts`)
+        getJson(`${V2_API}/status/job-counts`)
       ]);
       updateServices({
         capabilities: capabilityResult.status === 'fulfilled'

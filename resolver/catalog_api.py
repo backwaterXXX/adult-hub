@@ -94,6 +94,9 @@ async def get_telegram_history(channel_id: str, offset_id: Optional[int] = None,
             channel_id, offset_id=offset_id, limit=max(1, min(limit, 500)))
     except HTTPException:
         raise
+    except TimeoutError:
+        logger.warning("Telegram history fetch timed out for %s", channel_id)
+        raise HTTPException(status_code=504, detail="Telegram history request timed out")
     except Exception as e:
         logger.error("Telegram history fetch failed for %s: %s", channel_id, e)
         raise HTTPException(status_code=502, detail="Telegram history request failed")

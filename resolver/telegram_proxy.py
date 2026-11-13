@@ -226,14 +226,9 @@ async def proxy_telegram_response(  # noqa: C901
     prov = _resolve_provider(services, ref)
     rng_raw = request.headers.get("range")
     # File-size probe is only required when the client requests a range; normal playback streams safely without it.
-    try:
-        total = await asyncio.wait_for(
-            _probe_total_size(services, prov, ref, required=bool(rng_raw)),
-            timeout=get_telegram_metadata_timeout(),
-        )
-    except (asyncio.TimeoutError, TimeoutError):
-        _LOGGER.warning("Telegram total size probe timeout for %s", ref)
-        raise HTTPException(status_code=504, detail="Telegram size lookup timed out")
+    # _probe_total_size bounds the lookup itself. Wrapping it again here would let this outer timer fire first
+    # and return 504 even for playback that never needed the size.
+    total = await _probe_total_size(services, prov, ref, required=bool(rng_raw))
 
     rng = services.parse_range_request(rng_raw, total)
     offset = rng[0] if rng else 0

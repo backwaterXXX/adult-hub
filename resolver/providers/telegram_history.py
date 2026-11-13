@@ -59,9 +59,10 @@ async def fetch_history(
                 timeout=get_telegram_history_timeout(),
             )
             return list(messages or [])
-        except (asyncio.TimeoutError, TimeoutError):
+        except (asyncio.TimeoutError, TimeoutError) as exc:
             logger.warning("Telegram fetch_history (cursor) timeout for entity %s", entity.id if hasattr(entity, 'id') else entity)
-            return []
+            # An empty batch would look like the end of history to the caller, so report the timeout.
+            raise TimeoutError("Telegram history request timed out") from exc
 
     page = max(1, int(page or 1))
     pages = max_pages if max_pages is not None else max_history_fn()
@@ -78,9 +79,10 @@ async def fetch_history(
                 ),
                 timeout=get_telegram_history_timeout(),
             )
-        except (asyncio.TimeoutError, TimeoutError):
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            # A partial page would be indistinguishable from the last page, so report the timeout.
             logger.warning("Telegram fetch_history (page %s) timeout for entity %s", index + 1, entity.id if hasattr(entity, 'id') else entity)
-            break
+            raise TimeoutError("Telegram history request timed out") from exc
         if not batch:
             break
         messages.extend(batch)

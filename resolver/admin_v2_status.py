@@ -340,8 +340,9 @@ def _route_admin_v2_status(router, admin):
             "capabilities": admin._capabilities(),
         }
 
-    @router.get("/api/v2/jobs/counts")
-    async def admin_v2_jobs_counts(request: Request):
+    # Not under /api/v2/jobs: the jobs router registers /api/v2/jobs/{job_id} first and would capture it.
+    @router.get("/api/v2/status/job-counts")
+    async def admin_v2_job_counts(request: Request):
         """Lightweight count of active jobs for header bar (no introspection/decisions)."""
         if admin._admin_blocked(request):
             return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
