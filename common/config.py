@@ -82,7 +82,6 @@ DEFAULT_TELEGRAM_REQUEST_RETRIES = 3
 DEFAULT_TELEGRAM_FLOOD_SLEEP_THRESHOLD = 60
 
 # Telegram download timeouts (seconds)
-DEFAULT_TELEGRAM_DOWNLOAD_METADATA_TIMEOUT = 60
 DEFAULT_TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT = 300
 DEFAULT_TELEGRAM_AVAILABILITY_CHECKS_PER_RUN = 20
 DEFAULT_TELEGRAM_MIN_DURATION_SECONDS = 420
@@ -118,6 +117,25 @@ DEFAULT_STASHDB_API_URL = "https://stashdb.org/graphql"
 DEFAULT_ADMIN_V2_MONITOR_BACKUPS = False
 DEFAULT_ADMIN_V2_QUEUE_WARNING_SECONDS = 3600
 DEFAULT_ADMIN_V2_BACKUP_WARNING_SECONDS = 129600
+
+
+# -----------------------------------------------------------------------------
+# Telegram Client Factory Helpers
+# -----------------------------------------------------------------------------
+
+def telegram_client_kwargs() -> dict[str, Any]:
+    """Return the Telethon ``TelegramClient`` keyword arguments shared by every client.
+
+    Telethon 1.x accepts ``timeout`` as the *connection* timeout only (``int`` or
+    ``float``); it has no request-timeout constructor argument. Callers that need a
+    request deadline enforce it with ``asyncio.wait_for``.
+    """
+    return {
+        "timeout": DEFAULT_TELEGRAM_CONNECTION_TIMEOUT_SECONDS,
+        "connection_retries": DEFAULT_TELEGRAM_CONNECTION_RETRIES,
+        "request_retries": DEFAULT_TELEGRAM_REQUEST_RETRIES,
+        "flood_sleep_threshold": DEFAULT_TELEGRAM_FLOOD_SLEEP_THRESHOLD,
+    }
 
 
 # -----------------------------------------------------------------------------

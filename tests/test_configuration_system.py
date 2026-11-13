@@ -38,6 +38,7 @@ from common.config import (
     parse_float,
     parse_int,
     parse_url,
+    telegram_client_kwargs,
 )
 from common.config_loader import (
     ConfigError,
@@ -179,6 +180,22 @@ class TestConfigDefaultsAndValidation(unittest.TestCase):
 
     def test_watchdog_default_failures_is_three(self):
         self.assertEqual(DEFAULT_RESOLVER_WATCHDOG_FAILURES, 3)
+
+    def test_telegram_client_kwargs_are_valid_telethon_arguments(self):
+        """Every shared client kwarg is accepted by Telethon and timeout stays scalar.
+
+        Telethon 1.x has no request-timeout constructor argument and its ``timeout``
+        is a single number, so a tuple or a ``request_timeout`` keyword would make
+        every TelegramClient construction fail before it connects.
+        """
+        import inspect
+
+        from telethon.client.telegrambaseclient import TelegramBaseClient
+
+        kwargs = telegram_client_kwargs()
+        params = inspect.signature(TelegramBaseClient.__init__).parameters
+        self.assertTrue(set(kwargs).issubset(params), kwargs.keys() - params.keys())
+        self.assertIsInstance(kwargs["timeout"], (int, float))
 
     def test_admin_public_precedence_and_fallback(self):
         with patch.dict(os.environ, {"ADMIN_PUBLIC": "", "STANDALONE_ADMIN_PUBLIC": "true"}):

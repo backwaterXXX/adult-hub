@@ -8,6 +8,8 @@ import os
 import sys
 from typing import Any, Callable, Optional, Tuple
 
+from common.config import DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS, telegram_client_kwargs
+
 logger = logging.getLogger(__name__)
 
 
@@ -98,26 +100,17 @@ async def is_session_authorized(
         # Callers see an exception, as they did before, and keep their cached-authorization rules.
         raise ValueError("Telegram session file is not a SQLite database.")
 
-    from common.config import (
-        DEFAULT_TELEGRAM_CONNECTION_TIMEOUT_SECONDS,
-        DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS,
-        DEFAULT_TELEGRAM_CONNECTION_RETRIES,
-        DEFAULT_TELEGRAM_REQUEST_RETRIES,
-        DEFAULT_TELEGRAM_FLOOD_SLEEP_THRESHOLD,
-    )
     client = TelegramClient(
         actual_path, api_id_int, api_hash_str,
-        connection_retries=DEFAULT_TELEGRAM_CONNECTION_RETRIES,
-        request_retries=DEFAULT_TELEGRAM_REQUEST_RETRIES,
-        flood_sleep_threshold=DEFAULT_TELEGRAM_FLOOD_SLEEP_THRESHOLD,
-        request_timeout=(
-            DEFAULT_TELEGRAM_CONNECTION_TIMEOUT_SECONDS,
-            DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS
-        ),
+        **telegram_client_kwargs(),
     )
     try:
-        await client.connect()
-        return bool(await client.is_user_authorized())
+        await asyncio.wait_for(
+            client.connect(), timeout=DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS
+        )
+        return bool(await asyncio.wait_for(
+            client.is_user_authorized(), timeout=DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS
+        ))
     except Exception:
         if raise_on_error:
             raise
@@ -301,22 +294,9 @@ async def interactive_login(
             "resolver/requirements.txt and install it first."
         ) from exc
 
-    from common.config import (
-        DEFAULT_TELEGRAM_CONNECTION_TIMEOUT_SECONDS,
-        DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS,
-        DEFAULT_TELEGRAM_CONNECTION_RETRIES,
-        DEFAULT_TELEGRAM_REQUEST_RETRIES,
-        DEFAULT_TELEGRAM_FLOOD_SLEEP_THRESHOLD,
-    )
     client = TelegramClient(
         pending_path, api_id_int, api_hash_str,
-        connection_retries=DEFAULT_TELEGRAM_CONNECTION_RETRIES,
-        request_retries=DEFAULT_TELEGRAM_REQUEST_RETRIES,
-        flood_sleep_threshold=DEFAULT_TELEGRAM_FLOOD_SLEEP_THRESHOLD,
-        request_timeout=(
-            DEFAULT_TELEGRAM_CONNECTION_TIMEOUT_SECONDS,
-            DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS
-        ),
+        **telegram_client_kwargs(),
     )
     auth_succeeded = False
     try:
@@ -369,22 +349,9 @@ async def require_client(session_state: dict, *, api_id_fn, api_hash_fn, session
             # blank session during playback or an admin access check.
             if not os.path.isfile(session_path):
                 raise RuntimeError("Telegram session file is missing. Log in first.")
-            from common.config import (
-                DEFAULT_TELEGRAM_CONNECTION_TIMEOUT_SECONDS,
-                DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS,
-                DEFAULT_TELEGRAM_CONNECTION_RETRIES,
-                DEFAULT_TELEGRAM_REQUEST_RETRIES,
-                DEFAULT_TELEGRAM_FLOOD_SLEEP_THRESHOLD,
-            )
             session_state["client"] = TelegramClient(
                 session_path, api_id, api_hash,
-                connection_retries=DEFAULT_TELEGRAM_CONNECTION_RETRIES,
-                request_retries=DEFAULT_TELEGRAM_REQUEST_RETRIES,
-                flood_sleep_threshold=DEFAULT_TELEGRAM_FLOOD_SLEEP_THRESHOLD,
-                request_timeout=(
-                    DEFAULT_TELEGRAM_CONNECTION_TIMEOUT_SECONDS,
-                    DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS
-                ),
+                **telegram_client_kwargs(),
             )
         # Telethon can lose its transport while the resolver process remains
         # alive. Keep the singleton, but reconnect it before making requests.
@@ -427,22 +394,9 @@ async def login(
     if not phone and code is None:
         if not os.path.isfile(get_sqlite_session_file_path(session_path)):
             return "not_authorized"
-    from common.config import (
-        DEFAULT_TELEGRAM_CONNECTION_TIMEOUT_SECONDS,
-        DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS,
-        DEFAULT_TELEGRAM_CONNECTION_RETRIES,
-        DEFAULT_TELEGRAM_REQUEST_RETRIES,
-        DEFAULT_TELEGRAM_FLOOD_SLEEP_THRESHOLD,
-    )
     client = TelegramClient(
         session_path, api_id_fn(), api_hash_fn(),
-        connection_retries=DEFAULT_TELEGRAM_CONNECTION_RETRIES,
-        request_retries=DEFAULT_TELEGRAM_REQUEST_RETRIES,
-        flood_sleep_threshold=DEFAULT_TELEGRAM_FLOOD_SLEEP_THRESHOLD,
-        request_timeout=(
-            DEFAULT_TELEGRAM_CONNECTION_TIMEOUT_SECONDS,
-            DEFAULT_TELEGRAM_REQUEST_TIMEOUT_SECONDS
-        ),
+        **telegram_client_kwargs(),
     )
     await client.connect()
     try:
