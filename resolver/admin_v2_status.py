@@ -340,6 +340,19 @@ def _route_admin_v2_status(router, admin):
             "capabilities": admin._capabilities(),
         }
 
+    @router.get("/api/v2/jobs/counts")
+    async def admin_v2_jobs_counts(request: Request):
+        """Lightweight count of active jobs for header bar (no introspection/decisions)."""
+        if admin._admin_blocked(request):
+            return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
+        try:
+            from resolver.admin_services import job_counts
+            counts = await asyncio.to_thread(job_counts, admin.HUB_DB_URL)
+            return counts
+        except Exception:
+            logger.debug("Ignored exception in admin_v2_jobs_counts", exc_info=True)
+            return {"active_total": 0, "available": False}
+
 
 def build_router(admin):
     router = APIRouter(route_class=V2ErrorRoute)

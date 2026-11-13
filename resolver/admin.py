@@ -85,8 +85,9 @@ def _backup_status() -> dict:
 def _attention_summary() -> dict:
     """Counts answering "what needs action?" for the Overview."""
     try:
-        from resolver.admin_services import job_listing, sync_backlog, unresolved_failed_task_summary
-        active = job_listing(HUB_DB_URL, limit=1, state="active")
+        from resolver.admin_services import job_counts, job_listing, sync_backlog, unresolved_failed_task_summary
+        job_summary = job_counts(HUB_DB_URL)
+        active = job_listing(HUB_DB_URL, limit=1, state="active") if job_summary.get("available") else {"active_total": 0, "available": False}
         failed = unresolved_failed_task_summary(HUB_DB_URL)
         backlog = sync_backlog(HUB_DB_URL)
         library = admin_data.unavailable_videos(HUB_DB_URL, limit=1)
@@ -96,7 +97,7 @@ def _attention_summary() -> dict:
         failed_sources = sum(1 for source in latest.get("sources", []) if not source.get("success"))
         failures_available = failed.get("available") is True
         return {
-            "pending_tasks": int(active.get("active_total") or 0),
+            "pending_tasks": int(job_summary.get("active_total") or 0),
             "failed_tasks": failed.get("count") if failures_available else None,
             "failed_tasks_available": failures_available,
             "unavailable_videos": int(library.get("total") or 0),

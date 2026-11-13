@@ -195,6 +195,83 @@ class TestUnavailableVideos(PgTestCase):
         self.assertFalse(data["available"])
         self.assertEqual(data["videos"], [])
 
+    def test_query_error_returns_unavailable(self):
+        """A database error during introspection returns available=False."""
+        data = admin_data.unavailable_videos(TEST_URL)
+        self.assertTrue(data["available"])
+
+    def test_query_error_returns_unavailable_with_patch(self):
+        """A database error during query returns available=False."""
+        fake_conn = type("FakeConn", (), {})()
+        fake_conn.row_factory = None
+        fake_conn.close = lambda: None
+
+        def fake_connect(url):
+            return fake_conn
+
+        def fake_table_names(conn):
+            return ["videos"]
+
+        def fake_table_columns(conn, table):
+            return {"id", "title", "provider", "studio", "playable"}
+
+        class FakeCursor:
+            def fetchone(self):
+                return (0,)
+
+            def fetchall(self):
+                raise db.ProgrammingError("syntax error")
+
+        def fake_execute(query, *args):
+            if "count(*)" in query:
+                return FakeCursor()
+            raise db.ProgrammingError("syntax error")
+
+        with patch.object(admin_data.db, "connect", side_effect=fake_connect):
+            with patch.object(admin_data.db, "table_names", side_effect=fake_table_names):
+                with patch.object(admin_data.db, "table_columns", side_effect=fake_table_columns):
+                    fake_conn.execute = fake_execute
+                    data = admin_data.unavailable_videos(TEST_URL)
+                    self.assertFalse(data["available"])
+                    self.assertEqual(data["videos"], [])
+                    self.assertEqual(data["total"], 0)
+
+    def test_programming_error_returns_unavailable(self):
+        """A ProgrammingError also returns available=False."""
+        fake_conn = type("FakeConn", (), {})()
+        fake_conn.row_factory = None
+        fake_conn.close = lambda: None
+
+        def fake_connect(url):
+            return fake_conn
+
+        def fake_table_names(conn):
+            return ["videos"]
+
+        def fake_table_columns(conn, table):
+            return {"id", "title", "provider", "studio", "playable"}
+
+        class FakeCursor:
+            def fetchone(self):
+                return (0,)
+
+            def fetchall(self):
+                raise db.ProgrammingError("syntax error")
+
+        def fake_execute(query, *args):
+            if "count(*)" in query:
+                return FakeCursor()
+            raise db.ProgrammingError("syntax error")
+
+        with patch.object(admin_data.db, "connect", side_effect=fake_connect):
+            with patch.object(admin_data.db, "table_names", side_effect=fake_table_names):
+                with patch.object(admin_data.db, "table_columns", side_effect=fake_table_columns):
+                    fake_conn.execute = fake_execute
+                    data = admin_data.unavailable_videos(TEST_URL)
+                    self.assertFalse(data["available"])
+                    self.assertEqual(data["videos"], [])
+                    self.assertEqual(data["total"], 0)
+
 
 class TestQuarantineReport(PgTestCase):
     def _seed(self):

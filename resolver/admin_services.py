@@ -158,6 +158,21 @@ def sync_backlog(db_url: str | None, *, now: int | None = None) -> dict:
         conn.close()
 
 
+def job_counts(db_url: str | None) -> dict:
+    """Lightweight count of active jobs without introspection or decision/undo scanning."""
+    conn = _jobs_connection(db_url)
+    if conn is None:
+        return {"active_total": 0, "available": False}
+    try:
+        total = conn.execute("SELECT count(*) FROM video_duplicate_jobs WHERE state IN ('queued','processing')").fetchone()[0]
+        return {"active_total": total, "available": True}
+    except db.Error:
+        logger.warning("Database error in job_counts", exc_info=True)
+        return {"active_total": 0, "available": False}
+    finally:
+        conn.close()
+
+
 def job_listing(db_url: str | None, limit: int = 50, state: str = "", action: str = "", offset: int = 0,
                 *, include_failure_code: bool = False) -> dict:
     conn = _jobs_connection(db_url)
