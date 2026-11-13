@@ -24,7 +24,7 @@ sync:
   tpdb_backfill_per_run: 50
   # Scene and performer source queues: ~20 daily syncs per 10k videos / 1k actors.
   scene_backfill_per_run: 500
-  jellyfin_people_per_run: 25
+  jellyfin_people_per_run: 50
 
 sources:
   - provider: telegram

@@ -71,6 +71,10 @@ ui-contracts:
 	    printf '%s\n' "$$output" >&2; echo "FAIL: $$test_file" >&2; exit 1; \
 	  fi; \
 	  printf '%s\n' "$$output"; \
+	  case "$$output" in \
+	    *PASS*|*passed*) ;; \
+	    *) echo "FAIL: $$test_file ended without a completion marker, so it likely stalled on a promise that never settles" >&2; exit 1;; \
+	  esac; \
 	done
 
 js-check:

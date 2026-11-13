@@ -1,5 +1,8 @@
 # Adult Hub Configuration Audit
 
+> **Archived (state at 2026-11-12, before the configuration refactoring).** The
+> defaults and findings below describe the pre-refactoring code. For current
+> values use `docs/advanced-configuration.md` and `CONFIGURATION.md`.
 ## 1. Executive Summary
 
 This audit establishes a complete, rigorous inventory of the Adult Hub configuration surface across all services (`resolver`, `sync`, `backup`, `database`, `migration`), CLI tools, setup scripts, Docker Compose manifests, and existing configuration loaders.

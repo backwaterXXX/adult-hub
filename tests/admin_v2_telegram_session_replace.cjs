@@ -21,4 +21,4 @@ assert.match(telegramUi, /await refreshTelegramAuthWizard\(target\);/,
 assert.doesNotMatch(telegramUi, /back up or remove/i,
   'the panel no longer tells the operator to move the session file by hand');
 
-console.log('admin_v2_telegram_session_replace.cjs: ok');
+console.log('PASS: admin_v2_telegram_session_replace.cjs: unauthorized-session replacement is wired end to end');

@@ -52,6 +52,7 @@ Configure these settings in `.env` or Compose only when tuning specific performa
 | `TELEGRAM_DOWNLOAD_WORKERS` | `3` | Parallel chunk download workers per stream when parallel mode is active. |
 | `TELEGRAM_DOWNLOAD_GLOBAL_WORKERS` | `6` | Global ceiling on concurrent Telegram download workers. |
 | `TELEGRAM_DOWNLOAD_BLOCK_BYTES` | `524288` | Byte size of chunk downloads from Telegram MTProto (512 KB). |
+| `TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT_SECONDS` | `300` | Deadline for one chunk block download; a stalled block fails instead of hanging the stream (minimum 5). |
 | `TELEGRAM_READ_AHEAD_BYTES` | `33554432` | Read-ahead buffer size for progressive streaming (32 MB). |
 | `TELEGRAM_STREAM_CACHE_BYTES` | `134217728`| In-memory ring buffer size for active streams (128 MB). |
 | `TELEGRAM_STREAM_CACHE_TTL_SECONDS`| `120` | Cache lifetime for idle playback stream chunks (seconds). |
