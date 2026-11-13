@@ -59,11 +59,6 @@ async def _probe_total_size(
         if required:
             raise HTTPException(status_code=504, detail="Telegram size lookup timed out")
         return None
-    except TimeoutError:
-        _LOGGER.warning("Telegram file_size timeout for %s", ref)
-        if required:
-            raise HTTPException(status_code=504, detail="Telegram size lookup timed out")
-        return None
     except Exception as fs_error:
         _LOGGER.warning("Telegram file_size lookup failed for %s: %s", ref, fs_error)
         if required:
@@ -209,7 +204,7 @@ async def _open_download(services: TelegramProxyServices, prov, ref: str, offset
         raise HTTPException(status_code=502, detail=f"Telegram download failed: {e}")
 
 
-async def proxy_telegram_response(  # noqa: C901
+async def proxy_telegram_response(
     request: Request, url: str, cache_key: Optional[str] = None,
     *, services: TelegramProxyServices,
 ):
@@ -246,19 +241,9 @@ async def proxy_telegram_response(  # noqa: C901
     elif is_head:
         return _head_response(total)
 
-    try:
-        stream = await asyncio.wait_for(
-            _open_download(services, prov, ref, offset, length),
-            timeout=get_telegram_metadata_timeout(),
-        )
-    except (asyncio.TimeoutError, TimeoutError):
-        _LOGGER.warning("Telegram download open timeout for %s", ref)
-        raise HTTPException(status_code=504, detail="Telegram download timed out")
-    except HTTPException:
-        raise
-    except Exception as e:
-        _LOGGER.warning("Telegram download open failed for %s: %s", ref, e)
-        raise HTTPException(status_code=502, detail=f"Telegram download failed: {e}")
+    # download_range is an async generator, so opening it does not contact Telegram. Stalls are
+    # bounded per chunk in the download stream instead, so no timeout is applied here.
+    stream = await _open_download(services, prov, ref, offset, length)
 
     playback_handle = None
     if not is_head and not _is_worker_request(request):

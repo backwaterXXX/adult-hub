@@ -646,7 +646,7 @@ sync:
   pbc_backfill_per_run: 50
   tpdb_backfill_per_run: 50
   scene_backfill_per_run: 500
-  jellyfin_people_per_run: 25
+  jellyfin_people_per_run: 50
 
 sources:
   - provider: telegram
