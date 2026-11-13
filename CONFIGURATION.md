@@ -43,20 +43,21 @@ Configure these settings in `.env` or Compose only when tuning specific performa
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `RESOLVER_CONCURRENCY_LIMIT` | `10` | Maximum simultaneous upstream video stream resolutions. |
-| `CACHE_TTL_SECONDS` | `1500` | Resolver LRU cache TTL for stream URLs (25 minutes). |
+| `CACHE_TTL_SECONDS` | `3600` | Resolver LRU cache TTL for stream URLs (60 minutes). |
 | `MAX_CACHE_ENTRIES` | `2000` | Maximum entries cached in resolver memory before eviction. |
 
 ### 2.2 Telegram Stream & Transfer Tuning
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `TELEGRAM_PARALLEL_STREAM_ENABLED` | `false` | Enable multi-worker parallel chunk streaming for playback. |
-| `TELEGRAM_DOWNLOAD_WORKERS` | `3` | Parallel chunk download workers per stream when parallel mode is active. |
-| `TELEGRAM_DOWNLOAD_GLOBAL_WORKERS` | `6` | Global ceiling on concurrent Telegram download workers. |
+| `TELEGRAM_PARALLEL_STREAM_ENABLED` | `true` | Enable multi-worker parallel chunk streaming for playback. |
+| `TELEGRAM_DOWNLOAD_WORKERS` | `4` | Parallel chunk download workers per stream when parallel mode is active. |
+| `TELEGRAM_DOWNLOAD_GLOBAL_WORKERS` | `12` | Global ceiling on concurrent Telegram download workers. |
 | `TELEGRAM_DOWNLOAD_BLOCK_BYTES` | `524288` | Byte size of chunk downloads from Telegram MTProto (512 KB). |
-| `TELEGRAM_READ_AHEAD_BYTES` | `33554432` | Read-ahead buffer size for progressive streaming (32 MB). |
-| `TELEGRAM_STREAM_CACHE_BYTES` | `134217728`| In-memory ring buffer size for active streams (128 MB). |
-| `TELEGRAM_STREAM_CACHE_TTL_SECONDS`| `120` | Cache lifetime for idle playback stream chunks (seconds). |
+| `TELEGRAM_READ_AHEAD_BYTES` | `67108864` | Read-ahead buffer size for progressive streaming (64 MB). |
+| `TELEGRAM_STREAM_CACHE_BYTES` | `268435456`| In-memory ring buffer size for active streams (256 MB). |
+| `TELEGRAM_STREAM_CACHE_TTL_SECONDS`| `300` | Cache lifetime for idle playback stream chunks (5 minutes). |
+| `TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT_SECONDS` | `45` | Per-block stall timeout; failed blocks retry immediately. |
 | `TELEGRAM_SESSION_PATH` | `/data/telegram.session` | MTProto session database path (falls back to legacy `/cache/telegram.session` if present). |
 | `TELEGRAM_SIGNATURE_CHANNEL` | `""` | Telegram handle used in video captions to detect cast lists. |
 | `TELEGRAM_CHANNEL_NAME_HINTS` | `""` | Comma-separated channel titles treated as source channels rather than studios. |
@@ -117,8 +118,8 @@ Tuning knobs for the Jellyfin FFmpeg stream probing wrapper (`scripts/jellyfin-f
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `JELLYFIN_FFMPEG_FAST_PROBE` | `true` | Apply fast-probe flags (`-analyzeduration`, `-probesize`) to accelerate `.strm` stream start. |
-| `JELLYFIN_FFMPEG_ANALYZE_DURATION` | `5M` | Maximum duration analyzed for stream information. |
-| `JELLYFIN_FFMPEG_PROBE_SIZE` | `10M` | Maximum buffer size probed for stream metadata. |
+| `JELLYFIN_FFMPEG_ANALYZE_DURATION` | `2M` | Maximum duration analyzed for stream information. |
+| `JELLYFIN_FFMPEG_PROBE_SIZE` | `3M` | Maximum buffer size probed for stream metadata. |
 
 ---
 
