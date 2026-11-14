@@ -72,7 +72,7 @@ def trigger_library_refresh(url, api_key, *, min_interval=10.0, http_client_fact
             try:
                 del_url = f"{url.rstrip('/')}/ScheduledTasks/Running/{task_id}"
                 del_req = urllib.request.Request(del_url, method="DELETE", headers=headers)
-                with urllib.request.urlopen(del_req, timeout=5) as resp:
+                with urllib.request.urlopen(del_req, timeout=5):
                     pass
                 log.info("Reset zombie Jellyfin library scan task: %s", task_id)
                 time.sleep(0.5)
