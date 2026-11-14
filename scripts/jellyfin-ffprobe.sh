@@ -39,4 +39,10 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-exec "$REAL_FFPROBE" "${args[@]}"
+TIMEOUT="${JELLYFIN_FFPROBE_TIMEOUT:-15s}"
+
+if command -v timeout >/dev/null 2>&1; then
+    exec timeout "$TIMEOUT" "$REAL_FFPROBE" "${args[@]}"
+else
+    exec "$REAL_FFPROBE" "${args[@]}"
+fi

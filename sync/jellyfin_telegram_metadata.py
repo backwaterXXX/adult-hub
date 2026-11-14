@@ -134,12 +134,29 @@ class _TelegramNfoReconciler:
     def _scan_inventory(self):
         start = 0
         seen_ids = set()
+        adult_folder_id = None
+        try:
+            libraries = self.call('GET', '/Library/VirtualFolders')
+            adult = next((folder for folder in (libraries or [])
+                          if '/media/adult' in folder.get('Locations', [])), None)
+            if adult:
+                adult_folder_id = adult.get('ItemId')
+        except Exception:
+            pass
+
+        params = {
+            'IncludeItemTypes': 'Movie',
+            'Fields': 'Path,Overview,OriginalTitle,Settings,Tags,Genres,Studios,People,ProviderIds',
+            'Limit': 500,
+        }
+        if adult_folder_id:
+            params['ParentId'] = adult_folder_id
+        else:
+            params['Recursive'] = 'true'
+
         while True:
-            page = self.call('GET', '/Items', params={
-                'Recursive': 'true', 'IncludeItemTypes': 'Movie',
-                'Fields': 'Path,Overview,OriginalTitle,Settings,Tags,Genres,Studios,People,ProviderIds',
-                'StartIndex': start, 'Limit': 500,
-            })
+            params['StartIndex'] = start
+            page = self.call('GET', '/Items', params=params)
             items = page.get('Items', [])
             for dto in items:
                 self._scan_item(dto, seen_ids)

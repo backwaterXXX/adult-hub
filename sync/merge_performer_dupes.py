@@ -115,14 +115,8 @@ def trigger_jellyfin_refresh(url: str, api_key: str):
     if not url or not api_key:
         return
     try:
-        import urllib.request
-        req = urllib.request.Request(
-            f"{url.rstrip('/')}/Library/Refresh",
-            headers={"Authorization": f'MediaBrowser Token="{api_key}"'},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            logger.info("Jellyfin Library/Refresh trigger: HTTP %s", resp.status)
+        from sync.jellyfin_db import trigger_library_refresh as _trig
+        _trig(url, api_key, logger=logger)
     except Exception as e:
         logger.warning("Nie udalo sie wywolac Jellyfin Library/Refresh: %s", e)
 
