@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import uuid
+import uuid  # noqa: F401 — kept for any direct callers, real work via queue_primitives
 
 from common import db
 from common.admin_job_health import timestamp_seconds
+from common.queue_primitives import advisory_xact_lock, generate_job_id, generate_lease_token
 from common.telegram_transfer_budget import (
     current_local_day_start_timestamp,
     next_daily_reset_timestamp,
@@ -21,7 +22,7 @@ def enqueue(db_url: str | None, *, video_id: str, duration_us: int,
     try:
         conn.row_factory = db.Record
         identity = f"{video_id}:{algorithm_version}:{decoder_profile}"
-        conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("phash:" + identity,))
+        advisory_xact_lock(conn, "phash:" + identity)
         video = conn.execute(
             "SELECT provider FROM videos WHERE id=%s FOR UPDATE", (video_id,),
         ).fetchone()
@@ -68,7 +69,7 @@ def enqueue(db_url: str | None, *, video_id: str, duration_us: int,
                         job_kind,state,fingerprint,finished_at)
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE NULL END)
                        RETURNING *""",
-                    (("p-" if kind == "phash" else "t-") + uuid.uuid4().hex, video_id,
+                    (("p-" if kind == "phash" else "t-") + generate_job_id(), video_id,
                      algorithm_version, decoder_profile, duration_us, user_id, kind,
                      'done' if complete else 'queued', current[0] if complete and kind == 'phash' else None,
                      complete),
@@ -277,7 +278,7 @@ def claim_next(db_url: str | None) -> dict | None:
         if row is None:
             conn.commit()
             return None
-        token = uuid.uuid4().hex
+        token = generate_lease_token()
         result = conn.execute(
             """UPDATE video_phash_jobs SET state='processing',attempts=attempts+1,
                lease_token=%s,lease_until=CURRENT_TIMESTAMP + (%s * INTERVAL '1 second'),

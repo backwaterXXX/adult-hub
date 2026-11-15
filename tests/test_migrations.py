@@ -558,5 +558,84 @@ class TestMigrationsEngine(PgTestCase):
         self.assertEqual(row[1], "")
 
 
+class TestMigrationRecoverability(PgTestCase):
+    """P20: verify atomicity and checkpoint-based recovery.
+
+    Migrations do not have ``down()`` functions; production recovery relies on
+    restoring a backup dump.  These tests confirm that:
+    1. A failing migration leaves the schema at the last committed state
+       (transaction atomicity — the foundation for backup/restore safety).
+    2. ``apply_migrations`` can continue from any intermediate checkpoint and
+       reach the same final schema as a full run from scratch.
+    """
+
+    def test_failed_migration_does_not_corrupt_schema(self):
+        """A migration that raises must leave the schema unchanged (transaction rollback)."""
+        _drop_everything(self.conn)
+        ensure_schema_migrations_table(self.conn)
+
+        # Apply the first two migrations to get a stable starting point.
+        for migration in list(MIGRATIONS)[:2]:
+            with self.conn:
+                migration.apply(self.conn)
+                _record(self.conn, migration.version, migration.name)
+
+        snapshot_before = schema_snapshot(self.conn)
+
+        # Simulate a migration that changes the schema then raises.
+        try:
+            with self.conn:
+                self.conn.execute("CREATE TABLE _test_rollback_probe (x int)")
+                raise RuntimeError("simulated migration failure")
+        except RuntimeError:
+            pass
+
+        snapshot_after = schema_snapshot(self.conn)
+        self.assertEqual(
+            snapshot_before, snapshot_after,
+            "Schema was modified by a failing migration; the transaction did not roll back",
+        )
+        self.assertNotIn("_test_rollback_probe", db.table_names(self.conn),
+                         "Partial table from failed migration must not persist")
+
+    def test_apply_continues_from_checkpoint_consistently(self):
+        """Continuing apply_migrations from a mid-chain checkpoint produces the full schema."""
+        # Reference: full migration from a truly empty database.
+        _drop_everything(self.conn)
+        ensure_schema_migrations_table(self.conn)
+        apply_migrations(self.conn)
+        full_snapshot = schema_snapshot(self.conn)
+
+        # Partial apply: stop at the halfway mark, then resume.
+        _drop_everything(self.conn)
+        ensure_schema_migrations_table(self.conn)
+        halfway = len(MIGRATIONS) // 2
+        for migration in MIGRATIONS[:halfway]:
+            with self.conn:
+                migration.apply(self.conn)
+                _record(self.conn, migration.version, migration.name)
+
+        apply_migrations(self.conn)  # continues from the checkpoint
+        incremental_snapshot = schema_snapshot(self.conn)
+
+        self.assertEqual(
+            full_snapshot, incremental_snapshot,
+            "Schema from full apply must match schema from checkpoint + continue",
+        )
+
+    def test_idempotent_apply_does_not_alter_schema(self):
+        """Calling apply_migrations on an up-to-date schema must leave it unchanged."""
+        _drop_everything(self.conn)
+        ensure_schema_migrations_table(self.conn)
+        apply_migrations(self.conn)
+        snapshot_before = schema_snapshot(self.conn)
+
+        apply_migrations(self.conn)  # should be a no-op
+        snapshot_after = schema_snapshot(self.conn)
+
+        self.assertEqual(snapshot_before, snapshot_after,
+                         "Re-applying migrations on a current schema must not alter it")
+
+
 if __name__ == "__main__":
     unittest.main()

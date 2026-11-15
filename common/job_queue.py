@@ -11,13 +11,19 @@ from __future__ import annotations
 
 import json
 import time
-import uuid
+import uuid  # noqa: F401 — kept for any direct callers, real work via queue_primitives
 
 from common.db import (
     Connection,
     Record,
     UndefinedTable,
     connect as _db_connect,
+)
+from common.queue_primitives import (
+    advisory_xact_lock,
+    generate_job_id,
+    generate_lease_token,
+    serialize_result,
 )
 
 # Actions the generic jobs-only worker can execute while holding its lock.
@@ -78,7 +84,7 @@ def enqueue_jobs_batch(db_url: str | None, items: list[tuple[str, dict]]) -> lis
     try:
         actions = sorted({action for action, _ in items})
         for action in actions:
-            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("enqueue_job:" + action,))
+            advisory_xact_lock(conn, "enqueue_job:" + action)
 
         # Lock equivalent rows so concurrent producers cannot double-enqueue.
         existing_by_action: dict[str, dict[str, str]] = defaultdict(dict)
@@ -102,7 +108,7 @@ def enqueue_jobs_batch(db_url: str | None, items: list[tuple[str, dict]]) -> lis
             if ident in existing_by_action[action]:
                 job_ids.append(existing_by_action[action][ident])
             else:
-                job_id = uuid.uuid4().hex
+                job_id = generate_job_id()
                 job_ids.append(job_id)
                 existing_by_action[action][ident] = job_id
                 to_insert.append((job_id, action, "queued", json.dumps(payload, ensure_ascii=False), None, now, now))
@@ -260,7 +266,7 @@ def claim_job(db_url: str | None, action: str) -> dict | None:
             conn.commit()
             return None
         record = dict(row)
-        token = uuid.uuid4().hex
+        token = generate_lease_token()
         changed = conn.execute(
             "UPDATE video_duplicate_jobs SET state='processing', lease_token=%s, updated_at=%s "
             "WHERE id=%s AND state='queued'",
@@ -305,16 +311,7 @@ def finish_job(db_url: str | None, job_id: str, state: str, result: dict, *,
     """Finish a job this process claimed, without overwriting another owner's run."""
     if state not in {"done", "failed"}:
         raise ValueError("Job completion state must be 'done' or 'failed'.")
-    serialized_result = json.dumps(result, ensure_ascii=False)
-    result_bytes = len(serialized_result.encode("utf-8"))
-    if result_bytes > MAX_JOB_RESULT_BYTES:
-        # Keep the job terminal and make truncation explicit instead of leaving
-        # it processing because a diagnostic/result payload grew without bound.
-        serialized_result = json.dumps({
-            "result_truncated": True,
-            "original_size_bytes": result_bytes,
-            "message": "Job result exceeded the storage limit; detailed result was omitted.",
-        }, ensure_ascii=False)
+    serialized_result = serialize_result(result, max_bytes=MAX_JOB_RESULT_BYTES)
     conn = connect_queue(db_url)
     try:
         changed = conn.execute(
