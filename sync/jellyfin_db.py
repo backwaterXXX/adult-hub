@@ -24,7 +24,7 @@ _LAST_LIBRARY_REFRESH_RESULT = False
 
 def _inspect_refresh_task(url, headers):
     """Query scheduled tasks to inspect RefreshLibrary task state.
-    Returns (task_id, state, is_zombie, progress).
+    Returns (task_id, state, progress).
     """
     try:
         tasks_url = f"{url.rstrip('/')}/ScheduledTasks"
@@ -35,22 +35,16 @@ def _inspect_refresh_task(url, headers):
             if t.get("Key") == "RefreshLibrary" or "bibliotek" in t.get("Name", "").lower():
                 task_id = t.get("Id")
                 state = t.get("State", "Idle")
-                last_res = t.get("LastExecutionResult") or {}
-                # Zombie check: State is Running, but LastExecutionResult has EndTimeUtc or Cancelled/Failed
-                is_zombie = (state == "Running" and (
-                    bool(last_res.get("EndTimeUtc")) or
-                    last_res.get("Status") in ("Cancelled", "Failed")
-                ))
                 progress = t.get("CurrentProgressPercentage", 0.0)
-                return task_id, state, is_zombie, progress
+                return task_id, state, progress
     except Exception:
         pass
-    return None, "Idle", False, 0.0
+    return None, "Idle", 0.0
 
 
 def trigger_library_refresh(url, api_key, *, min_interval=10.0, http_client_factory=None,
                             logger=None, time_fn=time.time):
-    """Ask Jellyfin to refresh its library, avoiding cancelling active scans and unsticking zombies."""
+    """Ask Jellyfin to refresh its library, avoiding cancelling active scans."""
     global _LAST_LIBRARY_REFRESH_TIME, _LAST_LIBRARY_REFRESH_RESULT
     log = logger or _LOGGER
     if not url or not api_key:
@@ -67,19 +61,12 @@ def trigger_library_refresh(url, api_key, *, min_interval=10.0, http_client_fact
             "X-Emby-Token": api_key,
         }
 
-        task_id, task_state, is_zombie, progress = _inspect_refresh_task(url, headers)
-        if is_zombie and task_id:
-            try:
-                del_url = f"{url.rstrip('/')}/ScheduledTasks/Running/{task_id}"
-                del_req = urllib.request.Request(del_url, method="DELETE", headers=headers)
-                with urllib.request.urlopen(del_req, timeout=5):
-                    pass
-                log.info("Reset zombie Jellyfin library scan task: %s", task_id)
-                time.sleep(0.5)
-            except Exception as e:
-                log.warning("Failed to reset zombie Jellyfin task: %s", e)
-        elif task_state == "Running" and not is_zombie:
-            log.info("Jellyfin library scan is already actively running (progress: %.1f%%), skipping refresh to avoid scan cancellation", progress)
+        task_id, task_state, progress = _inspect_refresh_task(url, headers)
+        if task_state == "Running":
+            log.info(
+                "Jellyfin library scan is already actively running (progress: %.1f%%), skipping refresh",
+                progress,
+            )
             _LAST_LIBRARY_REFRESH_TIME = now
             _LAST_LIBRARY_REFRESH_RESULT = True
             return True
