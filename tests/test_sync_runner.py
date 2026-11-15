@@ -377,6 +377,18 @@ class TestStartupConfiguration(RunnerHarness):
         self.assertEqual(stop.exception.code, 1)
         self.assertTrue(self.logs.has("FATAL: config load failed unexpectedly: config file vanished", "critical"))
 
+    def test_init_config_is_a_named_callable_not_bare_module_code(self):
+        # H-11: sys.exit must live inside _init_config(), not at the bare module
+        # level, so the module is importable without side-effects in test code.
+        module = self.load()
+        self.assertTrue(callable(module._init_config),
+                        "_init_config must be a callable function (not removed or inlined)")
+        # Defaults must be set even before _init_config is called explicitly.
+        self.assertIsInstance(module.interval, int)
+        self.assertIsInstance(module.BASE_BACKOFF_SECONDS, int)
+        self.assertIsInstance(module.MAX_BACKOFF_SECONDS, int)
+        self.assertIsInstance(module.SHUTDOWN_GRACE_SECONDS, int)
+
     def test_the_trigger_and_state_files_follow_the_environment(self):
         with contextlib.ExitStack() as stack:
             for name, value in (("SYNC_TRIGGER_FILE", "/tmp/run/trigger"),

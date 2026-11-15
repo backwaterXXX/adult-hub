@@ -61,21 +61,44 @@ try:
 except ImportError:
     APP_VERSION = os.getenv("APP_VERSION", "0+unknown")
 
-try:
-    from common.config_loader import load_config
-    cfg = load_config()
-    interval = cfg.sync.interval_minutes * 60
-    daily_at = getattr(cfg.sync, "daily_at", None)
-    run_on_startup = getattr(cfg.sync, "run_on_startup", True)
-    BASE_BACKOFF_SECONDS = cfg.sync.retry_backoff_base_seconds
-    MAX_BACKOFF_SECONDS = cfg.sync.retry_backoff_max_seconds
-    SHUTDOWN_GRACE_SECONDS = getattr(cfg.sync, "shutdown_grace_seconds", 180)
-except ConfigError as ce:
-    LOGGER.critical("[sync-daemon] FATAL CONFIG ERROR: %s", ce)
-    sys.exit(1)
-except Exception as e:
-    LOGGER.critical("[sync-daemon] FATAL: config load failed unexpectedly: %s", e)
-    sys.exit(1)
+# Config globals — initialised with safe defaults so the module is importable
+# before _init_config() runs (H-11: no bare sys.exit at the module level).
+interval: int = 900
+daily_at: Optional[str] = None
+run_on_startup: bool = True
+BASE_BACKOFF_SECONDS: int = 30
+MAX_BACKOFF_SECONDS: int = 900
+SHUTDOWN_GRACE_SECONDS: int = 180
+
+
+def _init_config() -> None:
+    """Load configuration and set module-level constants.
+
+    Called once at the end of module initialisation.  Separating this from
+    the bare module body means the module can be imported and re-executed by
+    the test harness safely (sys.exit lives inside a named function, not at
+    the bare module level).
+    """
+    global interval, daily_at, run_on_startup
+    global BASE_BACKOFF_SECONDS, MAX_BACKOFF_SECONDS, SHUTDOWN_GRACE_SECONDS
+    try:
+        from common.config_loader import load_config
+        cfg = load_config()
+        interval = cfg.sync.interval_minutes * 60
+        daily_at = getattr(cfg.sync, "daily_at", None)
+        run_on_startup = getattr(cfg.sync, "run_on_startup", True)
+        BASE_BACKOFF_SECONDS = cfg.sync.retry_backoff_base_seconds
+        MAX_BACKOFF_SECONDS = cfg.sync.retry_backoff_max_seconds
+        SHUTDOWN_GRACE_SECONDS = getattr(cfg.sync, "shutdown_grace_seconds", 180)
+    except ConfigError as ce:
+        LOGGER.critical("[sync-daemon] FATAL CONFIG ERROR: %s", ce)
+        sys.exit(1)
+    except Exception as e:
+        LOGGER.critical("[sync-daemon] FATAL: config load failed unexpectedly: %s", e)
+        sys.exit(1)
+
+
+_init_config()
 
 stop_event = threading.Event()
 _process_lock = threading.Lock()  # guards current_process across the main thread and signal handler
