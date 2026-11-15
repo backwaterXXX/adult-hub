@@ -1,6 +1,7 @@
 """Unit tests for Stage 3 Telegram authentication helpers and lifecycle."""
 
 import asyncio
+import os
 import stat
 import sys
 import tempfile
@@ -603,6 +604,44 @@ class TestTelegramAuthCli(unittest.TestCase):
                 "--api-hash", "abcdef0123456789abcdef0123456789",
             ])
             self.assertEqual(ret, 1)
+
+    def test_has_session_auth_key_valid(self):
+        import sqlite3
+        from resolver.providers.telegram_session import has_session_auth_key
+        with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as f:
+            temp_path = f.name
+        try:
+            with sqlite3.connect(temp_path) as conn:
+                conn.execute("CREATE TABLE sessions (dc_id INTEGER, server_address TEXT, port INTEGER, auth_key BLOB)")
+                conn.execute("INSERT INTO sessions VALUES (4, '149.154.167.91', 443, ?)", (b"x" * 256,))
+            self.assertTrue(has_session_auth_key(temp_path))
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+    def test_has_session_auth_key_invalid_or_missing(self):
+        import sqlite3
+        from resolver.providers.telegram_session import has_session_auth_key
+        self.assertFalse(has_session_auth_key("/nonexistent/path/session.session"))
+        with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as f:
+            temp_path = f.name
+            f.write(b"not a sqlite db")
+        try:
+            self.assertFalse(has_session_auth_key(temp_path))
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+        with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as f:
+            empty_path = f.name
+        try:
+            with sqlite3.connect(empty_path) as conn:
+                conn.execute("CREATE TABLE sessions (dc_id INTEGER, server_address TEXT, port INTEGER, auth_key BLOB)")
+                conn.execute("INSERT INTO sessions VALUES (4, '149.154.167.91', 443, NULL)")
+            self.assertFalse(has_session_auth_key(empty_path))
+        finally:
+            if os.path.exists(empty_path):
+                os.unlink(empty_path)
 
 
 if __name__ == "__main__":

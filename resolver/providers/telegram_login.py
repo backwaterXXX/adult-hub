@@ -15,6 +15,7 @@ from resolver.providers.telegram_authorization import invalidate as invalidate_a
 from resolver.providers.telegram_session import (
     _cleanup_pending_session,
     _promote_pending_session,
+    has_session_auth_key,
     is_session_authorized,
     validate_phone_number,
 )
@@ -129,6 +130,16 @@ class ActiveLoginChallenge:
         return max(0, int(min(self.expires_at, self.absolute_deadline) - now))
 
 
+def _fast_local_auth_check(account_id: str, target_path: str) -> bool:
+    try:
+        from resolver.providers.telegram_router import get_telegram_router
+        if account_id in get_telegram_router()._clients:
+            return True
+    except Exception:
+        pass
+    return has_session_auth_key(target_path)
+
+
 class TelegramLoginManager:
     """Thread-safe manager for transient Telegram login challenges.
 
@@ -203,6 +214,10 @@ class TelegramLoginManager:
 
         cached = self._cached_auth.get(ctx.account_id)
         if not check_live:
+            if cached is None and _fast_local_auth_check(ctx.account_id, target_path):
+                cached = True
+                self._cached_auth[ctx.account_id] = True
+
             if cached is True:
                 return {
                     "ok": True,
