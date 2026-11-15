@@ -28,7 +28,7 @@ help:
 	@printf '%s\n' \
 	  'install-dev    Install resolver, sync, shared package, and lint dependencies' \
 	  'lock           Refresh the uv-compiled resolver and sync dependency locks' \
-	  'test           Run Python, browser-contract, JavaScript syntax, and proxy-origin checks' \
+	  'test           Run Python, browser-contract, JavaScript syntax, ESLint, and proxy-origin checks' \
 	  'python-test    Run the full Python suite and require TEST_DATABASE_URL' \
 	  'coverage       Run the same suite while reporting test coverage' \
 	  'ui-contracts   Run every tests/**/*.cjs contract' \
@@ -44,14 +44,14 @@ help:
 	  'dev-logs       Follow the isolated development resolver logs'
 
 install-dev:
-	$(PYTHON) -m pip install -r requirements-dev.lock
-	$(PYTHON) -m pip install --no-deps ./common
+	uv pip install -r requirements-dev.lock
+	uv pip install --no-deps ./common
 
 lock:
 	uv pip compile --universal common/pyproject.toml resolver/requirements.txt --output-file resolver/requirements.lock
 	uv pip compile --universal common/pyproject.toml sync/requirements.txt --output-file sync/requirements.lock
 
-test: python-test ui-contracts js-check proxy-origin
+test: python-test ui-contracts js-check js-lint proxy-origin
 
 python-test:
 	$(TEST_ENV) $(PYTHON) -m unittest discover -s tests -v

@@ -815,7 +815,9 @@ class TestHealthEndpoints(ResolverHarness):
         self.assertEqual(health["cache_entries"], 7)
         self.assertEqual(ready["cache_entries"], 7)
         self.assertEqual(ready["database"], "ok")
-        self.assertEqual(len(cache_database.urls), 2)
+        # H-1: len(cache) is now cached for 30 s, so only the first health call
+        # queries the database; the second hits the in-memory counter.
+        self.assertEqual(len(cache_database.urls), 1)
 
     def test_readiness_checks_the_shared_catalog(self):
         module = self.load()

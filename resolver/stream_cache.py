@@ -11,7 +11,7 @@ from common import db
 logger = logging.getLogger("resolver")
 
 # Persistent LRU Stream Cache
-CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "1500")) # 25 minutes
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))  # 60 minutes (matches config.DEFAULT_CACHE_TTL_SECONDS)
 MAX_CACHE_ENTRIES = int(os.getenv("MAX_CACHE_ENTRIES", "2000"))
 
 def cache_ttl_for_provider(provider_name: str) -> int:
@@ -28,6 +28,9 @@ def cache_ttl_for_provider(provider_name: str) -> int:
         logger.debug("Ignored exception in cache_ttl_for_provider", exc_info=True)
         return CACHE_TTL_SECONDS
 
+_CACHE_LEN_TTL = 30.0  # seconds between DB count refreshes for __len__
+
+
 class PersistentLRUCache:
     """PostgreSQL-backed persistent LRU stream cache (plus in-memory hot set)."""
 
@@ -43,6 +46,8 @@ class PersistentLRUCache:
         self._pg_ok = bool(self.db_url)
         self._consecutive_errors = 0
         self._pg_recovery_at = 0.0
+        self._cached_len: int = 0
+        self._cached_len_at: float = 0.0
         self._init_db()
 
     def _pg(self, now: Optional[float] = None):
@@ -186,38 +191,45 @@ class PersistentLRUCache:
             self._memory.move_to_end(key)
             if len(self._memory) > self.max_entries:
                 self._memory.popitem(last=False)
+            # Snapshot the DB-availability state while still under lock so we
+            # don't hold the lock during the (potentially slow) connect call.
+            should_persist = self._pg_ok or (self.db_url and now >= self._pg_recovery_at)
 
-            try:
-                conn = self._pg(now)
-            except Exception:
-                return
-            if not conn:
-                return
-            try:
-                with conn:
+        # DB operations are intentionally outside the lock (C-2): a slow
+        # connect (up to 10 s) must not block concurrent get()/invalidate().
+        if not should_persist:
+            return
+        try:
+            conn = self._pg(now)
+        except Exception:
+            return
+        if not conn:
+            return
+        try:
+            with conn:
+                conn.execute("""
+                    INSERT INTO stream_cache (cache_key, stream_url, expire_at, last_accessed)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (cache_key) DO UPDATE SET
+                        stream_url = EXCLUDED.stream_url,
+                        expire_at = EXCLUDED.expire_at,
+                        last_accessed = EXCLUDED.last_accessed
+                """, (key, url, exp, now))
+
+                cur = conn.execute("SELECT count(*) FROM stream_cache")
+                count = cur.fetchone()[0]
+                if count > self.max_entries:
+                    overflow = count - self.max_entries
                     conn.execute("""
-                        INSERT INTO stream_cache (cache_key, stream_url, expire_at, last_accessed)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (cache_key) DO UPDATE SET
-                            stream_url = EXCLUDED.stream_url,
-                            expire_at = EXCLUDED.expire_at,
-                            last_accessed = EXCLUDED.last_accessed
-                    """, (key, url, exp, now))
-
-                    cur = conn.execute("SELECT count(*) FROM stream_cache")
-                    count = cur.fetchone()[0]
-                    if count > self.max_entries:
-                        overflow = count - self.max_entries
-                        conn.execute("""
-                            DELETE FROM stream_cache WHERE cache_key IN (
-                                SELECT cache_key FROM stream_cache ORDER BY last_accessed ASC LIMIT %s
-                            )
-                        """, (overflow,))
-                self._consecutive_errors = 0
-            except Exception as e:
-                self._handle_pg_error(e, now)
-            finally:
-                conn.close()
+                        DELETE FROM stream_cache WHERE cache_key IN (
+                            SELECT cache_key FROM stream_cache ORDER BY last_accessed ASC LIMIT %s
+                        )
+                    """, (overflow,))
+            self._consecutive_errors = 0
+        except Exception as e:
+            self._handle_pg_error(e, now)
+        finally:
+            conn.close()
 
     def invalidate(self, key: str):
         """Drop one entry (used when a cached URL is found dead)."""
@@ -228,6 +240,8 @@ class PersistentLRUCache:
     def __len__(self) -> int:
         now = time.time()
         with self._lock:
+            if now - self._cached_len_at < _CACHE_LEN_TTL:
+                return self._cached_len
             if self._pg_ok:
                 try:
                     conn = self._pg(now)
@@ -235,13 +249,19 @@ class PersistentLRUCache:
                     conn = None
                 if conn:
                     try:
-                        cur = conn.execute("SELECT count(*) FROM stream_cache WHERE expire_at > %s", (now,))
-                        return cur.fetchone()[0]
+                        cur = conn.execute(
+                            "SELECT count(*) FROM stream_cache WHERE expire_at > %s", (now,)
+                        )
+                        self._cached_len = cur.fetchone()[0]
+                        self._cached_len_at = now
+                        return self._cached_len
                     except Exception as e:
                         self._handle_pg_error(e, now)
                     finally:
                         conn.close()
-            return sum(1 for _, exp, _ in self._memory.values() if exp > now)
+            self._cached_len = sum(1 for _, exp, _ in self._memory.values() if exp > now)
+            self._cached_len_at = now
+            return self._cached_len
 
     def clear(self) -> int:
         """Clear persisted and in-memory entries and return the unique live count.
@@ -271,6 +291,8 @@ class PersistentLRUCache:
                 finally:
                     conn.close()
             self._memory.clear()
+            self._cached_len = 0
+            self._cached_len_at = 0.0
             return len(live_keys)
 
     def close(self):

@@ -1,4 +1,9 @@
 {
+  "private": true,
+  "scripts": {
+    "lint": "eslint resolver/static/admin-v2",
+    "check": "find resolver/static/admin-v2 -name '*.js' -exec node --check {} +"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^10.14.0",

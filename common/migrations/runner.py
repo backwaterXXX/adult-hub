@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
+import pathlib
+import re as _re
 from typing import Any
 
 from common import db
@@ -14,69 +17,46 @@ from common.migrations.legacy import (
     video_metadata_overrides,
 )
 from common.migrations.m0001_baseline import migration as baseline
-from common.migrations.m0050_duplicate_reconcile_schedule import (
-    current_migration as current_duplicate_reconcile_schedule,
-)
-from common.migrations.m0051_video_visual_duplicates import (
-    current_migration as current_video_visual_duplicates,
-)
-from common.migrations.m0052_video_visual_timestamps import (
-    current_migration as current_video_visual_timestamps,
-)
-
-from common.migrations.m0053_visual_history import current_migration as current_video_visual_history
-from common.migrations.m0054_telegram_latest_cursor import current_migration as current_telegram_latest_cursor
-from common.migrations.m0055_duplicate_reconcile_opt_in import (
-    current_migration as current_duplicate_reconcile_opt_in,
-)
-from common.migrations.m0056_performer_alias_canonical_index import (
-    current_migration as current_performer_alias_canonical_index,
-)
-from common.migrations.m0057_split_phash_jobs import current_migration as current_split_phash_jobs
-from common.migrations.m0058_cron_schedules import current_migration as current_cron_schedules
-from common.migrations.m0059_metadata_proposal_retries import current_migration as current_metadata_proposal_retries
-from common.migrations.m0060_video_job_lease_token import current_migration as current_video_job_lease_token
-from common.migrations.m0061_schedule_stages import current_migration as current_schedule_stages
-from common.migrations.m0062_artwork_generation_schedule import (
-    current_migration as current_artwork_generation_schedule,
-)
-from common.migrations.m0063_source_removal_indexes import (
-    current_migration as current_source_removal_indexes,
-)
-from common.migrations.m0064_video_duplicate_decisions_evidence import (
-    current_migration as current_video_duplicate_decisions_evidence,
-)
-from common.migrations.m0065_system_schedules_last_job_id import (
-    current_migration as current_system_schedules_last_job_id,
-)
-from common.migrations.m0066_telegram_accounts import (
-    current_migration as current_telegram_accounts,
-)
-from common.migrations.m0067_scene_fingerprints_schedule import (
-    current_migration as current_scene_fingerprints_schedule,
-)
-from common.migrations.m0068_phash_generation_schedule import (
-    current_migration as current_phash_generation_schedule,
-)
 
 logger = logging.getLogger(__name__)
 
 SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
 MIGRATION_LOCK_ID = 0xAD01780B
 
+# Version number of the first migration that belongs to the current
+# (post-squash) chain.  Migrations below this threshold are either part
+# of the baseline or the legacy pre-squash compatibility chain in legacy.py.
+_CURRENT_CHAIN_START = 50
+
+_MIGRATION_FILENAME_RE = _re.compile(r"^m(\d{4})_.*\.py$")
+
+
+def _discover_current_migrations() -> tuple[Migration, ...]:
+    """Auto-discover current-chain migrations from the package directory.
+
+    Scans for ``m{NNNN}_*.py`` files whose version number is at or above
+    ``_CURRENT_CHAIN_START``.  Adding a new migration file is then the only
+    step required — no manual import or tuple update needed (C-5).
+    """
+    migrations_dir = pathlib.Path(__file__).parent
+    found: list[Migration] = []
+    for path in sorted(migrations_dir.glob("m[0-9]*.py")):
+        match = _MIGRATION_FILENAME_RE.match(path.name)
+        if not match:
+            continue
+        version = int(match.group(1))
+        if version < _CURRENT_CHAIN_START:
+            continue
+        module = importlib.import_module(f"common.migrations.{path.stem}")
+        if hasattr(module, "current_migration"):
+            found.append(module.current_migration)
+    return tuple(sorted(found, key=lambda m: m.version))
+
+
 # A fresh database is built by the tracked baseline and receives small forward
 # upgrades separately. The historical post-baseline chain is replayed only by
 # databases whose recorded history proves they began before the squash.
-CURRENT_MIGRATIONS: tuple[Migration, ...] = (
-    current_duplicate_reconcile_schedule, current_video_visual_duplicates,
-    current_video_visual_timestamps, current_video_visual_history, current_telegram_latest_cursor,
-    current_duplicate_reconcile_opt_in, current_performer_alias_canonical_index,
-    current_split_phash_jobs, current_cron_schedules, current_metadata_proposal_retries,
-    current_video_job_lease_token, current_schedule_stages, current_artwork_generation_schedule,
-    current_source_removal_indexes, current_video_duplicate_decisions_evidence,
-    current_system_schedules_last_job_id, current_telegram_accounts,
-    current_scene_fingerprints_schedule, current_phash_generation_schedule,
-)
+CURRENT_MIGRATIONS: tuple[Migration, ...] = _discover_current_migrations()
 MIGRATIONS: tuple[Migration, ...] = (baseline, *CURRENT_MIGRATIONS)
 
 # Names a post-baseline database is allowed to record at versions below the

@@ -6,11 +6,8 @@ import signal
 import subprocess
 import threading
 import tempfile
-import logging
+from typing import Optional
 from common.logging_setup import configure_logging
-
-logger = logging.getLogger(__name__)
-
 
 LOGGER = configure_logging("sync.runner")
 
@@ -29,7 +26,7 @@ except ImportError:
 
 try:
     from common.job_queue import claim_job, finish_job, heartbeat_job, requeue_processing, pending_actions, WORKER_ACTIONS, ALL_ACTIONS
-except Exception:  # pragma: no cover - the shared package ships in both images
+except ImportError:  # pragma: no cover - the shared package ships in both images
     claim_job = finish_job = requeue_processing = None
     heartbeat_job = None
     pending_actions = None
@@ -38,12 +35,12 @@ except Exception:  # pragma: no cover - the shared package ships in both images
 
 try:
     from common.worker_capabilities import publish_worker_capabilities
-except Exception:  # pragma: no cover - older deployments do not publish capabilities
+except ImportError:  # pragma: no cover - older deployments do not publish capabilities
     publish_worker_capabilities = None
 
 try:
     from common.admin_schedules import dispatch_due_schedules
-except Exception:  # pragma: no cover - older deployments may not have migrations yet
+except ImportError:  # pragma: no cover - older deployments may not have migrations yet
     dispatch_due_schedules = None
 
 try:
@@ -51,7 +48,7 @@ try:
         claim_due_system_schedule, dispatch_due_system_schedules, ensure_system_schedules,
         finish_system_schedule, list_system_schedules, recover_system_schedules,
     )
-except Exception:  # pragma: no cover - older deployments may not have migrations yet
+except ImportError:  # pragma: no cover - older deployments may not have migrations yet
     claim_due_system_schedule = dispatch_due_system_schedules = ensure_system_schedules = finish_system_schedule = list_system_schedules = recover_system_schedules = None
 
 try:
@@ -81,6 +78,7 @@ except Exception as e:
     sys.exit(1)
 
 stop_event = threading.Event()
+_process_lock = threading.Lock()  # guards current_process across the main thread and signal handler
 current_process = None
 consecutive_errors = 0
 requested_source = None
@@ -91,12 +89,13 @@ SYNC_JOB_HEARTBEAT_INTERVAL_SECONDS = 15
 def signal_handler(signum, frame):
     LOGGER.info("[sync-daemon] Received shutdown signal, stopping...")
     stop_event.set()
-    global current_process
-    if current_process and current_process.poll() is None:
+    with _process_lock:
+        proc = current_process
+    if proc and proc.poll() is None:
         try:
-            current_process.terminate()
+            proc.terminate()
         except Exception:
-            logger.debug("Ignored exception in signal_handler", exc_info=True)
+            LOGGER.debug("Ignored exception in signal_handler")
 
 def install_signal_handlers() -> None:
     """Route SIGTERM and SIGINT to a graceful stop. Called only by the daemon entry point."""
@@ -173,9 +172,8 @@ def worker_heartbeat_loop() -> None:
         stop_event.wait(5.0)
 
 
-def update_sync_status(running: bool, exit_code: int = None, success: bool = None, source: str = None):
+def update_sync_status(running: bool, exit_code: Optional[int] = None, success: Optional[bool] = None, source: Optional[str] = None):
     try:
-        import json
         from pathlib import Path
         p = Path(STATUS_FILE)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -218,7 +216,8 @@ def run_jobs_worker() -> int:
     timers = _WaitTimers()
     try:
         proc = subprocess.Popen([sys.executable, "-m", "sync.sync", "--jobs-only"])
-        current_process = proc
+        with _process_lock:
+            current_process = proc
         while proc.poll() is None:
             if stop_event.is_set():
                 _stop_child(proc)
@@ -235,7 +234,8 @@ def run_jobs_worker() -> int:
         LOGGER.warning("[sync-daemon] Jobs worker execution error: %s", e)
         return -1
     finally:
-        current_process = None
+        with _process_lock:
+            current_process = None
 
 
 def log_next_sync_schedule():
@@ -469,14 +469,16 @@ def _report_sync_exit(exit_code: int, interrupted: bool) -> bool:
 
 def _reap_sync_child() -> None:
     global current_process
-    if current_process is not None:
+    with _process_lock:
+        proc = current_process
+        current_process = None
+    if proc is not None:
         try:
-            if current_process.poll() is None:
-                _stop_child(current_process)
-            current_process.wait()
+            if proc.poll() is None:
+                _stop_child(proc)
+            proc.wait()
         except Exception as e:
             LOGGER.warning("[sync-daemon] Could not reap sync process: %s", e)
-    current_process = None
 
 
 def run_full_sync(source_filter=None, sync_mode="scheduled"):
@@ -488,9 +490,11 @@ def run_full_sync(source_filter=None, sync_mode="scheduled"):
     success = False
     exit_code = -1
     try:
-        current_process = subprocess.Popen([sys.executable, "-m", "sync.sync", *source_arg, *mode_arg])
-        interrupted = _wait_for_sync_child(current_process)
-        exit_code = current_process.returncode if current_process.returncode is not None else -1
+        proc = subprocess.Popen([sys.executable, "-m", "sync.sync", *source_arg, *mode_arg])
+        with _process_lock:
+            current_process = proc
+        interrupted = _wait_for_sync_child(proc)
+        exit_code = proc.returncode if proc.returncode is not None else -1
         success = _report_sync_exit(exit_code, interrupted)
     except Exception as e:
         if consecutive_errors < 3:
@@ -512,7 +516,7 @@ def _clear_sync_trigger() -> None:
         if isinstance(payload, dict) and payload.get("action") == "sync":
             trig.unlink(missing_ok=True)
     except Exception:
-        logger.debug("Ignored exception in _clear_sync_trigger", exc_info=True)
+        LOGGER.debug("Ignored exception in _clear_sync_trigger")
 
 
 def _latest_scheduled_sync_start() -> int | None:

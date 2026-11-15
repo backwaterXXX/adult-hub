@@ -5,6 +5,8 @@ import os
 from typing import Any, Dict, Optional, Set
 from common.http_rate_limit import snapshot_host_rate_limit_stats
 
+from types import SimpleNamespace
+
 from sync import sync as _core
 
 from common import schedule_stages
@@ -282,13 +284,14 @@ def _reconcile_channel_availability(sp: _SyncPass, ch, synced_ids) -> None:
         sp.availability_errors.append(f"{ch.id}: {_core._safe_error_detail(e)}")
 
 
-def _legacy_telegram_channel(channel_name: str):
-    class _SimpleCh:
-        studio = channel_name
-        min_duration_seconds = 420
-        max_pages = _core.TELEGRAM_MAX_PAGES
-        history_batch_size = 100
-    return _SimpleCh()
+def _legacy_telegram_channel(channel_name: str) -> SimpleNamespace:
+    """Build a minimal channel descriptor for the legacy (string-name) Telegram path."""
+    return SimpleNamespace(
+        studio=channel_name,
+        min_duration_seconds=420,
+        max_pages=_core.TELEGRAM_MAX_PAGES,
+        history_batch_size=100,
+    )
 
 
 def _scan_legacy_telegram_channels(sp: _SyncPass) -> None:
@@ -356,23 +359,20 @@ def _run_stream_rewrite(sp: _SyncPass) -> None:
         _core.logger.warning("Stream rewrite pass failed: %s", e)
 
 
-def _run_scene_identification(sp: _SyncPass) -> None:
-    # Scene identification for Telegram is the first metadata-enrichment step:
-    # fingerprints must run before performer-profile lookups and PBC requests.
-    # The scraper is optional, so an absent module leaves the stage unrecorded
-    # instead of reporting a failure on every install that never asked for it.
+def _run_scene_identification(sp: _SyncPass, problems: list) -> None:
     try:
         from sync.scene_scrapers import backfill_scenes  # type: ignore
     except ImportError:
         backfill_scenes = None
     if backfill_scenes is not None:
         try:
-            sp.recorder.run(
-                "scene-identification", "metadata_scenes",
+            _run_timed_stage(
+                "metadata_scenes",
                 lambda: backfill_scenes(sp.conn, _core.MEDIA_DIR, limit=_core.SCENE_BACKFILL_PER_RUN),
             )
         except Exception as e:
             _core.logger.warning("Scene fingerprint backfill pass failed: %s", e)
+            problems.append(_core._safe_error_detail(e))
     _run_duplicate_jobs_checkpoint(sp.conn, sp.collected)
 
 
@@ -642,7 +642,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         _run_dead_stream_filter(sp)
         _run_final_flush(sp)
         _run_stream_rewrite(sp)
-        _run_scene_identification(sp)
+        sp.recorder.run_group("scene-identification", lambda problems: _run_scene_identification(sp, problems))
         sp.recorder.run_group("metadata-backfill", lambda problems: _run_metadata_backfills(sp, problems))
         _run_telegram_title_cleanup(sp)
         sp.recorder.run("library-maintenance", None, lambda: _library_maintenance_pass(sp))

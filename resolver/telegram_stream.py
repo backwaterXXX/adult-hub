@@ -275,10 +275,14 @@ class ParallelTelegramStreamManager:
                             break
 
                     if job_to_run is None:
-                        # Memory constrained, wait for release
+                        # Memory constrained: release the lock (via Condition.wait) and wait
+                        # briefly for a block to complete. asyncio.timeout is used instead of
+                        # asyncio.wait_for so that lock state is correctly restored on
+                        # cancellation (C-3; asyncio.wait_for had a bug pre-3.12 / CPython #86296).
                         try:
-                            await asyncio.wait_for(self._mem_cond.wait(), timeout=0.1)
-                        except asyncio.TimeoutError:
+                            async with asyncio.timeout(0.1):
+                                await self._mem_cond.wait()
+                        except TimeoutError:
                             pass
                         continue
 
@@ -470,11 +474,18 @@ class ParallelTelegramStreamManager:
         cache_key = (key, cur_blk)
         entry: Optional[_CacheEntry] = None
         job: Optional[_Job] = None
+        _acquire_attempts = 0
 
         # Retry if a prefetch entry was evicted before we pinned it:
         # re-acquiring attaches demand (or creates a fresh demand job
         # pinned at completion), so the second pass is guaranteed.
         while entry is None:
+            _acquire_attempts += 1
+            if _acquire_attempts > 50:
+                raise RuntimeError(
+                    f"Failed to pin block {cur_blk} for key {key!r} after 50 attempts "
+                    "(persistent eviction pressure or logic error)"
+                )
             async with self._lock:
                 now = time.monotonic()
                 # 1. Early demand block scheduling MUST precede prefetch start

@@ -20,6 +20,7 @@ max-complexity = 10
 "common/fuzzy_performers.py" = ["T201"]
 "migrate_db.py" = ["E402", "T201"]
 "restore_db.py" = ["E402", "T201"]
+"resolver/phash_subprocess_entry.py" = ["T201"]
 "scripts/*.py" = ["E402", "T201"]
 "sync/find_dupes.py" = ["T201"]
 "sync/jellyfin_db.py" = ["T201"]

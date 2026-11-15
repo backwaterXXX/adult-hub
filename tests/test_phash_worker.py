@@ -241,7 +241,8 @@ class TestCompute(WorkerPatch):
         self.assertEqual(payload["idle_bytes_per_second"], 10_000_000)
         argv = popen.call_args[0][0]
         self.assertEqual(argv[0], sys.executable)
-        self.assertEqual(argv[1], "-c")
+        self.assertEqual(argv[1], "-m")
+        self.assertEqual(argv[2], "resolver.phash_subprocess_entry")
         self.assertTrue(popen.call_args[1]["start_new_session"])
 
     def test_a_successful_run_decodes_the_thumbnail(self):

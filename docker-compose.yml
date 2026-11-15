@@ -18,7 +18,10 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-    # Host networking supports native DLNA / UPnP discovery on Debian
+    # Host networking supports native DLNA / UPnP discovery on Debian.
+    # Trade-off: no network isolation for Jellyfin (accepted — Jellyfin serves
+    # LAN only and DLNA/UPnP requires host-level multicast). Revisit if
+    # Jellyfin ever needs to be internet-facing; bridge + --publish is safer.
     network_mode: host
     environment:
       - JELLYFIN_PublishedServerUrl=http://${HOST_IP:-127.0.0.1}:8096
@@ -47,6 +50,7 @@ services:
         APP_VERSION: ${APP_VERSION:-dev}
     container_name: adult-resolver
     restart: unless-stopped
+    mem_limit: 2g
     networks:
       - default
       - selfhost

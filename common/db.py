@@ -103,6 +103,25 @@ _FLOAT_TIME_COLUMNS = frozenset({"expire_at", "last_accessed", "ended_at"})
 _NANO_TIME_COLUMNS = frozenset({"performers_audited_at"})
 
 
+def _build_epoch_patterns():
+    """Compile the SQL-rewriting patterns once at import time (H-2: avoid per-call recompilation)."""
+    names = "|".join(sorted(map(re.escape, _EPOCH_TIME_COLUMNS), key=len, reverse=True))
+    nanos = "|".join(sorted(map(re.escape, _NANO_TIME_COLUMNS), key=len, reverse=True))
+    json_names = "|".join(sorted(map(re.escape, _JSONB_COLUMNS), key=len, reverse=True))
+    return (
+        re.compile(rf"(?i)(\b(?:[\w\"]+\.)?(?:{nanos})\s*=\s*)(%s)"),
+        re.compile(rf"(?i)(\b(?:[\w\"]+\.)?(?:{nanos})\s*(?:<=|>=|<>|!=|=|<|>)\s*)(%s)"),
+        re.compile(rf"(?i)(\b(?:[\w\"]+\.)?(?:{names})\s*=\s*)(%s)"),
+        re.compile(rf"(?i)(\b(?:[\w\"]+\.)?(?:{names})\s*(?:<=|>=|<>|!=|=|<|>)\s*)(%s)"),
+        re.compile(rf"(?i)(\b(?:[\w\"]+\.)?(?:{json_names})\s*=\s*)(%s)"),
+        re.compile(r"(?i)(THEN\s+)(%s)(\s+ELSE\s+aliases\b)"),
+    )
+
+
+(_RE_NANO_EQ, _RE_NANO_CMP, _RE_EPOCH_EQ, _RE_EPOCH_CMP,
+ _RE_JSON_EQ, _RE_JSON_ELSE) = _build_epoch_patterns()
+
+
 def _split_sql_list(value: str) -> list[str]:
     """Split a SQL expression list without splitting nested expressions."""
     parts: list[str] = []
@@ -131,20 +150,27 @@ def _split_sql_list(value: str) -> list[str]:
     return parts
 
 
+_TABLE_COLUMNS_CACHE: dict[str, list[str]] = {}
+"""Module-level cache for information_schema column lookups (H-8: avoid per-INSERT queries)."""
+
+
 def _adapt_no_column_insert(sql: str, connection=None) -> str:
     no_columns = re.search(
         r'(?is)(INSERT\s+INTO\s+([\w"]+)(?:\.[\w"]+)?\s+)(VALUES\s*\([^()]*\))', sql
     )
     if no_columns and connection is not None:
         table = no_columns.group(2).split(".")[-1].strip('"')
-        columns = connection.execute(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_schema = current_schema() AND table_name = %s "
-            "ORDER BY ordinal_position",
-            (table,),
-        ).fetchall()
-        if columns:
-            column_list = ", ".join('"' + row[0].replace('"', '""') + '"' for row in columns)
+        if table not in _TABLE_COLUMNS_CACHE:
+            rows = connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = %s "
+                "ORDER BY ordinal_position",
+                (table,),
+            ).fetchall()
+            _TABLE_COLUMNS_CACHE[table] = [row[0] for row in rows]
+        columns_cached = _TABLE_COLUMNS_CACHE[table]
+        if columns_cached:
+            column_list = ", ".join('"' + col.replace('"', '""') + '"' for col in columns_cached)
             replacement = no_columns.group(1) + "(" + column_list + ") " + no_columns.group(3)
             sql = sql[:no_columns.start()] + replacement + sql[no_columns.end():]
     return sql
@@ -189,30 +215,12 @@ def _adapt_insert_values(sql: str) -> str:
 
 
 def _adapt_epoch_comparisons(sql: str) -> str:
-    names = "|".join(sorted(map(re.escape, _EPOCH_TIME_COLUMNS), key=len, reverse=True))
-    nanos = "|".join(sorted(map(re.escape, _NANO_TIME_COLUMNS), key=len, reverse=True))
-    sql = re.sub(
-        rf"(?i)(\b(?:[\w\"]+\.)?(?:{nanos})\s*=\s*)(%s)",
-        r"\1to_timestamp(\2 / 1000000000.0)", sql,
-    )
-    sql = re.sub(
-        rf"(?i)(\b(?:[\w\"]+\.)?(?:{nanos})\s*(?:<=|>=|<>|!=|=|<|>)\s*)(%s)",
-        r"\1to_timestamp(\2 / 1000000000.0)", sql,
-    )
-    sql = re.sub(
-        rf"(?i)(\b(?:[\w\"]+\.)?(?:{names})\s*=\s*)(%s)",
-        r"\1to_timestamp(\2)", sql,
-    )
-    sql = re.sub(
-        rf"(?i)(\b(?:[\w\"]+\.)?(?:{names})\s*(?:<=|>=|<>|!=|=|<|>)\s*)(%s)",
-        r"\1to_timestamp(\2)", sql,
-    )
-    json_names = "|".join(sorted(map(re.escape, _JSONB_COLUMNS), key=len, reverse=True))
-    sql = re.sub(
-        rf"(?i)(\b(?:[\w\"]+\.)?(?:{json_names})\s*=\s*)(%s)",
-        r"\1\2::jsonb", sql,
-    )
-    sql = re.sub(r"(?i)(THEN\s+)(%s)(\s+ELSE\s+aliases\b)", r"\1\2::jsonb\3", sql)
+    sql = _RE_NANO_EQ.sub(r"\1to_timestamp(\2 / 1000000000.0)", sql)
+    sql = _RE_NANO_CMP.sub(r"\1to_timestamp(\2 / 1000000000.0)", sql)
+    sql = _RE_EPOCH_EQ.sub(r"\1to_timestamp(\2)", sql)
+    sql = _RE_EPOCH_CMP.sub(r"\1to_timestamp(\2)", sql)
+    sql = _RE_JSON_EQ.sub(r"\1\2::jsonb", sql)
+    sql = _RE_JSON_ELSE.sub(r"\1\2::jsonb\3", sql)
     return sql
 
 
@@ -280,13 +288,15 @@ class Record(tuple):
     def __new__(cls, values: Sequence[Any], columns: Sequence[str]):
         instance = super().__new__(cls, tuple(values))
         instance._columns = list(columns)
+        # O(1) name→index map (H-3: replaces O(n) list.index() per access)
+        instance._columns_map: dict[str, int] = {name: i for i, name in enumerate(columns)}
         return instance
 
     def __getitem__(self, key):
         if isinstance(key, str):
             try:
-                key = self._columns.index(key)
-            except ValueError:
+                key = self._columns_map[key]
+            except KeyError:
                 raise KeyError(key) from None
         return super().__getitem__(key)
 
@@ -295,7 +305,7 @@ class Record(tuple):
 
     def __contains__(self, key):
         if isinstance(key, str):
-            return key in self._columns
+            return key in self._columns_map
         return super().__contains__(key)
 
 

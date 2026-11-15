@@ -2,6 +2,7 @@ import os
 import time
 import asyncio
 import inspect
+from contextlib import asynccontextmanager
 from common import db
 from common.job_queue import ALL_ACTIONS
 from common.logging_setup import configure_logging
@@ -174,12 +175,12 @@ app.state.admin_extra = _admin_extra
 app.state.admin_cache_clear = _admin_cache_clear
 
 
-@app.on_event("shutdown")
 async def _on_shutdown():
+    """Shutdown cleanup: close all resources. Called by lifespan and directly in tests."""
     try:
         await aclose_shared_client()
     except Exception:
-        logger.debug("Ignored exception in _on_shutdown", exc_info=True)
+        logger.debug("Ignored exception closing shared HTTP client")
     # Bounded parallel Telegram streaming (v1, opt-in): let the provider
     # close its own resources (including the shared stream manager, if one
     # was created). provider.close() creates nothing; never fail shutdown.
@@ -192,13 +193,22 @@ async def _on_shutdown():
                 if inspect.isawaitable(_res):
                     await asyncio.wait_for(_res, timeout=5.0)
             except Exception:
-                logger.debug("Ignored exception in _on_shutdown", exc_info=True)
+                logger.debug("Ignored exception closing Telegram provider")
     except Exception:
-        logger.debug("Ignored exception in _on_shutdown", exc_info=True)
+        logger.debug("Ignored exception in _on_shutdown")
     try:
         cache.close()
     except Exception:
-        logger.debug("Ignored exception in _on_shutdown", exc_info=True)
+        logger.debug("Ignored exception closing stream cache")
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Application lifespan: clean up resources on shutdown (H-7: replaces deprecated on_event)."""
+    yield
+    await _on_shutdown()
+
+app.router.lifespan_context = _lifespan
 
 # Concurrency limit for upstream stream resolutions (#28)
 RESOLVER_CONCURRENCY_LIMIT = int(os.getenv("RESOLVER_CONCURRENCY_LIMIT", "10"))
@@ -254,6 +264,14 @@ async def _validate_proxy_url_async(url: str):
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
 
 
+async def _close_ctx(ctx) -> None:
+    """Close a manually-managed httpx streaming context, swallowing errors (H-10)."""
+    try:
+        await ctx.__aexit__(None, None, None)
+    except Exception:
+        logger.debug("Ignored exception closing upstream stream context")
+
+
 async def _safe_proxy_stream(client, url: str, *, headers: dict, timeout: "float | httpx.Timeout | None", method: str = "GET"):
     """Open a streaming request, checking every redirect before following it."""
     current = url
@@ -264,7 +282,7 @@ async def _safe_proxy_stream(client, url: str, *, headers: dict, timeout: "float
         if response.status_code not in _REDIRECT_CODES:
             return context, response
         location = response.headers.get("location")
-        await context.__aexit__(None, None, None)
+        await _close_ctx(context)
         if not location:
             raise HTTPException(status_code=502, detail="Invalid upstream redirect")
         current = urljoin(current, location)
@@ -390,7 +408,7 @@ def _performer_bio_payload(wanted: str) -> dict:
     """Blocking performer lookup; the endpoint runs it off the event loop."""
     import json as _json
 
-    conn = db.connect(os.getenv("DATABASE_URL") or None)
+    conn = db.connect(os.getenv("DATABASE_URL"))
     try:
         tables = db.table_names(conn)
         canonical = wanted
@@ -468,7 +486,7 @@ def _parse_play_id_or_400(video_id: str) -> Tuple[str, str]:
 def _get_stream_candidate_ids(requested_id: str) -> list[str]:
     """Look up canonical video ID and all active failover sources from the database."""
     try:
-        conn = db.connect(os.getenv("DATABASE_URL") or None)
+        conn = db.connect(os.getenv("DATABASE_URL"))
         try:
             canonical_id = requested_id
             tables = db.table_names(conn)
@@ -537,7 +555,6 @@ async def _telegram_variants(cand_id: str, raw_id: str):
 
 
 @api.get("/play/{video_id:path}/variants")
-@api.get("/api/videos/{video_id:path}/variants")
 async def get_video_variants(video_id: str):
     """Get available video variants/qualities.
 
@@ -572,6 +589,12 @@ async def get_video_variants(video_id: str):
         raise HTTPException(status_code=502, detail="Failed to resolve video variants")
 
     raise HTTPException(status_code=404, detail=f"No video found for {video_id}")
+
+
+@api.get("/api/videos/{video_id:path}/variants")
+async def get_video_variants_legacy(video_id: str):
+    """Legacy variants URL — 301 redirect to the canonical endpoint."""
+    return RedirectResponse(url=f"/admin/play/{video_id}/variants", status_code=301)
 
 
 def _telegram_channel_unauthorized(raw_id: Optional[str]) -> bool:
@@ -633,7 +656,7 @@ async def _resolve_play_candidate(cand_id: str, chosen_variant: Optional[str]):
         return cache_key, None, e
     except Exception as e:
         logger.warning("Failed to resolve %s: %s", cache_key, e)
-        if chosen_variant and "not found" in str(e).lower():
+        if chosen_variant and isinstance(e, ValueError) and "not found" in str(e).lower():
             return cache_key, None, HTTPException(status_code=404, detail="Video not found")
         return cache_key, None, e
     return cache_key, cand_stream, None
@@ -800,10 +823,7 @@ async def _open_upstream(request: Request, url: str, cache_key: Optional[str]):
         raise HTTPException(status_code=502, detail=f"Upstream fetch failed: {e}")
 
     if sresp.status_code >= 400:
-        try:
-            await ctx.__aexit__(None, None, None)
-        except Exception:
-            logger.debug("Ignored exception in proxy_fetch_response", exc_info=True)
+        await _close_ctx(ctx)
         if sresp.status_code in (502, 504) and cache_key:
             await asyncio.to_thread(cache.invalidate, cache_key)
         raise HTTPException(status_code=502, detail=f"Upstream fetch failed (HTTP {sresp.status_code})")
@@ -829,10 +849,7 @@ async def _relay_upstream_body(ctx, sresp):
     except asyncio.CancelledError:
         raise
     finally:
-        try:
-            await ctx.__aexit__(None, None, None)
-        except Exception:
-            logger.debug("Ignored exception in _relay_upstream_body", exc_info=True)
+        await _close_ctx(ctx)
 
 
 async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[str] = None):
@@ -844,10 +861,7 @@ async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[s
     media_type = sresp.headers.get("content-type", "application/octet-stream")
 
     if (request.method or "GET").upper() == "HEAD":
-        try:
-            await ctx.__aexit__(None, None, None)
-        except Exception:
-            logger.debug("Ignored exception in proxy_fetch_response", exc_info=True)
+        await _close_ctx(ctx)
         return Response(status_code=sresp.status_code, headers=out_headers, media_type=media_type)
 
     return StreamingResponse(_relay_upstream_body(ctx, sresp), status_code=sresp.status_code,
