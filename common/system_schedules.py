@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 
 from common import admin_schedules, db
@@ -15,6 +16,7 @@ _RUN_LOCKS = {
     "database-backup": 0x41485502,
     "artwork-generation": 0x41485503,
     "scene-fingerprints": 0x41485504,
+    "phash-generation": 0x41485505,
 }
 _ACTIVE_RUNS = {}
 
@@ -23,6 +25,7 @@ _NAMES = {
     "database-backup": "System database backup",
     "artwork-generation": "Daily artwork generation",
     "scene-fingerprints": "Scene fingerprints",
+    "phash-generation": "pHash generation",
 }
 
 _JOB_SYSTEM_SCHEDULES = {
@@ -39,6 +42,13 @@ _JOB_SYSTEM_SCHEDULES = {
         "SELECT s.enabled,s.cron_expression,s.legacy_interval_minutes,s.legacy_daily_at,"
         "s.needs_conversion,s.revision,s.next_run_at,s.last_result,s.last_finished_at,s.last_job_id "
         "FROM system_schedules s WHERE s.id=%s FOR UPDATE SKIP LOCKED",
+    ),
+    "phash-generation": (
+        "phash_generation",
+        {"limit": int(os.environ.get("TELEGRAM_PHASH_BATCH_SIZE", "20"))},
+        "SELECT p.enabled,p.cron_expression,p.legacy_interval_minutes,p.legacy_daily_at,"
+        "p.needs_conversion,p.revision,p.next_run_at,p.last_result,p.last_finished_at,p.last_job_id "
+        "FROM system_schedules p WHERE p.id=%s FOR UPDATE SKIP LOCKED",
     ),
 }
 
@@ -78,7 +88,9 @@ def _defaults(daily_at, interval_minutes):
 def ensure_system_schedules(db_url, *, sync_daily_at=None, sync_interval_minutes=60,
                             backup_daily_at="04:30", artwork_daily_at="06:00",
                             fingerprints_daily_at=None, fingerprints_interval_minutes=60,
-                            include_sync=True, include_artwork=True, include_fingerprints=True) -> None:
+                            phash_daily_at=None, phash_interval_minutes=240,
+                            include_sync=True, include_artwork=True, include_fingerprints=True,
+                            include_phash=True) -> None:
     """Seed effective defaults once; later config changes never overwrite Admin edits."""
     sync_cron, legacy_interval, legacy_daily = _defaults(sync_daily_at, sync_interval_minutes)
     if backup_daily_at:
@@ -87,6 +99,7 @@ def ensure_system_schedules(db_url, *, sync_daily_at=None, sync_interval_minutes
         backup_cron, backup_interval, backup_legacy_daily = _defaults(None, 60)
     artwork_cron, artwork_interval, artwork_legacy_daily = _defaults(artwork_daily_at, None)
     fingerprints_cron, fingerprints_interval, fingerprints_legacy_daily = _defaults(fingerprints_daily_at, fingerprints_interval_minutes)
+    phash_cron, phash_interval, phash_legacy_daily = _defaults(phash_daily_at, phash_interval_minutes)
     values = []
     if include_sync:
         values.append(("library-sync", _NAMES["library-sync"], sync_cron, legacy_interval, legacy_daily))
@@ -97,6 +110,9 @@ def ensure_system_schedules(db_url, *, sync_daily_at=None, sync_interval_minutes
     if include_fingerprints:
         values.append(("scene-fingerprints", _NAMES["scene-fingerprints"], fingerprints_cron,
                        fingerprints_interval, fingerprints_legacy_daily))
+    if include_phash:
+        values.append(("phash-generation", _NAMES["phash-generation"], phash_cron,
+                       phash_interval, phash_legacy_daily))
     conn = db.connect(db_url)
     try:
         with conn:
@@ -309,6 +325,51 @@ def _request_fingerprints_run(conn, instant) -> dict:
     return {"outcome": "queued", "job_id": job_id}
 
 
+def _request_phash_generation_run(conn, instant) -> dict:
+    row = conn.execute(
+        "SELECT enabled,cron_expression,legacy_interval_minutes,legacy_daily_at,needs_conversion,"
+        "revision,next_run_at,last_result,last_job_id FROM system_schedules WHERE id='phash-generation' FOR UPDATE"
+    ).fetchone()
+    if not row:
+        conn.rollback()
+        return {"outcome": "not_found"}
+    enabled, cron_expr, leg_int, leg_daily, needs_conv, revision, next_run_at, last_result, last_job_id = row
+    if last_job_id:
+        job = conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (last_job_id,)).fetchone()
+        if job and job[0] in {"queued", "processing"}:
+            conn.rollback()
+            return {"outcome": "conflict"}
+    if last_result in {"queued", "processing", "processing_manual"}:
+        conn.rollback()
+        return {"outcome": "conflict"}
+    slot_due = bool(enabled and next_run_at is not None and admin_schedules._utc(next_run_at) <= instant)
+    job_id = uuid.uuid4().hex
+    try:
+        limit = int(os.environ.get("TELEGRAM_PHASH_BATCH_SIZE", "20"))
+    except (TypeError, ValueError):
+        limit = 20
+    payload = {
+        "_system_schedule_id": "phash-generation",
+        "_system_schedule_revision": int(revision),
+        "_manual": True,
+        "_slot_due": slot_due,
+        "limit": limit,
+    }
+    epoch = int(instant.timestamp())
+    conn.execute(
+        "INSERT INTO video_duplicate_jobs (id, action, state, payload, result, created_at, updated_at) "
+        "VALUES (%s, 'phash_generation', 'queued', %s, NULL, %s, %s)",
+        (job_id, json.dumps(payload, ensure_ascii=False), epoch, epoch),
+    )
+    conn.execute(
+        "UPDATE system_schedules SET last_job_id=%s, last_run_at=%s, last_result='queued', updated_at=%s "
+        "WHERE id='phash-generation'",
+        (job_id, instant.timestamp(), instant.timestamp()),
+    )
+    conn.commit()
+    return {"outcome": "queued", "job_id": job_id}
+
+
 def request_system_run(db_url, schedule_id: str, *, now=None) -> dict:
     """Request a run for the system worker, serialized with scheduled claims."""
     if schedule_id not in _NAMES:
@@ -321,6 +382,8 @@ def request_system_run(db_url, schedule_id: str, *, now=None) -> dict:
             return _request_backup_run(conn, instant)
         if schedule_id == "scene-fingerprints":
             return _request_fingerprints_run(conn, instant)
+        if schedule_id == "phash-generation":
+            return _request_phash_generation_run(conn, instant)
         locked = conn.execute("SELECT pg_try_advisory_xact_lock(%s)", (_RUN_LOCKS[schedule_id],)).fetchone()[0]
         if not locked:
             conn.rollback()

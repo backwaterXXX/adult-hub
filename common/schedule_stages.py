@@ -36,6 +36,7 @@ JOB_STAGES = {
     "telegram_title_cleanup": ("library-sync", "telegram-title-cleanup"),
     "metadata_backfill": ("library-sync", "metadata-backfill"),
     "collections_refresh": ("library-sync", "jellyfin-refresh"),
+    "phash_generation": ("library-sync", "phash-generation"),
 }
 
 
@@ -73,6 +74,11 @@ STAGES: tuple[Stage, ...] = (
         "scene-identification", "library-sync", "Scene identification",
         "Backfills scene fingerprints when the optional scraper is installed and work is available.",
         "scene_backfill", None,
+    ),
+    Stage(
+        "phash-generation", "library-sync", "pHash generation",
+        "Generates visual perceptual hashes (pHash) for Telegram videos in bounded batches.",
+        "phash_generation", None,
     ),
     Stage(
         "metadata-backfill", "library-sync", "Performer and scene metadata backfill",

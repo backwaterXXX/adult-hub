@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from pg_helper import PgTestCase
 
@@ -13,6 +13,7 @@ from sync.scene_scrapers import (
     ScrapedScene,
     backfill_scenes,
     backfill_telegram_fingerprints,
+    _telegram_fingerprint_batch_limit,
     _telegram_oshash,
 )
 
@@ -415,6 +416,106 @@ class TestBackfillScenes(PgTestCase):
         ).fetchall()
         self.assertEqual(len(states), 2)
         self.assertTrue(all(row[1] == "no_match" for row in states))
+
+    def test_telegram_fingerprint_batch_limit_default_and_env(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TELEGRAM_FINGERPRINT_BACKFILL_PER_RUN", None)
+            self.assertEqual(_telegram_fingerprint_batch_limit(), 200)
+
+            os.environ["TELEGRAM_FINGERPRINT_BACKFILL_PER_RUN"] = "50"
+            self.assertEqual(_telegram_fingerprint_batch_limit(), 50)
+
+            os.environ["TELEGRAM_FINGERPRINT_BACKFILL_PER_RUN"] = "invalid"
+            self.assertEqual(_telegram_fingerprint_batch_limit(), 200)
+
+            os.environ["TELEGRAM_FINGERPRINT_BACKFILL_PER_RUN"] = "2000"
+            self.assertEqual(_telegram_fingerprint_batch_limit(), 1000)
+
+            os.environ["TELEGRAM_FINGERPRINT_BACKFILL_PER_RUN"] = "-5"
+            self.assertEqual(_telegram_fingerprint_batch_limit(), 1)
+
+    def test_identification_does_not_generate_phash_when_missing(self):
+        vid_id = "telegram:-1001234567890:501:999"
+        self.conn.execute(
+            """INSERT INTO videos (id,provider,title,duration,performers,studio,first_seen,last_seen)
+               VALUES (%s,'telegram','Scene Without Phash',600,'[]','Studio',1000,1000)""",
+            (vid_id,),
+        )
+        self.conn.execute(
+            "INSERT INTO video_fingerprints (video_id,algorithm,fingerprint) VALUES (%s,'OSHASH','0123456789abcdef')",
+            (vid_id,),
+        )
+        self.conn.commit()
+
+        mock_phash = MagicMock()
+        with patch.dict(os.environ, {"TELEGRAM_FINGERPRINTS_ENABLED": "true", "TELEGRAM_PHASH_ENABLED": "true"}), \
+             patch("sync.scene_scrapers.search_scene_by_oshash", return_value=None), \
+             patch("sync.video_fingerprints.telegram_phash", mock_phash):
+            checked, updated = backfill_telegram_fingerprints(
+                self.conn, self.media_dir, limit=10, sleep_sec=0, video_ids=[vid_id],
+            )
+            self.assertEqual(checked, 1)
+            self.assertEqual(updated, 0)
+            mock_phash.assert_not_called()
+
+    def test_identification_uses_cached_phash(self):
+        from sync.scene_scrapers import ScrapedScene
+        vid_id = "telegram:-1001234567890:502:999"
+        self.conn.execute(
+            """INSERT INTO videos (id,provider,title,duration,performers,studio,first_seen,last_seen)
+               VALUES (%s,'telegram','Scene With Cached Phash',600,'[]','Studio',1000,1000)""",
+            (vid_id,),
+        )
+        self.conn.execute(
+            "INSERT INTO video_fingerprints (video_id,algorithm,fingerprint) VALUES (%s,'OSHASH','0123456789abcdef')",
+            (vid_id,),
+        )
+        self.conn.execute(
+            "INSERT INTO video_fingerprints (video_id,algorithm,fingerprint) VALUES (%s,'PHASH','abcdef0123456789')",
+            (vid_id,),
+        )
+        self.conn.commit()
+
+        matched_scene = ScrapedScene(
+            title="Matched via Cached pHash", plot="Scene desc", date="2022-01-01",
+            performers=["Performer"], tags=[], studio="Studio", poster_url="",
+            external_id="scene-phash-1", source="theporndb:phash",
+        )
+        with patch.dict(os.environ, {"TELEGRAM_FINGERPRINTS_ENABLED": "true", "TELEGRAM_PHASH_ENABLED": "true"}), \
+             patch("sync.scene_scrapers.search_scene_by_oshash", return_value=None), \
+             patch("sync.scene_scrapers.search_scene_by_phash", return_value=matched_scene), \
+             patch("sync.scene_scrapers._apply_matched_scene", return_value=True):
+            checked, updated = backfill_telegram_fingerprints(
+                self.conn, self.media_dir, limit=10, sleep_sec=0, video_ids=[vid_id],
+            )
+            self.assertEqual(checked, 1)
+            self.assertEqual(updated, 1)
+
+    def test_generate_telegram_phashes_batch(self):
+        from sync.scene_scrapers import generate_telegram_phashes
+        vid_id = "telegram:-1001234567890:503:999"
+        self.conn.execute(
+            """INSERT INTO videos (id,provider,title,duration,performers,studio,first_seen,last_seen)
+               VALUES (%s,'telegram','Video For pHash Gen',600,'[]','Studio',1000,1000)""",
+            (vid_id,),
+        )
+        self.conn.commit()
+
+        progress_calls = []
+        with patch("sync.video_fingerprints.telegram_phash", return_value=("fedcba9876543210", 2048)):
+            checked, generated = generate_telegram_phashes(
+                self.conn, limit=5, sleep_sec=0, video_ids=[vid_id],
+                progress_callback=lambda c, t: progress_calls.append((c, t)),
+            )
+            self.assertEqual(checked, 1)
+            self.assertEqual(generated, 1)
+            self.assertIn((1, 1), progress_calls)
+
+        row = self.conn.execute(
+            "SELECT fingerprint FROM video_fingerprints WHERE video_id=%s AND algorithm='PHASH'", (vid_id,),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "fedcba9876543210")
 
 
 if __name__ == "__main__":

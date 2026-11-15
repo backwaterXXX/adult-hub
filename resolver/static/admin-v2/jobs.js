@@ -81,6 +81,7 @@
       removing_source_data: 'Removing channel videos and history',
       syncing_performer_catalog: 'Importing the StashDB performer catalog',
       cleaning_telegram_titles: 'Cleaning Telegram titles and tags',
+      generating_phash: 'Generating perceptual hashes (pHash)',
       checking_availability: 'Checking playback availability',
       recovery: 'Recovering operation',
       done: 'Completed', failed: 'Failed', cancelled: 'Cancelled before start'
@@ -88,7 +89,7 @@
     return labels[safeId(value).toLowerCase()] || 'Progress details unavailable';
   }
   function localResultLabel(value) {
-    const labels = { hidden: 'Saved locally', dismissed: 'Saved locally', restored: 'Restored locally', quarantined: 'Quarantined locally', metadata_updated: 'Metadata updated locally', artwork_downloaded: 'Artwork downloaded locally', artwork_generated: 'Artwork generated locally', artwork_not_found: 'No matching artwork', artwork_download_failed: 'Poster download failed', artwork_lookup_failed: 'Artwork lookup failed', availability_checked: 'Availability check recorded', audit_completed: 'Audit complete' };
+    const labels = { hidden: 'Saved locally', dismissed: 'Saved locally', restored: 'Restored locally', quarantined: 'Quarantined locally', metadata_updated: 'Metadata updated locally', artwork_downloaded: 'Artwork downloaded locally', artwork_generated: 'Artwork generated locally', artwork_not_found: 'No matching artwork', artwork_download_failed: 'Poster download failed', artwork_lookup_failed: 'Artwork lookup failed', availability_checked: 'Availability check recorded', audit_completed: 'Audit complete', phash_generation_completed: 'pHash batch generated' };
     return labels[safeId(value).toLowerCase()] || 'Not recorded';
   }
   function jellyfinResultLabel(value) {

@@ -92,6 +92,9 @@ from common.migrations.m0066_telegram_accounts import (
 from common.migrations.m0067_scene_fingerprints_schedule import (
     migration as scene_fingerprints_schedule,
 )
+from common.migrations.m0068_phash_generation_schedule import (
+    migration as phash_generation_schedule,
+)
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -163,4 +166,5 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     system_schedules_last_job_id,
     telegram_accounts,
     scene_fingerprints_schedule,
+    phash_generation_schedule,
 )

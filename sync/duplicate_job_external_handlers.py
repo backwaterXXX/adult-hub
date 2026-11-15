@@ -484,6 +484,42 @@ def _action_telegram_title_cleanup(conn, job_id, payload, media_dir, services):
     return result, False
 
 
+def _action_phash_generation(conn, job_id, payload, media_dir, services):
+    try:
+        from sync.scene_scrapers import generate_telegram_phashes
+    except ImportError:
+        raise RuntimeError("pHash generation is not installed in this worker.")
+
+    limit = payload.get("limit")
+    if not isinstance(limit, int) or limit < 1:
+        try:
+            limit = int(_core.os.getenv("TELEGRAM_PHASH_BATCH_SIZE", "20"))
+        except (TypeError, ValueError):
+            limit = 20
+    limit = max(1, min(1000, limit))
+
+    video_ids = payload.get("video_ids")
+    if video_ids is not None:
+        if not isinstance(video_ids, list) or not video_ids or any(not isinstance(v, str) for v in video_ids):
+            raise ValueError("video_ids must be a non-empty list of video ID strings.")
+
+    def report_phash_progress(completed, total, _job_id=job_id):
+        _core._record_job_progress(
+            conn, _job_id, "generating_phash", completed=completed, total=total,
+        )
+
+    _core._record_job_progress(conn, job_id, "generating_phash", completed=0, total=limit)
+    checked, generated = generate_telegram_phashes(
+        conn, limit=limit, video_ids=video_ids, progress_callback=report_phash_progress,
+    )
+    return {
+        "videos_checked": int(checked or 0),
+        "phash_generated": int(generated or 0),
+        "batch_limit": limit,
+        "local_state": "phash_generation_completed",
+    }, False
+
+
 _EXTERNAL_ACTION_HANDLERS = {
     "source_remove": _action_source_remove,
     "source_readd": _action_source_readd,
@@ -500,6 +536,7 @@ _EXTERNAL_ACTION_HANDLERS = {
     "performer_catalog": _action_performer_catalog,
     "scene_backfill": _action_scene_backfill,
     "telegram_title_cleanup": _action_telegram_title_cleanup,
+    "phash_generation": _action_phash_generation,
 }
 
 

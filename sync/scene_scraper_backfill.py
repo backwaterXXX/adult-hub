@@ -42,12 +42,14 @@ __all__ = [
     "_load_official_stashdb_performers",
     "_scene_match_provenance",
     "_store_video_fingerprint",
+    "_telegram_fingerprint_batch_limit",
     "_telegram_oshash_batch_limit",
     "_update_media_files",
     "apply_pending_fingerprint_proposals",
     "backfill_missing_telegram_oshashes",
     "backfill_scenes",
     "backfill_telegram_fingerprints",
+    "generate_telegram_phashes",
 ]
 
 
@@ -196,7 +198,7 @@ def _run_backfill_stages(conn, media_dir, limit, sleep_sec, http_client, _stop) 
         return checked, updated
 
     hash_c, hash_u = _core.backfill_telegram_fingerprints(
-        conn, media_dir, limit=min(limit, 20), sleep_sec=sleep_sec, http_client=http_client,
+        conn, media_dir, limit=min(limit, _core._telegram_fingerprint_batch_limit()), sleep_sec=sleep_sec, http_client=http_client,
     )
     checked += hash_c
     updated += hash_u
@@ -284,6 +286,10 @@ def _fingerprint_backfill_module():
     return implementation
 
 
+def _telegram_fingerprint_batch_limit() -> int:
+    return _fingerprint_backfill_module()._telegram_fingerprint_batch_limit()
+
+
 def _telegram_oshash_batch_limit() -> int:
     return _fingerprint_backfill_module()._telegram_oshash_batch_limit()
 
@@ -308,7 +314,7 @@ def _fingerprint_feature_enabled(name: str, legacy_name: str, *, default: bool =
 def backfill_telegram_fingerprints(
     conn: Any,
     media_dir: Path,
-    limit: int = 20,
+    limit: int = 200,
     sleep_sec: float = 0.5,
     http_client: Optional[Any] = None,
     video_ids: Optional[List[str]] = None,
@@ -326,6 +332,24 @@ def backfill_telegram_fingerprints(
     if "progress_callback" in inspect.signature(implementation).parameters:
         kwargs["progress_callback"] = progress_callback
     return implementation(conn, media_dir, **kwargs)
+
+
+def generate_telegram_phashes(
+    conn: Any,
+    limit: int = 20,
+    sleep_sec: float = 0.5,
+    video_ids: Optional[List[str]] = None,
+    progress_callback: Optional[Any] = None,
+) -> Tuple[int, int]:
+    implementation = _fingerprint_backfill_module().generate_telegram_phashes
+    kwargs = {
+        "limit": limit,
+        "sleep_sec": sleep_sec,
+        "video_ids": video_ids,
+    }
+    if "progress_callback" in inspect.signature(implementation).parameters:
+        kwargs["progress_callback"] = progress_callback
+    return implementation(conn, **kwargs)
 
 
 

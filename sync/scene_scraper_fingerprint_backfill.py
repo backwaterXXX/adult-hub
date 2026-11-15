@@ -18,6 +18,13 @@ def _telegram_oshash_batch_limit() -> int:
         return 500
 
 
+def _telegram_fingerprint_batch_limit() -> int:
+    try:
+        return max(1, min(1000, int(_core.os.environ.get("TELEGRAM_FINGERPRINT_BACKFILL_PER_RUN", "200"))))
+    except (TypeError, ValueError):
+        return 200
+
+
 _TELEGRAM_CHANNEL_LABEL = "Telegram"
 
 
@@ -126,6 +133,10 @@ def _fetch_telegram_fingerprint_rows(conn: Any, video_ids: Optional[List[str]], 
            LEFT JOIN external_metadata_attempts a
              ON a.entity_type='video' AND a.entity_key=v.id AND a.source=%s
            WHERE v.provider='telegram' AND v.id LIKE %s
+             AND EXISTS (
+                 SELECT 1 FROM video_fingerprints f
+                 WHERE f.video_id=v.id AND f.algorithm IN ('OSHASH', 'PHASH')
+             )
              AND (a.entity_key IS NULL OR a.next_attempt_at <= CURRENT_TIMESTAMP)
            ORDER BY a.last_attempt_at ASC NULLS FIRST,v.first_seen DESC,v.id DESC
            LIMIT %s""",
@@ -180,21 +191,29 @@ def _phash_size_sink(conn: Any, video_id: str) -> Callable[[int], None]:
 def _phash_match_for_video(conn: Any, video_id: Any, duration: Any, started: float, bytes_read: int,
                            http_client: Optional[Any]) -> Tuple[Any, int]:
     """Return (matched scene or None, bytes read for the pHash)."""
-    from sync.video_fingerprints import DEFAULT_TIMEOUT_SECONDS, telegram_phash
-    configured_budget, configured_timeout, configured_rate = _phash_settings(DEFAULT_TIMEOUT_SECONDS)
     phash = _core._cached_video_fingerprint(conn, video_id, "PHASH")
     if phash:
-        phash_bytes = 0
         _core.logger.info("Using cached Telegram pHash for %s", video_id)
-    else:
-        remaining_budget = max(0, configured_budget - bytes_read)
-        remaining_time = max(1, configured_timeout - int(_core.time.monotonic() - started))
-        phash, phash_bytes = telegram_phash(
-            video_id, int(duration or 0), byte_budget=remaining_budget,
-            timeout_seconds=remaining_time, max_bytes_per_second=configured_rate,
-            size_sink=_phash_size_sink(conn, str(video_id)),
+        matched = _core.search_scene_by_phash(
+            phash, http_client=http_client, duration=int(duration or 0),
+            max_distance=10, duration_tolerance=2,
         )
-        _core._store_video_fingerprint(conn, video_id, "PHASH", phash)
+        return matched, 0
+
+    # Identification only matches by existing fingerprints; pHash generation is run in a separate task/schedule.
+    if not _core._fingerprint_feature_enabled("TELEGRAM_PHASH_GENERATE_ON_IDENTIFY", default=False):
+        return None, 0
+
+    from sync.video_fingerprints import DEFAULT_TIMEOUT_SECONDS, telegram_phash
+    configured_budget, configured_timeout, configured_rate = _phash_settings(DEFAULT_TIMEOUT_SECONDS)
+    remaining_budget = max(0, configured_budget - bytes_read)
+    remaining_time = max(1, configured_timeout - int(_core.time.monotonic() - started))
+    phash, phash_bytes = telegram_phash(
+        video_id, int(duration or 0), byte_budget=remaining_budget,
+        timeout_seconds=remaining_time, max_bytes_per_second=configured_rate,
+        size_sink=_phash_size_sink(conn, str(video_id)),
+    )
+    _core._store_video_fingerprint(conn, video_id, "PHASH", phash)
     matched = _core.search_scene_by_phash(
         phash, http_client=http_client, duration=int(duration or 0),
         max_distance=10, duration_tolerance=2,
@@ -210,17 +229,20 @@ def _find_telegram_match(conn: Any, video_id: Any, duration: Any,
     # OSHASH is a useful lookup/candidate signal, not cryptographic proof
     # of identical media. Keep duplicate decisions in the operator's
     # preview/execute flow instead of hiding files during metadata sync.
-    matched = _core.search_scene_by_oshash(
-        fingerprint, http_client=http_client, duration=int(duration or 0),
-        duration_tolerance=2,
-    )
+    matched = None
+    if fingerprint:
+        matched = _core.search_scene_by_oshash(
+            fingerprint, http_client=http_client, duration=int(duration or 0),
+            duration_tolerance=2,
+        )
     method = "oshash"
     total_bytes = bytes_read
     if (matched is None and _core._fingerprint_feature_enabled(
             "TELEGRAM_PHASH_ENABLED", "LUKAYAN_PHASH_ENABLED", default=True)):
         matched, phash_bytes = _phash_match_for_video(conn, video_id, duration, started, bytes_read, http_client)
         total_bytes += phash_bytes
-        method = "phash"
+        if matched is not None:
+            method = "phash"
     return matched, method, total_bytes
 
 
@@ -260,7 +282,7 @@ def _backfill_telegram_video(conn: Any, media_dir: Path, video_id: Any, duration
 def backfill_telegram_fingerprints(
     conn: Any,
     media_dir: Path,
-    limit: int = 20,
+    limit: int = 200,
     sleep_sec: float = 0.5,
     http_client: Optional[Any] = None,
     video_ids: Optional[List[str]] = None,
@@ -302,3 +324,118 @@ def backfill_telegram_fingerprints(
         if paused:
             break
     return checked, updated
+
+
+def _fetch_phash_candidate_rows(conn: Any, video_ids: Optional[List[str]], batch_limit: int):
+    if video_ids is not None:
+        return conn.execute(
+            """SELECT v.id, v.duration
+               FROM videos v
+               LEFT JOIN video_fingerprints f ON f.video_id=v.id AND f.algorithm='PHASH'
+               WHERE v.id = ANY(%s) AND v.provider='telegram' AND v.duration > 0
+                 AND f.video_id IS NULL
+               ORDER BY v.id""",
+            (video_ids,),
+        ).fetchall()
+    return conn.execute(
+        """SELECT v.id, v.duration
+           FROM videos v
+           LEFT JOIN video_fingerprints f ON f.video_id=v.id AND f.algorithm='PHASH'
+           LEFT JOIN external_metadata_attempts a
+             ON a.entity_type='video' AND a.entity_key=v.id AND a.source='telegram_phash_gen'
+           WHERE v.provider='telegram' AND v.duration > 0 AND f.video_id IS NULL
+             AND (a.entity_key IS NULL OR a.outcome <> 'error' OR a.next_attempt_at <= CURRENT_TIMESTAMP)
+           ORDER BY a.last_attempt_at ASC NULLS FIRST, v.first_seen DESC NULLS LAST, v.id DESC
+           LIMIT %s""",
+        (batch_limit,),
+    ).fetchall()
+
+
+def _generate_one_telegram_phash(
+    conn: Any,
+    video_id: Any,
+    duration: Any,
+    budget: int,
+    timeout: int,
+    rate: int,
+) -> Tuple[bool, bool]:
+    """Generate and store one pHash. Returns (success, paused_due_to_budget)."""
+    from sync.video_fingerprints import telegram_phash
+
+    try:
+        phash, _phash_bytes = telegram_phash(
+            video_id, int(duration or 0), byte_budget=budget,
+            timeout_seconds=timeout, max_bytes_per_second=rate,
+            size_sink=_phash_size_sink(conn, str(video_id)),
+        )
+        with conn:
+            _core._store_video_fingerprint(conn, video_id, "PHASH", phash)
+            try:
+                conn.execute(
+                    """INSERT INTO video_phash_provenance
+                       (video_id, fingerprint, generator_version, decoder_profile, submitted_by_user_id)
+                       VALUES (%s, %s, %s, %s, %s)
+                       ON CONFLICT (video_id) DO UPDATE SET
+                       fingerprint=EXCLUDED.fingerprint, generator_version=EXCLUDED.generator_version,
+                       submitted_at=CURRENT_TIMESTAMP""",
+                    (str(video_id), phash,
+                     "stash-phash-689a6b400625d6da2afb58a7f908c88bcdb6f8ab-v2:resolver-ffmpeg-stash-v2",
+                     "resolver-ffmpeg-stash-v2", "phash-generator"),
+                )
+            except Exception:
+                pass
+        if _core.record_attempt:
+            _core.record_attempt(conn, "video", video_id, "telegram_phash_gen", "found")
+        return True, False
+    except (DailyTelegramTransferBudgetExceeded, DailyTelegramTransferBudgetUnavailable) as exc:
+        _record_error_attempt(conn, video_id, "telegram_phash_gen", exc,
+                              "Could not save daily Telegram transfer cap state for %s")
+        _core.logger.info("pHash generation paused because the shared transfer budget is exhausted or unavailable (%s)", video_id)
+        return False, True
+    except Exception as exc:
+        _record_error_attempt(conn, video_id, "telegram_phash_gen", exc,
+                              "Could not save pHash generation retry state for %s")
+        _core.logger.warning("pHash generation failed for %s (%s)", video_id, type(exc).__name__)
+        return False, False
+
+
+def generate_telegram_phashes(
+    conn: Any,
+    limit: int = 20,
+    sleep_sec: float = 0.5,
+    video_ids: Optional[List[str]] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> Tuple[int, int]:
+    """Generate visual pHash for Telegram videos in bounded batches.
+
+    Generates perceptual hashes for unhashed videos and stores them in
+    the database for scene identification and duplicate detection.
+    """
+    if not conn:
+        return 0, 0
+    from sync.video_fingerprints import DEFAULT_TIMEOUT_SECONDS
+
+    budget, timeout, rate = _phash_settings(DEFAULT_TIMEOUT_SECONDS)
+    batch_limit = max(1, min(1000, int(limit)))
+    rows = _fetch_phash_candidate_rows(conn, video_ids, batch_limit)
+
+    if not rows:
+        return 0, 0
+
+    checked = generated = 0
+    if progress_callback:
+        progress_callback(0, len(rows))
+
+    for idx, (video_id, duration) in enumerate(rows):
+        if idx and sleep_sec > 0:
+            _core.time.sleep(sleep_sec)
+        checked += 1
+        success, paused = _generate_one_telegram_phash(conn, video_id, duration, budget, timeout, rate)
+        if success:
+            generated += 1
+        if progress_callback:
+            progress_callback(checked, len(rows))
+        if paused:
+            break
+
+    return checked, generated

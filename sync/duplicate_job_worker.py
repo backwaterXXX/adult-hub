@@ -132,7 +132,8 @@ def _execute_action(conn, job_id, action, payload, media_dir, services, quaranti
          or action == 'scene_backfill'
          or action == 'telegram_title_cleanup'
          or action == 'source_remove'
-         or action == 'source_readd',
+         or action == 'source_readd'
+         or action == 'phash_generation',
          lambda: _run_external_action(action, conn, job_id, payload, media_dir, services, run)),
         (action == 'dismiss',
          lambda: _run_dismiss(conn, job_id, payload, now)),
@@ -207,13 +208,13 @@ def _record_job_failure(conn, job_id, action, exc, services) -> None:
 
 
 def _handle_system_schedule_start(conn: _core.db.Connection, job_id: str, action: str, payload: dict) -> None:
-    if action in {'backup_create', 'scene_backfill'} and payload.get('_system_schedule_id'):
+    if action in {'backup_create', 'scene_backfill', 'phash_generation'} and payload.get('_system_schedule_id'):
         from common.system_schedules import record_system_schedule_job_start
         record_system_schedule_job_start(conn, job_id, payload)
 
 
 def _handle_system_schedule_finish(conn: _core.db.Connection, job_id: str, action: str, payload: dict, *, success: bool) -> None:
-    if action in {'backup_create', 'scene_backfill'} and payload.get('_system_schedule_id'):
+    if action in {'backup_create', 'scene_backfill', 'phash_generation'} and payload.get('_system_schedule_id'):
         from common.system_schedules import finish_system_schedule_job, maybe_enqueue_backup_history_cleanup
         finish_system_schedule_job(conn, job_id, payload, success=success)
         if success and action == 'backup_create':

@@ -18,7 +18,7 @@ from psycopg.types.json import Jsonb  # noqa: F401 -- job handlers read this thr
 
 _JOB_STAGES = WORKING_STAGES
 _LONG_RUNNING_WORKER_ACTIONS = frozenset({
-    "metadata_backfill", "telegram_fingerprint_scan", "source_remove",
+    "metadata_backfill", "telegram_fingerprint_scan", "source_remove", "phash_generation",
 })
 
 _AUDIT_INVENTORY_MAX_ENTRIES = 100000

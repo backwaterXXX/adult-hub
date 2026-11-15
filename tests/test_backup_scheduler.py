@@ -158,6 +158,39 @@ class TestSystemScheduleDispatch(unittest.TestCase):
         self.assertEqual(len(update_calls), 1)
         self.assertEqual(update_calls[0][1][3], "scene-fingerprints")
 
+    def test_dispatch_due_phash_generation_enqueues_worker_job(self):
+        now = dt.datetime(2026, 11, 7, 4, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
+        due_row = (
+            True,           # enabled
+            "0 */4 * * *",  # cron_expression
+            None,           # legacy_interval_minutes
+            None,           # legacy_daily_at
+            False,          # needs_conversion
+            1,              # revision
+            now - dt.timedelta(minutes=1),  # next_run_at (due)
+            "done",         # last_result
+            now - dt.timedelta(hours=4),    # last_finished_at
+            None,           # last_job_id
+        )
+        fake_conn = FakeConnection({
+            "SELECT p.enabled": due_row,
+        })
+        with patch.object(db, "connect", return_value=fake_conn):
+            dispatched = system_schedules.dispatch_due_system_schedules("postgresql://fixture/db", now=now)
+
+        self.assertEqual(dispatched, 1)
+        self.assertTrue(fake_conn.committed)
+        insert_calls = [c for c in fake_conn.executed if "INSERT INTO video_duplicate_jobs" in c[0]]
+        self.assertEqual(len(insert_calls), 1)
+        query, params = insert_calls[0]
+        self.assertEqual(params[1], "phash_generation")
+        self.assertIn("'queued'", query)
+        payload = json.loads(params[2])
+        self.assertEqual(payload.get("_system_schedule_id"), "phash-generation")
+        self.assertEqual(payload.get("limit"), 20)
+        self.assertFalse(payload.get("_manual"))
+        self.assertTrue(payload.get("_slot_due"))
+
     def test_dispatch_deduplicates_when_active_job_exists(self):
         now = dt.datetime(2026, 11, 7, 4, 30, tzinfo=ZoneInfo("Europe/Warsaw"))
         due_row = (

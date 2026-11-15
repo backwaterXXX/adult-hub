@@ -55,6 +55,9 @@ from common.migrations.m0066_telegram_accounts import (
 from common.migrations.m0067_scene_fingerprints_schedule import (
     current_migration as current_scene_fingerprints_schedule,
 )
+from common.migrations.m0068_phash_generation_schedule import (
+    current_migration as current_phash_generation_schedule,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +75,7 @@ CURRENT_MIGRATIONS: tuple[Migration, ...] = (
     current_video_job_lease_token, current_schedule_stages, current_artwork_generation_schedule,
     current_source_removal_indexes, current_video_duplicate_decisions_evidence,
     current_system_schedules_last_job_id, current_telegram_accounts,
-    current_scene_fingerprints_schedule,
+    current_scene_fingerprints_schedule, current_phash_generation_schedule,
 )
 MIGRATIONS: tuple[Migration, ...] = (baseline, *CURRENT_MIGRATIONS)
 

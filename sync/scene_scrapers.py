@@ -170,6 +170,11 @@ def _apply_matched_scene(conn: Any, media_dir: Path, video_id: str, matched: Scr
     return implementation(conn, media_dir, video_id, matched, http_client, now)
 
 
+def _telegram_fingerprint_batch_limit() -> int:
+    from sync.scene_scraper_backfill import _telegram_fingerprint_batch_limit as implementation
+    return implementation()
+
+
 def _telegram_oshash_batch_limit() -> int:
     from sync.scene_scraper_backfill import _telegram_oshash_batch_limit as implementation
     return implementation()
@@ -185,7 +190,7 @@ def _fingerprint_feature_enabled(name: str, legacy_name: str, *, default: bool=F
     return implementation(name, legacy_name, default=default)
 
 
-def backfill_telegram_fingerprints(conn: Any, media_dir: Path, limit: int=20, sleep_sec: float=0.5, http_client: Optional[Any]=None, video_ids: Optional[List[str]]=None, channel_id: Optional[str]=None, progress_callback: Optional[Any]=None) -> Tuple[int, int]:
+def backfill_telegram_fingerprints(conn: Any, media_dir: Path, limit: int=200, sleep_sec: float=0.5, http_client: Optional[Any]=None, video_ids: Optional[List[str]]=None, channel_id: Optional[str]=None, progress_callback: Optional[Any]=None) -> Tuple[int, int]:
     from sync.scene_scraper_backfill import backfill_telegram_fingerprints as implementation
     kwargs = {
         "limit": limit,
@@ -197,6 +202,20 @@ def backfill_telegram_fingerprints(conn: Any, media_dir: Path, limit: int=20, sl
     if "progress_callback" in inspect.signature(implementation).parameters:
         kwargs["progress_callback"] = progress_callback
     return implementation(conn, media_dir, **kwargs)
+
+
+def generate_telegram_phashes(conn: Any, limit: int = 20, sleep_sec: float = 0.5,
+                              video_ids: Optional[List[str]] = None,
+                              progress_callback: Optional[Any] = None) -> Tuple[int, int]:
+    from sync.scene_scraper_backfill import generate_telegram_phashes as implementation
+    kwargs = {
+        "limit": limit,
+        "sleep_sec": sleep_sec,
+        "video_ids": video_ids,
+    }
+    if "progress_callback" in inspect.signature(implementation).parameters:
+        kwargs["progress_callback"] = progress_callback
+    return implementation(conn, **kwargs)
 
 
 def _update_media_files(media_dir: Path, video_id: str, matched: ScrapedScene, performers: List[str], http_client: Optional[Any]=None, conn: Optional[Any]=None, strict: bool=False) -> None:

@@ -39,7 +39,7 @@ async def _queue_run(admin, request: Request, schedule_id: str, *, system: bool)
             return admin.JSONResponse({"ok": False, "error": "Schedule not found."}, status_code=404)
         if result["outcome"] == "conflict":
             return admin.JSONResponse({"ok": False, "error": "A run is already queued or processing."}, status_code=409)
-        if not system or schedule_id in {"database-backup", "scene-fingerprints"}:
+        if not system or schedule_id in {"database-backup", "scene-fingerprints", "phash-generation"}:
             admin._wake_worker("jobs")
         return admin.JSONResponse({"ok": True, **result}, status_code=202)
     except Exception:
@@ -55,6 +55,10 @@ _ARTWORK_DESCRIPTION = (
 _FINGERPRINTS_DESCRIPTION = (
     "Probes Telegram videos for OSHASH and visual fingerprints and matches scenes "
     "against external metadata catalogues."
+)
+_PHASH_DESCRIPTION = (
+    "Generates perceptual hashes (pHash) for Telegram videos in bounded batches "
+    "(10–100 videos) for scene matching and duplicate detection."
 )
 
 
@@ -94,6 +98,12 @@ async def _system_row(admin, item):
             problem = problem or item["last_result"] == "failed"
     elif item["id"] == "scene-fingerprints":
         task_description = _FINGERPRINTS_DESCRIPTION
+        status = item.get("last_result") or "unknown"
+        details = f"Last result: {item['last_result']}." if item.get("last_result") else ""
+        if item.get("last_result"):
+            problem = problem or item["last_result"] == "failed"
+    elif item["id"] == "phash-generation":
+        task_description = _PHASH_DESCRIPTION
         status = item.get("last_result") or "unknown"
         details = f"Last result: {item['last_result']}." if item.get("last_result") else ""
         if item.get("last_result"):
