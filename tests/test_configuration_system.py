@@ -544,6 +544,40 @@ sources:
             self.assertEqual(len(res["skipped_malformed"]), 2)
             self.assertIn("not_a_dict", res["skipped_malformed"])
 
+    def test_sync_shutdown_grace_period_strictly_less_than_compose_stop_grace_period(self):
+        """A-08: Ensure sync.shutdown_grace_seconds has sufficient margin below compose stop_grace_period."""
+        import re
+        import yaml
+        repo_root = Path(__file__).resolve().parents[1]
+        compose_path = repo_root / "docker-compose.yml"
+        self.assertTrue(compose_path.is_file())
+        with compose_path.open("r", encoding="utf-8") as f:
+            compose = yaml.safe_load(f)
+
+        raw_period = str(compose["services"]["sync"]["stop_grace_period"]).strip()
+        match = re.match(r"^(\d+)([smhd])?$", raw_period)
+        self.assertIsNotNone(match, f"Invalid stop_grace_period format: {raw_period}")
+        qty, unit = int(match.group(1)), match.group(2) or "s"
+        multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+        stop_grace_seconds = qty * multipliers[unit]
+
+        from common.config_loader import SyncConfig, load_config
+        cfg = load_config()
+        configured_grace = cfg.sync.shutdown_grace_seconds
+        default_grace = SyncConfig().shutdown_grace_seconds
+
+        # Compose must give the container at least 30 seconds more than the runner waits for the child.
+        self.assertGreaterEqual(
+            stop_grace_seconds - configured_grace,
+            30,
+            f"Compose stop_grace_period ({stop_grace_seconds}s) must exceed shutdown_grace_seconds ({configured_grace}s) by at least 30s",
+        )
+        self.assertGreaterEqual(
+            stop_grace_seconds - default_grace,
+            30,
+            f"Compose stop_grace_period ({stop_grace_seconds}s) must exceed default shutdown_grace_seconds ({default_grace}s) by at least 30s",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

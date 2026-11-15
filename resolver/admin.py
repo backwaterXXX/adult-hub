@@ -85,10 +85,21 @@ def _backup_status() -> dict:
 def _attention_summary() -> dict:
     """Counts answering "what needs action?" for the Overview."""
     try:
-        from resolver.admin_services import job_counts, sync_backlog, unresolved_failed_task_summary
-        job_summary = job_counts(HUB_DB_URL)
-        failed = unresolved_failed_task_summary(HUB_DB_URL)
-        backlog = sync_backlog(HUB_DB_URL)
+        from resolver.admin_services import (
+            _jobs_connection,
+            job_counts,
+            sync_backlog,
+            unresolved_failed_task_summary,
+        )
+        conn = _jobs_connection(HUB_DB_URL)
+        try:
+            job_summary = job_counts(HUB_DB_URL, conn=conn)
+            failed = unresolved_failed_task_summary(HUB_DB_URL, conn=conn)
+            backlog = sync_backlog(HUB_DB_URL, conn=conn)
+        finally:
+            if conn is not None:
+                conn.close()
+
         library = admin_data.unavailable_videos(HUB_DB_URL, limit=1)
         runs = _sync_history(1).get("runs", [])
         latest = runs[0] if runs else {}
@@ -100,7 +111,7 @@ def _attention_summary() -> dict:
             "failed_tasks": failed.get("count") if failures_available else None,
             "failed_tasks_available": failures_available,
             "unavailable_videos": int(library.get("total") or 0),
-            "unavailable_available": bool(library.get("available", True)),
+            "unavailable_available": bool(library.get("available")),
             "sync_backlog_available": bool(backlog.get("available")),
             "sync_backlog_queued": int(backlog.get("queued") or 0),
             "sync_backlog_processing": int(backlog.get("processing") or 0),

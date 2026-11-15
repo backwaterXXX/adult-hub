@@ -239,6 +239,15 @@ def _apply_sync_setting(sync_cfg: SyncConfig, k: str, v: Any) -> None:
         setattr(sync_cfg, k, _validate_stream_mode(v, "sync"))
     elif k in ("retention_days",):
         setattr(sync_cfg, k, _validate_positive_int(v, k, "sync", minimum=0))
+    elif k == "shutdown_grace_seconds":
+        val = _validate_positive_int(v, k, "sync", minimum=1)
+        if val >= 240:
+            logger.warning(
+                "sync.shutdown_grace_seconds (%ds) is greater than or equal to Docker Compose stop_grace_period (240s); "
+                "the container may be killed with SIGKILL before graceful shutdown completes.",
+                val,
+            )
+        setattr(sync_cfg, k, val)
     else:
         setattr(sync_cfg, k, _validate_positive_int(v, k, "sync", minimum=1))
 

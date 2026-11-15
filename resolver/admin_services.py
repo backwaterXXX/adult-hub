@@ -129,9 +129,12 @@ def _job_undo_available(conn, job: dict) -> bool:
     return True
 
 
-def sync_backlog(db_url: str | None, *, now: int | None = None) -> dict:
+def sync_backlog(db_url: str | None, *, now: int | None = None, conn: db.Connection | None = None) -> dict:
     """Read queued sync work and its age without initializing or changing schema."""
-    conn = _jobs_connection(db_url)
+    close_conn = False
+    if conn is None:
+        conn = _jobs_connection(db_url)
+        close_conn = True
     if conn is None:
         return {"available": False, "queued": 0, "processing": 0,
                 "oldest_queued_at": None, "oldest_queued_age_seconds": None}
@@ -155,12 +158,16 @@ def sync_backlog(db_url: str | None, *, now: int | None = None) -> dict:
             "oldest_queued_age_seconds": max(0, current - oldest) if oldest is not None else None,
         }
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 
 
-def job_counts(db_url: str | None) -> dict:
+def job_counts(db_url: str | None, *, conn: db.Connection | None = None) -> dict:
     """Lightweight count of active jobs without introspection or decision/undo scanning."""
-    conn = _jobs_connection(db_url)
+    close_conn = False
+    if conn is None:
+        conn = _jobs_connection(db_url)
+        close_conn = True
     if conn is None:
         return {"active_total": 0, "available": False}
     try:
@@ -170,7 +177,8 @@ def job_counts(db_url: str | None) -> dict:
         logger.warning("Database error in job_counts", exc_info=True)
         return {"active_total": 0, "available": False}
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 
 
 def job_listing(db_url: str | None, limit: int = 50, state: str = "", action: str = "", offset: int = 0,
@@ -231,9 +239,12 @@ def job_listing(db_url: str | None, limit: int = 50, state: str = "", action: st
         conn.close()
 
 
-def unresolved_failed_task_summary(db_url: str | None) -> dict:
+def unresolved_failed_task_summary(db_url: str | None, *, conn: db.Connection | None = None) -> dict:
     """Count actionable failed task groups without paging through full history."""
-    conn = _jobs_connection(db_url)
+    close_conn = False
+    if conn is None:
+        conn = _jobs_connection(db_url)
+        close_conn = True
     if conn is None:
         return {"available": False, "count": None}
     try:
@@ -269,7 +280,8 @@ def unresolved_failed_task_summary(db_url: str | None) -> dict:
         logger.debug("Ignored exception in unresolved_failed_task_summary", exc_info=True)
         return {"available": False, "count": None}
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 
 
 def unresolved_failed_task_listing(db_url: str | None, limit: int = 1000) -> dict:
