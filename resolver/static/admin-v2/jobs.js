@@ -20,7 +20,7 @@
     phash_generation: 'Generate pHash', thumbnail_generation: 'Generate thumbnail',
     phash_thumbnail_legacy: 'pHash and thumbnail (legacy)',
     duplicate_reconcile: 'Duplicate reconciliation', hide: 'Hide duplicates', dismiss: 'Dismiss pair', undo: 'Undo hide', undismiss: 'Undo dismissal',
-    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Full catalog audit', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', history_cleanup: 'Backup history cleanup', performer_catalog: 'StashDB performer catalog', scene_backfill: 'Scene identification', telegram_title_cleanup: 'Telegram title cleanup', source_remove: 'Remove Telegram channel', source_readd: 'Re-add/rename Telegram channel', visual_compare: 'Compare video frames', visual_signature: 'Build frame signatures', sync: 'Sync'
+    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Full catalog audit', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', history_cleanup: 'Backup history cleanup', performer_catalog: 'StashDB performer catalog', scene_backfill: 'Scene identification', telegram_title_cleanup: 'Telegram title cleanup', source_remove: 'Remove Telegram channel', source_readd: 'Re-add/rename Telegram channel', filesize_backfill: 'Backfill file sizes', dead_stream_quarantine: 'Dead stream quarantine', visual_compare: 'Compare video frames', visual_signature: 'Build frame signatures', sync: 'Sync'
   };
   const HISTORICAL_ACTION_LABELS = {
     lukayan_fingerprint: 'Scene fingerprint · legacy',
@@ -84,13 +84,15 @@
       reconciling_jellyfin_metadata: 'Reconciling Jellyfin metadata with Telegram tags',
       generating_phash: 'Generating perceptual hashes (pHash)',
       checking_availability: 'Checking playback availability',
+      backfilling_file_sizes: 'Backfilling video file sizes from Telegram metadata',
+      quarantining_dead_streams: 'Quarantining unavailable and dead streams',
       recovery: 'Recovering operation',
       done: 'Completed', failed: 'Failed', cancelled: 'Cancelled before start'
     };
     return labels[safeId(value).toLowerCase()] || 'Progress details unavailable';
   }
   function localResultLabel(value) {
-    const labels = { hidden: 'Saved locally', dismissed: 'Saved locally', restored: 'Restored locally', quarantined: 'Quarantined locally', metadata_updated: 'Metadata updated locally', artwork_downloaded: 'Artwork downloaded locally', artwork_generated: 'Artwork generated locally', artwork_not_found: 'No matching artwork', artwork_download_failed: 'Poster download failed', artwork_lookup_failed: 'Artwork lookup failed', availability_checked: 'Availability check recorded', audit_completed: 'Audit complete', phash_generation_completed: 'pHash batch generated' };
+    const labels = { hidden: 'Saved locally', dismissed: 'Saved locally', restored: 'Restored locally', quarantined: 'Quarantined locally', metadata_updated: 'Metadata updated locally', artwork_downloaded: 'Artwork downloaded locally', artwork_generated: 'Artwork generated locally', artwork_not_found: 'No matching artwork', artwork_download_failed: 'Poster download failed', artwork_lookup_failed: 'Artwork lookup failed', availability_checked: 'Availability check recorded', audit_completed: 'Audit complete', phash_generation_completed: 'pHash batch generated', filesize_backfill_completed: 'File sizes backfilled', dead_streams_quarantined: 'Dead streams quarantined' };
     return labels[safeId(value).toLowerCase()] || 'Not recorded';
   }
   function jellyfinResultLabel(value) {

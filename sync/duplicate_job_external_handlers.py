@@ -331,6 +331,21 @@ def _action_artwork_generate(conn, job_id, payload, media_dir, services):
         stream_url, dest, offset_seconds=offset, timeout=timeout,
     )
     if not success:
+        try:
+            import httpx
+            probe = httpx.get(f"{api_base}/play/{quote(video_id, safe='')}/variants", timeout=3.0)
+            if probe.status_code in (404, 410):
+                now = int(_core.time.time())
+                with conn:
+                    conn.execute("UPDATE videos SET playable=0 WHERE id=%s", (video_id,))
+                    conn.execute(
+                        "INSERT INTO dead_streams (video_id, reason, detected_at) "
+                        "VALUES (%s, %s, %s) ON CONFLICT(video_id) DO UPDATE SET "
+                        "reason=EXCLUDED.reason, detected_at=EXCLUDED.detected_at",
+                        (video_id, "artwork probe confirmed stream unavailable (404)", now),
+                    )
+        except Exception:
+            pass
         raise RuntimeError(f"Failed to generate artwork: {error}")
     refreshed = _core._refresh_jellyfin_with_progress(
         conn, job_id, "artwork_generated", services,
@@ -524,6 +539,156 @@ def _action_phash_generation(conn, job_id, payload, media_dir, services):
     }, False
 
 
+def _action_filesize_backfill(conn, job_id, payload, media_dir, services):
+    from tools.backfill_telegram_file_sizes import (
+        _default_resolver_url,
+        _fetch_missing_size_video_ids,
+        _process_single_video,
+    )
+    import httpx
+
+    limit = payload.get("limit")
+    if not isinstance(limit, int) or limit < 1:
+        limit = 500
+    limit = max(1, min(2000, limit))
+
+    resolver_url = (
+        payload.get("resolver_url")
+        or getattr(services, "resolver_api_url", None)
+        or _default_resolver_url()
+    )
+    base_url = str(resolver_url).rstrip("/")
+
+    video_ids = _fetch_missing_size_video_ids(conn, limit)
+    total = len(video_ids)
+    _core._record_job_progress(conn, job_id, "backfilling_file_sizes", completed=0, total=total)
+
+    checked = 0
+    updated = 0
+    unavailable = 0
+    failed = 0
+
+    with httpx.Client(timeout=10.0) as http_client:
+        for idx, vid in enumerate(video_ids, 1):
+            outcome = _process_single_video(http_client, base_url, vid)
+            if outcome is True:
+                updated += 1
+            elif outcome is None:
+                unavailable += 1
+            else:
+                failed += 1
+            checked += 1
+            if idx % 10 == 0 or idx == total:
+                _core._record_job_progress(
+                    conn, job_id, "backfilling_file_sizes", completed=idx, total=total,
+                )
+
+    return {
+        "videos_checked": checked,
+        "sizes_updated": updated,
+        "unavailable": unavailable,
+        "failed": failed,
+        "batch_limit": limit,
+        "local_state": "filesize_backfill_completed",
+    }, False
+
+
+def _action_dead_stream_quarantine(conn, job_id, payload, media_dir, services):
+    from urllib.parse import quote
+    from sync.telegram_unavailable import _quarantine_files, _ref
+    import httpx
+
+    limit = payload.get("limit")
+    if not isinstance(limit, int) or limit < 1:
+        limit = 100
+    limit = max(1, min(500, limit))
+
+    resolver_url = (
+        payload.get("resolver_url")
+        or getattr(services, "resolver_api_url", None)
+        or _core.os.getenv("RESOLVER_API_URL", "http://resolver:8090")
+    ).rstrip("/")
+
+    rows = conn.execute(
+        """SELECT v.id
+           FROM videos v
+           LEFT JOIN telegram_unavailable_quarantine q ON q.video_id=v.id
+           LEFT JOIN dead_streams d ON d.video_id=v.id
+           WHERE v.provider='telegram'
+             AND (q.status = 'suspect' OR v.playable = 0 OR d.video_id IS NOT NULL)
+             AND (q.status IS DISTINCT FROM 'quarantined')
+           ORDER BY COALESCE(q.last_checked_at, CURRENT_TIMESTAMP) ASC, v.id
+           LIMIT %s""",
+        (limit,),
+    ).fetchall()
+
+    total = len(rows)
+    _core._record_job_progress(conn, job_id, "quarantining_dead_streams", completed=0, total=total)
+
+    quarantine_root = services.jobs_lock_root(conn, media_dir) / "duplicate-quarantine"
+    now = int(_core.time.time())
+    checked = 0
+    quarantined = 0
+    restored = 0
+    errors = 0
+
+    with httpx.Client(timeout=10.0) as client:
+        for idx, (video_id,) in enumerate(rows, 1):
+            url = f"{resolver_url}/admin/play/{quote(video_id, safe='')}/variants"
+            try:
+                resp = client.get(url)
+                if resp.status_code in (404, 410):
+                    files = _quarantine_files(conn, video_id, media_dir, quarantine_root)
+                    ref = _ref(video_id)
+                    chan_id = ref[0] if ref else ""
+                    msg_id = ref[1] if ref else None
+                    uniq_id = ref[2] if ref else ""
+                    with conn:
+                        conn.execute("UPDATE videos SET playable=0 WHERE id=%s", (video_id,))
+                        conn.execute(
+                            "INSERT INTO dead_streams (video_id, reason, detected_at) "
+                            "VALUES (%s, %s, %s) ON CONFLICT(video_id) DO UPDATE SET "
+                            "reason=EXCLUDED.reason, detected_at=EXCLUDED.detected_at",
+                            (video_id, "confirmed dead stream (404)", now),
+                        )
+                        conn.execute(
+                            "INSERT INTO telegram_unavailable_quarantine "
+                            "(video_id, channel_id, message_id, file_unique_id, status, miss_count, last_checked_at, files, last_error) "
+                            "VALUES (%s, %s, %s, %s, 'quarantined', 2, to_timestamp(%s), %s::jsonb, '') "
+                            "ON CONFLICT(video_id) DO UPDATE SET status='quarantined', miss_count=EXCLUDED.miss_count, last_checked_at=EXCLUDED.last_checked_at, files=EXCLUDED.files",
+                            (video_id, chan_id, msg_id, uniq_id, now, _core.json.dumps(files)),
+                        )
+                    quarantined += 1
+                elif resp.status_code == 200:
+                    with conn:
+                        conn.execute("UPDATE videos SET playable=1 WHERE id=%s", (video_id,))
+                        conn.execute("DELETE FROM dead_streams WHERE video_id=%s", (video_id,))
+                        conn.execute("DELETE FROM telegram_unavailable_quarantine WHERE video_id=%s", (video_id,))
+                    restored += 1
+                checked += 1
+            except Exception as exc:
+                errors += 1
+                services.logger.warning("Could not probe candidate dead stream %s: %s", video_id, exc)
+
+            if idx % 10 == 0 or idx == total:
+                _core._record_job_progress(
+                    conn, job_id, "quarantining_dead_streams", completed=idx, total=total,
+                )
+
+    refreshed = False
+    if quarantined > 0:
+        refreshed = bool(_core._refresh_jellyfin_with_progress(conn, job_id, "dead_streams_quarantined", services))
+
+    return {
+        "videos_checked": checked,
+        "quarantined": quarantined,
+        "restored": restored,
+        "errors": errors,
+        "jellyfin_refresh": "updated" if refreshed else "skipped",
+        "local_state": "dead_streams_quarantined",
+    }, False
+
+
 _EXTERNAL_ACTION_HANDLERS = {
     "source_remove": _action_source_remove,
     "source_readd": _action_source_readd,
@@ -541,6 +706,8 @@ _EXTERNAL_ACTION_HANDLERS = {
     "scene_backfill": _action_scene_backfill,
     "telegram_title_cleanup": _action_telegram_title_cleanup,
     "phash_generation": _action_phash_generation,
+    "filesize_backfill": _action_filesize_backfill,
+    "dead_stream_quarantine": _action_dead_stream_quarantine,
 }
 
 

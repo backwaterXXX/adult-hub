@@ -599,6 +599,48 @@ class TestVideoDuplicateJobsWorker(BaseVideoDuplicateJobsTestCase):
         self.assertIsNone(self.conn.execute(
             "SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
 
+    def test_filesize_backfill_runs_in_jobs_worker(self):
+        job_id = enqueue_job(self.db_url, "filesize_backfill", {"limit": 10})
+
+        with patch("tools.backfill_telegram_file_sizes._fetch_missing_size_video_ids", return_value=["telegram:1:1:1"]), \
+             patch("tools.backfill_telegram_file_sizes._process_single_video", return_value=True):
+            self.assertEqual(
+                sync.process_video_duplicate_jobs(self.conn, self.media, include_long_running=True), 1
+            )
+        state, raw_result = self.conn.execute(
+            "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)
+        ).fetchone()
+        self.assertEqual(state, "done")
+        result = json.loads(raw_result)
+        self.assertEqual(result["local_state"], "filesize_backfill_completed")
+        self.assertEqual(result["videos_checked"], 1)
+        self.assertEqual(result["sizes_updated"], 1)
+
+    def test_dead_stream_quarantine_runs_in_jobs_worker(self):
+        job_id = enqueue_job(self.db_url, "dead_stream_quarantine", {"limit": 5})
+        vid = "telegram:1:1:deadstream"
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO videos (id, title, duration, provider, playable) "
+                "VALUES (%s, 'Dead Stream', 600, 'telegram', 0) "
+                "ON CONFLICT (id) DO UPDATE SET playable=0",
+                (vid,),
+            )
+
+        mock_resp = MagicMock(status_code=404)
+        with patch("httpx.Client.get", return_value=mock_resp), \
+             patch("sync.telegram_unavailable._quarantine_files", return_value=[{"file": "x.strm"}]), \
+             patch.object(duplicate_jobs, "_refresh_jellyfin_with_progress", return_value=False):
+            self.assertEqual(
+                sync.process_video_duplicate_jobs(self.conn, self.media, include_long_running=True), 1
+            )
+        state, raw_result = self.conn.execute(
+            "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)
+        ).fetchone()
+        self.assertEqual(state, "done")
+        result = json.loads(raw_result)
+        self.assertEqual(result["local_state"], "dead_streams_quarantined")
+        self.assertEqual(result["quarantined"], 1)
 
 
 class TestScheduledReconcileMergeGate(unittest.TestCase):
@@ -665,7 +707,6 @@ class TestScheduledReconcileMergeGate(unittest.TestCase):
             execute_merges, merge_tg = self.execute_merges_argument()
             self.assertTrue(execute_merges)
             self.assertTrue(merge_tg)
-
 
 
 if __name__ == "__main__":

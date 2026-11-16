@@ -527,6 +527,39 @@ class TestBackfillScenes(PgTestCase):
         with patch.dict(os.environ, {"LEGACY_VAR": "1"}):
             self.assertTrue(_fingerprint_feature_enabled("SOME_VAR", "LEGACY_VAR"))
 
+    def test_parallel_fingerprint_matching(self):
+        from sync.scene_scrapers import ScrapedScene
+
+        vids = ["telegram:-1001234567890:601:999", "telegram:-1001234567890:602:999"]
+        for vid in vids:
+            self.conn.execute(
+                """INSERT INTO videos (id,provider,title,duration,performers,studio,first_seen,last_seen)
+                   VALUES (%s,'telegram','Parallel Scene',600,'[]','Studio',1000,1000)""",
+                (vid,),
+            )
+            self.conn.execute(
+                "INSERT INTO video_fingerprints (video_id,algorithm,fingerprint) VALUES (%s,'OSHASH','0123456789abcdef')",
+                (vid,),
+            )
+        self.conn.commit()
+
+        matched_scene = ScrapedScene(
+            title="Matched Scene", plot="Scene desc", date="2022-01-01",
+            performers=["Performer"], tags=[], studio="Studio", poster_url="",
+            external_id="scene-parallel-1", source="theporndb:oshash",
+        )
+        progress = []
+        with patch.dict(os.environ, {"TELEGRAM_FINGERPRINTS_ENABLED": "true", "TELEGRAM_FINGERPRINT_WORKERS": "2"}), \
+             patch("sync.scene_scrapers.search_scene_by_oshash", return_value=matched_scene), \
+             patch("sync.scene_scrapers._apply_matched_scene", return_value=True):
+            checked, updated = backfill_telegram_fingerprints(
+                self.conn, self.media_dir, limit=10, sleep_sec=0, video_ids=vids,
+                progress_callback=lambda c, t: progress.append((c, t)),
+            )
+            self.assertEqual(checked, 2)
+            self.assertEqual(updated, 2)
+            self.assertIn((2, 2), progress)
+
 
 if __name__ == "__main__":
     unittest.main()

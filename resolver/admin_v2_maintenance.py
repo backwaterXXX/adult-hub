@@ -190,12 +190,76 @@ def _route_refresh_collections(router, admin):
     return refresh_collections
 
 
+def _route_filesize_backfill(router, admin):
+    @router.post("/api/v2/maintenance/filesize-backfill")
+    async def trigger_filesize_backfill(request: Request):
+        denied = admin._write_denied(request)
+        if denied is not None:
+            return denied
+        try:
+            body = await request.json() if "application/json" in (request.headers.get("content-type") or "") else {}
+        except Exception:
+            body = {}
+        limit = body.get("limit", 500) if isinstance(body, dict) else 500
+        try:
+            from resolver.video_duplicates import enqueue_job
+
+            job_id = await admin.asyncio.to_thread(
+                enqueue_job, admin.HUB_DB_URL, "filesize_backfill", {"limit": limit}
+            )
+            admin._wake_worker("jobs")
+            return admin.JSONResponse(
+                {"ok": True, "queued": True, "job_id": job_id, "state": "queued"},
+                status_code=202,
+            )
+        except Exception:
+            logger.warning("Request failed in trigger_filesize_backfill", exc_info=True)
+            return admin.JSONResponse(
+                {"ok": False, "error": "Could not queue file size backfill."}, status_code=503
+            )
+
+    return trigger_filesize_backfill
+
+
+def _route_dead_stream_quarantine(router, admin):
+    @router.post("/api/v2/maintenance/dead-streams/quarantine")
+    async def trigger_dead_stream_quarantine(request: Request):
+        denied = admin._write_denied(request)
+        if denied is not None:
+            return denied
+        try:
+            body = await request.json() if "application/json" in (request.headers.get("content-type") or "") else {}
+        except Exception:
+            body = {}
+        limit = body.get("limit", 100) if isinstance(body, dict) else 100
+        try:
+            from resolver.video_duplicates import enqueue_job
+
+            job_id = await admin.asyncio.to_thread(
+                enqueue_job, admin.HUB_DB_URL, "dead_stream_quarantine", {"limit": limit}
+            )
+            admin._wake_worker("jobs")
+            return admin.JSONResponse(
+                {"ok": True, "queued": True, "job_id": job_id, "state": "queued"},
+                status_code=202,
+            )
+        except Exception:
+            logger.warning("Request failed in trigger_dead_stream_quarantine", exc_info=True)
+            return admin.JSONResponse(
+                {"ok": False, "error": "Could not queue dead stream quarantine."}, status_code=503
+            )
+
+    return trigger_dead_stream_quarantine
+
+
 def build_router(admin):
     router = APIRouter(route_class=V2ErrorRoute)
     _route_trigger_sync(router, admin)
     _route_clear_resolver_cache(router, admin)
     _route_refresh_jellyfin_library(router, admin)
     _route_refresh_collections(router, admin)
+    _route_filesize_backfill(router, admin)
+    _route_dead_stream_quarantine(router, admin)
     return router
 
 

@@ -281,6 +281,186 @@ def _backfill_telegram_video(conn: Any, media_dir: Path, video_id: Any, duration
     return updated, False
 
 
+def _batch_fingerprints_map(conn: Any, video_ids: List[str]) -> dict[str, dict[str, str]]:
+    if not video_ids:
+        return {}
+    try:
+        rows = conn.execute(
+            """SELECT video_id, algorithm, fingerprint
+               FROM video_fingerprints
+               WHERE video_id = ANY(%s) AND algorithm IN ('OSHASH', 'PHASH')""",
+            (video_ids,),
+        ).fetchall()
+        result: dict[str, dict[str, str]] = {}
+        for vid, alg, fp in rows:
+            vid_str = str(vid)
+            if vid_str not in result:
+                result[vid_str] = {}
+            if fp:
+                result[vid_str][str(alg).upper()] = str(fp)
+        return result
+    except Exception:
+        return {}
+
+
+def _network_lookup_candidate(
+    video_id: str,
+    duration: Any,
+    oshash: Optional[str],
+    phash: Optional[str],
+    http_client: Optional[Any],
+) -> Tuple[str, Any, str, int, Optional[Exception]]:
+    try:
+        matched = None
+        method = "oshash"
+        if oshash:
+            matched = _core.search_scene_by_oshash(
+                oshash, http_client=http_client, duration=int(duration or 0),
+                duration_tolerance=2,
+            )
+        if matched is None and phash and _core._fingerprint_feature_enabled(
+            "TELEGRAM_PHASH_ENABLED", "LUKAYAN_PHASH_ENABLED", default=True
+        ):
+            matched = _core.search_scene_by_phash(
+                phash, http_client=http_client, duration=int(duration or 0),
+                max_distance=10, duration_tolerance=2,
+            )
+            if matched is not None:
+                method = "phash"
+        return video_id, matched, method, 0, None
+    except Exception as exc:
+        return video_id, None, "error", 0, exc
+
+
+def _apply_fingerprint_match(
+    conn: Any,
+    media_dir: Path,
+    vid: str,
+    matched: Any,
+    method: str,
+    total_bytes: int,
+    attempt_source: str,
+    http_client: Optional[Any],
+) -> int:
+    applied = 0
+    try:
+        with conn:
+            applied = int(_core._apply_matched_scene(
+                conn, media_dir, str(vid), matched, http_client=http_client,
+            ))
+        outcome = "found"
+        _core.logger.info(
+            "%s %s matched %s as %r (%d bytes read)",
+            _TELEGRAM_CHANNEL_LABEL, method, vid, matched.title, total_bytes,
+        )
+    except Exception as apply_exc:
+        outcome = "error"
+        _record_error_attempt(
+            conn, vid, attempt_source, apply_exc, "Could not apply matched scene for %s"
+        )
+    if _core.record_attempt:
+        _core.record_attempt(conn, "video", vid, attempt_source, outcome)
+    return applied
+
+
+def _handle_parallel_candidate_result(
+    conn: Any,
+    media_dir: Path,
+    result: Tuple[str, Any, str, int, Optional[Exception]],
+    attempt_source: str,
+    http_client: Optional[Any],
+) -> int:
+    vid, matched, method, total_bytes, exc = result
+    if exc is not None:
+        _record_error_attempt(
+            conn, vid, attempt_source, exc, "Could not save OSHASH retry state for %s"
+        )
+        _core.logger.warning(
+            "%s OSHASH enrichment failed for %s (%s)",
+            _TELEGRAM_CHANNEL_LABEL, vid, type(exc).__name__,
+        )
+        return 0
+    if matched:
+        return _apply_fingerprint_match(
+            conn, media_dir, vid, matched, method, total_bytes, attempt_source, http_client
+        )
+    outcome = "no_match"
+    _core.logger.info(
+        "%s fingerprints found no catalogue entry for %s (%d bytes read)",
+        _TELEGRAM_CHANNEL_LABEL, vid, total_bytes,
+    )
+    if _core.record_attempt:
+        _core.record_attempt(conn, "video", vid, attempt_source, outcome)
+    return 0
+
+
+def _run_sequential_fingerprint_loop(
+    conn: Any,
+    media_dir: Path,
+    rows: List[Any],
+    sleep_sec: float,
+    attempt_source: str,
+    http_client: Optional[Any],
+    progress_callback: Optional[Callable[[int, int], None]],
+) -> Tuple[int, int]:
+    checked = 0
+    updated = 0
+    for idx, (video_id, _old_title, duration, _old_studio) in enumerate(rows):
+        if idx and sleep_sec > 0:
+            _core.time.sleep(sleep_sec)
+        checked += 1
+        applied, paused = _backfill_telegram_video(
+            conn, media_dir, video_id, duration, http_client, attempt_source
+        )
+        updated += applied
+        if progress_callback:
+            progress_callback(checked, len(rows))
+        if paused:
+            break
+    return checked, updated
+
+
+def _run_parallel_fingerprint_loop(
+    conn: Any,
+    media_dir: Path,
+    rows: List[Any],
+    concurrency: int,
+    attempt_source: str,
+    http_client: Optional[Any],
+    progress_callback: Optional[Callable[[int, int], None]],
+) -> Tuple[int, int]:
+    from concurrent.futures import ThreadPoolExecutor
+
+    video_id_list = [str(r[0]) for r in rows]
+    fps_map = _batch_fingerprints_map(conn, video_id_list)
+
+    candidates = [
+        (
+            str(r[0]),
+            r[2],
+            fps_map.get(str(r[0]), {}).get("OSHASH"),
+            fps_map.get(str(r[0]), {}).get("PHASH"),
+        )
+        for r in rows
+    ]
+
+    checked = 0
+    updated = 0
+
+    def _worker(c: Tuple[str, Any, Optional[str], Optional[str]]) -> Tuple[str, Any, str, int, Optional[Exception]]:
+        return _network_lookup_candidate(c[0], c[1], c[2], c[3], http_client)
+
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        for res in executor.map(_worker, candidates):
+            checked += 1
+            updated += _handle_parallel_candidate_result(
+                conn, media_dir, res, attempt_source, http_client
+            )
+            if progress_callback:
+                progress_callback(checked, len(rows))
+    return checked, updated
+
+
 def backfill_telegram_fingerprints(
     conn: Any,
     media_dir: Path,
@@ -311,21 +491,23 @@ def backfill_telegram_fingerprints(
     attempt_source = "telegram_fingerprint"
     rows = _fetch_telegram_fingerprint_rows(conn, video_ids, channel_pattern, attempt_source, limit)
 
-    checked = 0
-    updated = 0
     if progress_callback:
         progress_callback(0, len(rows))
-    for idx, (video_id, _old_title, duration, _old_studio) in enumerate(rows):
-        if idx and sleep_sec > 0:
-            _core.time.sleep(sleep_sec)
-        checked += 1
-        applied, paused = _backfill_telegram_video(conn, media_dir, video_id, duration, http_client, attempt_source)
-        updated += applied
-        if progress_callback:
-            progress_callback(checked, len(rows))
-        if paused:
-            break
-    return checked, updated
+
+    concurrency_raw = _core.os.environ.get("TELEGRAM_FINGERPRINT_WORKERS", "3")
+    try:
+        concurrency = max(1, min(6, int(concurrency_raw)))
+    except (TypeError, ValueError):
+        concurrency = 3
+
+    if concurrency <= 1 or len(rows) <= 1:
+        return _run_sequential_fingerprint_loop(
+            conn, media_dir, rows, sleep_sec, attempt_source, http_client, progress_callback
+        )
+
+    return _run_parallel_fingerprint_loop(
+        conn, media_dir, rows, concurrency, attempt_source, http_client, progress_callback
+    )
 
 
 def _fetch_phash_candidate_rows(conn: Any, video_ids: Optional[List[str]], batch_limit: int):

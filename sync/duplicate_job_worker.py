@@ -133,7 +133,9 @@ def _execute_action(conn, job_id, action, payload, media_dir, services, quaranti
          or action == 'telegram_title_cleanup'
          or action == 'source_remove'
          or action == 'source_readd'
-         or action == 'phash_generation',
+         or action == 'phash_generation'
+         or action == 'filesize_backfill'
+         or action == 'dead_stream_quarantine',
          lambda: _run_external_action(action, conn, job_id, payload, media_dir, services, run)),
         (action == 'dismiss',
          lambda: _run_dismiss(conn, job_id, payload, now)),
