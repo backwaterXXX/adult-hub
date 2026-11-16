@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import logging
+import os
 
 from common import db
 from common.duplicate_evidence import extract_part_identity
@@ -14,7 +15,7 @@ PHASH_ALGORITHM_VERSION = "stash-phash-689a6b400625d6da2afb58a7f908c88bcdb6f8ab-
 PHASH_DECODER_PROFILE = "resolver-ffmpeg-stash-v2"
 VISUAL_ALGORITHM_VERSION = "visual-sequence-v1"
 MAX_PHASH_ENQUEUES = 25
-MAX_AUTO_LOSERS = 25
+MAX_AUTO_LOSERS = int(os.getenv("DUPLICATE_AUTO_MERGE_LIMIT", "200"))
 VISUAL_SIGNATURES_PER_RUN = 100
 VISUAL_PAIR_CHECKS_PER_RUN = 100_000
 VISUAL_VERIFICATIONS_PER_RUN = 25
@@ -328,12 +329,13 @@ def _build_auto_groups(db_url, pairs: list, by_id: dict, active_losers: set, vis
     return auto_groups, skipped
 
 
-def _select_auto_work(auto_groups: dict, execute_merges: bool, limit: int,
+def _select_auto_work(auto_groups: dict, execute_merges: bool, limit: int | None = None,
                       *, merge_telegram_file_id: bool = True) -> list:
     work = []
     if not execute_merges:
         return work
     claimed_ids: set[str] = set()
+    max_items = limit if limit is not None else MAX_AUTO_LOSERS
     for payload in auto_groups.values():
         is_same_telegram_file = payload.get("evidence") == "telegram_file_id"
         if is_same_telegram_file and not merge_telegram_file_id:
@@ -343,7 +345,7 @@ def _select_auto_work(auto_groups: dict, execute_merges: bool, limit: int,
             continue
         work.append(("hide", payload))
         claimed_ids.update(group_ids)
-        if len(work) >= max(1, min(limit, MAX_AUTO_LOSERS)):
+        if max_items is not None and max_items > 0 and len(work) >= max_items:
             break
     return work
 
@@ -404,7 +406,7 @@ def _filter_work_by_scale_guard(db_url: str | None, work: list) -> list:
     ]
 
 
-def reconcile(db_url: str | None, *, limit: int = MAX_AUTO_LOSERS,
+def reconcile(db_url: str | None, *, limit: int | None = None,
               execute_merges: bool = False,
               merge_telegram_file_id: bool = True) -> dict:
     """Queue missing pHashes and reversible hides for high-confidence matches."""

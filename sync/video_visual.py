@@ -119,7 +119,7 @@ def reevaluate_evidence(evidence: dict) -> str | None:
         if (len(strict) >= 5 and len(loose) >= 6 and all(sections.get(x) for x in ("beginning", "middle", "end"))
                 and ssims[len(ssims)//2] >= .90 and dhashes[len(dhashes)//2] <= 6
                 and fit["max_residual_seconds"] <= .5 and fit["predicted"]
-                and all(-2 <= x <= 2 for x in fit["predicted"]) and evidence["aspect_ratio_auto_safe"]):
+                and all(-2.01 <= x <= 2.01 for x in fit["predicted"]) and evidence["aspect_ratio_auto_safe"]):
             return "confirmed"
         return "review" if len(loose) >= 5 and all(evidence["sections"].values()) else (
             "different" if sum(bool(x["informative"]) for x in matches) >= 6 and len(loose) <= 2 else "inconclusive")
