@@ -11,14 +11,21 @@ class Result:
 
 
 class Conn:
-    def __init__(self, hashes, *, dismissed=False, parts=('', ''), oshashes=('', '')):
+    def __init__(self, hashes, *, dismissed=False, parts=('', ''), oshashes=('', ''),
+                 visual_evidence=None, file_sizes=(1000, 1000)):
         self.hashes, self.dismissed, self.parts, self.oshashes = hashes, dismissed, parts, oshashes
+        self.visual_evidence = visual_evidence
+        self.file_sizes = file_sizes
     def execute(self, sql, params):
         if 'FROM videos v' in sql:
-            return Result([(name, 100, 1, self.parts[i], '', '', '', self.oshashes[i], self.hashes[i])
+            return Result([(name, 100, self.file_sizes[i], self.parts[i], '', '', '', self.oshashes[i], self.hashes[i])
                            for i, name in enumerate(('a', 'b'))])
         if 'video_duplicate_dismissals' in sql:
             return Result([(1,)] if self.dismissed else [])
+        if 'video_visual_comparisons' in sql:
+            if self.visual_evidence is not None:
+                return Result([(self.visual_evidence,)])
+            return Result([])
         return Result([])
 
 
@@ -36,6 +43,13 @@ class EvidencePolicyTest(unittest.TestCase):
         self.assertIsNone(pair_evidence(Conn(('0000000000000000',)*2, parts=('Series Vol 1 Part 2', 'Series Vol 2 Part 2')), 'a', 'b'))
         self.assertEqual(pair_evidence(Conn(('0000000000000000',)*2, parts=('Series Vol 2 Part 1', 'Series Vol 2 Part 1')), 'a', 'b')['type'], 'phash')
         self.assertEqual(pair_evidence(Conn(('', ''), oshashes=('same', 'same')), 'a', 'b')['type'], 'oshash')
+
+    def test_visual_evidence_allows_unmarked_parts_and_file_size_fallback(self):
+        ev = {'confirmation_policy': 'strict-5-of-8-v2'}
+        conn = Conn(('', ''), parts=('Series Vol 2 Part 1', ''), visual_evidence=ev)
+        res = pair_evidence(conn, 'a', 'b')
+        self.assertIsNotNone(res)
+        self.assertEqual(res['type'], 'visual_sequence')
 
     def test_saved_measurements_policy(self):
         strict = {'informative': True, 'phash': 6, 'dhash': 6, 'ssim': .90}

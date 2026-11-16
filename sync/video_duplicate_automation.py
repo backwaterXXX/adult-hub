@@ -257,10 +257,11 @@ def _loser_blocked(db_url, keeper: dict, loser: dict, evidence: str) -> bool:
     if not _duration_matches(keeper, loser):
         if evidence != "telegram_file_id" or (keeper.get("duration") and loser.get("duration")):
             return True
-    keeper_split, keeper_part = _part_identity(keeper)
-    loser_split, loser_part = _part_identity(loser)
-    if (keeper_split or loser_split) and (not keeper_part or keeper_part != loser_part):
-        return True
+    if evidence not in ("visual_sequence", "telegram_file_id", "oshash"):
+        keeper_split, keeper_part = _part_identity(keeper)
+        loser_split, loser_part = _part_identity(loser)
+        if (keeper_split or loser_split) and (not keeper_part or keeper_part != loser_part):
+            return True
     from common.duplicate_evidence import pair_evidence
     evidence_conn = db.connect(db_url)
     try:

@@ -108,20 +108,23 @@ def pair_evidence(conn, left_id: str, right_id: str) -> dict | None:
     same_tg_doc = bool(doc_a and doc_b and doc_a == doc_b)
     if not _durations_compatible(a, b, same_tg_doc):
         return None
-    ap, an = _part(a)
-    bp, bn = _part(b)
-    if (ap or bp) and (not an or an != bn):
-        return None
     if conn.execute('SELECT 1 FROM video_duplicate_dismissals WHERE left_id=%s AND right_id=%s AND active=1', (left_id,right_id)).fetchone():
         return None
     if same_tg_doc:
         return {'type': 'telegram_file_id', 'file_id': doc_a}
     if a['oshash'] and a['oshash'] == b['oshash']:
         return {'type': 'oshash'}
+    visual = _visual_evidence(conn, left_id, right_id, a, b)
+    if visual:
+        return visual
+    ap, an = _part(a)
+    bp, bn = _part(b)
+    if (ap or bp) and (not an or an != bn):
+        return None
     phash = _phash_evidence(a, b)
     if phash:
         return phash
-    return _visual_evidence(conn, left_id, right_id, a, b)
+    return None
 
 
 def _durations_compatible(a: dict, b: dict, same_tg_doc: bool) -> bool:
@@ -148,9 +151,16 @@ def _phash_evidence(a: dict, b: dict) -> dict | None:
 
 
 def _visual_evidence(conn, left_id: str, right_id: str, a: dict, b: dict) -> dict | None:
+    left_keys = [_source(a)]
+    if a.get('file_size_bytes'):
+        left_keys.append(_source(dict(a, file_size_bytes=None)))
+    right_keys = [_source(b)]
+    if b.get('file_size_bytes'):
+        right_keys.append(_source(dict(b, file_size_bytes=None)))
     row = conn.execute('''SELECT evidence FROM video_visual_comparisons WHERE left_id=%s AND right_id=%s
-        AND state='confirmed' AND algorithm_version='visual-sequence-v1' AND left_source_key=%s AND right_source_key=%s''',
-        (left_id,right_id,_source(a),_source(b))).fetchone()
+        AND state='confirmed' AND algorithm_version='visual-sequence-v1'
+        AND left_source_key=ANY(%s) AND right_source_key=ANY(%s)''',
+        (left_id, right_id, left_keys, right_keys)).fetchone()
     if row:
         evidence = row[0]
         if isinstance(evidence, str):
@@ -158,6 +168,6 @@ def _visual_evidence(conn, left_id: str, right_id: str, a: dict, b: dict) -> dic
                 evidence = json.loads(evidence)
             except ValueError:
                 evidence = {}
-        if isinstance(evidence,dict) and evidence.get('confirmation_policy') == VISUAL_POLICY:
+        if isinstance(evidence, dict) and evidence.get('confirmation_policy') == VISUAL_POLICY:
             return {'type': 'visual_sequence', 'policy': VISUAL_POLICY}
     return None
