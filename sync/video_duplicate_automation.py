@@ -361,49 +361,9 @@ def _incomplete_scan_result(db_url, visual: dict, scan: dict) -> dict:
             "phash_queued": 0, "merge_jobs_queued": 0}
 
 
-def _blocked_channel_prefixes(db_url: str | None, planned_per_prefix: dict[str, set[str]]) -> set[str]:
-    conn = db.connect(db_url)
-    blocked_prefixes: set[str] = set()
-    try:
-        for prefix, losers in planned_per_prefix.items():
-            count_row = conn.execute(
-                "SELECT count(*) FROM videos WHERE id LIKE %s", (f"{prefix}%",)
-            ).fetchone()
-            total = int(count_row[0]) if count_row else 0
-            limit = max(10, int(total * 0.25))
-            if len(losers) > limit:
-                logger.warning(
-                    "Skipping auto-hide for channel '%s': would hide %d of %d catalogued entries (>1/4)",
-                    prefix, len(losers), total,
-                )
-                blocked_prefixes.add(prefix)
-    finally:
-        conn.close()
-    return blocked_prefixes
-
-
 def _filter_work_by_scale_guard(db_url: str | None, work: list) -> list:
-    if not work:
-        return work
-    planned_per_prefix: dict[str, set[str]] = {}
-    for action, payload in work:
-        if action != "hide":
-            continue
-        for loser_id in payload.get("loser_ids", []):
-            parts = str(loser_id).split(":")
-            if len(parts) >= 3 and parts[0] == "telegram":
-                prefix = f"telegram:{parts[1]}:"
-                planned_per_prefix.setdefault(prefix, set()).add(loser_id)
-    if not planned_per_prefix:
-        return work
-
-    blocked = _blocked_channel_prefixes(db_url, planned_per_prefix)
-    if not blocked:
-        return work
-    return [
-        (action, payload) for action, payload in work
-        if not any(any(str(lid).startswith(bp) for bp in blocked) for lid in payload.get("loser_ids", []))
-    ]
+    """Channel scale guard is disabled; allow all safe duplicate merges regardless of source channel."""
+    return work
 
 
 def reconcile(db_url: str | None, *, limit: int | None = None,
