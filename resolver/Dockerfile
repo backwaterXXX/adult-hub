@@ -33,6 +33,7 @@ COPY sync/ ./sync/
 COPY resolver/ ./resolver/
 COPY tools/__init__.py ./tools/__init__.py
 COPY tools/export_video_duplicate_review_corpus.py ./tools/export_video_duplicate_review_corpus.py
+COPY tools/backfill_telegram_file_sizes.py ./tools/backfill_telegram_file_sizes.py
 
 EXPOSE 8090
 
