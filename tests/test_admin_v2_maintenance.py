@@ -29,9 +29,10 @@ def make_request(path, *, body=None, cache_clear=None):
         received = True
         return {"type": "http.request", "body": encoded, "more_body": False}
 
+    headers = [(b"content-type", b"application/json")] if body is not None else []
     return Request({
         "type": "http", "http_version": "1.1", "method": "POST", "scheme": "http",
-        "path": path, "raw_path": path.encode(), "query_string": b"", "headers": [],
+        "path": path, "raw_path": path.encode(), "query_string": b"", "headers": headers,
         "client": ("127.0.0.1", 1), "server": ("test", 80), "root_path": "",
         "app": SimpleNamespace(state=SimpleNamespace(admin_cache_clear=cache_clear)),
     }, receive=receive)
@@ -179,6 +180,22 @@ class TestAdminV2Maintenance(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.status_code, 403)
         self.assertEqual(cache_calls, [])
         self.assertEqual(admin.wake_calls, [])
+
+    async def test_filesize_backfill_and_dead_stream_quarantine_queue_jobs(self):
+        admin = make_admin()
+        routes = self.routes(admin)
+        fs_route = routes["/api/v2/maintenance/filesize-backfill"]
+        ds_route = routes["/api/v2/maintenance/dead-streams/quarantine"]
+        with patch("resolver.video_duplicates.enqueue_job", side_effect=["job-fs", "job-ds"]) as enqueue:
+            fs_res = await fs_route(make_request("/admin/api/v2/maintenance/filesize-backfill", body={"limit": 50}))
+            ds_res = await ds_route(make_request("/admin/api/v2/maintenance/dead-streams/quarantine", body={"limit": 20}))
+
+        self.assertEqual(fs_res.status_code, 202)
+        self.assertEqual(response_body(fs_res)["job_id"], "job-fs")
+        self.assertEqual(ds_res.status_code, 202)
+        self.assertEqual(response_body(ds_res)["job_id"], "job-ds")
+        enqueue.assert_any_call(admin.HUB_DB_URL, "filesize_backfill", {"limit": 50})
+        enqueue.assert_any_call(admin.HUB_DB_URL, "dead_stream_quarantine", {"limit": 20})
 
 
 if __name__ == "__main__":

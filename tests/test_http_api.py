@@ -36,6 +36,8 @@ def get_job(db_url, job_id):
 class BaseHttpApiTestCase(unittest.TestCase):
     MUTATIONS = (
         ("POST", "/admin/api/v2/maintenance/cache/clear"),
+        ("POST", "/admin/api/v2/maintenance/filesize-backfill"),
+        ("POST", "/admin/api/v2/maintenance/dead-streams/quarantine"),
         ("POST", "/admin/api/v2/operations/preview"),
         ("POST", "/admin/api/v2/operations/execute"),
         ("POST", "/admin/api/v2/duplicates/actions"),
