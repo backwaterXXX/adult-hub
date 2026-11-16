@@ -20,10 +20,37 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from common import db  # noqa: E402
-from resolver.providers.telegram_filesize import save_db_file_size  # noqa: E402
 
 logger = logging.getLogger("backfill_file_sizes")
 _STOP_REQUESTED = False
+
+
+def save_db_file_size(ref: str, size: int, db_url: Optional[str] = None) -> bool:
+    """Save file_size_bytes to PostgreSQL videos table if currently NULL."""
+    clean_ref = str(ref or "").strip()
+    if not clean_ref or not isinstance(size, int) or size <= 0 or ":variant:" in clean_ref:
+        return False
+    unique_id = clean_ref.rsplit(":", 1)[-1].strip()
+    candidate_ids = [
+        clean_ref if clean_ref.startswith("telegram:") else f"telegram:{clean_ref}",
+    ]
+    if unique_id and f"telegram:{unique_id}" not in candidate_ids:
+        candidate_ids.append(f"telegram:{unique_id}")
+
+    try:
+        with db.connection(db_url, connect_timeout=2) as conn:
+            with conn:
+                for candidate_id in candidate_ids:
+                    cur = conn.execute(
+                        "UPDATE videos SET file_size_bytes = %s "
+                        "WHERE id = %s AND file_size_bytes IS NULL",
+                        (int(size), candidate_id),
+                    )
+                    if getattr(cur, "rowcount", 0) > 0:
+                        return True
+    except Exception as exc:
+        logger.debug("Database file_size save failed for %s: %s", ref, exc)
+    return False
 
 
 def _sig_handler(signum, frame):
