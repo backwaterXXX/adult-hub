@@ -65,6 +65,7 @@ def _sig_handler(signum, frame):
 def _default_resolver_url() -> str:
     return (
         os.getenv("RESOLVER_INTERNAL_URL")
+        or os.getenv("RESOLVER_API_URL")
         or os.getenv("RESOLVER_URL")
         or "http://127.0.0.1:8090"
     ).rstrip("/")

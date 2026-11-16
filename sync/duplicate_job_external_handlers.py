@@ -555,6 +555,7 @@ def _action_filesize_backfill(conn, job_id, payload, media_dir, services):
     resolver_url = (
         payload.get("resolver_url")
         or getattr(services, "resolver_api_url", None)
+        or _core.os.getenv("RESOLVER_API_URL")
         or _default_resolver_url()
     )
     base_url = str(resolver_url).rstrip("/")
