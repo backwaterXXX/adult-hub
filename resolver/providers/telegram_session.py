@@ -67,7 +67,11 @@ def _has_sqlite_header(path: str) -> bool:
 
 
 def has_session_auth_key(session_path: str) -> bool:
-    """Fast local check: returns True if SQLite session file contains a 256-byte auth_key."""
+    """Fast local check: returns True if SQLite session file contains a 256-byte auth_key.
+
+    The file can still hold a key the server has revoked, so this is a hint, not proof
+    of authorization. The live check remains the source of truth.
+    """
     actual_path = get_sqlite_session_file_path(session_path)
     if not os.path.isfile(actual_path) or os.path.getsize(actual_path) == 0:
         return False
@@ -75,8 +79,10 @@ def has_session_auth_key(session_path: str) -> bool:
         return False
     try:
         import sqlite3
-        uri = f"file:{os.path.abspath(actual_path)}?mode=ro&immutable=1"
-        with sqlite3.connect(uri, uri=True, timeout=0.5) as conn:
+        from contextlib import closing
+        # Read-only, without immutable=1: the session file may be written concurrently.
+        uri = f"file:{os.path.abspath(actual_path)}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=0.5)) as conn:
             row = conn.execute("SELECT length(auth_key) FROM sessions LIMIT 1").fetchone()
             return bool(row and row[0] == 256)
     except Exception:

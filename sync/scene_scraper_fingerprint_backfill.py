@@ -372,6 +372,9 @@ def _generate_one_telegram_phash(
         )
         with conn:
             _core._store_video_fingerprint(conn, video_id, "PHASH", phash)
+            # Provenance is optional metadata. A savepoint keeps its failure from
+            # aborting the transaction that holds the freshly computed pHash.
+            conn.execute("SAVEPOINT phash_provenance")
             try:
                 conn.execute(
                     """INSERT INTO video_phash_provenance
@@ -384,8 +387,10 @@ def _generate_one_telegram_phash(
                      "stash-phash-689a6b400625d6da2afb58a7f908c88bcdb6f8ab-v2:resolver-ffmpeg-stash-v2",
                      "resolver-ffmpeg-stash-v2", "phash-generator"),
                 )
+                conn.execute("RELEASE SAVEPOINT phash_provenance")
             except Exception:
-                pass
+                conn.execute("ROLLBACK TO SAVEPOINT phash_provenance")
+                _core.logger.debug("Could not record pHash provenance for %s", video_id, exc_info=True)
         if _core.record_attempt:
             _core.record_attempt(conn, "video", video_id, "telegram_phash_gen", "found")
         return True, False

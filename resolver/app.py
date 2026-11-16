@@ -548,11 +548,11 @@ async def _telegram_variants(cand_id: str, raw_id: str):
         orig_size = orig.get("file_size") if orig else None
         if isinstance(orig_size, int) and orig_size > 0:
             try:
-                from resolver.providers.telegram_filesize import save_db_file_size
+                from resolver.providers.telegram_filesize import schedule_db_file_size_save
 
-                asyncio.create_task(asyncio.to_thread(save_db_file_size, raw_id, orig_size))
+                schedule_db_file_size_save(raw_id, orig_size)
             except Exception:
-                pass
+                logger.debug("Could not schedule file size save for %s", raw_id, exc_info=True)
         return res, None
     except HTTPException as exc:
         return None, exc
@@ -665,7 +665,10 @@ async def _resolve_play_candidate(cand_id: str, chosen_variant: Optional[str]):
         return cache_key, None, e
     except Exception as e:
         logger.warning("Failed to resolve %s: %s", cache_key, e)
-        if chosen_variant and isinstance(e, ValueError) and "not found" in str(e).lower():
+        if chosen_variant and "not found" in str(e).lower() and (
+            isinstance(e, ValueError)
+            or (isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404)
+        ):
             return cache_key, None, HTTPException(status_code=404, detail="Video not found")
         return cache_key, None, e
     return cache_key, cand_stream, None

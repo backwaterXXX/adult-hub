@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import time
-import uuid  # noqa: F401 — kept for any direct callers, real work via queue_primitives
 
 from common.db import (
     Connection,

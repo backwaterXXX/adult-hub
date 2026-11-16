@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 import logging
+import threading
 from typing import Any, Awaitable, Callable, Optional, Tuple
 
 from common import db
@@ -21,9 +22,15 @@ from resolver.providers.telegram_variants import find_variant_document
 
 logger = logging.getLogger(__name__)
 
-# Bounded LRU cache of ref -> file size in bytes
+# Bounded LRU cache of ref -> file size in bytes. Writers run on worker threads
+# (asyncio.to_thread) while readers run on the event loop, so every access holds the lock.
 _MAX_CACHE_ENTRIES = 5000
 _FILE_SIZE_CACHE: OrderedDict[str, int] = OrderedDict()
+_FILE_SIZE_CACHE_LOCK = threading.Lock()
+
+# Background DB writes. The event loop only keeps weak references to tasks, so
+# they are held here until they finish.
+_PENDING_DB_SAVES: set[asyncio.Task] = set()
 
 
 def _parse_ref(ref: str) -> Tuple[str, int, str]:
@@ -64,17 +71,18 @@ def get_cached_file_size(ref: str) -> Optional[int]:
     clean_ref = str(ref or "").strip()
     if not clean_ref:
         return None
-    size = _FILE_SIZE_CACHE.get(clean_ref)
-    if size is not None:
-        _FILE_SIZE_CACHE.move_to_end(clean_ref)
-        return size
-    unique_id = clean_ref.rsplit(":", 1)[-1].strip()
-    if unique_id and unique_id != clean_ref:
-        size = _FILE_SIZE_CACHE.get(unique_id)
+    with _FILE_SIZE_CACHE_LOCK:
+        size = _FILE_SIZE_CACHE.get(clean_ref)
         if size is not None:
-            _FILE_SIZE_CACHE.move_to_end(unique_id)
-            _FILE_SIZE_CACHE[clean_ref] = size
+            _FILE_SIZE_CACHE.move_to_end(clean_ref)
             return size
+        unique_id = clean_ref.rsplit(":", 1)[-1].strip()
+        if unique_id and unique_id != clean_ref:
+            size = _FILE_SIZE_CACHE.get(unique_id)
+            if size is not None:
+                _FILE_SIZE_CACHE.move_to_end(unique_id)
+                _FILE_SIZE_CACHE[clean_ref] = size
+                return size
     return None
 
 
@@ -83,19 +91,21 @@ def set_cached_file_size(ref: str, size: Optional[int]) -> None:
     clean_ref = str(ref or "").strip()
     if not clean_ref or not isinstance(size, int) or size < 0:
         return
-    _FILE_SIZE_CACHE[clean_ref] = size
-    _FILE_SIZE_CACHE.move_to_end(clean_ref)
     unique_id = clean_ref.rsplit(":", 1)[-1].strip()
-    if unique_id and unique_id != clean_ref:
-        _FILE_SIZE_CACHE[unique_id] = size
-        _FILE_SIZE_CACHE.move_to_end(unique_id)
-    while len(_FILE_SIZE_CACHE) > _MAX_CACHE_ENTRIES:
-        _FILE_SIZE_CACHE.popitem(last=False)
+    with _FILE_SIZE_CACHE_LOCK:
+        _FILE_SIZE_CACHE[clean_ref] = size
+        _FILE_SIZE_CACHE.move_to_end(clean_ref)
+        if unique_id and unique_id != clean_ref:
+            _FILE_SIZE_CACHE[unique_id] = size
+            _FILE_SIZE_CACHE.move_to_end(unique_id)
+        while len(_FILE_SIZE_CACHE) > _MAX_CACHE_ENTRIES:
+            _FILE_SIZE_CACHE.popitem(last=False)
 
 
 def clear_file_size_cache() -> None:
     """Clear in-memory cache (for test isolation)."""
-    _FILE_SIZE_CACHE.clear()
+    with _FILE_SIZE_CACHE_LOCK:
+        _FILE_SIZE_CACHE.clear()
 
 
 def get_db_file_size(ref: str, db_url: Optional[str] = None) -> Optional[int]:
@@ -155,6 +165,18 @@ def save_db_file_size(ref: str, size: int, db_url: Optional[str] = None) -> bool
     return False
 
 
+def schedule_db_file_size_save(ref: str, size: int, db_url: Optional[str] = None) -> None:
+    """Persist a file size in a worker thread without losing the task to garbage collection.
+
+    Must run inside an event loop; raises RuntimeError otherwise.
+    """
+    task = asyncio.get_running_loop().create_task(
+        asyncio.to_thread(save_db_file_size, ref, size, db_url)
+    )
+    _PENDING_DB_SAVES.add(task)
+    task.add_done_callback(_PENDING_DB_SAVES.discard)
+
+
 async def resolve_file_size(
     ref: str,
     *,
@@ -181,8 +203,7 @@ async def resolve_file_size(
     if size is not None and isinstance(size, int) and size >= 0:
         set_cached_file_size(clean_ref, size)
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(asyncio.to_thread(save_db_file_size, clean_ref, size, db_url))
+            schedule_db_file_size_save(clean_ref, size, db_url)
         except RuntimeError:
             pass
         return size

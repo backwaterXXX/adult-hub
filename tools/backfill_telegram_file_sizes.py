@@ -28,8 +28,11 @@ _STOP_REQUESTED = False
 
 def _sig_handler(signum, frame):
     global _STOP_REQUESTED
+    if _STOP_REQUESTED:
+        # A second signal means the operator wants out now, not after the current item.
+        raise KeyboardInterrupt
     _STOP_REQUESTED = True
-    logger.info("Interrupt received, finishing current item and exiting...")
+    logger.info("Interrupt received, finishing current item and exiting (signal again to abort now)...")
 
 
 def _default_resolver_url() -> str:
@@ -51,8 +54,13 @@ def _fetch_missing_size_video_ids(conn: Any, limit: Optional[int]) -> list[str]:
     return [r[0] for r in conn.execute(sql).fetchall()]
 
 
-def _process_single_video(http_client: Any, base_url: str, vid: str) -> bool:
-    """Fetch variants for a single video and save file size if found. Returns True on success."""
+def _process_single_video(http_client: Any, base_url: str, vid: str) -> Optional[bool]:
+    """Fetch variants for one video and save its file size.
+
+    Returns True when a size was saved, None when the resolver has no size for the
+    video (not an error: the video simply has no reachable variant), and False when
+    the request itself failed.
+    """
     raw_ref = vid[len("telegram:") :] if vid.startswith("telegram:") else vid
     url = f"{base_url}/admin/play/{quote(vid, safe=':-_')}/variants"
 
@@ -66,11 +74,11 @@ def _process_single_video(http_client: Any, base_url: str, vid: str) -> bool:
             if isinstance(size, int) and size > 0:
                 save_db_file_size(raw_ref, size)
                 return True
-            return False
+            return None
         if resp.status_code in (404, 403):
             logger.debug("Variants not available for %s (%d)", vid, resp.status_code)
-        else:
-            logger.warning("Variants query failed for %s (status %d)", vid, resp.status_code)
+            return None
+        logger.warning("Variants query failed for %s (status %d)", vid, resp.status_code)
         return False
     except Exception as exc:
         logger.debug("Variants request error for %s: %s", vid, exc)
@@ -103,6 +111,7 @@ def backfill_telegram_file_sizes(
     checked = 0
     updated = 0
     failed = 0
+    unavailable = 0
     http_client = client or httpx.Client(timeout=10.0)
 
     try:
@@ -112,17 +121,21 @@ def backfill_telegram_file_sizes(
                 break
 
             checked += 1
-            if _process_single_video(http_client, base_url, vid):
+            outcome = _process_single_video(http_client, base_url, vid)
+            if outcome is True:
                 updated += 1
+            elif outcome is None:
+                unavailable += 1
             else:
                 failed += 1
 
             if checked % 25 == 0 or checked == total_target:
                 logger.info(
-                    "Progress: %d/%d checked, %d updated, %d failed",
+                    "Progress: %d/%d checked, %d updated, %d unavailable, %d failed",
                     checked,
                     total_target,
                     updated,
+                    unavailable,
                     failed,
                 )
 
@@ -133,9 +146,10 @@ def backfill_telegram_file_sizes(
             http_client.close()
 
     logger.info(
-        "File size backfill finished: %d checked, %d updated, %d failed.",
+        "File size backfill finished: %d checked, %d updated, %d unavailable, %d failed.",
         checked,
         updated,
+        unavailable,
         failed,
     )
     return checked, updated, failed

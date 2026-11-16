@@ -150,8 +150,16 @@ def _split_sql_list(value: str) -> list[str]:
     return parts
 
 
-_TABLE_COLUMNS_CACHE: dict[str, list[str]] = {}
-"""Module-level cache for information_schema column lookups (H-8: avoid per-INSERT queries)."""
+_TABLE_COLUMNS_CACHE: dict[tuple[str, str], list[str]] = {}
+"""Column lists for INSERTs without a column list, keyed by (database URL, table).
+
+Only non-empty results are cached, so a table created later in the process is picked up.
+Callers that change the schema must call clear_table_columns_cache().
+"""
+
+
+def clear_table_columns_cache() -> None:
+    _TABLE_COLUMNS_CACHE.clear()
 
 
 def _adapt_no_column_insert(sql: str, connection=None) -> str:
@@ -160,15 +168,18 @@ def _adapt_no_column_insert(sql: str, connection=None) -> str:
     )
     if no_columns and connection is not None:
         table = no_columns.group(2).split(".")[-1].strip('"')
-        if table not in _TABLE_COLUMNS_CACHE:
+        key = (str(getattr(connection, "_url", None) or ""), table)
+        columns_cached = _TABLE_COLUMNS_CACHE.get(key)
+        if columns_cached is None:
             rows = connection.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_schema = current_schema() AND table_name = %s "
                 "ORDER BY ordinal_position",
                 (table,),
             ).fetchall()
-            _TABLE_COLUMNS_CACHE[table] = [row[0] for row in rows]
-        columns_cached = _TABLE_COLUMNS_CACHE[table]
+            columns_cached = [row[0] for row in rows]
+            if columns_cached:
+                _TABLE_COLUMNS_CACHE[key] = columns_cached
         if columns_cached:
             column_list = ", ".join('"' + col.replace('"', '""') + '"' for col in columns_cached)
             replacement = no_columns.group(1) + "(" + column_list + ") " + no_columns.group(3)

@@ -97,5 +97,33 @@ class VisualHistoryTest(PgTestCase):
         self.assertEqual(again['visual_signatures_queued'], 0)
 
 
+    def test_reclassify_visual_comparisons_upgrades_review_to_confirmed(self):
+        from psycopg.types.json import Jsonb
+        from sync.video_visual import source_key, reevaluate_evidence
+        from sync.video_duplicate_automation import _reclassify_visual_comparisons
+        strict = {'informative': True, 'phash': 0, 'dhash': 0, 'ssim': 1.0}
+        evidence = {
+            'matches': [strict] * 8,
+            'strict_sections': {'beginning': True, 'middle': True, 'end': True},
+            'sections': {'beginning': True, 'middle': True, 'end': True},
+            'offset_fit': {'max_residual_seconds': 0.0, 'predicted': [-2.0000000000000004] * 8},
+            'aspect_ratio_auto_safe': True,
+            'confirmation_policy': 'strict-5-of-8-v2',
+        }
+        with self.conn:
+            self.conn.execute("INSERT INTO videos (id,provider,title,duration,file_size_bytes) VALUES ('rec-a','telegram','Beach House 2 Scene 2',1120,2000), ('rec-b','telegram','Beach House 2',1118,2000)")
+            key_a = source_key({'id': 'rec-a', 'duration': 1120, 'file_size_bytes': None})
+            key_b = source_key({'id': 'rec-b', 'duration': 1118, 'file_size_bytes': None})
+            self.conn.execute(
+                "INSERT INTO video_visual_comparisons (id,left_id,right_id,algorithm_version,left_source_key,right_source_key,state,evidence) "
+                "VALUES ('rec-cmp','rec-a','rec-b','visual-sequence-v1',%s,%s,'review',%s)",
+                (key_a, key_b, Jsonb(evidence)),
+            )
+        videos = {}
+        _reclassify_visual_comparisons(self.conn, videos, source_key, reevaluate_evidence)
+        row = self.conn.execute("SELECT state, evidence->>'confirmation_rule' FROM video_visual_comparisons WHERE id='rec-cmp'").fetchone()
+        self.assertEqual(row, ('confirmed', 'five_strict_six_loose'))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -231,11 +231,13 @@ class RunnerHarness(unittest.TestCase):
         self.addCleanup(self.stack.close)
 
     def load(self, *, daily_at=None, interval_minutes=15, run_on_startup=True,
-             backoff_base=30, backoff_max=900, shutdown_grace=180, config_error=None, temp_files=True):
+             backoff_base=30, backoff_max=900, shutdown_grace=180, config_error=None, temp_files=True,
+             init_config=True):
         """Execute the daemon with the given config and hand it a recorded logger.
 
-        ``temp_files=False`` leaves the file paths the environment asked for, so
-        a test can read the ones the module body picked up.
+        Like the daemon entry point, this calls ``_init_config()`` after import unless
+        ``init_config=False``. ``temp_files=False`` leaves the file paths the environment
+        asked for, so a test can read the ones the module body picked up.
         """
         sync = types.SimpleNamespace(
             interval_minutes=interval_minutes, daily_at=daily_at, run_on_startup=run_on_startup,
@@ -248,6 +250,8 @@ class RunnerHarness(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("sync_runner_under_test", RUNNER_PATH)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        if init_config:
+            module._init_config()
         self.stack.enter_context(self.restore_signals())
         self.module = module
         if temp_files:
@@ -367,6 +371,13 @@ class TestStartupConfiguration(RunnerHarness):
         self.assertEqual(stop.exception.code, 1)
         self.assertEqual(self.logs.text("critical"),
                          ["[sync-daemon] FATAL CONFIG ERROR: sources: at least one is required"])
+
+    def test_importing_the_module_neither_reads_config_nor_exits(self):
+        # H-11: the entry point, not import, owns config loading and sys.exit.
+        module = self.load(config_error=ConfigError("sources: at least one is required"),
+                           init_config=False)
+        self.assertEqual(module.interval, 900)
+        self.assertEqual(self.logs.text("critical"), [])
 
     def test_an_unexpected_config_failure_stops_the_daemon_with_its_own_message(self):
         with self.assertRaises(SystemExit) as stop:

@@ -65,7 +65,7 @@ Configure these settings in `.env` or Compose only when tuning specific performa
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `TELEGRAM_FINGERPRINTS_ENABLED` | `true` | Enable automated OSHASH and pHash fingerprinting for metadata matching. |
-| `TELEGRAM_FINGERPRINT_BACKFILL_PER_RUN` | `200` | Maximum videos matched via existing fingerprints (OSHASH/pHash) per sync run. |
+| `TELEGRAM_FINGERPRINT_BACKFILL_PER_RUN` | `200` | Maximum videos matched via existing fingerprints (OSHASH/pHash) per sync run. Videos with neither fingerprint are skipped until one exists; the `phash-generation` schedule creates pHashes. |
 | `TELEGRAM_OSHASH_BACKFILL_PER_RUN` | `500` | Maximum unhashed videos probed with OSHASH per sync run. |
 | `TELEGRAM_PHASH_BATCH_SIZE` | `20` | Number of unhashed videos to compute visual pHash for per pHash generation batch run (e.g. 10, 20, 100). |
 | `TELEGRAM_PHASH_ENABLED` | `true` | Match by cached visual pHash when OSHASH yields no duration match. |

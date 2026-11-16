@@ -89,23 +89,58 @@ def _load_visual_videos(conn, ids: list, algorithm_version: str) -> dict:
         FROM videos v LEFT JOIN video_fingerprints f ON f.video_id=v.id AND f.algorithm='OSHASH'
         LEFT JOIN video_visual_signatures s ON s.video_id=v.id AND s.algorithm_version=%s
         WHERE v.id=ANY(%s)""", (algorithm_version, ids)).fetchall() if ids else []
-    return {str(row['id']): dict(row) for row in rows}
+    return {
+        str(row[0] if isinstance(row, (tuple, list)) else row["id"]): (
+            {"id": row[0], "provider": row[1], "duration": row[2], "file_size_bytes": row[3], "oshash": row[4], "source_key": row[5]}
+            if isinstance(row, (tuple, list)) else dict(row)
+        )
+        for row in rows
+    }
+
+
+def _matches_source_key(video: dict, expected: str, source_key) -> bool:
+    if source_key(video) == expected:
+        return True
+    if video.get("file_size_bytes") and source_key(dict(video, file_size_bytes=None)) == expected:
+        return True
+    return False
 
 
 def _reclassify_visual_comparisons(conn, videos: dict, source_key, reevaluate_evidence) -> None:
     # Reclassify complete saved measurements under the new policy locally.
     from psycopg.types.json import Jsonb
-    from common.video_visual_jobs import CONFIRMATION_POLICY_VERSION
-    old_rows = conn.execute("SELECT id,left_id,right_id,left_source_key,right_source_key,evidence FROM video_visual_comparisons WHERE state IN ('confirmed','review','different','inconclusive') AND evidence->>'confirmation_policy' IS DISTINCT FROM %s", (CONFIRMATION_POLICY_VERSION,)).fetchall()
+    from common.video_visual_jobs import ALGORITHM_VERSION, CONFIRMATION_POLICY_VERSION
+    old_rows = conn.execute(
+        """SELECT id,left_id,right_id,left_source_key,right_source_key,state,evidence
+        FROM video_visual_comparisons
+        WHERE (state IN ('confirmed','review','different','inconclusive') AND evidence->>'confirmation_policy' IS DISTINCT FROM %s)
+           OR state IN ('review','inconclusive')""",
+        (CONFIRMATION_POLICY_VERSION,),
+    ).fetchall()
+    missing_ids = [
+        vid for old in old_rows
+        for vid in (str(old[1] if isinstance(old, (tuple, list)) else old["left_id"]),
+                    str(old[2] if isinstance(old, (tuple, list)) else old["right_id"]))
+        if vid not in videos
+    ]
+    if missing_ids:
+        videos.update(_load_visual_videos(conn, missing_ids, ALGORITHM_VERSION))
     for old in old_rows:
-        left, right = videos.get(str(old['left_id'])), videos.get(str(old['right_id']))
-        if not left or not right or source_key(left) != old['left_source_key'] or source_key(right) != old['right_source_key']:
+        row_id = old[0] if isinstance(old, (tuple, list)) else old["id"]
+        left_id = str(old[1] if isinstance(old, (tuple, list)) else old["left_id"])
+        right_id = str(old[2] if isinstance(old, (tuple, list)) else old["right_id"])
+        left_key = old[3] if isinstance(old, (tuple, list)) else old["left_source_key"]
+        right_key = old[4] if isinstance(old, (tuple, list)) else old["right_source_key"]
+        curr_state = old[5] if isinstance(old, (tuple, list)) else old["state"]
+        raw_evidence = old[6] if isinstance(old, (tuple, list)) else old["evidence"]
+        left, right = videos.get(left_id), videos.get(right_id)
+        if not left or not right or not _matches_source_key(left, left_key, source_key) or not _matches_source_key(right, right_key, source_key):
             continue
-        evidence = _as_json(old['evidence'])
+        evidence = _as_json(raw_evidence)
         outcome = reevaluate_evidence(evidence)
-        if outcome is not None:
-            evidence = dict(evidence, confirmation_policy=CONFIRMATION_POLICY_VERSION, confirmation_rule='five_strict_six_loose' if outcome == 'confirmed' else None)
-            conn.execute("UPDATE video_visual_comparisons SET state=%s,evidence=%s,updated_at=CURRENT_TIMESTAMP WHERE id=%s", (outcome, Jsonb(evidence), old['id']))
+        if outcome is not None and (outcome != curr_state or evidence.get("confirmation_policy") != CONFIRMATION_POLICY_VERSION):
+            evidence = dict(evidence, confirmation_policy=CONFIRMATION_POLICY_VERSION, confirmation_rule="five_strict_six_loose" if outcome == "confirmed" else None)
+            conn.execute("UPDATE video_visual_comparisons SET state=%s,evidence=%s,updated_at=CURRENT_TIMESTAMP WHERE id=%s", (outcome, Jsonb(evidence), row_id))
 
 
 def _visual_needed_pairs(conn, candidates: set, videos: dict, pair_evidence) -> list:

@@ -401,6 +401,8 @@ def apply_migrations(
                     (migration.version,),
                 ).fetchone()
                 conn.commit()
+                # The migration may have changed columns; drop cached INSERT column lists.
+                db.clear_table_columns_cache()
                 if rec_row:
                     record = MigrationRecord(
                         version=int(rec_row[0]),

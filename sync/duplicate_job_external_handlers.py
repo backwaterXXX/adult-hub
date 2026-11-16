@@ -183,12 +183,9 @@ def _action_backup_restore_test(conn, job_id, payload, media_dir, services):
 def _action_duplicate_reconcile(conn, job_id, payload, media_dir, services):
     from sync.video_duplicate_automation import reconcile
     # Automatic merges hide library entries, so a scheduled pass only reports
-    # candidates until the operator opts in.
-    execute_merges = (
-        payload.get("execute_merges")
-        if "execute_merges" in payload
-        else _core.os.getenv("DUPLICATE_AUTO_MERGE_ENABLED", "false").strip().lower() == "true"
-    )
+    # candidates until the operator opts in. The opt-in is read from the environment
+    # only; a job payload must not be able to override it.
+    execute_merges = _core.os.getenv("DUPLICATE_AUTO_MERGE_ENABLED", "false").strip().lower() == "true"
     merge_telegram_file_id = (
         _core.os.getenv("DUPLICATE_AUTO_MERGE_TELEGRAM_FILE_ID", "true").strip().lower() == "true"
     )

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import uuid  # noqa: F401 — kept for any direct callers, real work via queue_primitives
-
 from common import db
 from common.admin_job_health import timestamp_seconds
 from common.queue_primitives import advisory_xact_lock, generate_job_id, generate_lease_token

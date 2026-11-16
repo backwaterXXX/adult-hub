@@ -61,8 +61,8 @@ try:
 except ImportError:
     APP_VERSION = os.getenv("APP_VERSION", "0+unknown")
 
-# Config globals — initialised with safe defaults so the module is importable
-# before _init_config() runs (H-11: no bare sys.exit at the module level).
+# Config globals — safe defaults until _init_config() runs. The daemon entry point
+# (__main__ below) calls _init_config(), so importing this module never exits the process.
 interval: int = 900
 daily_at: Optional[str] = None
 run_on_startup: bool = True
@@ -72,12 +72,9 @@ SHUTDOWN_GRACE_SECONDS: int = 180
 
 
 def _init_config() -> None:
-    """Load configuration and set module-level constants.
+    """Load configuration into the module-level constants; exits the process on a config error.
 
-    Called once at the end of module initialisation.  Separating this from
-    the bare module body means the module can be imported and re-executed by
-    the test harness safely (sys.exit lives inside a named function, not at
-    the bare module level).
+    Called only by the daemon entry point, never as a side effect of import.
     """
     global interval, daily_at, run_on_startup
     global BASE_BACKOFF_SECONDS, MAX_BACKOFF_SECONDS, SHUTDOWN_GRACE_SECONDS
@@ -98,10 +95,8 @@ def _init_config() -> None:
         sys.exit(1)
 
 
-_init_config()
-
 stop_event = threading.Event()
-_process_lock = threading.Lock()  # guards current_process across the main thread and signal handler
+_process_lock = threading.RLock()  # guards current_process; re-entrant so the signal handler can run inside a locked block on the main thread
 current_process = None
 consecutive_errors = 0
 requested_source = None
@@ -849,6 +844,7 @@ def run_loop():
 
 
 if __name__ == "__main__":
+    _init_config()
     install_signal_handlers()
     log_startup_banner()
     if init_db is not None:
