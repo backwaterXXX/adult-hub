@@ -544,6 +544,15 @@ async def _telegram_variants(cand_id: str, raw_id: str):
     try:
         res = await variants_fn(raw_id)
         res["video_id"] = cand_id
+        orig = next((v for v in res.get("variants", []) if v.get("is_original")), None)
+        orig_size = orig.get("file_size") if orig else None
+        if isinstance(orig_size, int) and orig_size > 0:
+            try:
+                from resolver.providers.telegram_filesize import save_db_file_size
+
+                asyncio.create_task(asyncio.to_thread(save_db_file_size, raw_id, orig_size))
+            except Exception:
+                pass
         return res, None
     except HTTPException as exc:
         return None, exc
