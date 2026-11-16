@@ -131,6 +131,10 @@ from resolver.providers.telegram_variants import (
     find_variant_document,
     should_ignore_alt_documents,
 )
+from resolver.providers.telegram_filesize import (
+    file_size_impl,
+    set_cached_file_size,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -344,27 +348,6 @@ async def login(phone: str, code: Optional[str] = None,
 # ---------------------------------------------------------------------------
 # Parallel Telegram streaming configuration and helpers
 # ---------------------------------------------------------------------------
-
-def _variant_size(message, channel_ref: str, unique_id: str) -> Optional[int]:
-    """Return the size of the media variant whose unique id matches, or None when unknown."""
-    media = getattr(message, "media", None) or getattr(message, "document", None)
-    if media is None:
-        return None
-    target_doc = find_variant_document(media, unique_id)
-    if target_doc is None:
-        return None
-    size = getattr(target_doc, "size", None)
-    if size is not None:
-        try:
-            size = int(size)
-        except (TypeError, ValueError):
-            size = None
-        if size is not None and size >= 0:
-            return size
-    doc_orig = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
-    if target_doc == doc_orig:
-        return _size_of(_message_to_dict(message, channel_ref))
-    return None
 
 
 class TelegramProvider(BaseProvider):
@@ -711,6 +694,7 @@ class TelegramProvider(BaseProvider):
             if total is None:
                 msg_dict = _message_to_dict(message, channel_ref)
                 total = _size_of(msg_dict)
+            set_cached_file_size(ref, total)
 
             doc_orig = getattr(media, "document", None) or (media if hasattr(media, "id") else None)
             download_target = media if (target_doc == doc_orig and media is not None) else target_doc
@@ -763,27 +747,14 @@ class TelegramProvider(BaseProvider):
             logger.warning("Could not reset Telegram router during provider close", exc_info=True)
 
     async def file_size(self, ref: str) -> Optional[int]:
-        """Rozmiar pliku z metadanych wiadomosci albo None, gdy nieznany."""
-        try:
-            channel_ref, message_id, unique_id = _parse_ref(ref)
-        except Exception:
-            logger.debug("Ignored exception in file_size", exc_info=True)
-            return None
-        if not is_channel_authorized(channel_ref):
-            return None
-        try:
-            async with _acquire_client_lease(channel_ref) as (_account_id, client):
-                message = await retry_call(
-                    lambda: _get_cached_message(client, channel_ref, int(message_id), account_id=_account_id),
-                    retryable=lambda exc: is_retryable(exc)
-                    or "database is locked" in str(exc).casefold(),
-                )
-                if message is None:
-                    return None
-                return _variant_size(message, channel_ref, str(unique_id))
-        except Exception:
-            logger.debug("Ignored exception in file_size", exc_info=True)
-            return None
+        """Rozmiar pliku z cache, bazy albo metadanych wiadomosci (None gdy nieznany)."""
+        return await file_size_impl(
+            self,
+            ref,
+            acquire_lease_fn=_acquire_client_lease,
+            is_channel_authorized_fn=is_channel_authorized,
+            get_cached_message_fn=_get_cached_message,
+        )
 
     async def download_thumb(self, ref: str) -> Optional[bytes]:
         return await _download_thumb_impl(self, ref)
