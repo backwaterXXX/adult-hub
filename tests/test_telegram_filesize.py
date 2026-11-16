@@ -65,6 +65,42 @@ class TelegramFilesizeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(size)
 
+    def test_save_db_file_size_invalid_input(self):
+        self.assertFalse(tfs.save_db_file_size("", 100))
+        self.assertFalse(tfs.save_db_file_size("chan:1:100", 0))
+        self.assertFalse(tfs.save_db_file_size("chan:1:100", -50))
+        self.assertFalse(tfs.save_db_file_size("chan:1:100", "not an int"))  # type: ignore
+        self.assertFalse(tfs.save_db_file_size("chan:1:100:variant:720p", 1000))
+
+    def test_save_db_file_size_success(self):
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.rowcount = 1
+        mock_conn.execute.return_value = mock_cur
+
+        with patch("common.db.connection") as mock_ctx:
+            mock_ctx.return_value.__enter__.return_value = mock_conn
+            mock_conn.__enter__.return_value = mock_conn
+            ok = tfs.save_db_file_size("chan:42:999", 54_321_000)
+
+        self.assertTrue(ok)
+        self.assertEqual(tfs.get_cached_file_size("chan:42:999"), 54_321_000)
+        mock_conn.execute.assert_called_once_with(
+            "UPDATE videos SET file_size_bytes = %s WHERE id = %s AND file_size_bytes IS NULL",
+            (54_321_000, "telegram:chan:42:999"),
+        )
+
+    def test_save_db_file_size_exception(self):
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = RuntimeError("DB error")
+
+        with patch("common.db.connection") as mock_ctx:
+            mock_ctx.return_value.__enter__.return_value = mock_conn
+            mock_conn.__enter__.return_value = mock_conn
+            ok = tfs.save_db_file_size("chan:42:999", 54_321_000)
+
+        self.assertFalse(ok)
+
     async def test_resolve_file_size_in_memory_hit(self):
         tfs.set_cached_file_size("chan:1:100", 42_000)
         mock_upstream = AsyncMock()
@@ -87,14 +123,19 @@ class TelegramFilesizeTest(unittest.IsolatedAsyncioTestCase):
         mock_upstream.assert_not_called()
 
     async def test_resolve_file_size_upstream_hit(self):
+        import asyncio
+
         mock_upstream = AsyncMock(return_value=999_999)
 
-        with patch("resolver.providers.telegram_filesize.get_db_file_size", return_value=None):
+        with patch("resolver.providers.telegram_filesize.get_db_file_size", return_value=None), \
+             patch("resolver.providers.telegram_filesize.save_db_file_size") as mock_save:
             size = await tfs.resolve_file_size("chan:1:100", fetch_upstream_fn=mock_upstream)
+            await asyncio.sleep(0.01)
 
         self.assertEqual(size, 999_999)
         mock_upstream.assert_called_once_with("chan:1:100")
         self.assertEqual(tfs.get_cached_file_size("chan:1:100"), 999_999)
+        mock_save.assert_called_once_with("chan:1:100", 999_999, None)
 
     async def test_file_size_impl_invalid_ref(self):
         size = await tfs.file_size_impl(

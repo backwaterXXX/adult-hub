@@ -768,25 +768,13 @@ async def upstream_url_alive(url: str) -> Optional[bool]:
 def _record_playback_file_size(ref: str, size_bytes: int) -> None:
     """Best-effort fill of videos.file_size_bytes learned while proxying playback."""
     try:
-        from resolver.providers.telegram_filesize import set_cached_file_size
+        from resolver.providers.telegram_filesize import (
+            save_db_file_size,
+            set_cached_file_size,
+        )
+
         set_cached_file_size(ref, int(size_bytes))
-    except Exception:
-        pass
-    db_url = (os.getenv("DATABASE_URL") or "").strip()
-    unique_id = str(ref).rsplit(":", 1)[-1].strip()
-    if not db_url or not unique_id:
-        return
-    try:
-        conn = db.connect(db_url)
-        try:
-            with conn:
-                conn.execute(
-                    "UPDATE videos SET file_size_bytes=%s "
-                    "WHERE id=%s AND file_size_bytes IS NULL",
-                    (int(size_bytes), f"telegram:{unique_id}"),
-                )
-        finally:
-            conn.close()
+        save_db_file_size(ref, int(size_bytes))
     except Exception as exc:
         logger.debug("Playback file-size fill skipped for %s: %s", ref, exc)
 
