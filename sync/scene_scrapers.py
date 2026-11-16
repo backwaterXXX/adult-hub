@@ -185,7 +185,7 @@ def backfill_missing_telegram_oshashes(conn: Any, limit: int=200, sleep_sec: flo
     return implementation(conn, limit, sleep_sec, http_client)
 
 
-def _fingerprint_feature_enabled(name: str, legacy_name: str, *, default: bool=False) -> bool:
+def _fingerprint_feature_enabled(name: str, legacy_name: str = "", *, default: bool = False) -> bool:
     from sync.scene_scraper_backfill import _fingerprint_feature_enabled as implementation
     return implementation(name, legacy_name, default=default)
 

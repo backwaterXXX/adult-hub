@@ -517,6 +517,16 @@ class TestBackfillScenes(PgTestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row[0], "fedcba9876543210")
 
+    def test_fingerprint_feature_enabled_optional_legacy_name(self):
+        from sync.scene_scrapers import _fingerprint_feature_enabled
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(_fingerprint_feature_enabled("SOME_VAR", default=False))
+            self.assertTrue(_fingerprint_feature_enabled("SOME_VAR", default=True))
+        with patch.dict(os.environ, {"SOME_VAR": "true"}):
+            self.assertTrue(_fingerprint_feature_enabled("SOME_VAR"))
+        with patch.dict(os.environ, {"LEGACY_VAR": "1"}):
+            self.assertTrue(_fingerprint_feature_enabled("SOME_VAR", "LEGACY_VAR"))
+
 
 if __name__ == "__main__":
     unittest.main()

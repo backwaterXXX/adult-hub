@@ -111,10 +111,12 @@ def backfill_missing_telegram_oshashes(
     return checked, computed
 
 
-def _fingerprint_feature_enabled(name: str, legacy_name: str, *, default: bool = False) -> bool:
+def _fingerprint_feature_enabled(name: str, legacy_name: str = "", *, default: bool = False) -> bool:
     value = _core.os.environ.get(name)
+    if value is None and legacy_name:
+        value = _core.os.environ.get(legacy_name)
     if value is None:
-        value = _core.os.environ.get(legacy_name, "true" if default else "")
+        value = "true" if default else ""
     return str(value).strip().lower() in {"1", "true", "yes"}
 
 

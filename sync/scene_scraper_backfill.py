@@ -305,7 +305,7 @@ def backfill_missing_telegram_oshashes(
     )
 
 
-def _fingerprint_feature_enabled(name: str, legacy_name: str, *, default: bool = False) -> bool:
+def _fingerprint_feature_enabled(name: str, legacy_name: str = "", *, default: bool = False) -> bool:
     return _fingerprint_backfill_module()._fingerprint_feature_enabled(
         name, legacy_name, default=default
     )
