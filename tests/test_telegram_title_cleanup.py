@@ -7,6 +7,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
+from unittest.mock import MagicMock, patch
+
 from sync.telegram_title_cleanup import cleanup_telegram_titles
 
 
@@ -15,7 +17,7 @@ class Cursor:
         self.rows = rows
 
     def fetchone(self):
-        return self.rows[0]
+        return self.rows[0] if self.rows else None
 
     def fetchall(self):
         return self.rows
@@ -141,6 +143,22 @@ class TestTelegramTitleCleanup(unittest.TestCase):
             resumed = cleanup_telegram_titles(conn, media_dir, status_path=state_path)
             self.assertEqual(resumed["status"], "complete")
             self.assertEqual(resumed["processed"], 1)
+
+    @patch("sync.telegram_title_cleanup.cleanup_telegram_titles", return_value={"status": "complete"})
+    def test_action_records_reconciling_jellyfin_metadata_stage(self, mock_cleanup):
+        from common.job_stages import WORKING_STAGES
+        from sync.duplicate_job_external_handlers import _action_telegram_title_cleanup
+        self.assertIn("reconciling_jellyfin_metadata", WORKING_STAGES)
+        conn = FakeConnection([])
+        services = MagicMock()
+        services.logger = MagicMock()
+        services.sync_jellyfin_telegram_metadata = MagicMock(return_value={"reconciled": 0})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result, committed = _action_telegram_title_cleanup(
+                conn, "job-1", {}, Path(temp_dir), services,
+            )
+            self.assertEqual(result["local_state"], "telegram_title_cleanup_completed")
+            self.assertFalse(committed)
 
 
 if __name__ == "__main__":

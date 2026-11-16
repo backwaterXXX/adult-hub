@@ -81,6 +81,7 @@
       removing_source_data: 'Removing channel videos and history',
       syncing_performer_catalog: 'Importing the StashDB performer catalog',
       cleaning_telegram_titles: 'Cleaning Telegram titles and tags',
+      reconciling_jellyfin_metadata: 'Reconciling Jellyfin metadata with Telegram tags',
       generating_phash: 'Generating perceptual hashes (pHash)',
       checking_availability: 'Checking playback availability',
       recovery: 'Recovering operation',
