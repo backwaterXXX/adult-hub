@@ -674,7 +674,11 @@ class TelegramAccountRouter:
             return
 
         # Check Access / Permissions
-        if exc_type in ACCESS_ERROR_NAMES:
+        is_access_error = (
+            exc_type in ACCESS_ERROR_NAMES
+            or (isinstance(exc, ValueError) and "could not find the input entity" in str(exc).casefold())
+        )
+        if is_access_error:
             logger.warning(
                 "Channel %s is inaccessible for account %s: %s",
                 clean_channel or "<general>",
@@ -722,7 +726,9 @@ class TelegramAccountRouter:
             exc_type = type(exc).__name__
             if "floodwait" in exc_type.casefold() or getattr(exc, "seconds", None) is not None:
                 return "flood_wait"
-            if exc_type in ACCESS_ERROR_NAMES:
+            if exc_type in ACCESS_ERROR_NAMES or (
+                isinstance(exc, ValueError) and "could not find the input entity" in str(exc).casefold()
+            ):
                 return "no_access"
             return "temporary_error"
 

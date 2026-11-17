@@ -318,6 +318,13 @@ class TestTelegramAccountRouter(unittest.IsolatedAsyncioTestCase):
         self.router.handle_request_exception("acc_flt", "-100888", ChannelPrivateError("Forbidden"))
         self.assertEqual(_MEMORY_CHANNEL_ACCESS[("acc_flt", "-100888")].access_status, "no_access")
 
+        # 5. ValueError with "Could not find the input entity" MUST mark no_access
+        set_channel_access("acc_flt", "-100888", "accessible")
+        self.router.handle_request_exception(
+            "acc_flt", "-100888", ValueError("Could not find the input entity for PeerChannel(channel_id=100888)")
+        )
+        self.assertEqual(_MEMORY_CHANNEL_ACCESS[("acc_flt", "-100888")].access_status, "no_access")
+
 
 if __name__ == "__main__":
     unittest.main()

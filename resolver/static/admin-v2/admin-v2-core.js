@@ -813,7 +813,7 @@
     link.href = `/admin/v2/?job_id=${encodeURIComponent(value)}${['phash', 'visual'].includes(queue) ? '&job_queue=' + queue : ''}#jobs`;
     return link;
   }
-  function showQueued(payload, message = '', target = $('#taskReceipt'), queue = 'jobs') {
+  function showQueued(payload, message = '', target = $('#taskReceipt'), queue = 'jobs', { scroll = true } = {}) {
     const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
     const ids = [...new Set([payload?.job_id, ...(payload?.job_ids || []), ...jobs.map(job => job.job_id)].filter(Boolean))];
     const label = `Queued${message ? ' · ' + message : ''}`;
@@ -835,7 +835,7 @@
       node.replaceChildren(create('span', '', label));
       for (const id of ids) { const link = taskLink(id, queue); if (link) node.append(link); }
     }
-    targets.at(-1)?.scrollIntoView?.({ block: 'nearest' });
+    if (scroll) targets.at(-1)?.scrollIntoView?.({ block: 'nearest' });
     announce(label);
   }
   // Publish core bindings for the other Admin V2 scripts.

@@ -99,13 +99,17 @@
     const feedback = card?.querySelector('.duplicate-action-feedback');
     const actionButtons = card?.querySelectorAll('button') || [];
     actionButtons.forEach(button => { button.disabled = true; });
-    if (trigger) trigger.textContent = 'Queuing…';
+    if (trigger) {
+      trigger.disabled = true;
+      trigger.textContent = 'Queuing…';
+    }
     if (feedback) {
       feedback.hidden = false;
       feedback.className = 'duplicate-action-feedback is-pending';
       feedback.textContent = `Keeping ${keeper.title || 'selected item'} and hiding ${loser.title || 'the other item'}…`;
     }
     announce('Queueing the selected duplicate action.');
+    let succeeded = false;
     try {
       const request = { type: 'hide', keeper_id: keeper.id, loser_ids: [loser.id],
         ...(Number.isInteger(pair.rules_version) ? { rules_version: pair.rules_version } : {}) };
@@ -115,6 +119,7 @@
       if (!plan.plan_id) throw new Error('The server did not return a review plan.');
       const result = await window.AdminV2.postJson(`${V2_API}/operations/execute`, { plan_id: plan.plan_id });
       if (!operationRequestIsCurrent(sequence, route) || state.duplicatePending !== pending) return;
+      succeeded = true;
       const jobId = result.jobs?.find(job => typeof job.job_id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(job.job_id))?.job_id || '';
       const message = `Hide queued for ${loser.title || loser.id}; ${keeper.title || keeper.id} stays in the catalog. No files were deleted.${jobId ? ` Task ${jobId}.` : ' See Jobs & Automation for progress.'}`;
       if (feedback) {
@@ -126,7 +131,7 @@
           feedback.append(taskLink);
         }
       }
-      showQueued(result, 'Duplicate decision');
+      showQueued(result, 'Duplicate decision', undefined, 'jobs', { scroll: false });
       loadDuplicateCandidates({ refresh: true });
       loadVisualDuplicateResults();
     } catch (error) {
@@ -137,11 +142,26 @@
           feedback.textContent = `Could not queue this duplicate action: ${error.message}`;
         }
         announce(feedback?.textContent || `Could not queue this duplicate action. ${error.message}`);
+        if (String(error?.message || '').includes('no longer exists')) {
+          loadDuplicateCandidates({ refresh: true });
+        }
       }
     } finally {
       if (state.duplicatePending === pending) state.duplicatePending = null;
-      if (trigger?.isConnected) trigger.textContent = 'Keep & hide other';
-      actionButtons.forEach(button => { if (button.isConnected) button.disabled = false; });
+      if (!succeeded) {
+        if (trigger?.isConnected) {
+          trigger.textContent = 'Keep & hide other';
+          trigger.disabled = false;
+        }
+        actionButtons.forEach(button => { if (button.isConnected) button.disabled = false; });
+      } else {
+        if (trigger?.isConnected) {
+          trigger.textContent = 'Queued';
+          trigger.disabled = true;
+        }
+        actionButtons.forEach(button => { if (button.isConnected) button.disabled = true; });
+        card?.classList?.add?.('is-queued');
+      }
     }
   }
   async function dismissDuplicateSuggestion(pair, button, feedback) {
@@ -167,7 +187,7 @@
         taskLink.href = `/admin/v2/?job_id=${encodeURIComponent(jobId)}#jobs`;
         if (typeof feedback?.append === 'function') feedback.append(taskLink);
       }
-      showQueued(result, 'Duplicate decision');
+      showQueued(result, 'Duplicate decision', undefined, 'jobs', { scroll: false });
       loadDuplicateCandidates({ refresh: true });
       loadVisualDuplicateResults();
     } catch (error) {

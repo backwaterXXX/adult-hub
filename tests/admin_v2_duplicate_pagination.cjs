@@ -210,8 +210,8 @@ context.loadVisualDuplicateResults = (...args) => {
   await context.previewDuplicate({ left: { id: 'v1' }, right: { id: 'v2' } }, 'left', trigger);
   assert.equal(state.duplicateOffset, 50, 'opening a duplicate preview on page 2+ must preserve the current page offset');
   assert.equal(elements['#operationDialog'].open, false, 'a duplicate action must not open a confirmation screen');
-  assert.equal(trigger.textContent, 'Keep & hide other');
-  assert.equal(trigger.disabled, false, 'duplicate row actions are re-enabled after the request completes');
+  assert.equal(trigger.textContent, 'Queued');
+  assert.equal(trigger.disabled, true, 'duplicate row actions remain disabled after queuing');
   assert.deepEqual(JSON.parse(JSON.stringify(operationPosts)), [{
     url: '/admin/api/v2/operations/preview',
     body: { type: 'hide', keeper_id: 'v1', loser_ids: ['v2'] },

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -148,6 +149,26 @@ def _load_fingerprints(conn, tables_available: set[str]) -> tuple[dict[str, str]
     return oshashes, phashes
 
 
+def _load_duplicate_decisions(conn, tables_available: set[str]) -> set[str]:
+    decisions = set()
+    if "video_duplicate_decisions" in tables_available:
+        decisions.update(r[0] for r in conn.execute(
+            "SELECT loser_id FROM video_duplicate_decisions WHERE state='active'"))
+    if "video_duplicate_jobs" in tables_available:
+        for (raw_payload,) in conn.execute(
+            "SELECT payload FROM video_duplicate_jobs WHERE action='hide' "
+            "AND state IN ('queued', 'running', 'processing')"
+        ):
+            try:
+                payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+                if isinstance(payload, dict):
+                    for loser_id in payload.get("loser_ids") or []:
+                        decisions.add(str(loser_id))
+            except Exception:
+                continue
+    return decisions
+
+
 def _load_duplicate_inputs(db_url: str | None, category: str) -> tuple[_DuplicateInputs | None, bool]:
     """Read catalog rows and decision state. Returns ``(None, scan_complete)`` on early exit."""
     try:
@@ -180,11 +201,7 @@ def _load_duplicate_inputs(db_url: str | None, category: str) -> tuple[_Duplicat
             video_id = str(row.get("id") or "")
             row["oshash"] = oshashes.get(video_id)
             row["phash"] = phashes.get(video_id)
-        # Decision tables may not exist until the first sync migration.
-        decisions = set()
-        if "video_duplicate_decisions" in tables_available:
-            decisions = {r[0] for r in conn.execute(
-                "SELECT loser_id FROM video_duplicate_decisions WHERE state='active'")}
+        decisions = _load_duplicate_decisions(conn, tables_available)
         dismissed = set()
         if "video_duplicate_dismissals" in tables_available:
             dismissed = {tuple(sorted((r[0], r[1]))) for r in conn.execute(
