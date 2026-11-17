@@ -196,7 +196,7 @@ def reconcile_clear_matches(db_url: str | None, after_id: int = 0, limit: int = 
                 reason, candidate, matched_text, source_field, source_text, title,
                 aliases, records, prepared, auto_created,
             )
-            if not selected or selected.get("_persisted") is not True:
+            if not selected or not (selected.get("_persisted") or selected.get("persisted")):
                 continue
             canonical = str(selected.get("name") or "").strip()
             if not canonical:
@@ -230,12 +230,16 @@ def _select_clear_match(
     auto_created: dict,
 ) -> dict | None:
     """Pick the single catalogue record a pending proposal clearly refers to, or None."""
-    from common.performer_catalog import normalize_name
+    from common.performer_catalog import _resolve_collisions, normalize_name
 
     key = normalize_name(str(matched_text or candidate or ""))
     matches = aliases.get(key, [])
     unique = {str(record["id"]): record for record in matches}
     selected = next(iter(unique.values())) if len(unique) == 1 else None
+    if selected is None and matches:
+        resolved = _resolve_collisions(key, matches)
+        if resolved and len(resolved) == 1:
+            selected = resolved[0]
     if selected is None and reason == "possible_typo":
         selected = _select_typo_record(key, source_field, source_text, title, records, prepared)
     if selected is None and reason == "uncatalogued_credit":
