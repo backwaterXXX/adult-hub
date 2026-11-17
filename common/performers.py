@@ -316,7 +316,7 @@ TITLE_STOPWORDS = {
     "bareback", "barebacked", "creampie", "creampied", "breed", "breeds", "breeding",
     "bottom", "bottoms", "top", "tops", "erection",
     "rs", "xl", "xxl", "xxxl", "nailed", "cocksucker", "onlyfans", "justforfans",
-    "sex", "gay", "twunk", "twunks", "republic", "bb", "ff",
+    "sex", "gay", "republic", "bb", "ff",
 }
 
 SINGLE_WORD_STOPWORDS = {
