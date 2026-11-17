@@ -125,6 +125,12 @@ def _scan_alias_map(conn, tables, _core) -> Tuple[Set[str], Dict[str, str]]:
                     alias_map[a_clean] = c_clean
                     if _core["is_valid_performer_name"](c_clean):
                         known_canonical_set.add(c_clean)
+    if "performer_catalog" in tables:
+        for (name,) in conn.execute("SELECT name FROM performer_catalog WHERE active IS NOT FALSE").fetchall():
+            if name:
+                c_clean = str(name).strip()
+                if c_clean and _core["is_valid_performer_name"](c_clean):
+                    known_canonical_set.add(c_clean)
     return known_canonical_set, alias_map
 
 
@@ -298,6 +304,8 @@ def _group_suffix_clusters(
             stem_canonical_candidates = clean_map[stem]
             for cand in stem_canonical_candidates:
                 if cand != name:
+                    if name in scan.known_canonical_set and cand in scan.known_canonical_set:
+                        continue
                     # Requirement: for single words, stem must have at least 4 characters
                     if len(stem) >= 4:
                         pair = tuple(sorted([name, cand]))
