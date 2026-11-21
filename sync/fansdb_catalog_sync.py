@@ -117,7 +117,7 @@ def _post(payload, token: str, endpoint: str | None = None):
     return response.json()
 
 
-def _fetch_catalog_records(request: Callable, api_key: str, per_page: int, pause: float,
+def _fetch_catalog_records(request: Callable, api_key: str, per_page: int, pause: float,  # noqa: C901
                            gender: str | None = None, max_pages: int | None = None) -> list:
     """Collect every performer row across pages, pausing between requests."""
     if per_page <= 0:

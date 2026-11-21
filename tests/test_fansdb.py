@@ -2,15 +2,12 @@
 import json
 import os
 import unittest
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 try:
     from tests.pg_helper import PgTestCase
-    from tests.test_support import load_json_fixture
 except ImportError:
     from pg_helper import PgTestCase
-    from test_support import load_json_fixture
 
 try:
     import sync.fansdb as fans_module
@@ -25,7 +22,6 @@ import sync.scene_scrapers as scene_scrapers
 import sync.scene_scraper_fingerprint_sources as fp_sources
 import sync.scene_scraper_text_sources as text_sources
 import sync.scene_scraper_split_parts as split_parts
-import sync.scene_artwork_download as artwork_download
 
 
 class TestFansDB(PgTestCase):

@@ -135,7 +135,7 @@ def _performer_result(perf: dict, name_clean: str) -> Optional[Dict[str, object]
     }
 
 
-def search_performer(
+def search_performer(  # noqa: C901
     name: str,
     token: Optional[str] = None,
     http_post: Optional[Callable] = None,

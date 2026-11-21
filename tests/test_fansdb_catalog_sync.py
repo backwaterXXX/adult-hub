@@ -1,10 +1,8 @@
 import os
-import time
 import unittest
 from datetime import datetime
 from unittest.mock import patch, MagicMock
 
-from common import db
 from tests.pg_helper import PgTestCase
 from sync.fansdb_catalog_sync import (
     KEY_SYNCED_AT,

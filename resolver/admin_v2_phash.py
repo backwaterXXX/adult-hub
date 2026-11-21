@@ -130,7 +130,7 @@ def _route_get_status(router, admin):
         return {"enabled": True, "already_computed": already, "accepted_profile": decoder_profile}
 
 
-def _route_submit_frames(router, admin):
+def _route_submit_frames(router, admin):  # noqa: C901
     @router.post("/api/v2/video-phash/frames")
     async def submit_frames(request: Request):
         if not _phash_upload_enabled():
