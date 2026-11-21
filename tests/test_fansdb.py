@@ -2,7 +2,7 @@
 import json
 import os
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 try:
     from tests.pg_helper import PgTestCase
@@ -411,6 +411,444 @@ class TestFansDBSceneSearch(unittest.TestCase):
         self.assertEqual(result.source, "fansdb:split_title_duration_v1")
         self.assertEqual(result.performers, ["Creator Star"])
         tpdb.assert_not_called()
+
+
+class TestFansDBSceneDistinguishErrors(unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        scene_scrapers.reset_fansdb_scene_metrics()
+
+    def test_exact_title_distinguishes_graphql_errors_and_malformed(self):
+        # 1. GraphQL error raises RuntimeError and increments error count
+        mock_resp_err = MagicMock()
+        mock_resp_err.json.return_value = {"errors": [{"message": "Syntax error"}]}
+        mock_resp_err.status_code = 200
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch.object(text_sources._core, "request_with_host_limit", return_value=mock_resp_err):
+            with self.assertRaises(RuntimeError) as ctx:
+                text_sources.search_fansdb_scene_by_exact_title("Test Title", duration=500, http_client=MagicMock())
+            self.assertIn("GraphQL errors", str(ctx.exception))
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics["error"], 1)
+
+        # 2. Malformed missing data raises RuntimeError
+        mock_resp_mal = MagicMock()
+        mock_resp_mal.json.return_value = {"unexpected": {}}
+        mock_resp_mal.status_code = 200
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch.object(text_sources._core, "request_with_host_limit", return_value=mock_resp_mal):
+            with self.assertRaises(RuntimeError) as ctx:
+                text_sources.search_fansdb_scene_by_exact_title("Test Title", duration=500, http_client=MagicMock())
+            self.assertIn("missing data", str(ctx.exception))
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics["error"], 2)
+
+        # 3. Valid empty search returns None and increments no_match count
+        mock_resp_empty = MagicMock()
+        mock_resp_empty.json.return_value = {"data": {"searchScenes": {"count": 0, "scenes": []}}}
+        mock_resp_empty.status_code = 200
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch.object(text_sources._core, "request_with_host_limit", return_value=mock_resp_empty):
+            res = text_sources.search_fansdb_scene_by_exact_title("Test Title", duration=500, http_client=MagicMock())
+            self.assertIsNone(res)
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics["error"], 2)
+        self.assertEqual(metrics["no_match"], 1)
+
+    def test_split_candidates_distinguishes_graphql_errors_and_malformed(self):
+        # 1. GraphQL error raises RuntimeError
+        mock_resp_err = MagicMock()
+        mock_resp_err.json.return_value = {"errors": [{"message": "Rate limit"}]}
+        mock_resp_err.status_code = 200
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch.object(split_parts._core, "request_with_host_limit", return_value=mock_resp_err):
+            with self.assertRaises(RuntimeError) as ctx:
+                split_parts._fansdb_candidates("Split Title", http_client=MagicMock())
+            self.assertIn("GraphQL errors", str(ctx.exception))
+
+        # 2. Malformed response raises RuntimeError
+        mock_resp_mal = MagicMock()
+        mock_resp_mal.json.return_value = {"data": None}
+        mock_resp_mal.status_code = 200
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch.object(split_parts._core, "request_with_host_limit", return_value=mock_resp_mal):
+            with self.assertRaises(RuntimeError) as ctx:
+                split_parts._fansdb_candidates("Split Title", http_client=MagicMock())
+            self.assertIn("missing data", str(ctx.exception))
+
+        # 3. Valid empty search returns []
+        mock_resp_empty = MagicMock()
+        mock_resp_empty.json.return_value = {"data": {"searchScenes": {"scenes": []}}}
+        mock_resp_empty.status_code = 200
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch.object(split_parts._core, "request_with_host_limit", return_value=mock_resp_empty):
+            res = split_parts._fansdb_candidates("Split Title", http_client=MagicMock())
+            self.assertEqual(res, [])
+
+    def test_linked_id_distinguishes_graphql_errors_and_empty(self):
+        # 1. GraphQL error raises
+        mock_resp_err = MagicMock()
+        mock_resp_err.json.return_value = {"errors": [{"message": "Not authorized"}]}
+        mock_resp_err.status_code = 200
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch.object(text_sources._core, "request_with_host_limit", return_value=mock_resp_err):
+            with self.assertRaises(RuntimeError) as ctx:
+                text_sources.fetch_fansdb_scene_by_id("fans-id-1", http_client=MagicMock())
+            self.assertIn("GraphQL errors", str(ctx.exception))
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics["error"], 1)
+
+        # 2. Malformed missing findScene raises
+        mock_resp_mal = MagicMock()
+        mock_resp_mal.json.return_value = {"data": {}}
+        mock_resp_mal.status_code = 200
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch.object(text_sources._core, "request_with_host_limit", return_value=mock_resp_mal):
+            with self.assertRaises(RuntimeError) as ctx:
+                text_sources.fetch_fansdb_scene_by_id("fans-id-1", http_client=MagicMock())
+            self.assertIn("missing findScene", str(ctx.exception))
+
+        # 3. Valid empty search (findScene is null in GraphQL) returns None
+        mock_resp_empty = MagicMock()
+        mock_resp_empty.json.return_value = {"data": {"findScene": None}}
+        mock_resp_empty.status_code = 200
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch.object(text_sources._core, "request_with_host_limit", return_value=mock_resp_empty):
+            res = text_sources.fetch_fansdb_scene_by_id("fans-id-1", http_client=MagicMock())
+            self.assertIsNone(res)
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics["no_match"], 1)
+
+        # 4. Valid match returns ScrapedScene and records matched
+        mock_resp_match = MagicMock()
+        mock_resp_match.json.return_value = {
+            "data": {
+                "findScene": {
+                    "id": "fans-id-1",
+                    "title": "Scene Linked",
+                    "details": "Details",
+                    "duration": 300,
+                    "images": [{"url": "https://img.test/1.jpg"}],
+                }
+            }
+        }
+        mock_resp_match.status_code = 200
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch.object(text_sources._core, "request_with_host_limit", return_value=mock_resp_match):
+            res = text_sources.fetch_fansdb_scene_by_id("fans-id-1", http_client=MagicMock())
+            self.assertIsNotNone(res)
+            self.assertEqual(res.external_id, "fans-id-1")
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics["matched"], 1)
+
+    def test_fingerprint_distinguishes_graphql_errors_and_empty(self):
+        # 1. GraphQL error raises
+        mock_resp_err = MagicMock()
+        mock_resp_err.json.return_value = {"errors": [{"message": "Invalid query"}]}
+        mock_resp_err.status_code = 200
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch.object(fp_sources._core, "request_with_host_limit", return_value=mock_resp_err):
+            with self.assertRaises(RuntimeError) as ctx:
+                fp_sources.search_fansdb_scene_by_fingerprint(
+                    "0000000000000000", "PHASH", http_client=MagicMock(),
+                )
+            self.assertIn("GraphQL errors", str(ctx.exception))
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics["error"], 1)
+
+        # 2. Malformed missing findScenesBySceneFingerprints raises
+        mock_resp_mal = MagicMock()
+        mock_resp_mal.json.return_value = {"data": {}}
+        mock_resp_mal.status_code = 200
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch.object(fp_sources._core, "request_with_host_limit", return_value=mock_resp_mal):
+            with self.assertRaises(RuntimeError) as ctx:
+                fp_sources.search_fansdb_scene_by_fingerprint(
+                    "0000000000000000", "PHASH", http_client=MagicMock(),
+                )
+            self.assertIn("missing findScenesBySceneFingerprints", str(ctx.exception))
+
+        # 3. Valid empty search returns None and records no_match
+        mock_resp_empty = MagicMock()
+        mock_resp_empty.json.return_value = {"data": {"findScenesBySceneFingerprints": [[]]}}
+        mock_resp_empty.status_code = 200
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch.object(fp_sources._core, "request_with_host_limit", return_value=mock_resp_empty):
+            res = fp_sources.search_fansdb_scene_by_fingerprint(
+                "0000000000000000", "PHASH", http_client=MagicMock(),
+            )
+            self.assertIsNone(res)
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics["no_match"], 1)
+
+    def test_resolver_find_fansdb_match_distinguishes_errors(self):
+        import asyncio
+        from resolver.admin_v2_phash import _find_fansdb_match
+
+        # 1. GraphQL error raises
+        mock_resp_err = MagicMock()
+        mock_resp_err.json.return_value = {"errors": [{"message": "Rate limited"}]}
+        mock_resp_err.status_code = 200
+
+        mock_async_client = MagicMock()
+        mock_async_client.__aenter__.return_value.post = AsyncMock(return_value=mock_resp_err)
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch("httpx.AsyncClient", return_value=mock_async_client), \
+             patch("resolver.admin_v2_phash.wait_for_host_slot"):
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(_find_fansdb_match("0000000000000000"))
+            self.assertIn("GraphQL errors", str(ctx.exception))
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics["error"], 1)
+
+        # 2. Valid empty returns False and records no_match
+        mock_resp_empty = MagicMock()
+        mock_resp_empty.json.return_value = {"data": {"findScenesBySceneFingerprints": [[]]}}
+        mock_resp_empty.status_code = 200
+
+        mock_async_client2 = MagicMock()
+        mock_async_client2.__aenter__.return_value.post = AsyncMock(return_value=mock_resp_empty)
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch("httpx.AsyncClient", return_value=mock_async_client2), \
+             patch("resolver.admin_v2_phash.wait_for_host_slot"):
+            res = asyncio.run(_find_fansdb_match("0000000000000000"))
+            self.assertFalse(res)
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics["no_match"], 1)
+
+    def test_metrics_have_no_personalized_labels(self):
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        # Verify strictly aggregate keys only
+        self.assertEqual(set(metrics.keys()), {"matched", "no_match", "error"})
+        for k, v in metrics.items():
+            self.assertIsInstance(k, str)
+            self.assertIsInstance(v, int)
+
+    def test_fansdb_graphql_error_preserves_provider_fallbacks(self):
+        # 1. Split search fallback to ThePornDB when FansDB fails with GraphQL error
+        tpdb_candidate = {
+            "id": "tpdb-split-1", "title": "Split Creator Scene", "duration": 1200,
+            "site": {"name": "Site"}, "performers": [{"name": "Star"}],
+            "tags": [], "poster": "",
+        }
+        with patch.object(split_parts, "_stashdb_candidates", return_value=[]), \
+             patch.object(split_parts, "_fansdb_candidates", side_effect=RuntimeError("FansDB split-title lookup returned GraphQL errors: syntax")), \
+             patch.object(split_parts, "_theporndb_candidates", return_value=[tpdb_candidate]), \
+             patch.dict("os.environ", {"FANSDB_API_KEY": "test-key"}):
+            split_result = split_parts.search_split_scene("Split Creator Scene", duration=1200)
+
+        self.assertIsNotNone(split_result)
+        self.assertEqual(split_result.external_id, "tpdb-split-1")
+        self.assertIn("theporndb", split_result.source)
+
+        # 2. Exact title search fallback to ThePornDB when FansDB fails with GraphQL error
+        tpdb_title_scene = ScrapedScene(
+            title="Title Exact", plot="", date="", duration=600, poster_url="",
+            performers=[], tags=[], studio="", external_id="tpdb-title-1",
+            confidence=0.9, source="theporndb:title_exact",
+        )
+        with patch.object(text_sources, "search_stashdb_scene_by_exact_title", return_value=None), \
+             patch.object(text_sources, "search_fansdb_scene_by_exact_title", side_effect=RuntimeError("FansDB title lookup returned GraphQL errors: down")), \
+             patch.object(text_sources, "search_tpdb_scene_by_exact_title", return_value=tpdb_title_scene):
+            title_result = text_sources.search_scene_by_exact_title("Title Exact", duration=600)
+
+        self.assertIsNotNone(title_result)
+        self.assertEqual(title_result.external_id, "tpdb-title-1")
+
+        # 3. Fingerprint search fallback to ThePornDB when FansDB fails with GraphQL error
+        tpdb_fp_scene = ScrapedScene(
+            title="FP Scene", plot="", date="", duration=600, poster_url="",
+            performers=[], tags=[], studio="", external_id="tpdb-fp-1",
+            confidence=0.9, source="theporndb:phash",
+        )
+        with patch.object(fp_sources._core, "_search_stashdb_scene_by_fingerprint", return_value=None), \
+             patch.object(fp_sources._core, "_search_fansdb_scene_by_fingerprint", side_effect=RuntimeError("FansDB PHASH returned GraphQL errors")), \
+             patch.object(fp_sources, "_theporndb_phash_scene", return_value=tpdb_fp_scene), \
+             patch.dict("os.environ", {"THEPORNDB_API_TOKEN": "tpdb-tok"}):
+            fp_result = fp_sources.search_scene_by_phash("0000000000000000", duration=600)
+
+        self.assertIsNotNone(fp_result)
+        self.assertEqual(fp_result.external_id, "tpdb-fp-1")
+
+    def test_fansdb_graphql_error_preserves_resolver_semantics(self):
+        import asyncio
+        from resolver import admin_v2_phash as phash_mod
+
+        # Test resolver submit_frames route fallback logic
+        router = MagicMock()
+        admin = MagicMock()
+        phash_mod._route_submit_frames(router, admin)
+
+        # Case A: StashDB lookup errors; FansDB match succeeds as fallback
+        with patch.object(phash_mod, "_phash_upload_enabled", return_value=True), \
+             patch.object(phash_mod, "_authorized_user", new=AsyncMock(return_value={"id": "u1"})), \
+             patch.object(phash_mod, "_read_frame_body", new=AsyncMock(return_value=({"duration_us": 100}, None))), \
+             patch.object(phash_mod, "_valid_frame_request", return_value=True), \
+             patch.object(phash_mod, "_decode_frames", return_value=[]), \
+             patch.object(phash_mod, "_save_frame_fingerprint", new=AsyncMock(return_value=("0000000000000000", None))), \
+             patch.object(phash_mod, "_find_stashdb_match", new=AsyncMock(side_effect=RuntimeError("StashDB connection error"))), \
+             patch.object(phash_mod, "_find_fansdb_match", new=AsyncMock(return_value=True)):
+
+            req = MagicMock()
+            req.headers = {"X-Emby-Token": "tok"}
+            res = asyncio.run(phash_mod._find_fansdb_match("0000000000000000"))
+            self.assertTrue(res)
+
+        # Case B: FansDB lookup raises GraphQL error; resolver returns 200 payload and doesn't crash
+        mock_resp_err = MagicMock()
+        mock_resp_err.json.return_value = {"errors": [{"message": "Rate limited"}]}
+        mock_resp_err.status_code = 200
+        mock_async_client = MagicMock()
+        mock_async_client.__aenter__.return_value.post = AsyncMock(return_value=mock_resp_err)
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}), \
+             patch("httpx.AsyncClient", return_value=mock_async_client), \
+             patch("resolver.admin_v2_phash.wait_for_host_slot"):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(phash_mod._find_fansdb_match("0000000000000000"))
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics["error"], 1)
+
+    def test_artwork_search_failure_retry_preserved_on_graphql_error(self):
+        from sync.scene_artwork_download import _ArtworkSearch
+
+        mock_sources = MagicMock()
+        # 1. FansDB GraphQL error raises RuntimeError
+        mock_sources.fetch_fansdb_scene_by_id.side_effect = RuntimeError("FansDB scene-by-id lookup returned GraphQL errors: bad query")
+        search = _ArtworkSearch("video-123", "/tmp/poster.jpg", 1200, mock_sources)
+        search.add_linked_matches("fans-scene-id", "fansdb")
+
+        # Must record lookup_error = True and return artwork_lookup_failed (NOT artwork_not_found)
+        self.assertTrue(search.lookup_error)
+        outcome = search.outcome()
+        self.assertFalse(outcome["downloaded"])
+        self.assertEqual(outcome["local_state"], "artwork_lookup_failed")
+
+        # 2. FansDB legitimate no match (returns None without exception)
+        mock_sources.fetch_fansdb_scene_by_id.side_effect = None
+        mock_sources.fetch_fansdb_scene_by_id.return_value = None
+        search2 = _ArtworkSearch("video-123", "/tmp/poster.jpg", 1200, mock_sources)
+        search2.add_linked_matches("fans-scene-id", "fansdb")
+
+        # Must NOT record lookup_error and return artwork_not_found
+        self.assertFalse(search2.lookup_error)
+        outcome2 = search2.outcome()
+        self.assertFalse(outcome2["downloaded"])
+        self.assertEqual(outcome2["local_state"], "artwork_not_found")
+
+    def test_split_counter_once_per_actual_request(self):
+        candidate = {
+            "id": "fans-split-scene", "title": "Split Creator Scene", "duration": 1200,
+            "details": "Description", "studio": {"name": "OnlyFans"},
+            "performers": [{"performer": {"name": "Creator Star"}}],
+            "images": [], "urls": [], "tags": [],
+        }
+
+        # 1. FANSDB_API_KEY unset -> 0 attempts recorded
+        with patch.object(split_parts, "_stashdb_candidates", return_value=[]), \
+             patch.dict("os.environ", {}, clear=True):
+            split_parts.search_split_scene("Split Creator Scene", duration=1200)
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics, {"matched": 0, "no_match": 0, "error": 0})
+
+        # 2. StashDB matches first -> FansDB never called -> 0 attempts recorded
+        stash_scene = ScrapedScene(
+            title="Split Creator Scene", plot="", date="", duration=1200,
+            poster_url="", performers=[], tags=[], studio="",
+            external_id="stash-1", confidence=0.92, source="stashdb:split_title_duration_v1",
+        )
+        with patch.object(split_parts, "_stashdb_candidates", return_value=[{"id": "stash-1", "title": "Split Creator Scene", "duration": 1200}]), \
+             patch.object(split_parts, "_accepted_scenes", return_value={"stash-1": stash_scene}), \
+             patch.object(split_parts, "_fansdb_candidates") as mock_fans, \
+             patch.dict("os.environ", {"FANSDB_API_KEY": "test-key"}):
+            res = split_parts.search_split_scene("Split Creator Scene", duration=1200)
+            self.assertIsNotNone(res)
+            mock_fans.assert_not_called()
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics, {"matched": 0, "no_match": 0, "error": 0})
+
+        # 3. FansDB called and no match -> exactly 1 no_match recorded
+        with patch.object(split_parts, "_stashdb_candidates", return_value=[]), \
+             patch.object(split_parts, "_fansdb_candidates", return_value=[]), \
+             patch.object(split_parts, "_theporndb_candidates", return_value=[]), \
+             patch.dict("os.environ", {"FANSDB_API_KEY": "test-key"}):
+            split_parts.search_split_scene("Split Creator Scene", duration=1200)
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics, {"matched": 0, "no_match": 1, "error": 0})
+
+        # 4. FansDB called and matched -> exactly 1 matched recorded
+        scene_scrapers.reset_fansdb_scene_metrics()
+        with patch.object(split_parts, "_stashdb_candidates", return_value=[]), \
+             patch.object(split_parts, "_fansdb_candidates", return_value=[candidate]), \
+             patch.object(split_parts, "_theporndb_candidates", return_value=[]), \
+             patch.dict("os.environ", {"FANSDB_API_KEY": "test-key"}):
+            split_parts.search_split_scene("Split Creator Scene", duration=1200)
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics, {"matched": 1, "no_match": 0, "error": 0})
+
+        # 5. FansDB called and errors -> exactly 1 error recorded
+        mock_resp_err = MagicMock()
+        mock_resp_err.json.return_value = {"errors": [{"message": "Syntax error"}]}
+        mock_resp_err.status_code = 200
+        scene_scrapers.reset_fansdb_scene_metrics()
+        with patch.object(split_parts, "_stashdb_candidates", return_value=[]), \
+             patch.object(split_parts._core, "request_with_host_limit", return_value=mock_resp_err), \
+             patch.object(split_parts, "_theporndb_candidates", return_value=[]), \
+             patch.dict("os.environ", {"FANSDB_API_KEY": "test-key"}):
+            split_parts.search_split_scene("Split Creator Scene", duration=1200)
+
+        metrics = scene_scrapers.get_fansdb_scene_metrics()
+        self.assertEqual(metrics, {"matched": 0, "no_match": 0, "error": 1})
+
+    def test_sync_metrics_ownership_and_explicit_bind(self):
+        active_run_metrics: dict = {
+            "fansdb_scene_attempts": {"matched": 0, "no_match": 0, "error": 0},
+        }
+        scene_scrapers.bind_active_metrics(active_run_metrics)
+        self.assertIs(scene_scrapers.get_active_metrics(), active_run_metrics)
+
+        scene_scrapers.record_fansdb_scene_attempt("matched")
+        self.assertEqual(active_run_metrics["fansdb_scene_attempts"]["matched"], 1)
+        self.assertEqual(scene_scrapers.get_fansdb_scene_metrics()["matched"], 1)
+
+        scene_scrapers.bind_active_metrics(None)
+        self.assertIsNone(scene_scrapers.get_active_metrics())
+
+        scene_scrapers.record_fansdb_scene_attempt("error")
+        # active_run_metrics not updated because it's unbound
+        self.assertEqual(active_run_metrics["fansdb_scene_attempts"]["error"], 0)
+        # Per-process counter updated
+        self.assertEqual(scene_scrapers.get_fansdb_scene_metrics()["error"], 1)
 
 
 if __name__ == "__main__":

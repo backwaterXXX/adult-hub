@@ -430,3 +430,98 @@ class TestFansdbCatalogGatingUnit(unittest.TestCase):
             _run_fansdb_catalog_stage(recorder, mock_conn)
             recorder.open.assert_called_once_with("fansdb-performer-catalog")
             recorder.close.assert_called_once_with("fansdb-performer-catalog", ["RuntimeError: FansDB timeout"])
+
+    def test_default_page_size_is_500(self):
+        import inspect
+        from sync.fansdb_catalog_sync import fetch_catalog_records, sync_catalog
+        sig_sync = inspect.signature(sync_catalog)
+        self.assertEqual(sig_sync.parameters["per_page"].default, 500)
+        sig_fetch = inspect.signature(fetch_catalog_records)
+        self.assertEqual(sig_fetch.parameters["per_page"].default, 500)
+
+    def test_fetch_catalog_records_read_only_and_client_reuse(self):
+        from sync.fansdb_catalog_sync import fetch_catalog_records
+        page1 = {
+            "data": {
+                "queryPerformers": {
+                    "count": 1000,
+                    "performers": [
+                        {"id": f"c{i}", "name": f"Creator {i}", "aliases": []}
+                        for i in range(500)
+                    ],
+                }
+            }
+        }
+        page2 = {
+            "data": {
+                "queryPerformers": {
+                    "count": 1000,
+                    "performers": [
+                        {"id": f"c{i}", "name": f"Creator {i}", "aliases": []}
+                        for i in range(500, 1000)
+                    ],
+                }
+            }
+        }
+        mock_client = MagicMock()
+        mock_resp1 = MagicMock()
+        mock_resp1.json.return_value = page1
+        mock_resp1.status_code = 200
+        mock_resp2 = MagicMock()
+        mock_resp2.json.return_value = page2
+        mock_resp2.status_code = 200
+        mock_client.post.side_effect = [mock_resp1, mock_resp2]
+
+        with patch("httpx.Client", return_value=mock_client), \
+             patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}):
+            records = fetch_catalog_records(per_page=500, max_pages=2, pause=0)
+
+        self.assertEqual(len(records), 1000)
+        self.assertEqual(mock_client.post.call_count, 2)
+        # Verify both requests used the same client and requested 500 per page
+        first_call_payload = mock_client.post.call_args_list[0].kwargs["json"]
+        second_call_payload = mock_client.post.call_args_list[1].kwargs["json"]
+        self.assertEqual(first_call_payload["variables"]["perPage"], 500)
+        self.assertEqual(first_call_payload["variables"]["page"], 1)
+        self.assertEqual(second_call_payload["variables"]["perPage"], 500)
+        self.assertEqual(second_call_payload["variables"]["page"], 2)
+        mock_client.close.assert_called_once()
+
+    def test_fetch_catalog_records_closes_client_on_error(self):
+        from sync.fansdb_catalog_sync import fetch_catalog_records
+        mock_client = MagicMock()
+        mock_client.post.side_effect = RuntimeError("Network failure")
+
+        with patch("httpx.Client", return_value=mock_client), \
+             patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}):
+            with self.assertRaises(RuntimeError):
+                fetch_catalog_records(per_page=500, max_pages=1, pause=0)
+
+        mock_client.close.assert_called_once()
+
+    def test_fetch_catalog_records_closes_client_on_multipage_error(self):
+        from sync.fansdb_catalog_sync import fetch_catalog_records
+        page1 = {
+            "data": {
+                "queryPerformers": {
+                    "count": 1000,
+                    "performers": [
+                        {"id": f"c{i}", "name": f"Creator {i}", "aliases": []}
+                        for i in range(500)
+                    ],
+                }
+            }
+        }
+        mock_client = MagicMock()
+        mock_resp1 = MagicMock()
+        mock_resp1.json.return_value = page1
+        mock_resp1.status_code = 200
+        mock_client.post.side_effect = [mock_resp1, RuntimeError("HTTP 500 on page 2")]
+
+        with patch("httpx.Client", return_value=mock_client), \
+             patch.dict(os.environ, {"FANSDB_API_KEY": "test-key"}):
+            with self.assertRaises(RuntimeError):
+                fetch_catalog_records(per_page=500, max_pages=2, pause=0)
+
+        self.assertEqual(mock_client.post.call_count, 2)
+        mock_client.close.assert_called_once()

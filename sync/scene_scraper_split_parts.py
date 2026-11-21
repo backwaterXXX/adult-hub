@@ -153,10 +153,10 @@ def _to_scraped_scene(scene: dict[str, Any], source: str) -> _core.ScrapedScene:
     )
 
 
-def _fansdb_candidates(title: str, http_client: Any) -> list[dict[str, Any]]:
+def _fansdb_candidates(title: str, http_client: Any) -> list[dict[str, Any]] | None:
     token = _core.os.environ.get("FANSDB_API_KEY", "").strip()
     if not token:
-        return []
+        return None
     query = """
     query SearchSplitScene($term: String!, $limit: Int) {
       searchScenes(term: $term, limit: $limit) {
@@ -172,29 +172,43 @@ def _fansdb_candidates(title: str, http_client: Any) -> list[dict[str, Any]]:
     }
     """
     endpoint = _core.os.environ.get("FANSDB_API_URL", "https://fansdb.cc/graphql")
-    response = _core.request_with_host_limit(
-        http_client,
-        "post",
-        endpoint,
-        headers={"ApiKey": token, "Accept": "application/json", "Content-Type": "application/json",
-                 "User-Agent": "AdultHubSync/1.0 (scene-split-title)"},
-        json={"query": query, "variables": {"term": title, "limit": 10}},
-        timeout=_core.DEFAULT_TIMEOUT,
-    )
-    if callable(getattr(response, "raise_for_status", None)):
-        response.raise_for_status()
-    payload = response.json() if callable(getattr(response, "json", None)) else _core._decode_scene_payload(response)
-    result = (((payload or {}).get("data") or {}).get("searchScenes")
-              if isinstance(payload, dict) else None)
-    scenes = result.get("scenes") if isinstance(result, dict) else None
-    return [scene for scene in scenes if isinstance(scene, dict)] if isinstance(scenes, list) else []
+    try:
+        response = _core.request_with_host_limit(
+            http_client,
+            "post",
+            endpoint,
+            headers={"ApiKey": token, "Accept": "application/json", "Content-Type": "application/json",
+                     "User-Agent": "AdultHubSync/1.0 (scene-split-title)"},
+            json={"query": query, "variables": {"term": title, "limit": 10}},
+            timeout=_core.DEFAULT_TIMEOUT,
+        )
+        if callable(getattr(response, "raise_for_status", None)):
+            response.raise_for_status()
+        payload = response.json() if callable(getattr(response, "json", None)) else _core._decode_scene_payload(response)
+        if not isinstance(payload, dict):
+            raise RuntimeError("FansDB returned malformed split-title payload: not a JSON object")
+        if payload.get("errors"):
+            raise RuntimeError(f"FansDB split-title lookup returned GraphQL errors: {payload['errors']}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("FansDB split-title response missing data object")
+        result = data.get("searchScenes")
+        if not isinstance(result, dict):
+            raise RuntimeError("FansDB split-title response missing searchScenes object")
+        scenes = result.get("scenes")
+        if not isinstance(scenes, list):
+            raise RuntimeError("FansDB split-title response missing scenes list")
+    except Exception:
+        _core.record_fansdb_scene_attempt("error")
+        raise
+    return [scene for scene in scenes if isinstance(scene, dict)]
 
 
-def _stashdb_candidates(title: str, http_client: Any) -> list[dict[str, Any]]:
+def _stashdb_candidates(title: str, http_client: Any) -> list[dict[str, Any]] | None:
     token = (_core.os.environ.get("STASHDB_API_KEY", "").strip()
              or _core.os.environ.get("STASH_API_KEY", "").strip())
     if not token:
-        return []
+        return None
     query = """
     query SearchSplitScene($term: String!, $limit: Int) {
       searchScenes(term: $term, limit: $limit) {
@@ -274,8 +288,15 @@ def search_split_scene(
         except Exception as exc:
             _core.logger.warning("%s split-title lookup failed (%s)", source, type(exc).__name__)
             continue
+        if candidates is None:
+            continue
         accepted = _accepted_scenes(candidates, query_title, runtime, tolerance,
                                     source_texts, caption_performers, source)
+        if source == "fansdb":
+            if len(accepted) == 1:
+                _core.record_fansdb_scene_attempt("matched")
+            else:
+                _core.record_fansdb_scene_attempt("no_match")
         if len(accepted) == 1:
             return next(iter(accepted.values()))
         if len(accepted) > 1:

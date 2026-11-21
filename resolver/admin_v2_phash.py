@@ -132,7 +132,7 @@ def _route_get_status(router, admin):
 
 def _route_submit_frames(router, admin):  # noqa: C901
     @router.post("/api/v2/video-phash/frames")
-    async def submit_frames(request: Request):
+    async def submit_frames(request: Request):  # noqa: C901
         if not _phash_upload_enabled():
             return admin.JSONResponse({"error": "Fingerprint uploads are disabled."}, status_code=404)
         user = await _authorized_user(request.headers.get("X-Emby-Token", ""))
@@ -157,12 +157,15 @@ def _route_submit_frames(router, admin):  # noqa: C901
         match_found = None
         try:
             match_found = await _find_stashdb_match(fingerprint)
-            if not match_found:
+        except Exception:
+            logger.debug("StashDB match failed in submit_frames", exc_info=True)
+        if not match_found:
+            try:
                 fansdb_match = await _find_fansdb_match(fingerprint)
                 if fansdb_match is not None:
                     match_found = fansdb_match
-        except Exception:
-            logger.debug("Ignored exception in submit_frames", exc_info=True)
+            except Exception:
+                logger.debug("FansDB match failed in submit_frames", exc_info=True)
         return {"ok": True, "fingerprint": fingerprint, "match_found": match_found}
 
 
@@ -501,7 +504,7 @@ async def _find_stashdb_match(fingerprint: str) -> bool | None:
     return len(set(candidates)) == 1
 
 
-async def _find_fansdb_match(fingerprint: str) -> bool | None:
+async def _find_fansdb_match(fingerprint: str) -> bool | None:  # noqa: C901
     token = os.getenv("FANSDB_API_KEY", "").strip()
     if not token:
         return None
@@ -514,18 +517,37 @@ async def _find_fansdb_match(fingerprint: str) -> bool | None:
     """
     fansdb_url = os.getenv("FANSDB_API_URL", "https://fansdb.cc/graphql")
     await asyncio.to_thread(wait_for_host_slot, fansdb_url)
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.post(
-            fansdb_url,
-            headers={"ApiKey": token, "Accept": "application/json", "Content-Type": "application/json"},
-            json={"query": query, "variables": {"fingerprints": [[{"algorithm": "PHASH", "hash": fingerprint}]]}},
-        )
-    response.raise_for_status()
-    payload = response.json()
-    groups = ((payload.get("data") or {}).get("findScenesBySceneFingerprints")
-              if isinstance(payload, dict) else None)
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                fansdb_url,
+                headers={"ApiKey": token, "Accept": "application/json", "Content-Type": "application/json"},
+                json={"query": query, "variables": {"fingerprints": [[{"algorithm": "PHASH", "hash": fingerprint}]]}},
+            )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("FansDB returned malformed phash response: not a JSON object")
+        if payload.get("errors"):
+            raise RuntimeError(f"FansDB phash lookup returned GraphQL errors: {payload['errors']}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("FansDB phash response missing data object")
+        if "findScenesBySceneFingerprints" not in data:
+            raise RuntimeError("FansDB phash response missing findScenesBySceneFingerprints")
+        groups = data.get("findScenesBySceneFingerprints")
+        if not isinstance(groups, list):
+            raise RuntimeError("FansDB phash response findScenesBySceneFingerprints is not a list")
+    except Exception:
+        try:
+            from sync.sync_metrics import record_fansdb_scene_attempt
+            record_fansdb_scene_attempt("error")
+        except Exception:
+            pass
+        raise
+
     candidates = []
-    if isinstance(groups, list) and groups and isinstance(groups[0], list):
+    if groups and isinstance(groups[0], list):
         for scene in groups[0]:
             if not isinstance(scene, dict) or not scene.get("id"):
                 continue
@@ -537,4 +559,10 @@ async def _find_fansdb_match(fingerprint: str) -> bool | None:
             ]
             if distances and min(distances) <= 2:
                 candidates.append(scene["id"])
-    return len(set(candidates)) == 1
+    matched = len(set(candidates)) == 1
+    try:
+        from sync.sync_metrics import record_fansdb_scene_attempt
+        record_fansdb_scene_attempt("matched" if matched else "no_match")
+    except Exception:
+        pass
+    return matched

@@ -104,10 +104,46 @@ def _stashdb_fingerprint_groups(fingerprint: str, algorithm: str, client: Any, t
 
 
 def _fansdb_fingerprint_groups(fingerprint: str, algorithm: str, client: Any, token: str):
-    return _stashbox_fingerprint_groups(
-        fingerprint, algorithm, client, token,
-        _core.os.environ.get("FANSDB_API_URL", "https://fansdb.cc/graphql"),
+    endpoint_url = _core.os.environ.get("FANSDB_API_URL", "https://fansdb.cc/graphql")
+    query = """
+    query FindScenesByFingerprint($fingerprints: [[FingerprintQueryInput!]!]!) {
+      findScenesBySceneFingerprints(fingerprints: $fingerprints) {
+        id title details date release_date duration
+        studio { name }
+        performers { performer { name } }
+        tags { name }
+        images { url }
+        urls { url }
+        fingerprints { hash algorithm }
+      }
+    }
+    """
+    response = _core.request_with_host_limit(
+        client,
+        "post",
+        endpoint_url,
+        headers={"ApiKey": token, "Accept": "application/json", "Content-Type": "application/json",
+                 "User-Agent": "AdultHubSync/1.0 (scene-fingerprint)"},
+        json={"query": query,
+              "variables": {"fingerprints": [[{"algorithm": algorithm, "hash": fingerprint}]]}},
+        timeout=_core.DEFAULT_TIMEOUT,
     )
+    if callable(getattr(response, "raise_for_status", None)):
+        response.raise_for_status()
+    payload = response.json() if callable(getattr(response, "json", None)) else _core._decode_scene_payload(response)
+    if not isinstance(payload, dict):
+        raise RuntimeError("FansDB returned malformed fingerprint response: not a JSON object")
+    if payload.get("errors"):
+        raise RuntimeError(f"FansDB fingerprint lookup returned GraphQL errors: {payload['errors']}")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError("FansDB fingerprint response missing data object")
+    if "findScenesBySceneFingerprints" not in data:
+        raise RuntimeError("FansDB fingerprint response missing findScenesBySceneFingerprints")
+    groups = data.get("findScenesBySceneFingerprints")
+    if not isinstance(groups, list):
+        raise RuntimeError("FansDB fingerprint response findScenesBySceneFingerprints is not a list")
+    return groups
 
 
 def _stashbox_fingerprint_groups(fingerprint: str, algorithm: str, client: Any, token: str, endpoint_url: str):
@@ -254,14 +290,21 @@ def search_fansdb_scene_by_fingerprint(
     client = http_client or _core.httpx
     if not token or client is None:
         return None
-    groups = _fansdb_fingerprint_groups(fingerprint, algorithm, client, token)
+    try:
+        groups = _fansdb_fingerprint_groups(fingerprint, algorithm, client, token)
+    except Exception:
+        _core.record_fansdb_scene_attempt("error")
+        raise
     if not isinstance(groups, list) or not groups or not isinstance(groups[0], list):
+        _core.record_fansdb_scene_attempt("no_match")
         return None
     candidates = _stashdb_candidates(groups[0], fingerprint, algorithm, max_distance=max_distance,
                                      duration=duration, duration_tolerance=duration_tolerance)
     if len(candidates) != 1:
+        _core.record_fansdb_scene_attempt("no_match")
         return None
     item, distance = candidates[0]
+    _core.record_fansdb_scene_attempt("matched")
     return _scraped_scene_from_fansdb(item, algorithm, distance)
 
 

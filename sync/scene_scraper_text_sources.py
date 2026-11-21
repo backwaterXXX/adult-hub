@@ -300,7 +300,7 @@ def fetch_stashdb_scene_by_id(
     )
 
 
-def search_fansdb_scene_by_exact_title(
+def search_fansdb_scene_by_exact_title(  # noqa: C901
     title: str,
     *,
     duration: int,
@@ -335,23 +335,35 @@ def search_fansdb_scene_by_exact_title(
       }
     }
     """
-    response = _core.request_with_host_limit(
-        client,
-        "post",
-        _core.os.environ.get("FANSDB_API_URL", "https://fansdb.cc/graphql"),
-        headers={"ApiKey": token, "Accept": "application/json", "Content-Type": "application/json",
-                 "User-Agent": "AdultHubSync/1.0 (scene-title-exact)"},
-        json={"query": query, "variables": {"term": query_title, "limit": 10}},
-        timeout=_core.DEFAULT_TIMEOUT,
-    )
-    if callable(getattr(response, "raise_for_status", None)):
-        response.raise_for_status()
-    payload = response.json() if callable(getattr(response, "json", None)) else _core._decode_scene_payload(response)
-    result = (((payload or {}).get("data") or {}).get("searchScenes")
-              if isinstance(payload, dict) else None)
-    scenes = result.get("scenes") if isinstance(result, dict) else None
-    if not isinstance(scenes, list):
-        return None
+    try:
+        response = _core.request_with_host_limit(
+            client,
+            "post",
+            _core.os.environ.get("FANSDB_API_URL", "https://fansdb.cc/graphql"),
+            headers={"ApiKey": token, "Accept": "application/json", "Content-Type": "application/json",
+                     "User-Agent": "AdultHubSync/1.0 (scene-title-exact)"},
+            json={"query": query, "variables": {"term": query_title, "limit": 10}},
+            timeout=_core.DEFAULT_TIMEOUT,
+        )
+        if callable(getattr(response, "raise_for_status", None)):
+            response.raise_for_status()
+        payload = response.json() if callable(getattr(response, "json", None)) else _core._decode_scene_payload(response)
+        if not isinstance(payload, dict):
+            raise RuntimeError("FansDB returned malformed title search payload: not a JSON object")
+        if payload.get("errors"):
+            raise RuntimeError(f"FansDB title lookup returned GraphQL errors: {payload['errors']}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("FansDB title search response missing data object")
+        result = data.get("searchScenes")
+        if not isinstance(result, dict):
+            raise RuntimeError("FansDB title search response missing searchScenes object")
+        scenes = result.get("scenes")
+        if not isinstance(scenes, list):
+            raise RuntimeError("FansDB title search response missing scenes list")
+    except Exception:
+        _core.record_fansdb_scene_attempt("error")
+        raise
 
     candidates = []
     seen_ids = set()
@@ -393,7 +405,11 @@ def search_fansdb_scene_by_exact_title(
             confidence=0.99,
             source="fansdb:title_exact",
         ))
-    return candidates[0] if len(candidates) == 1 else None
+    if len(candidates) == 1:
+        _core.record_fansdb_scene_attempt("matched")
+        return candidates[0]
+    _core.record_fansdb_scene_attempt("no_match")
+    return None
 
 
 def fetch_fansdb_scene_by_id(
@@ -419,23 +435,39 @@ def fetch_fansdb_scene_by_id(
       }
     }
     """
-    response = _core.request_with_host_limit(
-        client, "post", _core.os.environ.get("FANSDB_API_URL", "https://fansdb.cc/graphql"),
-        headers={"ApiKey": token, "Accept": "application/json", "Content-Type": "application/json",
-                 "User-Agent": "AdultHubSync/1.0 (scene-id-artwork)"},
-        json={"query": query, "variables": {"id": scene_id}},
-        timeout=_core.DEFAULT_TIMEOUT,
-    )
-    if callable(getattr(response, "raise_for_status", None)):
-        response.raise_for_status()
-    payload = response.json() if callable(getattr(response, "json", None)) else _core._decode_scene_payload(response)
-    item = (((payload or {}).get("data") or {}).get("findScene")
-            if isinstance(payload, dict) else None)
-    if not isinstance(item, dict):
-        return None
+    try:
+        response = _core.request_with_host_limit(
+            client, "post", _core.os.environ.get("FANSDB_API_URL", "https://fansdb.cc/graphql"),
+            headers={"ApiKey": token, "Accept": "application/json", "Content-Type": "application/json",
+                     "User-Agent": "AdultHubSync/1.0 (scene-id-artwork)"},
+            json={"query": query, "variables": {"id": scene_id}},
+            timeout=_core.DEFAULT_TIMEOUT,
+        )
+        if callable(getattr(response, "raise_for_status", None)):
+            response.raise_for_status()
+        payload = response.json() if callable(getattr(response, "json", None)) else _core._decode_scene_payload(response)
+        if not isinstance(payload, dict):
+            raise RuntimeError("FansDB returned malformed scene-by-id payload: not a JSON object")
+        if payload.get("errors"):
+            raise RuntimeError(f"FansDB scene-by-id lookup returned GraphQL errors: {payload['errors']}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("FansDB scene-by-id response missing data object")
+        if "findScene" not in data:
+            raise RuntimeError("FansDB scene-by-id response missing findScene object")
+        item = data.get("findScene")
+        if item is None:
+            _core.record_fansdb_scene_attempt("no_match")
+            return None
+        if not isinstance(item, dict):
+            raise RuntimeError("FansDB scene-by-id response findScene is not an object or null")
+    except Exception:
+        _core.record_fansdb_scene_attempt("error")
+        raise
     studio = item.get("studio") if isinstance(item.get("studio"), dict) else {}
     images = item.get("images") if isinstance(item.get("images"), list) else []
     image_url = str((images[0] or {}).get("url") or "") if images and isinstance(images[0], dict) else ""
+    _core.record_fansdb_scene_attempt("matched")
     return _core.ScrapedScene(
         title=str(item.get("title") or ""),
         plot=str(item.get("details") or ""),

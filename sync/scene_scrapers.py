@@ -28,6 +28,13 @@ except ImportError:
 
 from common import db  # noqa: F401
 from common.external_metadata import record_attempt  # noqa: F401
+from sync.sync_metrics import (  # noqa: F401
+    bind_active_metrics,
+    get_active_metrics,
+    get_fansdb_scene_metrics,
+    record_fansdb_scene_attempt,
+    reset_fansdb_scene_metrics,
+)
 
 logger = logging.getLogger("scene_scrapers")
 

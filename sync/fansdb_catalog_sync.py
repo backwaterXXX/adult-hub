@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from datetime import datetime
-from typing import Callable
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from common import db
@@ -106,11 +106,12 @@ def sync_catalog_if_due(conn: db.Connection, *, interval_seconds: int = 86400,
 sync_fansdb_catalog_if_due = sync_catalog_if_due
 
 
-def _post(payload, token: str, endpoint: str | None = None):
+def _post(payload, token: str, endpoint: str | None = None, client: Any = None):
     import httpx
     url = endpoint or _get_endpoint()
+    http_client = client if client is not None else httpx
     response = request_with_host_limit(
-        httpx, "post", url, json=payload, timeout=30,
+        http_client, "post", url, json=payload, timeout=30,
         headers={"ApiKey": token, "Accept": "application/json"},
     )
     response.raise_for_status()
@@ -200,8 +201,46 @@ def _fetch_catalog_page(request: Callable, api_key: str, page: int, per_page: in
     return page_rows, count
 
 
+def fetch_catalog_records(
+    *,
+    token: str | None = None,
+    post: Callable | None = None,
+    per_page: int = 500,
+    pause: float = 0.25,
+    gender: str | None = None,
+    max_pages: int | None = None,
+) -> list:
+    """Fetch FansDB performer catalog records without database writes.
+
+    Reuses a single httpx.Client across all pages, preserving host rate-limiting,
+    pacing, and pagination validation. Closes the client on completion or error.
+    """
+    api_key = _get_api_key(token)
+    if not api_key and post is None:
+        raise RuntimeError("FANSDB_API_KEY is required to import the catalogue")
+    gender_filter = gender or os.getenv("FANSDB_CATALOG_GENDER", "").strip() or None
+
+    if post is not None:
+        return _fetch_catalog_records(post, api_key, per_page, pause,
+                                      gender=gender_filter, max_pages=max_pages)
+
+    import httpx
+    client = httpx.Client()
+    try:
+        def request(payload, t):
+            return _post(payload, t, client=client)
+
+        return _fetch_catalog_records(request, api_key, per_page, pause,
+                                      gender=gender_filter, max_pages=max_pages)
+    finally:
+        client.close()
+
+
+fetch_fansdb_catalog = fetch_catalog_records
+
+
 def sync_catalog(conn: db.Connection, *, token: str | None = None,
-                 post: Callable | None = None, per_page: int = 100,
+                 post: Callable | None = None, per_page: int = 500,
                  pause: float = 0.25, gender: str | None = None,
                  max_pages: int | None = None,
                  now: int | float | None = None) -> tuple[int, int]:
@@ -209,13 +248,8 @@ def sync_catalog(conn: db.Connection, *, token: str | None = None,
 
     Returns (performers, aliases). Existing local rows survive source errors.
     """
-    api_key = _get_api_key(token)
-    if not api_key and post is None:
-        raise RuntimeError("FANSDB_API_KEY is required to import the catalogue")
-    gender_filter = gender or os.getenv("FANSDB_CATALOG_GENDER", "").strip() or None
-    request = post or _post
-    records = _fetch_catalog_records(request, api_key, per_page, pause,
-                                     gender=gender_filter, max_pages=max_pages)
+    records = fetch_catalog_records(token=token, post=post, per_page=per_page,
+                                    pause=pause, gender=gender, max_pages=max_pages)
 
     alias_count = 0
     with conn:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional, Set
 from common.http_rate_limit import snapshot_host_rate_limit_stats
+from sync.sync_metrics import bind_active_metrics
 
 from types import SimpleNamespace
 
@@ -624,7 +625,7 @@ def _write_pass_history(sp: _SyncPass, started_at: int, source_rows: list, faile
         for name, values in _core._ACTIVE_SYNC_METRICS["stages"].items()
     }
     rate_limit_summary = snapshot_host_rate_limit_stats(reset=True)
-    _core._write_sync_history({
+    history_payload = {
         "started_at": started_at, "ended_at": ended_at,
         "duration_seconds": max(0, ended_at - started_at),
         "managed_config_revision": int(getattr(_core.CONFIG, "managed_revision", 0)),
@@ -634,7 +635,11 @@ def _write_pass_history(sp: _SyncPass, started_at: int, source_rows: list, faile
         "sources": source_rows, "stages": stage_summary,
         "jellyfin_refresh_poll": _core._ACTIVE_SYNC_METRICS.get("jellyfin_refresh_poll", {}),
         "http": {**http_summary, "hosts": http_hosts, "rate_limit": rate_limit_summary},
-    })
+    }
+    fansdb_attempts = _core._ACTIVE_SYNC_METRICS.get("fansdb_scene_attempts")
+    if fansdb_attempts is not None:
+        history_payload["fansdb_scene_attempts"] = dict(fansdb_attempts)
+    _core._write_sync_history(history_payload)
 
 
 def _finish_sync_pass(sp: _SyncPass, started_at: int) -> bool:
@@ -657,7 +662,9 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         "stages": {},
         "http": {"failed_attempts": 0, "retries": 0, "rate_limited": 0},
         "http_hosts": {},
+        "fansdb_scene_attempts": {"matched": 0, "no_match": 0, "error": 0},
     }
+    bind_active_metrics(_core._ACTIVE_SYNC_METRICS)
     started_at = int(_core.time.time())
     _log_sync_start()
 
@@ -683,4 +690,5 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         _run_jellyfin_stage(sp)
         return _finish_sync_pass(sp, started_at)
     finally:
+        bind_active_metrics(None)
         conn.close()
