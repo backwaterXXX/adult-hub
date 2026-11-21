@@ -85,8 +85,33 @@ def search_stashdb_scene_by_oshash(
     )
 
 
+def search_fansdb_scene_by_oshash(
+    fingerprint: str, *, http_client: Optional[Any] = None,
+    duration: Optional[int] = None, duration_tolerance: int = 2,
+) -> Optional[_core.ScrapedScene]:
+    """Query FansDB by exact OSHASH, requiring duration and one unambiguous scene."""
+    return _core._search_fansdb_scene_by_fingerprint(
+        fingerprint, "OSHASH", http_client=http_client, duration=duration,
+        duration_tolerance=duration_tolerance,
+    )
+
+
 def _stashdb_fingerprint_groups(fingerprint: str, algorithm: str, client: Any, token: str):
-    """Ask StashDB for scenes matching one fingerprint; returns the raw result groups."""
+    return _stashbox_fingerprint_groups(
+        fingerprint, algorithm, client, token,
+        _core.os.environ.get("STASHDB_API_URL", "https://stashdb.org/graphql"),
+    )
+
+
+def _fansdb_fingerprint_groups(fingerprint: str, algorithm: str, client: Any, token: str):
+    return _stashbox_fingerprint_groups(
+        fingerprint, algorithm, client, token,
+        _core.os.environ.get("FANSDB_API_URL", "https://fansdb.cc/graphql"),
+    )
+
+
+def _stashbox_fingerprint_groups(fingerprint: str, algorithm: str, client: Any, token: str, endpoint_url: str):
+    """Ask a Stash-box instance (StashDB/FansDB) for scenes matching one fingerprint."""
     query = """
     query FindScenesByFingerprint($fingerprints: [[FingerprintQueryInput!]!]!) {
       findScenesBySceneFingerprints(fingerprints: $fingerprints) {
@@ -103,7 +128,7 @@ def _stashdb_fingerprint_groups(fingerprint: str, algorithm: str, client: Any, t
     response = _core.request_with_host_limit(
         client,
         "post",
-        _core.os.environ.get("STASHDB_API_URL", "https://stashdb.org/graphql"),
+        endpoint_url,
         headers={"ApiKey": token, "Accept": "application/json", "Content-Type": "application/json",
                  "User-Agent": "AdultHubSync/1.0 (scene-fingerprint)"},
         json={"query": query,
@@ -152,7 +177,9 @@ def _stashdb_candidates(scenes: list, fingerprint: str, algorithm: str, *, max_d
     return candidates
 
 
-def _scraped_scene_from_stashdb(item: dict, algorithm: str, distance: int) -> _core.ScrapedScene:
+def _scraped_scene_from_stashbox(
+    item: dict, algorithm: str, distance: int, *, source_prefix: str = "stashdb", base_url: str = "https://stashdb.org",
+) -> _core.ScrapedScene:
     studio = item.get("studio") if isinstance(item.get("studio"), dict) else {}
     performers = item.get("performers") if isinstance(item.get("performers"), list) else []
     names = [str((person.get("performer") or {}).get("name") or "").strip()
@@ -173,10 +200,18 @@ def _scraped_scene_from_stashdb(item: dict, algorithm: str, distance: int) -> _c
               for tag in tags if isinstance(tag, dict) and tag.get("name")],
         studio=str(studio.get("name") or "").strip(),
         external_id=str(item.get("id") or ""),
-        url=f"https://stashdb.org/scenes/{item['id']}" if item.get("id") else (str((urls[0] or {}).get("url") or "") if urls and isinstance(urls[0], dict) else ""),
+        url=f"{base_url}/scenes/{item['id']}" if item.get("id") else (str((urls[0] or {}).get("url") or "") if urls and isinstance(urls[0], dict) else ""),
         confidence=1.0 if algorithm == "OSHASH" else max(0.0, 1.0 - distance / 64),
-        source=f"stashdb:{algorithm.lower()}",
+        source=f"{source_prefix}:{algorithm.lower()}",
     )
+
+
+def _scraped_scene_from_stashdb(item: dict, algorithm: str, distance: int) -> _core.ScrapedScene:
+    return _scraped_scene_from_stashbox(item, algorithm, distance, source_prefix="stashdb", base_url="https://stashdb.org")
+
+
+def _scraped_scene_from_fansdb(item: dict, algorithm: str, distance: int) -> _core.ScrapedScene:
+    return _scraped_scene_from_stashbox(item, algorithm, distance, source_prefix="fansdb", base_url="https://fansdb.cc")
 
 
 def search_stashdb_scene_by_fingerprint(
@@ -203,6 +238,31 @@ def search_stashdb_scene_by_fingerprint(
         return None
     item, distance = candidates[0]
     return _scraped_scene_from_stashdb(item, algorithm, distance)
+
+
+def search_fansdb_scene_by_fingerprint(
+    fingerprint: str,
+    algorithm: str,
+    *,
+    http_client: Optional[Any] = None,
+    max_distance: int = 0,
+    duration: Optional[int] = None,
+    duration_tolerance: int = 2,
+) -> Optional[_core.ScrapedScene]:
+    """Query FansDB by fingerprint and reject ambiguous or distant results."""
+    token = _core.os.environ.get("FANSDB_API_KEY", "").strip()
+    client = http_client or _core.httpx
+    if not token or client is None:
+        return None
+    groups = _fansdb_fingerprint_groups(fingerprint, algorithm, client, token)
+    if not isinstance(groups, list) or not groups or not isinstance(groups[0], list):
+        return None
+    candidates = _stashdb_candidates(groups[0], fingerprint, algorithm, max_distance=max_distance,
+                                     duration=duration, duration_tolerance=duration_tolerance)
+    if len(candidates) != 1:
+        return None
+    item, distance = candidates[0]
+    return _scraped_scene_from_fansdb(item, algorithm, distance)
 
 
 def _theporndb_scene(item: dict) -> _core.ScrapedScene:
@@ -257,7 +317,7 @@ def search_scene_by_phash(
     duration: Optional[int] = None, max_distance: int = 10,
     duration_tolerance: int = 2,
 ) -> Optional[_core.ScrapedScene]:
-    """Find a duration-compatible pHash match; StashDB may return near hashes."""
+    """Find a duration-compatible pHash match; StashDB and FansDB may return near hashes."""
     if not _core.re.fullmatch(r"[0-9a-fA-F]{16}", str(fingerprint or "")):
         return None
     fingerprint = fingerprint.lower()
@@ -274,6 +334,18 @@ def search_scene_by_phash(
         stashdb_scene = None
     if stashdb_scene is not None:
         return stashdb_scene
+
+    try:
+        fansdb_scene = _core._search_fansdb_scene_by_fingerprint(
+            fingerprint, "PHASH", http_client=client, max_distance=max_distance,
+            duration=duration, duration_tolerance=duration_tolerance,
+        )
+    except Exception as exc:
+        errors.append(exc)
+        _core.logger.warning("FansDB PHASH lookup failed (%s)", type(exc).__name__)
+        fansdb_scene = None
+    if fansdb_scene is not None:
+        return fansdb_scene
 
     token = (_core.os.environ.get("THEPORNDB_API_TOKEN", "").strip()
              or _core.os.environ.get("THEPORNDB_API_KEY", "").strip())

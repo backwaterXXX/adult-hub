@@ -20,13 +20,15 @@ def run_external_metadata_backfill(
     from sync.pbc import backfill_pbc
     from sync.theporndb import backfill_tpdb
     from sync.stashdb import backfill_stashdb
+    from sync.fansdb import backfill_fansdb
     from sync.scene_scrapers import backfill_scenes
 
     passes = (
         ("metadata_pbc", lambda: backfill_pbc(conn, limit=pbc_limit)),
         ("metadata_tpdb", lambda: backfill_tpdb(conn, limit=tpdb_limit)),
-        # StashDB intentionally shares the existing TPDB per-run limit.
+        # StashDB and FansDB intentionally share the existing TPDB per-run limit.
         ("metadata_stashdb", lambda: backfill_stashdb(conn, limit=tpdb_limit)),
+        ("metadata_fansdb", lambda: backfill_fansdb(conn, limit=tpdb_limit)),
         ("metadata_scenes", lambda: backfill_scenes(conn, media_dir, limit=scenes_limit)),
     )
     checked = enriched = failed = 0

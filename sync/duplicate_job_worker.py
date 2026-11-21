@@ -129,6 +129,7 @@ def _execute_action(conn, job_id, action, payload, media_dir, services, quaranti
          or action == 'performer_merge'
          or action == 'history_cleanup'
          or action == 'performer_catalog'
+         or action == 'fansdb_performer_catalog'
          or action == 'scene_backfill'
          or action == 'telegram_title_cleanup'
          or action == 'source_remove'

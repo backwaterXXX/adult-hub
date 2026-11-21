@@ -119,8 +119,9 @@ def _load_media_overrides(conn: Optional[Any], video_id: str) -> dict:
 
 def _is_trusted_scene_source(source: Any) -> bool:
     return str(source or '').casefold() in {
-        'stashdb:phash', 'stashdb:oshash', 'theporndb:phash', 'theporndb:oshash',
+        'stashdb:phash', 'stashdb:oshash', 'fansdb:phash', 'fansdb:oshash', 'theporndb:phash', 'theporndb:oshash',
         'stashdb:title_exact', 'stashdb:linked_id', 'stashdb:split_title_duration_v1',
+        'fansdb:title_exact', 'fansdb:linked_id', 'fansdb:split_title_duration_v1',
         'theporndb:title_exact', 'theporndb:linked_id', 'theporndb:split_title_duration_v1',
     }
 
@@ -135,7 +136,7 @@ def _apply_title(root: Any, matched: ScrapedScene, overrides: dict) -> None:
         title_elem = root.find("title")
         catalog_match = any(
             provider in str(matched.source or "").casefold()
-            for provider in ("stashdb", "theporndb", "tpdb")
+            for provider in ("stashdb", "fansdb", "theporndb", "tpdb")
         )
         if title_elem is not None and (
                 not str(title_elem.text or "").strip() or catalog_match):
@@ -255,8 +256,12 @@ def _apply_provider_uniqueid(root: Any, matched: ScrapedScene) -> None:
     # Keep the provider identity in the NFO so Jellyfin artwork sync can
     # recognize externally matched scenes for both supported providers.
     source_lower = str(matched.source or "").casefold()
-    if matched.external_id and ("stashdb" in source_lower or "theporndb" in source_lower):
-        provider_name = "stashdb" if "stashdb" in source_lower else "theporndb"
+    if matched.external_id and ("stashdb" in source_lower or "theporndb" in source_lower or "fansdb" in source_lower):
+        provider_name = (
+            "fansdb" if "fansdb" in source_lower
+            else "stashdb" if "stashdb" in source_lower
+            else "theporndb"
+        )
         provider_uid = None
         for uid in root.findall("uniqueid"):
             if uid.get("type") == provider_name:

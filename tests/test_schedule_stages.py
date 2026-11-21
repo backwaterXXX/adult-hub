@@ -207,6 +207,17 @@ class TestStandaloneStageJobs(PgTestCase):
         self.assertEqual(row["last_result"], "failed")
         self.assertIn("STASHDB_API_KEY", row["last_error"])
 
+    def test_failed_fansdb_job_records_the_stage_failure_and_still_raises(self):
+        with patch.dict(os.environ, {}):
+            os.environ.pop("FANSDB_API_KEY", None)
+            os.environ.pop("FANS_API_KEY", None)
+            queued = schedule_stages.request_stage_run(self.db_url, "library-sync", "fansdb-performer-catalog")
+            with self.assertRaises(RuntimeError):
+                self._worker(queued)
+        row = self.row("fansdb-performer-catalog")
+        self.assertEqual(row["last_result"], "failed")
+        self.assertIn("FANSDB_API_KEY", row["last_error"])
+
 
 class TestParentFinishTime(PgTestCase):
     def test_system_pass_stores_when_it_actually_finished(self):

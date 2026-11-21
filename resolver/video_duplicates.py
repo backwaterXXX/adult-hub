@@ -239,7 +239,7 @@ def _group_rows(inputs: _DuplicateInputs):
         scene_id = str(row.get("scene_match_external_id") or "").strip()
         source = str(row.get("scene_match_source") or "").casefold()
         if scene_id and not source.endswith("split_title_duration_v1"):
-            provider = "theporndb" if "theporndb" in source or "tpdb" in source else "stashdb" if "stashdb" in source else ""
+            provider = "theporndb" if "theporndb" in source or "tpdb" in source else "fansdb" if "fansdb" in source else "stashdb" if "stashdb" in source else ""
             if provider:
                 duration = _duration_values(row)
                 if duration is not None:
@@ -284,11 +284,11 @@ def _shared_stashdb_scene(member_rows: list[dict]) -> bool:
     shared_scene_ids = {
         str(row.get("scene_match_external_id") or "").strip()
         for row in member_rows
-        if str(row.get("scene_match_source") or "").casefold().startswith("stashdb")
+        if str(row.get("scene_match_source") or "").casefold().startswith(("stashdb", "fansdb"))
     }
     return (
         len(shared_scene_ids) == 1 and "" not in shared_scene_ids
-        and all(str(row.get("scene_match_source") or "").casefold().startswith("stashdb")
+        and all(str(row.get("scene_match_source") or "").casefold().startswith(("stashdb", "fansdb"))
                 for row in member_rows)
     )
 

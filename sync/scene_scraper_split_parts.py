@@ -125,14 +125,15 @@ def _has_independent_evidence(
 
 def _to_scraped_scene(scene: dict[str, Any], source: str) -> _core.ScrapedScene:
     title, duration, performers, studio = _scene_fields(scene)
-    if source == "stashdb":
+    if source in ("stashdb", "fansdb"):
+        base_url = "https://fansdb.cc" if source == "fansdb" else "https://stashdb.org"
         images = scene.get("images") if isinstance(scene.get("images"), list) else []
         urls = scene.get("urls") if isinstance(scene.get("urls"), list) else []
         poster = str((images[0] or {}).get("url") or "") if images and isinstance(images[0], dict) else ""
         url = next((str(row.get("url") or "") for row in urls
                     if isinstance(row, dict) and row.get("url")), "")
         external_id = str(scene.get("id") or "")
-        url = url or (f"https://stashdb.org/scenes/{external_id}" if external_id else "")
+        url = url or (f"{base_url}/scenes/{external_id}" if external_id else "")
         tags = [str(row.get("name") or "").strip() for row in scene.get("tags", [])
                 if isinstance(row, dict) and row.get("name")]
         plot = str(scene.get("details") or "").strip()
@@ -150,6 +151,43 @@ def _to_scraped_scene(scene: dict[str, Any], source: str) -> _core.ScrapedScene:
         performers=performers, tags=tags, studio=studio, external_id=external_id,
         url=url, confidence=0.92, source=f"{source}:split_title_duration_v1",
     )
+
+
+def _fansdb_candidates(title: str, http_client: Any) -> list[dict[str, Any]]:
+    token = _core.os.environ.get("FANSDB_API_KEY", "").strip()
+    if not token:
+        return []
+    query = """
+    query SearchSplitScene($term: String!, $limit: Int) {
+      searchScenes(term: $term, limit: $limit) {
+        scenes {
+          id title details date release_date duration
+          studio { name }
+          performers { performer { name } }
+          tags { name }
+          images { url }
+          urls { url }
+        }
+      }
+    }
+    """
+    endpoint = _core.os.environ.get("FANSDB_API_URL", "https://fansdb.cc/graphql")
+    response = _core.request_with_host_limit(
+        http_client,
+        "post",
+        endpoint,
+        headers={"ApiKey": token, "Accept": "application/json", "Content-Type": "application/json",
+                 "User-Agent": "AdultHubSync/1.0 (scene-split-title)"},
+        json={"query": query, "variables": {"term": title, "limit": 10}},
+        timeout=_core.DEFAULT_TIMEOUT,
+    )
+    if callable(getattr(response, "raise_for_status", None)):
+        response.raise_for_status()
+    payload = response.json() if callable(getattr(response, "json", None)) else _core._decode_scene_payload(response)
+    result = (((payload or {}).get("data") or {}).get("searchScenes")
+              if isinstance(payload, dict) else None)
+    scenes = result.get("scenes") if isinstance(result, dict) else None
+    return [scene for scene in scenes if isinstance(scene, dict)] if isinstance(scenes, list) else []
 
 
 def _stashdb_candidates(title: str, http_client: Any) -> list[dict[str, Any]]:
@@ -227,6 +265,7 @@ def search_split_scene(
 
     providers = (
         ("stashdb", _stashdb_candidates),
+        ("fansdb", _fansdb_candidates),
         ("theporndb", _theporndb_candidates),
     )
     for source, fetch in providers:

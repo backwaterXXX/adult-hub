@@ -308,7 +308,7 @@ def _apply_catalog_title(video: Dict[str, Any], title: str, provider: str, _row)
         catalog_title = str(_row[7]).strip()
     scene_source = str(_row[8] or "").casefold() if _row and len(_row) > 8 else ""
     has_catalog_match = any(
-        provider in scene_source for provider in ("stashdb", "theporndb", "tpdb")
+        provider in scene_source for provider in ("stashdb", "fansdb", "theporndb", "tpdb")
     )
     title_overridden = bool(_row and len(_row) > 11 and _row[11])
     if has_catalog_match:

@@ -32,7 +32,7 @@ WORKER_ACTIONS = (
     "consistency_audit", "metadata_quality_audit", "catalog_full_audit", "audit_repair_nfo", "audit_import_refresh", "orphan_file_operation",
     "backup_create", "backup_restore_test", "metadata_backfill", "telegram_fingerprint_scan", "artwork_download", "artwork_generate", "duplicate_reconcile",
     # One-off triggers for the dependent stages listed in the Schedules UI.
-    "history_cleanup", "performer_catalog", "scene_backfill", "telegram_title_cleanup",
+    "history_cleanup", "performer_catalog", "fansdb_performer_catalog", "scene_backfill", "telegram_title_cleanup",
     "source_remove", "source_readd", "phash_generation", "filesize_backfill",
     "dead_stream_quarantine",
 )

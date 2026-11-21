@@ -29,6 +29,8 @@ from common.config import (
     get_backup_daily_at,
     get_backup_keep_days,
     get_database_url,
+    get_fansdb_api_key,
+    get_fansdb_api_url,
     get_resolver_public_url,
     get_stashdb_api_key,
     get_stream_public_url_telegram,
@@ -232,6 +234,15 @@ class TestLegacyAliasesAndGetters(unittest.TestCase):
 
         with patch.dict(os.environ, {"THEPORNDB_API_TOKEN": "", "THEPORNDB_API_KEY": "alt_key"}):
             self.assertEqual(get_theporndb_api_token(), "alt_key")
+
+    def test_fansdb_api_key_and_url(self):
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "fans_key", "FANSDB_API_URL": "https://fansdb.cc/graphql"}):
+            self.assertEqual(get_fansdb_api_key(), "fans_key")
+            self.assertEqual(get_fansdb_api_url(), "https://fansdb.cc/graphql")
+
+        with patch.dict(os.environ, {"FANSDB_API_KEY": "", "FANSDB_API_URL": ""}, clear=True):
+            self.assertEqual(get_fansdb_api_key(), "")
+            self.assertEqual(get_fansdb_api_url(), "https://fansdb.cc/graphql")
 
     def test_database_url_fallback_to_standalone_database_url(self):
         with patch.dict(os.environ, {

@@ -21,6 +21,7 @@ from common.config import (
     ConfigurationError,
     get_admin_write_token,
     get_database_url,
+    get_fansdb_api_key,
     get_stashdb_api_key,
     get_theporndb_api_token,
     parse_daily_at,
@@ -55,6 +56,7 @@ SECRET_KEYS = frozenset({
     "STANDALONE_JELLYFIN_API_KEY",
     "STASHDB_API_KEY",
     "STASH_API_KEY",
+    "FANSDB_API_KEY",
     "THEPORNDB_API_TOKEN",
     "THEPORNDB_API_KEY",
 })
@@ -141,7 +143,7 @@ def _check_legacy_aliases(env_map: Mapping[str, str], aliases: list[dict[str, st
 
 
 def _validate_urls(env_map: Mapping[str, str], warnings: list[str], summary: dict[str, str]) -> None:
-    url_keys = ("RESOLVER_PUBLIC_URL", "RESOLVER_API_URL", "JELLYFIN_URL", "STASHDB_API_URL")
+    url_keys = ("RESOLVER_PUBLIC_URL", "RESOLVER_API_URL", "JELLYFIN_URL", "STASHDB_API_URL", "FANSDB_API_URL")
     for key in url_keys:
         val = env_map.get(key)
         if not val:
@@ -195,6 +197,8 @@ def _check_credentials_and_tokens(env_map: Mapping[str, str], warnings: list[str
 
     if get_stashdb_api_key(env=env_map):
         summary["STASHDB_API_KEY"] = "[CONFIGURED]"
+    if get_fansdb_api_key(env=env_map):
+        summary["FANSDB_API_KEY"] = "[CONFIGURED]"
     if get_theporndb_api_token(env=env_map):
         summary["THEPORNDB_API_TOKEN"] = "[CONFIGURED]"
 

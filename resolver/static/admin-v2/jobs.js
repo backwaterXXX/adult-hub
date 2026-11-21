@@ -20,7 +20,7 @@
     phash_generation: 'Generate pHash', thumbnail_generation: 'Generate thumbnail',
     phash_thumbnail_legacy: 'pHash and thumbnail (legacy)',
     duplicate_reconcile: 'Duplicate reconciliation', hide: 'Hide duplicates', dismiss: 'Dismiss pair', undo: 'Undo hide', undismiss: 'Undo dismissal',
-    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Full catalog audit', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', history_cleanup: 'Backup history cleanup', performer_catalog: 'StashDB performer catalog', scene_backfill: 'Scene identification', telegram_title_cleanup: 'Telegram title cleanup', source_remove: 'Remove Telegram channel', source_readd: 'Re-add/rename Telegram channel', filesize_backfill: 'Backfill file sizes', dead_stream_quarantine: 'Dead stream quarantine', visual_compare: 'Compare video frames', visual_signature: 'Build frame signatures', sync: 'Sync'
+    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Full catalog audit', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', history_cleanup: 'Backup history cleanup', performer_catalog: 'StashDB performer catalog', fansdb_performer_catalog: 'FansDB performer catalog', scene_backfill: 'Scene identification', telegram_title_cleanup: 'Telegram title cleanup', source_remove: 'Remove Telegram channel', source_readd: 'Re-add/rename Telegram channel', filesize_backfill: 'Backfill file sizes', dead_stream_quarantine: 'Dead stream quarantine', visual_compare: 'Compare video frames', visual_signature: 'Build frame signatures', sync: 'Sync'
   };
   const HISTORICAL_ACTION_LABELS = {
     lukayan_fingerprint: 'Scene fingerprint · legacy',
@@ -29,7 +29,7 @@
     telegram_oshash: 'OSHASH fingerprint'
   };
   const METADATA_PROGRESS_STAGES = new Set([
-    'scanning_metadata', 'metadata_pbc', 'metadata_photos', 'metadata_tpdb', 'metadata_stashdb', 'metadata_scenes'
+    'scanning_metadata', 'metadata_pbc', 'metadata_photos', 'metadata_tpdb', 'metadata_stashdb', 'metadata_fansdb', 'metadata_scenes'
   ]);
 
   // Shared helpers live in admin-v2.js and are published through window.AdminV2.
@@ -76,10 +76,12 @@
       metadata_photos: 'Checking actor portrait providers',
       metadata_tpdb: 'Enriching actor and video metadata from ThePornDB',
       metadata_stashdb: 'Enriching actor metadata from StashDB',
+      metadata_fansdb: 'Enriching actor metadata from FansDB',
       metadata_scenes: 'Enriching video metadata from studio catalogs and ThePornDB',
       pruning_history: 'Removing expired history rows',
       removing_source_data: 'Removing channel videos and history',
       syncing_performer_catalog: 'Importing the StashDB performer catalog',
+      syncing_fansdb_performer_catalog: 'Importing the FansDB performer catalog',
       cleaning_telegram_titles: 'Cleaning Telegram titles and tags',
       reconciling_jellyfin_metadata: 'Reconciling Jellyfin metadata with Telegram tags',
       generating_phash: 'Generating perceptual hashes (pHash)',

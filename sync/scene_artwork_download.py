@@ -11,19 +11,23 @@ logger = logging.getLogger("sync.scene_artwork_download")
 def _import_scene_sources():
     """Load provider lookups and the poster downloader at call time."""
     from sync.scene_scraper_fingerprint_sources import (
+        search_fansdb_scene_by_oshash,
         search_stashdb_scene_by_oshash,
         search_tpdb_scene_by_oshash,
     )
     from sync.scene_scraper_media_files import _download_scene_poster
     from sync.scene_scraper_text_sources import (
+        fetch_fansdb_scene_by_id,
         fetch_stashdb_scene_by_id,
         fetch_tpdb_scene_by_id,
         search_scene_by_exact_title,
     )
     return SimpleNamespace(
+        search_fansdb_scene_by_oshash=search_fansdb_scene_by_oshash,
         search_stashdb_scene_by_oshash=search_stashdb_scene_by_oshash,
         search_tpdb_scene_by_oshash=search_tpdb_scene_by_oshash,
         download_scene_poster=_download_scene_poster,
+        fetch_fansdb_scene_by_id=fetch_fansdb_scene_by_id,
         fetch_stashdb_scene_by_id=fetch_stashdb_scene_by_id,
         fetch_tpdb_scene_by_id=fetch_tpdb_scene_by_id,
         search_scene_by_exact_title=search_scene_by_exact_title,
@@ -87,10 +91,13 @@ class _ArtworkSearch:
             return
         if "stashdb" in source:
             linked_lookups = (("StashDB", self.sources.fetch_stashdb_scene_by_id),)
+        elif "fansdb" in source:
+            linked_lookups = (("FansDB", self.sources.fetch_fansdb_scene_by_id),)
         elif "theporndb" in source or "tpdb" in source:
             linked_lookups = (("ThePornDB", self.sources.fetch_tpdb_scene_by_id),)
         else:
             linked_lookups = (("StashDB", self.sources.fetch_stashdb_scene_by_id),
+                              ("FansDB", self.sources.fetch_fansdb_scene_by_id),
                               ("ThePornDB", self.sources.fetch_tpdb_scene_by_id))
         for provider, lookup in linked_lookups:
             try:
@@ -104,6 +111,7 @@ class _ArtworkSearch:
 
     def try_oshash(self, oshash: str):
         lookups = (("StashDB", self.sources.search_stashdb_scene_by_oshash),
+                   ("FansDB", self.sources.search_fansdb_scene_by_oshash),
                    ("ThePornDB", self.sources.search_tpdb_scene_by_oshash))
         for provider, lookup in lookups:
             try:
@@ -124,7 +132,11 @@ class _ArtworkSearch:
         try:
             scene = self.sources.search_scene_by_exact_title(str(title), duration=int(duration))
             if scene and scene.poster_url:
-                provider = "StashDB" if "stashdb" in str(scene.source).casefold() else "ThePornDB"
+                provider = (
+                    "FansDB" if "fansdb" in str(scene.source).casefold()
+                    else "StashDB" if "stashdb" in str(scene.source).casefold()
+                    else "ThePornDB"
+                )
                 self.matches.append((provider, scene))
                 return self.save_from(len(self.matches) - 1)
         except Exception as exc:

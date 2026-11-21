@@ -367,6 +367,8 @@ def _add_uniqueid_elements(root, video: Dict[str, Any], provider_key: str) -> No
     if scene_ext_id:
         if scene_src == "stashdb" or scene_src.startswith("stashdb:"):
             catalog_uid_type = "stashdb"
+        elif scene_src == "fansdb" or scene_src.startswith("fansdb:"):
+            catalog_uid_type = "fansdb"
         elif "theporndb" in scene_src or scene_src.startswith("tpdb"):
             catalog_uid_type = "theporndb"
         else:

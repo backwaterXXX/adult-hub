@@ -232,16 +232,16 @@ def _apply_matched_scene(conn: Any, media_dir: Path, video_id: str, matched: Scr
     matched_source = str(matched.source or "unknown")
     normalized_source = matched_source.casefold()
     has_scene_catalog_match = any(
-        provider in normalized_source for provider in ("stashdb", "theporndb", "tpdb")
+        provider in normalized_source for provider in ("stashdb", "fansdb", "theporndb", "tpdb")
     )
     matched_priority = 100 if any(token in matched_source.casefold() for token in ("oshash", "phash", "fingerprint")) else 70
     current_priority = int(current_resolution.get("priority") or -1)
 
     trusted_fingerprint = normalized_source in {
-        "stashdb:phash", "stashdb:oshash", "theporndb:phash", "theporndb:oshash",
+        "stashdb:phash", "stashdb:oshash", "fansdb:phash", "fansdb:oshash", "theporndb:phash", "theporndb:oshash",
     }
     trusted_text = normalized_source in {
-        f"{provider}:{method}" for provider in ("stashdb", "theporndb")
+        f"{provider}:{method}" for provider in ("stashdb", "fansdb", "theporndb")
         for method in ("title_exact", "linked_id", "split_title_duration_v1")
     }
     current_source = str(current.get("scene_match_source") or "").casefold()
@@ -281,6 +281,7 @@ def _fetch_linked_artwork_rows(conn: Any, attempt_source: str, limit: int):
                  ON a.entity_type='video' AND a.entity_key=v.id AND a.source=%s
                WHERE v.provider='telegram' AND v.scene_match_external_id IS NOT NULL
                  AND (v.scene_match_source ILIKE '%%stashdb%%'
+                      OR v.scene_match_source ILIKE '%%fansdb%%'
                       OR v.scene_match_source ILIKE '%%theporndb%%'
                       OR v.scene_match_source ILIKE '%%tpdb%%')
                  AND (a.entity_key IS NULL OR a.next_attempt_at<=CURRENT_TIMESTAMP)
@@ -293,26 +294,28 @@ def _fetch_linked_artwork_rows(conn: Any, attempt_source: str, limit: int):
 
 
 def _import_linked_scene_lookups():
-    """(stashdb lookup, tpdb lookup), or None when the scene text sources are unavailable."""
+    """(stashdb lookup, fansdb lookup, tpdb lookup), or None when the scene text sources are unavailable."""
     try:
         from sync.scene_scraper_text_sources import (
-            fetch_stashdb_scene_by_id, fetch_tpdb_scene_by_id,
+            fetch_stashdb_scene_by_id, fetch_fansdb_scene_by_id, fetch_tpdb_scene_by_id,
         )
     except ImportError as exc:
         _core.logger.warning("Linked scene artwork lookup unavailable (%s)", type(exc).__name__)
         return None
-    return fetch_stashdb_scene_by_id, fetch_tpdb_scene_by_id
+    return fetch_stashdb_scene_by_id, fetch_fansdb_scene_by_id, fetch_tpdb_scene_by_id
 
 
 def _link_artwork_for_video(conn: Any, media_dir: Path, video_id: Any, external_id: Any, match_source: Any,
                             http_client: Optional[Any], attempt_source: str, lookups) -> int:
     """Fetch and store the poster for one linked scene. Returns 1 when artwork was saved."""
-    fetch_stashdb, fetch_tpdb = lookups
+    fetch_stashdb, fetch_fansdb, fetch_tpdb = lookups
     updated = 0
     try:
-        lookup = (fetch_tpdb
-                  if "theporndb" in str(match_source or "").casefold()
-                  or "tpdb" in str(match_source or "").casefold()
+        source_clean = str(match_source or "").casefold()
+        lookup = (fetch_fansdb
+                  if "fansdb" in source_clean
+                  else fetch_tpdb
+                  if "theporndb" in source_clean or "tpdb" in source_clean
                   else fetch_stashdb)
         scene = lookup(str(external_id or ""), http_client=http_client)
         if scene and str(scene.external_id or "") == str(external_id or "") and scene.poster_url:

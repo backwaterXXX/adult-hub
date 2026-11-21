@@ -24,7 +24,7 @@ TASK_BATCH_SIZE = 500
 STATUS_PATH = Path(os.getenv(
     "TELEGRAM_TITLE_CLEANUP_STATUS_PATH", "/data/cache/telegram-title-cleanup.json"
 ))
-_CATALOG_SOURCES = ("stashdb", "theporndb", "tpdb")
+_CATALOG_SOURCES = ("stashdb", "fansdb", "theporndb", "tpdb")
 
 
 def _now() -> str:

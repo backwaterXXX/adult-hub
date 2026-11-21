@@ -30,11 +30,11 @@ def _linked_scene_nfo(nfo_path):
     except (OSError, ET.ParseError):
         return False
     for uniqueid in root.findall('uniqueid'):
-        if (str(uniqueid.get('type') or '').casefold() in {'stashdb', 'theporndb', 'tpdb'}
+        if (str(uniqueid.get('type') or '').casefold() in {'stashdb', 'fansdb', 'theporndb', 'tpdb'}
                 and str(uniqueid.text or '').strip()):
             return True
     website = str(root.findtext('website') or '').casefold()
-    return 'stashdb.org/' in website or 'theporndb.net/' in website
+    return 'stashdb.org/' in website or 'fansdb.cc/' in website or 'theporndb.net/' in website
 
 
 class _ItemImport:

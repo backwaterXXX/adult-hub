@@ -117,6 +117,7 @@ DEFAULT_HIDE_DEAD_STREAMS = True
 
 # Metadata Providers
 DEFAULT_STASHDB_API_URL = "https://stashdb.org/graphql"
+DEFAULT_FANSDB_API_URL = "https://fansdb.cc/graphql"
 
 # Admin v2 Issues
 DEFAULT_ADMIN_V2_MONITOR_BACKUPS = False
@@ -339,6 +340,18 @@ def get_theporndb_api_token(env: Mapping[str, str] | None = None) -> str:
     if not token:
         token = (env_map.get("THEPORNDB_API_KEY") or "").strip()
     return token
+
+
+def get_fansdb_api_key(env: Mapping[str, str] | None = None) -> str:
+    """Return FansDB API key."""
+    env_map = os.environ if env is None else env
+    return (env_map.get("FANSDB_API_KEY") or "").strip()
+
+
+def get_fansdb_api_url(env: Mapping[str, str] | None = None) -> str:
+    """Return FansDB GraphQL endpoint URL."""
+    env_map = os.environ if env is None else env
+    return (env_map.get("FANSDB_API_URL") or DEFAULT_FANSDB_API_URL).strip()
 
 
 def get_stream_public_url_telegram(env: Mapping[str, str] | None = None) -> str:

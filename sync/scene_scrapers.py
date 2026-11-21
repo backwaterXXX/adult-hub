@@ -93,12 +93,33 @@ def _search_stashdb_scene_by_oshash(
     )
 
 
+def _search_fansdb_scene_by_oshash(
+    fingerprint: str, *, http_client: Optional[Any] = None,
+    duration: Optional[int] = None, duration_tolerance: int = 2,
+) -> Optional[ScrapedScene]:
+    return _fingerprint_source_module().search_fansdb_scene_by_oshash(
+        fingerprint, http_client=http_client, duration=duration,
+        duration_tolerance=duration_tolerance,
+    )
+
+
 def _search_stashdb_scene_by_fingerprint(
     fingerprint: str, algorithm: str, *, http_client: Optional[Any] = None,
     max_distance: int = 0, duration: Optional[int] = None,
     duration_tolerance: int = 2,
 ) -> Optional[ScrapedScene]:
     return _fingerprint_source_module().search_stashdb_scene_by_fingerprint(
+        fingerprint, algorithm, http_client=http_client, max_distance=max_distance,
+        duration=duration, duration_tolerance=duration_tolerance,
+    )
+
+
+def _search_fansdb_scene_by_fingerprint(
+    fingerprint: str, algorithm: str, *, http_client: Optional[Any] = None,
+    max_distance: int = 0, duration: Optional[int] = None,
+    duration_tolerance: int = 2,
+) -> Optional[ScrapedScene]:
+    return _fingerprint_source_module().search_fansdb_scene_by_fingerprint(
         fingerprint, algorithm, http_client=http_client, max_distance=max_distance,
         duration=duration, duration_tolerance=duration_tolerance,
     )
@@ -113,6 +134,7 @@ def search_scene_by_oshash(
     errors = []
     lookups = (
         ("StashDB", _search_stashdb_scene_by_oshash),
+        ("FansDB", _search_fansdb_scene_by_oshash),
         ("ThePornDB", _search_tpdb_scene_by_oshash),
     )
     for source_name, lookup in lookups:

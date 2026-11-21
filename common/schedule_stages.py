@@ -32,6 +32,7 @@ _TELEGRAM_TOKEN = re.compile(r"\b\d{5,}:[A-Za-z0-9_-]{20,}\b")
 JOB_STAGES = {
     "history_cleanup": ("database-backup", "history-cleanup"),
     "performer_catalog": ("library-sync", "performer-catalog"),
+    "fansdb_performer_catalog": ("library-sync", "fansdb-performer-catalog"),
     "scene_backfill": ("library-sync", "scene-identification"),
     "telegram_title_cleanup": ("library-sync", "telegram-title-cleanup"),
     "metadata_backfill": ("library-sync", "metadata-backfill"),
@@ -59,6 +60,11 @@ STAGES: tuple[Stage, ...] = (
         "performer-catalog", "library-sync", "StashDB performer catalog",
         "At sync, at most once per 24 hours; requires configured credentials.",
         "performer_catalog", None,
+    ),
+    Stage(
+        "fansdb-performer-catalog", "library-sync", "FansDB performer catalog",
+        "At sync, at most once per calendar day; requires configured FANSDB_API_KEY.",
+        "fansdb_performer_catalog", None,
     ),
     Stage(
         "source-scans", "library-sync", "Configured source scans",

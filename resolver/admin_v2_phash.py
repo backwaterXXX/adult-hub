@@ -157,6 +157,10 @@ def _route_submit_frames(router, admin):
         match_found = None
         try:
             match_found = await _find_stashdb_match(fingerprint)
+            if not match_found:
+                fansdb_match = await _find_fansdb_match(fingerprint)
+                if fansdb_match is not None:
+                    match_found = fansdb_match
         except Exception:
             logger.debug("Ignored exception in submit_frames", exc_info=True)
         return {"ok": True, "fingerprint": fingerprint, "match_found": match_found}
@@ -474,6 +478,45 @@ async def _find_stashdb_match(fingerprint: str) -> bool | None:
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(
             stashdb_url,
+            headers={"ApiKey": token, "Accept": "application/json", "Content-Type": "application/json"},
+            json={"query": query, "variables": {"fingerprints": [[{"algorithm": "PHASH", "hash": fingerprint}]]}},
+        )
+    response.raise_for_status()
+    payload = response.json()
+    groups = ((payload.get("data") or {}).get("findScenesBySceneFingerprints")
+              if isinstance(payload, dict) else None)
+    candidates = []
+    if isinstance(groups, list) and groups and isinstance(groups[0], list):
+        for scene in groups[0]:
+            if not isinstance(scene, dict) or not scene.get("id"):
+                continue
+            distances = [
+                (int(str(item.get("hash") or ""), 16) ^ int(fingerprint, 16)).bit_count()
+                for item in (scene.get("fingerprints") or []) if isinstance(item, dict)
+                and str(item.get("algorithm") or "").upper() == "PHASH"
+                and re.fullmatch(r"[0-9a-fA-F]{16}", str(item.get("hash") or ""))
+            ]
+            if distances and min(distances) <= 2:
+                candidates.append(scene["id"])
+    return len(set(candidates)) == 1
+
+
+async def _find_fansdb_match(fingerprint: str) -> bool | None:
+    token = os.getenv("FANSDB_API_KEY", "").strip()
+    if not token:
+        return None
+    query = """
+      query FindScenesByFingerprint($fingerprints: [[FingerprintQueryInput!]!]!) {
+        findScenesBySceneFingerprints(fingerprints: $fingerprints) {
+          id fingerprints { hash algorithm }
+        }
+      }
+    """
+    fansdb_url = os.getenv("FANSDB_API_URL", "https://fansdb.cc/graphql")
+    await asyncio.to_thread(wait_for_host_slot, fansdb_url)
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(
+            fansdb_url,
             headers={"ApiKey": token, "Accept": "application/json", "Content-Type": "application/json"},
             json={"query": query, "variables": {"fingerprints": [[{"algorithm": "PHASH", "hash": fingerprint}]]}},
         )

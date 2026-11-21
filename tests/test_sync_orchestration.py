@@ -60,10 +60,12 @@ CORE_CALLS = (
 # Imported lazily inside the pass, so they are reached through sys.modules.
 LAZY_FUNCTIONS = {
     "sync.performer_catalog_sync": "sync_catalog_if_due",
+    "sync.fansdb_catalog_sync": "sync_fansdb_catalog_if_due",
     "sync.scene_scrapers": "backfill_scenes",
     "sync.pbc": "backfill_pbc",
     "sync.theporndb": "backfill_tpdb",
     "sync.stashdb": "backfill_stashdb",
+    "sync.fansdb": "backfill_fansdb",
     "sync.telegram_title_cleanup": "cleanup_telegram_titles",
     "sync.jellyfin_people": "sync_jellyfin_people",
 }
@@ -234,6 +236,7 @@ class CoreDouble:
             setattr(module, function_name, recorder)
             self.lazy_modules[module_name] = module
         self.sinks["sync_catalog_if_due"].result = (12, 3)
+        self.sinks["sync_fansdb_catalog_if_due"].result = (8, 2)
 
     def _register(self, recorder):
         self.sinks[recorder.name] = recorder
@@ -462,7 +465,7 @@ class TestMaintenanceAheadOfTheScans(SyncPassHarness):
         order = self.core.order
         scanned = order.index("sync_telegram_channel_pipeline")
         self.assertEqual(order[:scanned], [
-            "init_db", "sync_catalog_if_due", "_video_id_snapshot", "migrate_synced_files",
+            "init_db", "sync_catalog_if_due", "sync_fansdb_catalog_if_due", "_video_id_snapshot", "migrate_synced_files",
             "migrate_categories", "migrate_display_titles", "migrate_redundant_performers",
             "cleanup_legacy_folders", "cleanup_old_transcodes", "republish_pending_videos",
             "safe_process_duplicate_jobs_checkpoint",
@@ -479,23 +482,30 @@ class TestMaintenanceAheadOfTheScans(SyncPassHarness):
         self.sync()
 
         self.assertEqual(self.sink("sync_catalog_if_due").args(), (CONN,))
+        self.assertEqual(self.sink("sync_fansdb_catalog_if_due").args(), (CONN,))
         self.assertTrue(self.core.logger.has("Performer catalogue refreshed: 12 people, 3 aliases", "info"))
+        self.assertTrue(self.core.logger.has("FansDB performer catalogue refreshed: 8 people, 2 aliases", "info"))
 
     def test_the_catalogue_refresh_is_silent_when_it_reports_nothing(self):
         self.sink("sync_catalog_if_due").result = ()
+        self.sink("sync_fansdb_catalog_if_due").result = ()
 
         self.sync()
 
         self.assertFalse(self.core.logger.has("Performer catalogue refreshed", "info"))
+        self.assertFalse(self.core.logger.has("FansDB performer catalogue refreshed", "info"))
         self.assertFalse(self.core.logger.has("catalogue refresh failed", "warning"))
 
     def test_a_failing_catalogue_refresh_keeps_the_last_local_copy(self):
         self.explode("sync_catalog_if_due", ValueError("stashdb unreachable"))
+        self.explode("sync_fansdb_catalog_if_due", ValueError("fansdb unreachable"))
 
         self.assertTrue(self.sync())
 
         self.assertTrue(self.core.logger.has(
             "Performer catalogue refresh failed; using last local copy: stashdb unreachable", "warning"))
+        self.assertTrue(self.core.logger.has(
+            "FansDB performer catalogue refresh failed; using last local copy: fansdb unreachable", "warning"))
 
     def test_the_first_duplicate_checkpoint_failure_is_only_a_warning(self):
         checkpoint = self.sink("safe_process_duplicate_jobs_checkpoint")

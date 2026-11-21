@@ -161,6 +161,27 @@ def _run_performer_catalog_stage(recorder: _StageRecorder, conn) -> None:
             recorder.close("performer-catalog", catalogue_problems)
 
 
+def _run_fansdb_catalog_stage(recorder: _StageRecorder, conn) -> None:
+    if not recorder.enabled("fansdb-performer-catalog"):
+        _core.logger.info("Stage fansdb-performer-catalog is disabled; skipping it in this pass.")
+        return
+    catalogue_problems: list = []
+    try:
+        from sync.fansdb_catalog_sync import sync_fansdb_catalog_if_due
+        catalogue_result = sync_fansdb_catalog_if_due(conn)
+        if catalogue_result:
+            if recorder.open("fansdb-performer-catalog"):
+                recorder.close("fansdb-performer-catalog", catalogue_problems)
+            _core.logger.info("FansDB performer catalogue refreshed: %s people, %s aliases", *catalogue_result)
+        else:
+            _core.logger.debug("FansDB performer catalogue skipped: not due or unconfigured")
+    except Exception as e:
+        _core.logger.warning("FansDB performer catalogue refresh failed; using last local copy: %s", e)
+        catalogue_problems.append(_core._safe_error_detail(e))
+        if recorder.open("fansdb-performer-catalog"):
+            recorder.close("fansdb-performer-catalog", catalogue_problems)
+
+
 def _run_startup_maintenance(conn) -> None:
     # 0. Migrate filenames, migrate categories, clean legacy folders and old transcodes.
     # NOTE (ETAP B): cleanup_orphaned_records() no longer runs here — it needs
@@ -392,6 +413,7 @@ def _run_metadata_backfills(sp: _SyncPass, problems: list) -> None:
     _run_pbc_backfill(sp, problems)
     _run_tpdb_backfill(sp, problems)
     _run_stashdb_backfill(sp, problems)
+    _run_fansdb_backfill(sp, problems)
 
 
 def _run_pbc_backfill(sp: _SyncPass, problems: list) -> None:
@@ -424,6 +446,17 @@ def _run_stashdb_backfill(sp: _SyncPass, problems: list) -> None:
         pass
     except Exception as e:
         _core.logger.warning("StashDB backfill pass failed: %s", e)
+        problems.append(_core._safe_error_detail(e))
+
+
+def _run_fansdb_backfill(sp: _SyncPass, problems: list) -> None:
+    try:
+        from sync.fansdb import backfill_fansdb  # type: ignore
+        _run_timed_stage("metadata_fansdb", lambda: backfill_fansdb(sp.conn, limit=_core.TPDB_BACKFILL_PER_RUN))
+    except ImportError:
+        pass
+    except Exception as e:
+        _core.logger.warning("FansDB backfill pass failed: %s", e)
         problems.append(_core._safe_error_detail(e))
 
 
@@ -636,6 +669,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         schedule_stages.mark_interrupted_stages(conn, _SYNC_SCHEDULE)
         sp.recorder.stages.update(schedule_stages.stage_states(conn, _SYNC_SCHEDULE))
         _run_performer_catalog_stage(sp.recorder, conn)
+        _run_fansdb_catalog_stage(sp.recorder, conn)
         sp.before_ids = _core._video_id_snapshot(conn)
         _run_startup_maintenance(conn)
         _run_telegram_scans(sp)

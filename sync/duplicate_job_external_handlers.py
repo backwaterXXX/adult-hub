@@ -458,6 +458,17 @@ def _action_performer_catalog(conn, job_id, payload, media_dir, services):
     }, False
 
 
+def _action_fansdb_performer_catalog(conn, job_id, payload, media_dir, services):
+    _core._record_job_progress(conn, job_id, "syncing_fansdb_performer_catalog")
+    from sync.fansdb_catalog_sync import sync_catalog
+    performers, aliases = sync_catalog(conn)
+    return {
+        "catalogue_performers": performers,
+        "catalogue_aliases": aliases,
+        "local_state": "fansdb_performer_catalog_completed",
+    }, False
+
+
 def _action_scene_backfill(conn, job_id, payload, media_dir, services):
     try:
         from sync.scene_scrapers import backfill_scenes  # type: ignore
@@ -704,6 +715,7 @@ _EXTERNAL_ACTION_HANDLERS = {
     "performer_merge": _action_performer_merge,
     "history_cleanup": _action_history_cleanup,
     "performer_catalog": _action_performer_catalog,
+    "fansdb_performer_catalog": _action_fansdb_performer_catalog,
     "scene_backfill": _action_scene_backfill,
     "telegram_title_cleanup": _action_telegram_title_cleanup,
     "phash_generation": _action_phash_generation,

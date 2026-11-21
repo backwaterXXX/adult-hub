@@ -6,8 +6,8 @@ WORKING_STAGES = frozenset({
     "applying_metadata", "checking_availability", "auditing_library", "auditing_metadata",
     "checking_jellyfin_import_state", "creating_backup", "testing_backup_restore",
     "repairing_nfo", "writing_nfo", "scanning_metadata", "downloading_artwork", "generating_artwork",
-    "metadata_pbc", "metadata_photos", "metadata_tpdb", "metadata_stashdb", "metadata_scenes",
-    "pruning_history", "syncing_performer_catalog", "cleaning_telegram_titles",
+    "metadata_pbc", "metadata_photos", "metadata_tpdb", "metadata_stashdb", "metadata_fansdb", "metadata_scenes",
+    "pruning_history", "syncing_performer_catalog", "syncing_fansdb_performer_catalog", "cleaning_telegram_titles",
     "reconciling_jellyfin_metadata", "removing_source_data", "generating_phash",
     "backfilling_file_sizes", "quarantining_dead_streams",
 })

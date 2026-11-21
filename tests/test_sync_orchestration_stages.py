@@ -12,9 +12,9 @@ class TestEnrichmentStages(SyncPassHarness):
 
         self.assertEqual([stage for stage, _, _ in self.core.stages], [
             "metadata_scenes", "performer_title_backfill", "metadata_pbc", "metadata_tpdb",
-            "metadata_stashdb", "telegram_title_cleanup", "jellyfin_metadata_reconciliation",
+            "metadata_stashdb", "metadata_fansdb", "telegram_title_cleanup", "jellyfin_metadata_reconciliation",
         ])
-        self.assertEqual([failed for _, _, failed in self.core.stages], [False] * 7)
+        self.assertEqual([failed for _, _, failed in self.core.stages], [False] * 8)
         self.assertEqual(self.sink("backfill_scenes").args(), (CONN, MEDIA_DIR))
         self.assertEqual(self.sink("backfill_scenes").kwargs(), {"limit": self.core.SCENE_BACKFILL_PER_RUN})
         self.assertEqual(self.sink("backfill_performers_from_titles").args(), (CONN, MEDIA_DIR))
@@ -23,6 +23,8 @@ class TestEnrichmentStages(SyncPassHarness):
                          {"limit": self.core.TPDB_BACKFILL_PER_RUN})
         # The StashDB pass is limited by the PornDB knob, not its own.
         self.assertEqual(self.sink("backfill_stashdb").kwargs(),
+                         {"limit": self.core.TPDB_BACKFILL_PER_RUN})
+        self.assertEqual(self.sink("backfill_fansdb").kwargs(),
                          {"limit": self.core.TPDB_BACKFILL_PER_RUN})
         self.assertEqual(self.sink("cleanup_telegram_titles").args(), (CONN, MEDIA_DIR))
         self.assertEqual(self.sink("sync_jellyfin_people").args(),
@@ -49,7 +51,7 @@ class TestEnrichmentStages(SyncPassHarness):
         self.assertTrue(self.history()["success"])
 
     def test_an_uninstalled_optional_module_is_skipped_quietly(self):
-        for module in ("sync.scene_scrapers", "sync.pbc", "sync.theporndb", "sync.stashdb"):
+        for module in ("sync.scene_scrapers", "sync.pbc", "sync.theporndb", "sync.stashdb", "sync.fansdb"):
             self.absent(module)
 
         self.assertTrue(self.sync())
