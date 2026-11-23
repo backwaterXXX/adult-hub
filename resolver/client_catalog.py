@@ -296,7 +296,7 @@ def _determine_is_hd(height: int | None, width: int | None) -> bool | None:
     return None
 
 
-def _format_performer_refs(
+def _format_performer_refs(  # noqa: C901
     raw_performers: Any,
     performers_catalog_map: Mapping[str, tuple[str, str] | str] | None = None,
     base_artwork_url: str = "/api/v1/artwork",
@@ -431,7 +431,7 @@ def serialize_client_video(
     )
 
 
-def _lookup_user_states(
+def _lookup_user_states(  # noqa: C901
     conn: Any,
     tables: set[str],
     user_id: str,
@@ -804,7 +804,7 @@ def client_sort_clause(sort: str, direction: str | None = None, *, effective_tit
         return f"v.first_seen {dir_sql} NULLS LAST, v.id ASC"
 
 
-def query_catalog_videos(
+def query_catalog_videos(  # noqa: C901
     conn: Any,
     *,
     q: str | None = None,
@@ -1090,7 +1090,7 @@ def query_catalog_videos(
     )
 
 
-def query_catalog_video_detail(
+def query_catalog_video_detail(  # noqa: C901
     conn: Any,
     video_id: str,
     *,
@@ -1911,7 +1911,7 @@ def query_catalog_performers(
     )
 
 
-def query_catalog_performer_detail(
+def query_catalog_performer_detail(  # noqa: C901
     conn: Any,
     performer_id: str,
     *,

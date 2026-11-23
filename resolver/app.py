@@ -885,7 +885,7 @@ async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[s
 app.include_router(api)
 
 # Explicit opt-in staging for Desktop API slice (disabled by default)
-from resolver.desktop_api import mount_desktop_api
+from resolver.desktop_api import mount_desktop_api  # noqa: E402
 
 mount_desktop_api(app)
 

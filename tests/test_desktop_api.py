@@ -42,7 +42,6 @@ from resolver.app import app as resolver_production_app
 from resolver.desktop_api import (
     create_desktop_integration_app,
     mount_desktop_api,
-    router as desktop_router,
 )
 from tests.pg_helper import PgTestCase
 
@@ -1402,7 +1401,7 @@ class TestDesktopApiPostgresLive(PgTestCase):
         self.assertEqual(res_refresh.status_code, 200)
         self.assertEqual(res_refresh.headers.get("cache-control"), "private, no-store")
         data = res_refresh.json()
-        new_access = data["access_token"]
+        self.assertTrue(data["access_token"])
         new_refresh = data["refresh_token"]
         self.assertNotEqual(new_refresh, refresh_tok)
 
@@ -1578,7 +1577,7 @@ class TestDesktopApiPostgresLive(PgTestCase):
         self.assertEqual(res.status_code, 401)
         self.assertEqual(res.headers.get("cache-control"), "private, no-store")
 
-    def test_authenticated_playback_descriptor_and_stream_with_failover(self):
+    def test_authenticated_playback_descriptor_and_stream_with_failover(self):  # noqa: C901
         """Authenticated playback descriptor resolves aliases and streams with pre-play source failover."""
         access_tok, _, _ = self._bootstrap_and_login("playback_user", "PlayPass12345!")
         auth_header = {"Authorization": f"Bearer {access_tok}"}

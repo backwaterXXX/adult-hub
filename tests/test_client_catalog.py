@@ -28,8 +28,6 @@ from datetime import datetime, timezone
 
 from common.managed_sources import canonical_channel_id, channel_aliases
 from resolver.client_catalog import (
-    ChannelItem,
-    PaginatedChannels,
     PaginatedPerformers,
     PaginatedTaxonomy,
     PaginatedVideos,
@@ -40,13 +38,8 @@ from resolver.client_catalog import (
     _CLIENT_SORT_CLAUSES,
     _extract_disabled_channel_ids,
     client_sort_clause,
-    query_catalog_categories,
     query_catalog_channel_detail,
     query_catalog_channels,
-    query_catalog_performer_detail,
-    query_catalog_performers,
-    query_catalog_studios,
-    query_catalog_tags,
     query_catalog_video_detail,
     query_catalog_videos,
     serialize_client_video,

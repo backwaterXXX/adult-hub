@@ -21,9 +21,7 @@ import io
 import os
 import secrets
 import sys
-import time
 import unittest
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from starlette.testclient import TestClient
@@ -45,7 +43,6 @@ from common.client_auth.rate_limit import check_and_increment_rate_limit
 from common.client_auth.schema import ensure_auth_schema
 from common.client_auth.service import (
     AuthenticationFailed,
-    BoundedValidationError,
     PairingAlreadyExchanged,
     PairingNotFoundOrExpired,
     RateLimitExceeded,
@@ -57,7 +54,6 @@ from common.client_auth.service import (
     prune_retired_auth_data,
     refresh_session_token,
     revoke_session_token,
-    verify_access_token,
 )
 from common.client_auth_cli import run_bootstrap_owner
 from fastapi import FastAPI
@@ -768,7 +764,6 @@ class TestClientAuthLive(PgTestCase):
         )
         ref1 = auth_data["refresh_token"]
         auth2 = refresh_session_token(self.conn, ref1)
-        ref2 = auth2["refresh_token"]
 
         # Present ref1 again via HTTP endpoint -> returns 401
         replay_res = client.post(

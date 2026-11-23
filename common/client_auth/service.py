@@ -228,7 +228,7 @@ def authenticate_by_password(
     }
 
 
-def refresh_session_token(conn, refresh_token: str) -> dict[str, Any]:
+def refresh_session_token(conn, refresh_token: str) -> dict[str, Any]:  # noqa: C901
     """Refresh an access token using single-use rotation with row locking and persistent replay detection.
 
     Enforces RFC 6819 strict rotation without insecure grace windows.
@@ -565,7 +565,7 @@ def approve_pairing(conn, pairing_code: str, approver_user_id: str | None = None
     return {"approved": True, "device_name": device_name}
 
 
-def poll_pairing_status(conn, secret: str, client_ip: str) -> dict[str, Any]:
+def poll_pairing_status(conn, secret: str, client_ip: str) -> dict[str, Any]:  # noqa: C901
     """Poll TV pairing status using private secret.
 
     Atomic claim and one-time token issuance.

@@ -18,6 +18,7 @@ max-complexity = 10
 # T201: command-line tools print their results to stdout.
 "backup_db.py" = ["T201"]
 "common/fuzzy_performers.py" = ["T201"]
+"common/client_auth_cli.py" = ["T201"]
 "migrate_db.py" = ["E402", "T201"]
 "restore_db.py" = ["E402", "T201"]
 "resolver/phash_subprocess_entry.py" = ["T201"]

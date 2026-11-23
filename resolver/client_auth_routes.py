@@ -32,7 +32,6 @@ from common.client_auth.service import (
     MAX_DEVICE_NAME_LEN,
     MAX_PASSWORD_LEN,
     MAX_USERNAME_LEN,
-    AuthError,
     AuthenticationFailed,
     BoundedValidationError,
     PairingAlreadyExchanged,
@@ -401,7 +400,7 @@ async def post_pair_init(request: Request) -> JSONResponse:
 
 
 @router.post("/api/v1/auth/pair/status")
-async def post_pair_status(
+async def post_pair_status(  # noqa: C901
     request: Request,
     authorization: str | None = Header(None),
 ) -> JSONResponse:
@@ -461,7 +460,7 @@ async def post_pair_status(
 
 # --- Out-of-band Admin V2 Pairing Approval ---
 
-async def _handle_admin_pairing_approval(request: Request) -> JSONResponse:
+async def _handle_admin_pairing_approval(request: Request) -> JSONResponse:  # noqa: C901
     """Internal handler for Admin V2 pairing approval."""
     denied = _admin_write_guard(request)
     if denied:
