@@ -399,8 +399,37 @@ async def post_pair_init(request: Request) -> JSONResponse:
         return _auth_response({"error": "Pairing initialization failed"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+async def _read_pair_secret(request: Request, authorization: str | None) -> tuple[str, JSONResponse | None]:
+    """Read and validate the pairing secret from the Authorization header or the JSON body.
+
+    Returns (secret, None) on success, or ("", error response) when the request is rejected.
+    """
+    secret = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        secret = authorization[7:].strip()
+    else:
+        body = await request.body()
+        if body and body.strip():
+            payload, err_resp = await _parse_json_object(request)
+            if err_resp:
+                return "", err_resp
+            secret = payload.get("secret", "")
+
+    if not secret:
+        return "", _auth_response(
+            {"error": "Pairing secret must be provided in Authorization header or JSON body"},
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    try:
+        _safe_hash_token(secret, name="secret")
+    except BoundedValidationError as exc:
+        return "", _auth_response({"error": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
+    return secret, None
+
+
 @router.post("/api/v1/auth/pair/status")
-async def post_pair_status(  # noqa: C901
+async def post_pair_status(
     request: Request,
     authorization: str | None = Header(None),
 ) -> JSONResponse:
@@ -411,27 +440,9 @@ async def post_pair_status(  # noqa: C901
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    secret = ""
-    if authorization and authorization.lower().startswith("bearer "):
-        secret = authorization[7:].strip()
-    else:
-        body = await request.body()
-        if body and body.strip():
-            payload, err_resp = await _parse_json_object(request)
-            if err_resp:
-                return err_resp
-            secret = payload.get("secret", "")
-
-    if not secret:
-        return _auth_response(
-            {"error": "Pairing secret must be provided in Authorization header or JSON body"},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-        )
-
-    try:
-        _safe_hash_token(secret, name="secret")
-    except BoundedValidationError as exc:
-        return _auth_response({"error": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
+    secret, err_resp = await _read_pair_secret(request, authorization)
+    if err_resp:
+        return err_resp
 
     client_ip = _extract_client_ip(request)
 
@@ -460,7 +471,18 @@ async def post_pair_status(  # noqa: C901
 
 # --- Out-of-band Admin V2 Pairing Approval ---
 
-async def _handle_admin_pairing_approval(request: Request) -> JSONResponse:  # noqa: C901
+def _validate_admin_pairing_request(pairing_code: str, user_id) -> JSONResponse | None:
+    """Return a 400 response when the approval inputs fail bounds checks, otherwise None."""
+    try:
+        _validate_bounds(pairing_code, "pairing_code", 1, 32)
+        if user_id is not None:
+            _validate_bounds(str(user_id), "user_id", 1, 64)
+    except BoundedValidationError as exc:
+        return _auth_response({"error": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
+    return None
+
+
+async def _handle_admin_pairing_approval(request: Request) -> JSONResponse:
     """Internal handler for Admin V2 pairing approval."""
     denied = _admin_write_guard(request)
     if denied:
@@ -476,12 +498,9 @@ async def _handle_admin_pairing_approval(request: Request) -> JSONResponse:  # n
     if not pairing_code:
         return _auth_response({"error": "pairing_code is required"}, status_code=status.HTTP_400_BAD_REQUEST)
 
-    try:
-        _validate_bounds(pairing_code, "pairing_code", 1, 32)
-        if user_id is not None:
-            _validate_bounds(str(user_id), "user_id", 1, 64)
-    except BoundedValidationError as exc:
-        return _auth_response({"error": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
+    invalid_request = _validate_admin_pairing_request(pairing_code, user_id)
+    if invalid_request is not None:
+        return invalid_request
 
     def _execute():
         conn = _db_connection(request)

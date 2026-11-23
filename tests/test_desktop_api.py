@@ -1353,6 +1353,62 @@ print("__PAYLOAD_START__" + json.dumps(out) + "__PAYLOAD_END__")
                 self.assertIsNone(absent_data)
 
 
+class _LiveFailoverProvider:
+    """Provider double: the primary keeper candidate fails preflight, other candidates stream."""
+
+    def __init__(self, dummy_media: bytes):
+        self.calls = []
+        self._dummy_media = dummy_media
+
+    def is_channel_authorized(self, channel_ref: str) -> bool:
+        return True
+
+    async def file_size(self, ref: str) -> int:
+        return len(self._dummy_media)
+
+    async def get_video_variants(self, ref: str) -> dict:
+        return {
+            "status": "ready",
+            "video_processing_pending": False,
+            "has_alternatives": True,
+            "variants": [
+                {
+                    "id": "original",
+                    "is_original": True,
+                    "width": 1920,
+                    "height": 1080,
+                    "mime_type": "video/mp4",
+                    "file_size": 2000000,
+                    "duration": 1800.0,
+                },
+                {
+                    "id": "alt_720",
+                    "is_original": False,
+                    "width": 1280,
+                    "height": 720,
+                    "mime_type": "video/mp4",
+                    "file_size": 1000000,
+                    "duration": 1800.0,
+                },
+            ],
+        }
+
+    async def resolve_stream(self, raw_id: str, variant: str | None = None) -> str:
+        self.calls.append(raw_id)
+        if "keeper_vid" in raw_id:
+            # Primary candidate fails preflight
+            raise RuntimeError("Primary DC dropped connection")
+        return f"tg://{raw_id}"
+
+    async def download_range(self, ref: str, offset: int, length: int | None):
+        dummy_media = self._dummy_media
+
+        async def _gen():
+            yield dummy_media
+
+        return _gen()
+
+
 class TestDesktopApiPostgresLive(PgTestCase):
     """Live integration tests running against disposable PostgreSQL 17."""
 
@@ -1577,12 +1633,8 @@ class TestDesktopApiPostgresLive(PgTestCase):
         self.assertEqual(res.status_code, 401)
         self.assertEqual(res.headers.get("cache-control"), "private, no-store")
 
-    def test_authenticated_playback_descriptor_and_stream_with_failover(self):  # noqa: C901
-        """Authenticated playback descriptor resolves aliases and streams with pre-play source failover."""
-        access_tok, _, _ = self._bootstrap_and_login("playback_user", "PlayPass12345!")
-        auth_header = {"Authorization": f"Bearer {access_tok}"}
-        dummy_media = b"POSTGRES_LIVE_FAILOVER_STREAM_BYTES_999"
-
+    def _seed_failover_fixture(self):
+        """Insert a canonical video, a duplicate loser alias, and a secondary failover source."""
         with db.connect(self.db_url) as conn:
             # Seed canonical video
             conn.execute(
@@ -1604,91 +1656,56 @@ class TestDesktopApiPostgresLive(PgTestCase):
                 )
             conn.commit()
 
-        class LiveFailoverProvider:
-            def __init__(self):
-                self.calls = []
+    def _assert_capabilities(self, auth_header):
+        res_caps = self.client.get("/api/v1/playback/capabilities", headers=auth_header)
+        self.assertEqual(res_caps.status_code, 200)
+        self.assertEqual(res_caps.headers.get("cache-control"), "private, no-store")
+        self.assertIn("http_range_rfc7233", res_caps.json()["streaming_protocols"])
 
-            def is_channel_authorized(self, channel_ref: str) -> bool:
-                return True
+    def _assert_descriptor_resolves_alias(self, auth_header):
+        # Playback descriptor via duplicate loser alias resolves to keeper canonical ID
+        res_desc = self.client.get("/api/v1/playback/renditions/telegram:loser_alias", headers=auth_header)
+        self.assertEqual(res_desc.status_code, 200)
+        self.assertEqual(res_desc.headers.get("cache-control"), "private, no-store")
+        desc_data = res_desc.json()
+        self.assertEqual(desc_data["video_id"], "telegram:keeper_vid")
+        self.assertEqual(desc_data["stream_path"], "/api/v1/playback/stream/telegram:keeper_vid")
+        self.assertEqual(len(desc_data["renditions"]), 2)
 
-            async def file_size(self, ref: str) -> int:
-                return len(dummy_media)
+    def _assert_stream_fails_over(self, auth_header, prov, dummy_media):
+        # Stream with pre-play source failover (primary keeper_vid fails -> secondary_source plays)
+        res_stream = self.client.get("/api/v1/playback/stream/telegram:loser_alias", headers=auth_header)
+        self.assertEqual(res_stream.status_code, 200)
+        self.assertEqual(res_stream.content, dummy_media)
+        self.assertEqual(res_stream.headers.get("cache-control"), "private, no-store")
+        self.assertIn("keeper_vid", prov.calls)
+        self.assertIn("secondary_source", prov.calls)
 
-            async def get_video_variants(self, ref: str) -> dict:
-                return {
-                    "status": "ready",
-                    "video_processing_pending": False,
-                    "has_alternatives": True,
-                    "variants": [
-                        {
-                            "id": "original",
-                            "is_original": True,
-                            "width": 1920,
-                            "height": 1080,
-                            "mime_type": "video/mp4",
-                            "file_size": 2000000,
-                            "duration": 1800.0,
-                        },
-                        {
-                            "id": "alt_720",
-                            "is_original": False,
-                            "width": 1280,
-                            "height": 720,
-                            "mime_type": "video/mp4",
-                            "file_size": 1000000,
-                            "duration": 1800.0,
-                        },
-                    ],
-                }
+    def _assert_dead_stream_rejected(self, auth_header):
+        # Dead stream is rejected with 404
+        with db.connect(self.db_url) as conn:
+            if "dead_streams" in db.table_names(conn):
+                conn.execute("INSERT INTO dead_streams (video_id) VALUES ('telegram:keeper_vid')")
+                conn.commit()
 
-            async def resolve_stream(self, raw_id: str, variant: str | None = None) -> str:
-                self.calls.append(raw_id)
-                if "keeper_vid" in raw_id:
-                    # Primary candidate fails preflight
-                    raise RuntimeError("Primary DC dropped connection")
-                return f"tg://{raw_id}"
+        res_dead = self.client.get("/api/v1/playback/renditions/telegram:keeper_vid", headers=auth_header)
+        self.assertEqual(res_dead.status_code, 404)
+        self.assertEqual(res_dead.headers.get("cache-control"), "private, no-store")
 
-            async def download_range(self, ref: str, offset: int, length: int | None):
-                async def _gen():
-                    yield dummy_media
+    def test_authenticated_playback_descriptor_and_stream_with_failover(self):
+        """Authenticated playback descriptor resolves aliases and streams with pre-play source failover."""
+        access_tok, _, _ = self._bootstrap_and_login("playback_user", "PlayPass12345!")
+        auth_header = {"Authorization": f"Bearer {access_tok}"}
+        dummy_media = b"POSTGRES_LIVE_FAILOVER_STREAM_BYTES_999"
 
-                return _gen()
-
-        prov = LiveFailoverProvider()
+        self._seed_failover_fixture()
+        prov = _LiveFailoverProvider(dummy_media)
 
         with patch("resolver.providers.get_provider", return_value=prov):
-            # 1. Capabilities discovery
-            res_caps = self.client.get("/api/v1/playback/capabilities", headers=auth_header)
-            self.assertEqual(res_caps.status_code, 200)
-            self.assertEqual(res_caps.headers.get("cache-control"), "private, no-store")
-            self.assertIn("http_range_rfc7233", res_caps.json()["streaming_protocols"])
-
-            # 2. Playback descriptor via duplicate loser alias resolves to keeper canonical ID
-            res_desc = self.client.get("/api/v1/playback/renditions/telegram:loser_alias", headers=auth_header)
-            self.assertEqual(res_desc.status_code, 200)
-            self.assertEqual(res_desc.headers.get("cache-control"), "private, no-store")
-            desc_data = res_desc.json()
-            self.assertEqual(desc_data["video_id"], "telegram:keeper_vid")
-            self.assertEqual(desc_data["stream_path"], "/api/v1/playback/stream/telegram:keeper_vid")
-            self.assertEqual(len(desc_data["renditions"]), 2)
-
-            # 3. Stream with pre-play source failover (primary keeper_vid fails -> secondary_source plays)
-            res_stream = self.client.get("/api/v1/playback/stream/telegram:loser_alias", headers=auth_header)
-            self.assertEqual(res_stream.status_code, 200)
-            self.assertEqual(res_stream.content, dummy_media)
-            self.assertEqual(res_stream.headers.get("cache-control"), "private, no-store")
-            self.assertIn("keeper_vid", prov.calls)
-            self.assertIn("secondary_source", prov.calls)
-
-            # 4. Dead stream is rejected with 404
-            with db.connect(self.db_url) as conn:
-                if "dead_streams" in db.table_names(conn):
-                    conn.execute("INSERT INTO dead_streams (video_id) VALUES ('telegram:keeper_vid')")
-                    conn.commit()
-
-            res_dead = self.client.get("/api/v1/playback/renditions/telegram:keeper_vid", headers=auth_header)
-            self.assertEqual(res_dead.status_code, 404)
-            self.assertEqual(res_dead.headers.get("cache-control"), "private, no-store")
+            self._assert_capabilities(auth_header)
+            self._assert_descriptor_resolves_alias(auth_header)
+            self._assert_stream_fails_over(auth_header, prov, dummy_media)
+            self._assert_dead_stream_rejected(auth_header)
 
     def test_taxonomy_excludes_videos_from_disabled_channels(self):
         """Taxonomy counts (categories, studios, tags, performers) never include videos from configured-disabled channels."""

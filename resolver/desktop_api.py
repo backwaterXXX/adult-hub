@@ -283,6 +283,22 @@ def _api_response(
     )
 
 
+def _auth_validation_error_response(exc: Exception) -> JSONResponse:
+    """Map an AuthenticationFailed to a 401 response and any other auth or validation error to a 400."""
+    if isinstance(exc, AuthenticationFailed):
+        return _api_response(
+            {"error": str(exc)},
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            cache_control="private, no-store",
+        )
+    msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
+    return _api_response(
+        {"error": msg},
+        status_code=status.HTTP_400_BAD_REQUEST,
+        cache_control="private, no-store",
+    )
+
+
 async def _read_bounded_body(request: Request, max_bytes: int = MAX_AUTH_BODY_BYTES) -> bytes:
     """Read request body up to max_bytes.
 
@@ -545,8 +561,30 @@ async def post_login(request: Request) -> JSONResponse:
         )
 
 
+def _refresh_token_from_payload(payload: dict[str, Any]) -> tuple[str | None, JSONResponse | None]:
+    """Validate the refresh_token payload field, returning the token or a 400 response."""
+    raw_token = payload.get("refresh_token")
+    if raw_token is None or raw_token == "":
+        return None, _api_response(
+            {"error": "refresh_token is required"},
+            status_code=status.HTTP_400_BAD_REQUEST,
+            cache_control="private, no-store",
+        )
+
+    try:
+        refresh_token = _require_typed_str(raw_token, "refresh_token")
+        _safe_hash_token(refresh_token, name="refresh_token")
+    except BoundedValidationError as exc:
+        return None, _api_response(
+            {"error": str(exc)},
+            status_code=status.HTTP_400_BAD_REQUEST,
+            cache_control="private, no-store",
+        )
+    return refresh_token, None
+
+
 @router.post("/api/v1/auth/refresh")
-async def post_refresh(request: Request) -> JSONResponse:  # noqa: C901
+async def post_refresh(request: Request) -> JSONResponse:
     """Rotate single-use refresh token and issue new access token."""
     if request.query_params:
         return _api_response(
@@ -559,23 +597,9 @@ async def post_refresh(request: Request) -> JSONResponse:  # noqa: C901
     if err_resp:
         return err_resp
 
-    raw_token = payload.get("refresh_token")
-    if raw_token is None or raw_token == "":
-        return _api_response(
-            {"error": "refresh_token is required"},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
-
-    try:
-        refresh_token = _require_typed_str(raw_token, "refresh_token")
-        _safe_hash_token(refresh_token, name="refresh_token")
-    except BoundedValidationError as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
+    refresh_token, err_resp = _refresh_token_from_payload(payload)
+    if err_resp:
+        return err_resp
 
     def _execute():
         conn = _db_connection(request)
@@ -802,31 +826,28 @@ async def get_catalog_videos(
         )
 
 
+def _fetch_video_detail(request: Request, token: str, clean_vid: str) -> dict[str, Any] | None:
+    """Load the video detail payload for an authenticated caller, or None when the video is missing."""
+    conn = _db_connection(request)
+    try:
+        session = _verify_client_session(conn, token)
+        user_id = session.get("user_id") if isinstance(session, dict) else None
+        item = query_catalog_video_detail(conn, clean_vid, user_id=user_id)
+        if item is None:
+            return None
+        return item.to_dict()
+    finally:
+        conn.close()
+
+
 @router.get("/api/v1/catalog/videos/{video_id}")
-async def get_catalog_video_detail(request: Request, video_id: str) -> JSONResponse:  # noqa: C901
+async def get_catalog_video_detail(request: Request, video_id: str) -> JSONResponse:
     """Query video details by canonical ID, resolving duplicate merge aliases."""
     try:
         token = _extract_bearer_token(request)
         clean_vid = _clean_str_filter(video_id, "video_id")
-    except AuthenticationFailed as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            cache_control="private, no-store",
-        )
-    except (BoundedValidationError, HTTPException) as exc:
-        msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        return _api_response(
-            {"error": msg},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
-    except BoundedValidationError as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
+    except (AuthenticationFailed, BoundedValidationError, HTTPException) as exc:
+        return _auth_validation_error_response(exc)
 
     if not clean_vid:
         return _api_response(
@@ -835,20 +856,8 @@ async def get_catalog_video_detail(request: Request, video_id: str) -> JSONRespo
             cache_control="private, no-store",
         )
 
-    def _execute():
-        conn = _db_connection(request)
-        try:
-            session = _verify_client_session(conn, token)
-            user_id = session.get("user_id") if isinstance(session, dict) else None
-            item = query_catalog_video_detail(conn, clean_vid, user_id=user_id)
-            if item is None:
-                return None
-            return item.to_dict()
-        finally:
-            conn.close()
-
     try:
-        data = await _run_in_thread(_execute)
+        data = await _run_in_thread(_fetch_video_detail, request, token, clean_vid)
         if data is None:
             return _api_response(
                 {"error": "Video not found"},
@@ -856,19 +865,8 @@ async def get_catalog_video_detail(request: Request, video_id: str) -> JSONRespo
                 cache_control="private, no-store",
             )
         return _api_response(data, status_code=status.HTTP_200_OK, cache_control="private, no-store")
-    except AuthenticationFailed as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            cache_control="private, no-store",
-        )
-    except (BoundedValidationError, HTTPException) as exc:
-        msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        return _api_response(
-            {"error": msg},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
+    except (AuthenticationFailed, BoundedValidationError, HTTPException) as exc:
+        return _auth_validation_error_response(exc)
     except Exception as exc:
         logger.exception("Unexpected error querying catalog video detail: %s", exc)
         return _api_response(
@@ -948,31 +946,27 @@ async def get_catalog_channels(
         )
 
 
+def _fetch_channel_detail(request: Request, token: str, clean_cid: str) -> dict[str, Any] | None:
+    """Load the channel detail payload for an authenticated caller, or None when the channel is missing."""
+    conn = _db_connection(request)
+    try:
+        _verify_client_session(conn, token)
+        item = query_catalog_channel_detail(conn, clean_cid)
+        if item is None:
+            return None
+        return item.to_dict()
+    finally:
+        conn.close()
+
+
 @router.get("/api/v1/catalog/channels/{channel_id}")
-async def get_catalog_channel_detail(request: Request, channel_id: str) -> JSONResponse:  # noqa: C901
+async def get_catalog_channel_detail(request: Request, channel_id: str) -> JSONResponse:
     """Query channel details and active video counts by channel ID."""
     try:
         token = _extract_bearer_token(request)
         clean_cid = _clean_str_filter(channel_id, "channel_id")
-    except AuthenticationFailed as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            cache_control="private, no-store",
-        )
-    except (BoundedValidationError, HTTPException) as exc:
-        msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        return _api_response(
-            {"error": msg},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
-    except BoundedValidationError as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
+    except (AuthenticationFailed, BoundedValidationError, HTTPException) as exc:
+        return _auth_validation_error_response(exc)
 
     if not clean_cid:
         return _api_response(
@@ -981,19 +975,8 @@ async def get_catalog_channel_detail(request: Request, channel_id: str) -> JSONR
             cache_control="private, no-store",
         )
 
-    def _execute():
-        conn = _db_connection(request)
-        try:
-            _verify_client_session(conn, token)
-            item = query_catalog_channel_detail(conn, clean_cid)
-            if item is None:
-                return None
-            return item.to_dict()
-        finally:
-            conn.close()
-
     try:
-        data = await _run_in_thread(_execute)
+        data = await _run_in_thread(_fetch_channel_detail, request, token, clean_cid)
         if data is None:
             return _api_response(
                 {"error": "Channel not found"},
@@ -1001,19 +984,8 @@ async def get_catalog_channel_detail(request: Request, channel_id: str) -> JSONR
                 cache_control="private, no-store",
             )
         return _api_response(data, status_code=status.HTTP_200_OK, cache_control="private, no-store")
-    except AuthenticationFailed as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            cache_control="private, no-store",
-        )
-    except (BoundedValidationError, HTTPException) as exc:
-        msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        return _api_response(
-            {"error": msg},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
+    except (AuthenticationFailed, BoundedValidationError, HTTPException) as exc:
+        return _auth_validation_error_response(exc)
     except Exception as exc:
         logger.exception("Unexpected error querying channel detail: %s", exc)
         return _api_response(
@@ -1348,13 +1320,8 @@ def _artwork_error_response(
     )
 
 
-def _validate_artwork_id(raw_id: str, entity_type: str) -> str:  # noqa: C901
-    """Validate and sanitize an artwork resource identifier, preventing path traversal."""
-    if not raw_id or not isinstance(raw_id, str):
-        raise BoundedValidationError("id is required")
-    clean = raw_id.strip()
-    if not clean:
-        raise BoundedValidationError("id is required")
+def _reject_unsafe_artwork_id(clean: str) -> None:
+    """Reject artwork identifiers that are oversized, contain NUL bytes, traverse paths, or name URLs."""
     if len(clean) > 500:
         raise BoundedValidationError("id exceeds maximum length of 500")
     if "\x00" in clean:
@@ -1364,6 +1331,10 @@ def _validate_artwork_id(raw_id: str, entity_type: str) -> str:  # noqa: C901
     lower = clean.lower()
     if lower.startswith("file:") or lower.startswith("http:") or lower.startswith("https:"):
         raise BoundedValidationError("External or filesystem URLs not permitted in identifier")
+
+
+def _check_artwork_id_format(clean: str, entity_type: str) -> None:
+    """Check that an artwork identifier uses the character set allowed for its entity type."""
     if entity_type == "video":
         if not re.fullmatch(r"[a-zA-Z0-9_\-\.:]+", clean):
             raise BoundedValidationError("Invalid video identifier format")
@@ -1373,6 +1344,17 @@ def _validate_artwork_id(raw_id: str, entity_type: str) -> str:  # noqa: C901
     elif entity_type == "performer":
         if not re.fullmatch(r"[a-zA-Z0-9_\-\.: %]+", clean):
             raise BoundedValidationError("Invalid performer identifier format")
+
+
+def _validate_artwork_id(raw_id: str, entity_type: str) -> str:
+    """Validate and sanitize an artwork resource identifier, preventing path traversal."""
+    if not raw_id or not isinstance(raw_id, str):
+        raise BoundedValidationError("id is required")
+    clean = raw_id.strip()
+    if not clean:
+        raise BoundedValidationError("id is required")
+    _reject_unsafe_artwork_id(clean)
+    _check_artwork_id_format(clean, entity_type)
     return clean
 
 
@@ -1387,7 +1369,155 @@ def _detect_image_media_type(data: bytes) -> str:
     return "image/jpeg"
 
 
-def _resolve_artwork_asset(  # noqa: C901
+def _local_video_artwork(db_url: str | None, cand: str, media_root: Path) -> bytes | None:
+    """Read artwork stored next to a video's .strm file when it is a regular file inside the media root."""
+    from resolver.admin_catalog_queries import _get_video_artwork_path
+    from common.image_utils import is_black_image
+
+    art_path = _get_video_artwork_path(db_url, cand, media_root)
+    if art_path is not None and art_path.is_file():
+        res_path = art_path.resolve()
+        if res_path.is_relative_to(media_root) and not stat.S_ISLNK(art_path.lstat().st_mode):
+            content = res_path.read_bytes()
+            if content and not is_black_image(res_path):
+                return content
+    return None
+
+
+def _telegram_thumb_ref(conn: db.Connection, cand: str) -> str | None:
+    """Return the Telegram provider reference for a video candidate, from its ID prefix or its active source row."""
+    ref = cand.removeprefix("telegram:") if cand.startswith("telegram:") else None
+    if not ref:
+        tables = db.table_names(conn)
+        if "video_sources" in tables:
+            src_row = conn.execute(
+                "SELECT provider_ref FROM video_sources WHERE video_id = %s AND provider = 'telegram' AND is_active = 1 LIMIT 1",
+                (cand,),
+            ).fetchone()
+            if src_row and src_row[0]:
+                ref = str(src_row[0])
+    return ref
+
+
+def _telegram_cached_thumb(ref: str) -> bytes | None:
+    """Return the in-memory Telegram thumbnail for a provider reference when it is fresh and not black."""
+    from resolver.providers import get_provider
+    from common.image_utils import is_black_image
+
+    try:
+        tg_prov = get_provider("telegram")
+        cached = getattr(tg_prov, "_thumb_cache", {}).get(ref)
+        if cached is not None:
+            expires, data = cached
+            if data and expires > time.monotonic():
+                if not is_black_image(data):
+                    return bytes(data)
+    except KeyError:
+        pass
+    return None
+
+
+def _resolve_video_artwork(conn: db.Connection, clean_id: str, db_url: str | None, media_root: Path) -> bytes | None:
+    """Find artwork for a video or one of its alias IDs, trying local files before the Telegram thumbnail cache."""
+    canonical_id, alias_ids = _get_video_alias_ids(conn, clean_id)
+    candidates = [canonical_id] + [a for a in alias_ids if a != canonical_id]
+
+    for cand in candidates:
+        # 1. Local artwork next to .strm
+        try:
+            content = _local_video_artwork(db_url, cand, media_root)
+        except Exception:
+            logger.debug("Failed reading local artwork for %s", cand, exc_info=True)
+            content = None
+        if content:
+            return content
+
+        # 2. Telegram provider in-memory thumbnail cache
+        try:
+            ref = _telegram_thumb_ref(conn, cand)
+            if ref:
+                content = _telegram_cached_thumb(ref)
+                if content is not None:
+                    return content
+        except Exception:
+            logger.debug("Failed reading telegram cache for %s", cand, exc_info=True)
+
+    return None
+
+
+def _first_image_in_subdirs(media_root: Path, subdirs: list[str], stem: str) -> bytes | None:
+    """Return the first non-black image named stem with a known extension in the given subdirectories of the media root."""
+    from common.image_utils import is_black_image
+
+    for sub in subdirs:
+        sub_dir = (media_root / sub).resolve() if sub else media_root
+        if sub_dir.is_dir() and sub_dir.is_relative_to(media_root):
+            for ext in [".jpg", ".jpeg", ".png", ".webp"]:
+                candidate = (sub_dir / f"{stem}{ext}").resolve()
+                if candidate.is_file() and not stat.S_ISLNK(candidate.lstat().st_mode) and candidate.is_relative_to(media_root):
+                    content = candidate.read_bytes()
+                    if content and not is_black_image(candidate):
+                        return content
+    return None
+
+
+def _performer_canonical_name(conn: db.Connection, clean_id: str, tables: Any) -> str:
+    """Resolve a performer identifier to the canonical performer name, falling back to the identifier itself."""
+    canonical_name = None
+    if clean_id.startswith("name:"):
+        canonical_name = clean_id[5:].strip()
+    elif "performer_catalog" in tables:
+        row = conn.execute(
+            "SELECT name FROM performer_catalog WHERE id = %s AND active = true LIMIT 1",
+            (clean_id,),
+        ).fetchone()
+        if row and row[0]:
+            canonical_name = str(row[0]).strip()
+        elif "performer_catalog_aliases" in tables:
+            a_row = conn.execute(
+                "SELECT c.name FROM performer_catalog_aliases a JOIN performer_catalog c ON c.id = a.performer_id WHERE a.performer_id = %s AND a.approved = true AND c.active = true LIMIT 1",
+                (clean_id,),
+            ).fetchone()
+            if a_row and a_row[0]:
+                canonical_name = str(a_row[0]).strip()
+    if not canonical_name:
+        canonical_name = clean_id.strip()
+    return canonical_name
+
+
+def _performer_thumb_artwork(conn: db.Connection, canonical_name: str, media_root: Path) -> bytes | None:
+    """Return the thumbnail file recorded in performer_photos when it is a local regular file inside the media root."""
+    from common.image_utils import is_black_image
+
+    p_row = conn.execute(
+        "SELECT thumb FROM performer_photos WHERE lower(name) = lower(%s) ORDER BY CASE WHEN name = %s THEN 0 ELSE 1 END, updated_at DESC NULLS LAST, name ASC LIMIT 1",
+        (canonical_name, canonical_name),
+    ).fetchone()
+    if p_row and p_row[0]:
+        thumb_val = str(p_row[0]).strip()
+        if not thumb_val.startswith("http://") and not thumb_val.startswith("https://"):
+            candidate_path = (media_root / thumb_val).resolve()
+            if candidate_path.is_file() and not stat.S_ISLNK(candidate_path.lstat().st_mode) and candidate_path.is_relative_to(media_root):
+                content = candidate_path.read_bytes()
+                if content and not is_black_image(candidate_path):
+                    return content
+    return None
+
+
+def _resolve_performer_artwork(conn: db.Connection, clean_id: str, media_root: Path) -> bytes | None:
+    """Find performer artwork from the performer_photos table, then from photo files in the media root."""
+    tables = db.table_names(conn)
+    canonical_name = _performer_canonical_name(conn, clean_id, tables)
+
+    if canonical_name and "performer_photos" in tables:
+        content = _performer_thumb_artwork(conn, canonical_name, media_root)
+        if content:
+            return content
+
+    return _first_image_in_subdirs(media_root, [".photos", "photos", ""], canonical_name)
+
+
+def _resolve_artwork_asset(
     conn: db.Connection,
     entity_type: str,
     clean_id: str,
@@ -1395,122 +1525,104 @@ def _resolve_artwork_asset(  # noqa: C901
     request: Request | None = None,
 ) -> bytes | None:
     from resolver import admin as admin_module
-    from resolver.admin_catalog_queries import _get_video_artwork_path
-    from common.image_utils import is_black_image
 
     db_url = getattr(admin_module, "HUB_DB_URL", None) or os.environ.get("DATABASE_URL")
     media_dir = getattr(admin_module, "MEDIA_DIR", "/media/adult")
     media_root = Path(media_dir).resolve()
 
     if entity_type == "video":
-        canonical_id, alias_ids = _get_video_alias_ids(conn, clean_id)
-        candidates = [canonical_id] + [a for a in alias_ids if a != canonical_id]
-
-        for cand in candidates:
-            # 1. Local artwork next to .strm
-            try:
-                art_path = _get_video_artwork_path(db_url, cand, media_root)
-                if art_path is not None and art_path.is_file():
-                    res_path = art_path.resolve()
-                    if res_path.is_relative_to(media_root) and not stat.S_ISLNK(art_path.lstat().st_mode):
-                        content = res_path.read_bytes()
-                        if content and not is_black_image(res_path):
-                            return content
-            except Exception:
-                logger.debug("Failed reading local artwork for %s", cand, exc_info=True)
-
-            # 2. Telegram provider in-memory thumbnail cache
-            try:
-                ref = cand.removeprefix("telegram:") if cand.startswith("telegram:") else None
-                if not ref:
-                    tables = db.table_names(conn)
-                    if "video_sources" in tables:
-                        src_row = conn.execute(
-                            "SELECT provider_ref FROM video_sources WHERE video_id = %s AND provider = 'telegram' AND is_active = 1 LIMIT 1",
-                            (cand,),
-                        ).fetchone()
-                        if src_row and src_row[0]:
-                            ref = str(src_row[0])
-                if ref:
-                    from resolver.providers import get_provider
-                    try:
-                        tg_prov = get_provider("telegram")
-                        cached = getattr(tg_prov, "_thumb_cache", {}).get(ref)
-                        if cached is not None:
-                            expires, data = cached
-                            if data and expires > time.monotonic():
-                                if not is_black_image(data):
-                                    return bytes(data)
-                    except KeyError:
-                        pass
-            except Exception:
-                logger.debug("Failed reading telegram cache for %s", cand, exc_info=True)
-
-        return None
-
-    elif entity_type == "performer":
-        tables = db.table_names(conn)
-        canonical_name = None
-        if clean_id.startswith("name:"):
-            canonical_name = clean_id[5:].strip()
-        elif "performer_catalog" in tables:
-            row = conn.execute(
-                "SELECT name FROM performer_catalog WHERE id = %s AND active = true LIMIT 1",
-                (clean_id,),
-            ).fetchone()
-            if row and row[0]:
-                canonical_name = str(row[0]).strip()
-            elif "performer_catalog_aliases" in tables:
-                a_row = conn.execute(
-                    "SELECT c.name FROM performer_catalog_aliases a JOIN performer_catalog c ON c.id = a.performer_id WHERE a.performer_id = %s AND a.approved = true AND c.active = true LIMIT 1",
-                    (clean_id,),
-                ).fetchone()
-                if a_row and a_row[0]:
-                    canonical_name = str(a_row[0]).strip()
-        if not canonical_name:
-            canonical_name = clean_id.strip()
-
-        if canonical_name and "performer_photos" in tables:
-            p_row = conn.execute(
-                "SELECT thumb FROM performer_photos WHERE lower(name) = lower(%s) ORDER BY CASE WHEN name = %s THEN 0 ELSE 1 END, updated_at DESC NULLS LAST, name ASC LIMIT 1",
-                (canonical_name, canonical_name),
-            ).fetchone()
-            if p_row and p_row[0]:
-                thumb_val = str(p_row[0]).strip()
-                if not thumb_val.startswith("http://") and not thumb_val.startswith("https://"):
-                    candidate_path = (media_root / thumb_val).resolve()
-                    if candidate_path.is_file() and not stat.S_ISLNK(candidate_path.lstat().st_mode) and candidate_path.is_relative_to(media_root):
-                        content = candidate_path.read_bytes()
-                        if content and not is_black_image(candidate_path):
-                            return content
-
-        for photo_sub in [".photos", "photos", ""]:
-            photo_dir = (media_root / photo_sub).resolve() if photo_sub else media_root
-            if photo_dir.is_dir() and photo_dir.is_relative_to(media_root):
-                for ext in [".jpg", ".jpeg", ".png", ".webp"]:
-                    candidate = (photo_dir / f"{canonical_name}{ext}").resolve()
-                    if candidate.is_file() and not stat.S_ISLNK(candidate.lstat().st_mode) and candidate.is_relative_to(media_root):
-                        content = candidate.read_bytes()
-                        if content and not is_black_image(candidate):
-                            return content
-        return None
-
-    elif entity_type == "channel":
-        for chan_sub in ["channels", ""]:
-            chan_dir = (media_root / chan_sub).resolve() if chan_sub else media_root
-            if chan_dir.is_dir() and chan_dir.is_relative_to(media_root):
-                for ext in [".jpg", ".jpeg", ".png", ".webp"]:
-                    candidate = (chan_dir / f"{clean_id}{ext}").resolve()
-                    if candidate.is_file() and not stat.S_ISLNK(candidate.lstat().st_mode) and candidate.is_relative_to(media_root):
-                        content = candidate.read_bytes()
-                        if content and not is_black_image(candidate):
-                            return content
-        return None
-
+        return _resolve_video_artwork(conn, clean_id, db_url, media_root)
+    if entity_type == "performer":
+        return _resolve_performer_artwork(conn, clean_id, media_root)
+    if entity_type == "channel":
+        return _first_image_in_subdirs(media_root, ["channels", ""], clean_id)
     return None
 
 
-async def _handle_artwork_request(  # noqa: C901
+def _artwork_kind_or_error(clean_entity: str, kind: str | None) -> tuple[str | None, str | None]:
+    """Normalize the requested artwork kind for an entity, returning KIND_NOT_FOUND when the kind is not allowed."""
+    effective_kind = str(kind or "").strip().lower() if kind else None
+    if clean_entity == "video":
+        if not effective_kind or effective_kind not in _ALLOWED_VIDEO_KINDS:
+            return "KIND_NOT_FOUND", None
+    elif clean_entity == "performer":
+        if effective_kind and effective_kind not in _ALLOWED_PERFORMER_KINDS:
+            return "KIND_NOT_FOUND", None
+        effective_kind = effective_kind or "photo"
+    elif clean_entity == "channel":
+        if effective_kind and effective_kind not in _ALLOWED_CHANNEL_KINDS:
+            return "KIND_NOT_FOUND", None
+        effective_kind = effective_kind or "icon"
+    return None, effective_kind
+
+
+def _lookup_artwork_asset(
+    request: Request,
+    token: str,
+    entity_type: str,
+    raw_id: str,
+    kind: str | None,
+) -> tuple[str | None, bytes | None, str | None]:
+    """Verify the session, check the entity and kind allowlists, and load the artwork bytes."""
+    conn = _db_connection(request)
+    try:
+        _verify_client_session(conn, token)
+
+        # 3. Entity type allowlist
+        clean_entity = str(entity_type or "").strip().lower()
+        if clean_entity not in _ALLOWED_ARTWORK_ENTITIES:
+            return "ENTITY_NOT_FOUND", None, None
+
+        # 4. Kind allowlist
+        err, effective_kind = _artwork_kind_or_error(clean_entity, kind)
+        if err is not None:
+            return err, None, None
+
+        # 5. Identifier validation & path traversal protection
+        clean_id = _validate_artwork_id(raw_id, clean_entity)
+
+        # 6. Asset lookup
+        raw_bytes = _resolve_artwork_asset(conn, clean_entity, clean_id, effective_kind, request)
+        return None, raw_bytes, clean_id
+    finally:
+        conn.close()
+
+
+def _artwork_success_response(request: Request, raw_bytes: bytes) -> Response:
+    """Build the artwork response, returning 304 when If-None-Match matches the ETag and no body for HEAD."""
+    media_type = _detect_image_media_type(raw_bytes)
+    etag = f'"{hashlib.sha256(raw_bytes).hexdigest()[:16]}"'
+
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match and if_none_match.strip() == etag:
+        return Response(
+            status_code=status.HTTP_304_NOT_MODIFIED,
+            headers={
+                "Cache-Control": "private, no-store",
+                "ETag": etag,
+            },
+        )
+
+    headers = {
+        "Cache-Control": "private, no-store",
+        "ETag": etag,
+        "Content-Length": str(len(raw_bytes)),
+    }
+    if request.method == "HEAD":
+        return Response(
+            status_code=status.HTTP_200_OK,
+            headers=headers,
+            media_type=media_type,
+        )
+    return Response(
+        content=raw_bytes,
+        status_code=status.HTTP_200_OK,
+        headers=headers,
+        media_type=media_type,
+    )
+
+
+async def _handle_artwork_request(
     request: Request,
     entity_type: str,
     raw_id: str,
@@ -1528,41 +1640,8 @@ async def _handle_artwork_request(  # noqa: C901
         )
 
     # 2. Database session verification and asset resolution
-    def _verify_session_and_resolve():
-        conn = _db_connection(request)
-        try:
-            _verify_client_session(conn, token)
-
-            # 3. Entity type allowlist
-            clean_entity = str(entity_type or "").strip().lower()
-            if clean_entity not in _ALLOWED_ARTWORK_ENTITIES:
-                return "ENTITY_NOT_FOUND", None, None
-
-            # 4. Kind allowlist
-            effective_kind = str(kind or "").strip().lower() if kind else None
-            if clean_entity == "video":
-                if not effective_kind or effective_kind not in _ALLOWED_VIDEO_KINDS:
-                    return "KIND_NOT_FOUND", None, None
-            elif clean_entity == "performer":
-                if effective_kind and effective_kind not in _ALLOWED_PERFORMER_KINDS:
-                    return "KIND_NOT_FOUND", None, None
-                effective_kind = effective_kind or "photo"
-            elif clean_entity == "channel":
-                if effective_kind and effective_kind not in _ALLOWED_CHANNEL_KINDS:
-                    return "KIND_NOT_FOUND", None, None
-                effective_kind = effective_kind or "icon"
-
-            # 5. Identifier validation & path traversal protection
-            clean_id = _validate_artwork_id(raw_id, clean_entity)
-
-            # 6. Asset lookup
-            raw_bytes = _resolve_artwork_asset(conn, clean_entity, clean_id, effective_kind, request)
-            return None, raw_bytes, clean_id
-        finally:
-            conn.close()
-
     try:
-        err, raw_bytes, clean_id = await _run_in_thread(_verify_session_and_resolve)
+        err, raw_bytes, clean_id = await _run_in_thread(_lookup_artwork_asset, request, token, entity_type, raw_id, kind)
         if err == "ENTITY_NOT_FOUND":
             return _artwork_error_response(
                 "Entity Not Found",
@@ -1585,36 +1664,7 @@ async def _handle_artwork_request(  # noqa: C901
                 "ARTWORK_NOT_FOUND",
             )
 
-        media_type = _detect_image_media_type(raw_bytes)
-        etag = f'"{hashlib.sha256(raw_bytes).hexdigest()[:16]}"'
-
-        if_none_match = request.headers.get("if-none-match")
-        if if_none_match and if_none_match.strip() == etag:
-            return Response(
-                status_code=status.HTTP_304_NOT_MODIFIED,
-                headers={
-                    "Cache-Control": "private, no-store",
-                    "ETag": etag,
-                },
-            )
-
-        headers = {
-            "Cache-Control": "private, no-store",
-            "ETag": etag,
-            "Content-Length": str(len(raw_bytes)),
-        }
-        if request.method == "HEAD":
-            return Response(
-                status_code=status.HTTP_200_OK,
-                headers=headers,
-                media_type=media_type,
-            )
-        return Response(
-            content=raw_bytes,
-            status_code=status.HTTP_200_OK,
-            headers=headers,
-            media_type=media_type,
-        )
+        return _artwork_success_response(request, raw_bytes)
 
     except AuthenticationFailed as exc:
         return _artwork_error_response(
@@ -1744,7 +1794,43 @@ def _parse_play_id(video_id: str) -> tuple[str, str]:
     return "telegram", text
 
 
-def _get_stream_candidate_ids(requested_id: str, conn: db.Connection | None = None) -> list[str]:  # noqa: C901
+def _pick_canonical_stream_id(conn: db.Connection, requested_id: str, tables: Any) -> str:
+    """Resolve a requested video ID to its canonical ID through source aliases and duplicate decisions."""
+    canonical_id = requested_id
+    if "video_sources" in tables:
+        alias_row = conn.execute(
+            "SELECT video_id FROM video_sources WHERE source_id=%s AND video_id!=%s AND is_active=1",
+            (requested_id, requested_id),
+        ).fetchone()
+        if alias_row and alias_row[0]:
+            canonical_id = alias_row[0]
+    if canonical_id == requested_id and "video_duplicate_decisions" in tables:
+        dec_row = conn.execute(
+            "SELECT keeper_id FROM video_duplicate_decisions WHERE loser_id=%s AND state='active'",
+            (requested_id,),
+        ).fetchone()
+        if dec_row and dec_row[0]:
+            canonical_id = dec_row[0]
+    return canonical_id
+
+
+def _collect_stream_candidate_ids(conn: db.Connection, requested_id: str, canonical_id: str, tables: Any) -> list[str]:
+    """Build the ordered candidate list: the canonical ID, its active sources, then the requested ID."""
+    candidates = [canonical_id]
+    if "video_sources" in tables:
+        sources = conn.execute(
+            "SELECT source_id FROM video_sources WHERE video_id=%s AND is_active=1 ORDER BY priority ASC, id ASC",
+            (canonical_id,),
+        ).fetchall()
+        for (s,) in sources:
+            if s and s not in candidates:
+                candidates.append(s)
+    if requested_id not in candidates:
+        candidates.append(requested_id)
+    return candidates
+
+
+def _get_stream_candidate_ids(requested_id: str, conn: db.Connection | None = None) -> list[str]:
     """Look up canonical video ID and all active failover sources from the database."""
     close_conn = False
     if conn is None:
@@ -1754,35 +1840,9 @@ def _get_stream_candidate_ids(requested_id: str, conn: db.Connection | None = No
         conn = db.connect(url)
         close_conn = True
     try:
-        canonical_id = requested_id
         tables = db.table_names(conn)
-        if "video_sources" in tables:
-            alias_row = conn.execute(
-                "SELECT video_id FROM video_sources WHERE source_id=%s AND video_id!=%s AND is_active=1",
-                (requested_id, requested_id),
-            ).fetchone()
-            if alias_row and alias_row[0]:
-                canonical_id = alias_row[0]
-        if canonical_id == requested_id and "video_duplicate_decisions" in tables:
-            dec_row = conn.execute(
-                "SELECT keeper_id FROM video_duplicate_decisions WHERE loser_id=%s AND state='active'",
-                (requested_id,),
-            ).fetchone()
-            if dec_row and dec_row[0]:
-                canonical_id = dec_row[0]
-
-        candidates = [canonical_id]
-        if "video_sources" in tables:
-            sources = conn.execute(
-                "SELECT source_id FROM video_sources WHERE video_id=%s AND is_active=1 ORDER BY priority ASC, id ASC",
-                (canonical_id,),
-            ).fetchall()
-            for (s,) in sources:
-                if s and s not in candidates:
-                    candidates.append(s)
-        if requested_id not in candidates:
-            candidates.append(requested_id)
-        return candidates
+        canonical_id = _pick_canonical_stream_id(conn, requested_id, tables)
+        return _collect_stream_candidate_ids(conn, requested_id, canonical_id, tables)
     except Exception as exc:
         logger.debug("Source candidate lookup error for %s: %s", requested_id, exc)
         return [requested_id]
@@ -1994,13 +2054,8 @@ async def get_playback_capabilities(request: Request) -> JSONResponse:
     return _api_response(capabilities, status_code=200, cache_control="private, no-store")
 
 
-@router.api_route("/api/v1/playback/stream/{video_id:path}", methods=["GET", "HEAD"])
-async def play_stream_direct(  # noqa: C901
-    request: Request,
-    video_id: str,
-    rendition_id: str | None = Query(None),
-) -> Response:
-    """Stream video content with RFC 7233 byte-range support and pre-play source fallback."""
+def _unexpected_stream_query_response(request: Request) -> JSONResponse | None:
+    """Return a 400 response when a stream request carries any query parameter other than rendition_id."""
     for qkey in request.query_params.keys():
         if qkey != "rendition_id":
             return _api_response(
@@ -2008,89 +2063,53 @@ async def play_stream_direct(  # noqa: C901
                 status_code=status.HTTP_400_BAD_REQUEST,
                 cache_control="private, no-store",
             )
+    return None
 
+
+def _parse_stream_request_params(request: Request, video_id: str, rendition_id: str | None) -> tuple[str, str, str | None]:
+    """Extract the bearer token, cleaned video ID, and validated rendition ID from a stream request."""
+    token = _extract_bearer_token(request)
+    clean_id = _clean_str_filter(video_id, "video_id")
+    clean_rendition = _clean_str_filter(rendition_id, "rendition_id", max_len=64) if rendition_id else None
+    if clean_rendition and not _RENDITION_ID_PATTERN.match(clean_rendition):
+        raise BoundedValidationError("rendition_id contains invalid characters")
+    return token, clean_id, clean_rendition
+
+
+def _load_stream_candidates(request: Request, token: str, clean_id: str) -> tuple[str, list[str]] | None:
+    """Verify the session and return the canonical ID with its candidate sources, or None when the video is unavailable."""
+    conn = _db_connection(request)
     try:
-        token = _extract_bearer_token(request)
-        clean_id = _clean_str_filter(video_id, "video_id")
-        clean_rendition = _clean_str_filter(rendition_id, "rendition_id", max_len=64) if rendition_id else None
-        if clean_rendition and not _RENDITION_ID_PATTERN.match(clean_rendition):
-            raise BoundedValidationError("rendition_id contains invalid characters")
-    except AuthenticationFailed as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            cache_control="private, no-store",
-        )
-    except (BoundedValidationError, HTTPException) as exc:
-        msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        return _api_response(
-            {"error": msg},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
-    except BoundedValidationError as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
+        _verify_client_session(conn, token)
+        candidates = _get_stream_candidate_ids(clean_id, conn)
+        canonical_id = candidates[0] if candidates else clean_id
+        if not _is_video_visible_and_playable(conn, canonical_id):
+            return None
+        return canonical_id, candidates
+    finally:
+        conn.close()
 
-    if not clean_id:
-        return _api_response(
-            {"error": "video_id is required"},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
 
-    def _execute():
-        conn = _db_connection(request)
-        try:
-            _verify_client_session(conn, token)
-            candidates = _get_stream_candidate_ids(clean_id, conn)
-            canonical_id = candidates[0] if candidates else clean_id
-            if not _is_video_visible_and_playable(conn, canonical_id):
-                return None, None
-            return canonical_id, candidates
-        finally:
-            conn.close()
+async def _resolve_telegram_stream(tg_prov: Any, raw_id: str, chosen_variant: str | None) -> Any:
+    """Ask the Telegram provider for a stream URL, passing the rendition variant when one is requested."""
+    if chosen_variant and chosen_variant.lower() != "original":
+        return await tg_prov.resolve_stream(raw_id, variant=chosen_variant)
+    return await tg_prov.resolve_stream(raw_id)
 
-    try:
-        db_res = await _run_in_thread(_execute)
-    except AuthenticationFailed as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            cache_control="private, no-store",
-        )
-    except (BoundedValidationError, HTTPException) as exc:
-        msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        return _api_response(
-            {"error": msg},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
-    except Exception as exc:
-        logger.exception("Error verifying auth for stream: %s", exc)
-        return _api_response(
-            {"error": "Database lookup failed"},
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            cache_control="private, no-store",
-        )
 
-    if db_res is None or db_res[0] is None:
-        return _api_response(
-            {"error": "Video not found or unavailable"},
-            status_code=status.HTTP_404_NOT_FOUND,
-            cache_control="private, no-store",
-        )
+def _telegram_cache_key(raw_id: str, chosen_variant: str | None) -> str:
+    """Build the proxy cache key for a Telegram file, including the rendition variant when one is requested."""
+    active_cache_key = f"telegram:{raw_id}"
+    if chosen_variant and chosen_variant.lower() != "original":
+        active_cache_key = f"{active_cache_key}:variant:{chosen_variant}"
+    return active_cache_key
 
-    canonical_id, candidates = db_res
 
-    chosen_variant = clean_rendition
+async def _pre_play_telegram_stream(candidates: list[str], chosen_variant: str | None) -> tuple[str | None, str | None, Any]:
+    """Resolve the first authorized Telegram candidate to a stream URL, returning the URL, cache key, and last error."""
     stream_url = None
     active_cache_key = None
     last_error = None
-
     for cand_id in candidates:
         try:
             prov_name, raw_id = _parse_play_id(cand_id)
@@ -2116,141 +2135,127 @@ async def play_stream_direct(  # noqa: C901
             continue
 
         try:
-            if chosen_variant and chosen_variant.lower() != "original":
-                cand_stream = await tg_prov.resolve_stream(raw_id, variant=chosen_variant)
-            else:
-                cand_stream = await tg_prov.resolve_stream(raw_id)
-
+            cand_stream = await _resolve_telegram_stream(tg_prov, raw_id, chosen_variant)
             if cand_stream:
                 stream_url = cand_stream
-                active_cache_key = f"telegram:{raw_id}"
-                if chosen_variant and chosen_variant.lower() != "original":
-                    active_cache_key = f"{active_cache_key}:variant:{chosen_variant}"
+                active_cache_key = _telegram_cache_key(raw_id, chosen_variant)
                 break
         except Exception as exc:
             logger.warning("Pre-play stream resolution failed for candidate %s: %s", cand_id, type(exc).__name__)
             last_error = exc
             continue
 
-    if not stream_url:
-        if isinstance(last_error, HTTPException):
-            if last_error.status_code == 403:
-                return _api_response(
-                    {"error": "Telegram channel is not authorized", "code": "CHANNEL_UNAUTHORIZED"},
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    cache_control="private, no-store",
-                )
-            if last_error.status_code == 404:
-                return _api_response(
-                    {"error": "Stream not found", "code": "NOT_FOUND"},
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    cache_control="private, no-store",
-                )
-        if chosen_variant and chosen_variant.lower() != "original":
-            if isinstance(last_error, ValueError) and "not found" in str(last_error).lower():
-                return _api_response(
-                    {"error": f"Rendition '{chosen_variant}' not found for this video", "code": "RENDITION_NOT_FOUND"},
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    cache_control="private, no-store",
-                )
-        return _api_response(
-            {
-                "type": "https://adulthub.media/errors/video-source-unavailable",
-                "title": "Video Source Unavailable",
-                "status": 502,
-                "detail": f"None of the registered sources for video {clean_id} could be reached.",
-                "instance": f"/api/v1/playback/stream/{clean_id}",
-                "code": "SOURCE_UNAVAILABLE",
-            },
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            cache_control="private, no-store",
-        )
+    return stream_url, active_cache_key, last_error
 
-    try:
-        from resolver.providers import get_provider
-        from resolver.proxy_utils import _parse_range_request
-        from resolver.telegram_proxy import (
-            TelegramProxyServices,
-            proxy_telegram_response as _proxy_telegram_response_impl,
-        )
 
-        services = TelegramProxyServices(
-            get_provider=get_provider,
-            parse_range_request=_parse_range_request,
-            asyncio=asyncio,
-            inspect=inspect,
-            record_file_size=None,
-        )
+def _pre_play_error_response(last_error: Any, chosen_variant: str | None, clean_id: str) -> JSONResponse:
+    """Map the last pre-play resolution failure to the client-facing stream error response."""
+    if isinstance(last_error, HTTPException):
+        if last_error.status_code == 403:
+            return _api_response(
+                {"error": "Telegram channel is not authorized", "code": "CHANNEL_UNAUTHORIZED"},
+                status_code=status.HTTP_403_FORBIDDEN,
+                cache_control="private, no-store",
+            )
+        if last_error.status_code == 404:
+            return _api_response(
+                {"error": "Stream not found", "code": "NOT_FOUND"},
+                status_code=status.HTTP_404_NOT_FOUND,
+                cache_control="private, no-store",
+            )
+    if chosen_variant and chosen_variant.lower() != "original":
+        if isinstance(last_error, ValueError) and "not found" in str(last_error).lower():
+            return _api_response(
+                {"error": f"Rendition '{chosen_variant}' not found for this video", "code": "RENDITION_NOT_FOUND"},
+                status_code=status.HTTP_404_NOT_FOUND,
+                cache_control="private, no-store",
+            )
+    return _api_response(
+        {
+            "type": "https://adulthub.media/errors/video-source-unavailable",
+            "title": "Video Source Unavailable",
+            "status": 502,
+            "detail": f"None of the registered sources for video {clean_id} could be reached.",
+            "instance": f"/api/v1/playback/stream/{clean_id}",
+            "code": "SOURCE_UNAVAILABLE",
+        },
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        cache_control="private, no-store",
+    )
 
-        response = await _proxy_telegram_response_impl(
-            request, stream_url, active_cache_key, services=services
-        )
-        response.headers["Cache-Control"] = "private, no-store"
-        return response
-    except HTTPException as exc:
-        headers = dict(exc.headers or {})
-        headers["Cache-Control"] = "private, no-store"
-        if (request.method or "GET").upper() == "HEAD":
-            return Response(content=b"", status_code=exc.status_code, headers=headers)
-        prob = {
+
+async def _proxy_telegram_stream(request: Request, stream_url: str, active_cache_key: str | None) -> Response:
+    """Proxy the resolved Telegram stream to the client with no-store caching."""
+    from resolver.providers import get_provider
+    from resolver.proxy_utils import _parse_range_request
+    from resolver.telegram_proxy import (
+        TelegramProxyServices,
+        proxy_telegram_response as _proxy_telegram_response_impl,
+    )
+
+    services = TelegramProxyServices(
+        get_provider=get_provider,
+        parse_range_request=_parse_range_request,
+        asyncio=asyncio,
+        inspect=inspect,
+        record_file_size=None,
+    )
+
+    response = await _proxy_telegram_response_impl(
+        request, stream_url, active_cache_key, services=services
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+def _proxy_http_error_response(request: Request, exc: HTTPException) -> Response:
+    """Build the response for an HTTPException raised while proxying a stream, with an empty body for HEAD."""
+    headers = dict(exc.headers or {})
+    headers["Cache-Control"] = "private, no-store"
+    if (request.method or "GET").upper() == "HEAD":
+        return Response(content=b"", status_code=exc.status_code, headers=headers)
+    prob = {
+        "type": "https://adulthub.media/errors/playback-error",
+        "title": "Range Not Satisfiable" if exc.status_code == 416 else "Playback Error",
+        "status": exc.status_code,
+        "detail": str(exc.detail),
+        "code": "RANGE_NOT_SATISFIABLE" if exc.status_code == 416 else "PLAYBACK_ERROR",
+    }
+    return JSONResponse(status_code=exc.status_code, content=prob, headers=headers)
+
+
+def _proxy_failure_response(request: Request) -> Response:
+    """Build the 502 response for an unexpected stream proxy failure, with an empty body for HEAD."""
+    if (request.method or "GET").upper() == "HEAD":
+        return Response(content=b"", status_code=status.HTTP_502_BAD_GATEWAY, headers={"Cache-Control": "private, no-store"})
+    return _api_response(
+        {
             "type": "https://adulthub.media/errors/playback-error",
-            "title": "Range Not Satisfiable" if exc.status_code == 416 else "Playback Error",
-            "status": exc.status_code,
-            "detail": str(exc.detail),
-            "code": "RANGE_NOT_SATISFIABLE" if exc.status_code == 416 else "PLAYBACK_ERROR",
-        }
-        return JSONResponse(status_code=exc.status_code, content=prob, headers=headers)
-    except Exception as exc:
-        logger.warning("Unexpected error proxying stream for %s: %s", clean_id, type(exc).__name__)
-        if (request.method or "GET").upper() == "HEAD":
-            return Response(content=b"", status_code=status.HTTP_502_BAD_GATEWAY, headers={"Cache-Control": "private, no-store"})
-        return _api_response(
-            {
-                "type": "https://adulthub.media/errors/playback-error",
-                "title": "Stream Delivery Error",
-                "status": 502,
-                "detail": "Failed to proxy media stream from upstream provider.",
-                "code": "STREAM_PROXY_ERROR",
-            },
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            cache_control="private, no-store",
-        )
+            "title": "Stream Delivery Error",
+            "status": 502,
+            "detail": "Failed to proxy media stream from upstream provider.",
+            "code": "STREAM_PROXY_ERROR",
+        },
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        cache_control="private, no-store",
+    )
 
 
-@router.get("/api/v1/playback/{video_id:path}")
-@router.get("/api/v1/playback/renditions/{video_id:path}")
-async def get_playback_descriptor_endpoint(request: Request, video_id: str) -> JSONResponse:  # noqa: C901
-    """Discover playback descriptor and available pre-existing Direct Play renditions."""
-    if request.query_params:
-        return _api_response(
-            {"error": "Query parameters are strictly prohibited on playback descriptor endpoint."},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
+@router.api_route("/api/v1/playback/stream/{video_id:path}", methods=["GET", "HEAD"])
+async def play_stream_direct(
+    request: Request,
+    video_id: str,
+    rendition_id: str | None = Query(None),
+) -> Response:
+    """Stream video content with RFC 7233 byte-range support and pre-play source fallback."""
+    bad_query = _unexpected_stream_query_response(request)
+    if bad_query is not None:
+        return bad_query
+
     try:
-        token = _extract_bearer_token(request)
-        clean_id = _clean_str_filter(video_id, "video_id")
-        if clean_id.startswith("renditions/"):
-            clean_id = clean_id[len("renditions/"):]
-    except AuthenticationFailed as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            cache_control="private, no-store",
-        )
-    except (BoundedValidationError, HTTPException) as exc:
-        msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        return _api_response(
-            {"error": msg},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
-    except BoundedValidationError as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
+        token, clean_id, clean_rendition = _parse_stream_request_params(request, video_id, rendition_id)
+    except (AuthenticationFailed, BoundedValidationError, HTTPException) as exc:
+        return _auth_validation_error_response(exc)
 
     if not clean_id:
         return _api_response(
@@ -2259,63 +2264,75 @@ async def get_playback_descriptor_endpoint(request: Request, video_id: str) -> J
             cache_control="private, no-store",
         )
 
-    def _execute():
-        conn = _db_connection(request)
-        try:
-            _verify_client_session(conn, token)
-            candidates = _get_stream_candidate_ids(clean_id, conn)
-            canonical_id = candidates[0] if candidates else clean_id
-            if not _is_video_visible_and_playable(conn, canonical_id):
-                return None, None, None
-            meta = {}
-            if "videos" in db.table_names(conn):
-                row = conn.execute(
-                    "SELECT duration, file_size_bytes FROM videos WHERE id = %s",
-                    (canonical_id,),
-                ).fetchone()
-                if row:
-                    meta = {
-                        "duration": float(row[0]) if row[0] is not None else None,
-                        "file_size": int(row[1]) if row[1] is not None else None,
-                        "width": None,
-                        "height": None,
-                    }
-            return canonical_id, candidates, meta
-        finally:
-            conn.close()
-
     try:
-        db_res = await _run_in_thread(_execute)
-    except AuthenticationFailed as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            cache_control="private, no-store",
-        )
-    except (BoundedValidationError, HTTPException) as exc:
-        msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        return _api_response(
-            {"error": msg},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
+        db_res = await _run_in_thread(_load_stream_candidates, request, token, clean_id)
+    except (AuthenticationFailed, BoundedValidationError, HTTPException) as exc:
+        return _auth_validation_error_response(exc)
     except Exception as exc:
-        logger.exception("Error verifying auth for playback descriptor: %s", exc)
+        logger.exception("Error verifying auth for stream: %s", exc)
         return _api_response(
             {"error": "Database lookup failed"},
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             cache_control="private, no-store",
         )
 
-    if db_res is None or db_res[0] is None:
+    if db_res is None:
         return _api_response(
             {"error": "Video not found or unavailable"},
             status_code=status.HTTP_404_NOT_FOUND,
             cache_control="private, no-store",
         )
 
-    canonical_id, candidates, meta = db_res
+    canonical_id, candidates = db_res
 
+    chosen_variant = clean_rendition
+    stream_url, active_cache_key, last_error = await _pre_play_telegram_stream(candidates, chosen_variant)
+    if not stream_url:
+        return _pre_play_error_response(last_error, chosen_variant, clean_id)
+
+    try:
+        return await _proxy_telegram_stream(request, stream_url, active_cache_key)
+    except HTTPException as exc:
+        return _proxy_http_error_response(request, exc)
+    except Exception as exc:
+        logger.warning("Unexpected error proxying stream for %s: %s", clean_id, type(exc).__name__)
+        return _proxy_failure_response(request)
+
+
+def _descriptor_meta(conn: db.Connection, canonical_id: str) -> dict[str, Any]:
+    """Read duration and file size for a video from the videos table, or return an empty dict when absent."""
+    meta = {}
+    if "videos" in db.table_names(conn):
+        row = conn.execute(
+            "SELECT duration, file_size_bytes FROM videos WHERE id = %s",
+            (canonical_id,),
+        ).fetchone()
+        if row:
+            meta = {
+                "duration": float(row[0]) if row[0] is not None else None,
+                "file_size": int(row[1]) if row[1] is not None else None,
+                "width": None,
+                "height": None,
+            }
+    return meta
+
+
+def _load_descriptor_context(request: Request, token: str, clean_id: str) -> tuple[str, list[str], dict[str, Any]] | None:
+    """Verify the session and load the canonical ID, candidate sources, and metadata, or None when the video is unavailable."""
+    conn = _db_connection(request)
+    try:
+        _verify_client_session(conn, token)
+        candidates = _get_stream_candidate_ids(clean_id, conn)
+        canonical_id = candidates[0] if candidates else clean_id
+        if not _is_video_visible_and_playable(conn, canonical_id):
+            return None
+        return canonical_id, candidates, _descriptor_meta(conn, canonical_id)
+    finally:
+        conn.close()
+
+
+async def _first_telegram_variants(candidates: list[str]) -> tuple[Any, Any]:
+    """Try Telegram candidates in order and return the first variant metadata found, plus the last error seen."""
     variants_data = None
     last_error = None
     for cand_id in candidates:
@@ -2334,32 +2351,86 @@ async def get_playback_descriptor_endpoint(request: Request, video_id: str) -> J
         if vdata is not None:
             variants_data = vdata
             break
+    return variants_data, last_error
 
-    if variants_data is None and last_error is not None:
-        if isinstance(last_error, HTTPException):
-            if last_error.status_code == 403:
-                return _api_response(
-                    {"error": "Telegram channel is not authorized", "code": "CHANNEL_UNAUTHORIZED"},
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    cache_control="private, no-store",
-                )
-            if last_error.status_code == 404:
-                return _api_response(
-                    {"error": "Video variants unavailable", "code": "NOT_FOUND"},
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    cache_control="private, no-store",
-                )
+
+def _descriptor_error_response(last_error: Any, clean_id: str) -> JSONResponse:
+    """Map the last Telegram variant lookup failure to the playback descriptor error response."""
+    if isinstance(last_error, HTTPException):
+        if last_error.status_code == 403:
+            return _api_response(
+                {"error": "Telegram channel is not authorized", "code": "CHANNEL_UNAUTHORIZED"},
+                status_code=status.HTTP_403_FORBIDDEN,
+                cache_control="private, no-store",
+            )
+        if last_error.status_code == 404:
+            return _api_response(
+                {"error": "Video variants unavailable", "code": "NOT_FOUND"},
+                status_code=status.HTTP_404_NOT_FOUND,
+                cache_control="private, no-store",
+            )
+    return _api_response(
+        {
+            "type": "https://adulthub.media/errors/video-source-unavailable",
+            "title": "Video Source Unavailable",
+            "status": 502,
+            "detail": f"None of the registered sources for video {clean_id} could be reached.",
+            "code": "SOURCE_UNAVAILABLE",
+        },
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        cache_control="private, no-store",
+    )
+
+
+@router.get("/api/v1/playback/{video_id:path}")
+@router.get("/api/v1/playback/renditions/{video_id:path}")
+async def get_playback_descriptor_endpoint(request: Request, video_id: str) -> JSONResponse:
+    """Discover playback descriptor and available pre-existing Direct Play renditions."""
+    if request.query_params:
         return _api_response(
-            {
-                "type": "https://adulthub.media/errors/video-source-unavailable",
-                "title": "Video Source Unavailable",
-                "status": 502,
-                "detail": f"None of the registered sources for video {clean_id} could be reached.",
-                "code": "SOURCE_UNAVAILABLE",
-            },
-            status_code=status.HTTP_502_BAD_GATEWAY,
+            {"error": "Query parameters are strictly prohibited on playback descriptor endpoint."},
+            status_code=status.HTTP_400_BAD_REQUEST,
             cache_control="private, no-store",
         )
+    try:
+        token = _extract_bearer_token(request)
+        clean_id = _clean_str_filter(video_id, "video_id")
+        if clean_id.startswith("renditions/"):
+            clean_id = clean_id[len("renditions/"):]
+    except (AuthenticationFailed, BoundedValidationError, HTTPException) as exc:
+        return _auth_validation_error_response(exc)
+
+    if not clean_id:
+        return _api_response(
+            {"error": "video_id is required"},
+            status_code=status.HTTP_400_BAD_REQUEST,
+            cache_control="private, no-store",
+        )
+
+    try:
+        db_res = await _run_in_thread(_load_descriptor_context, request, token, clean_id)
+    except (AuthenticationFailed, BoundedValidationError, HTTPException) as exc:
+        return _auth_validation_error_response(exc)
+    except Exception as exc:
+        logger.exception("Error verifying auth for playback descriptor: %s", exc)
+        return _api_response(
+            {"error": "Database lookup failed"},
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            cache_control="private, no-store",
+        )
+
+    if db_res is None:
+        return _api_response(
+            {"error": "Video not found or unavailable"},
+            status_code=status.HTTP_404_NOT_FOUND,
+            cache_control="private, no-store",
+        )
+
+    canonical_id, candidates, meta = db_res
+
+    variants_data, last_error = await _first_telegram_variants(candidates)
+    if variants_data is None and last_error is not None:
+        return _descriptor_error_response(last_error, clean_id)
 
     descriptor = _build_playback_descriptor(canonical_id, variants_data, meta)
     return _api_response(descriptor.to_dict(), status_code=status.HTTP_200_OK, cache_control="private, no-store")
@@ -2520,33 +2591,8 @@ async def get_user_watch_progress(request: Request, video_id: str) -> JSONRespon
     return await _run_in_thread(_execute)
 
 
-@router.put("/api/v1/user/watch/{video_id:path}")
-@router.put("/api/v1/me/progress/{video_id:path}")
-async def put_user_watch_progress(request: Request, video_id: str) -> JSONResponse:  # noqa: C901
-    """Upsert authenticated owner-scoped watch progress for a video, resolving canonical duplicate aliases."""
-    try:
-        token = _extract_bearer_token(request)
-        clean_id = _validate_progress_video_id(video_id)
-    except AuthenticationFailed as exc:
-        return _api_response(
-            {"error": str(exc)},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            cache_control="private, no-store",
-        )
-    except (BoundedValidationError, HTTPException) as exc:
-        msg = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        return _api_response(
-            {"error": msg},
-            status_code=status.HTTP_400_BAD_REQUEST,
-            cache_control="private, no-store",
-        )
-
-    body_dict, err_resp = await _parse_json_object(request)
-    if err_resp is not None:
-        return err_resp
-    assert body_dict is not None
-
-    pos = body_dict.get("position_seconds")
+def _progress_field_error(pos: Any, dur: Any, is_played: Any, pct: Any) -> JSONResponse | None:
+    """Return a 400 response for the first invalid watch progress field, or None when every field is valid."""
     if not isinstance(pos, int) or isinstance(pos, bool) or pos < 0:
         return _api_response(
             {"error": "Field 'position_seconds' must be a non-negative integer."},
@@ -2554,7 +2600,6 @@ async def put_user_watch_progress(request: Request, video_id: str) -> JSONRespon
             cache_control="private, no-store",
         )
 
-    dur = body_dict.get("duration_seconds")
     if not isinstance(dur, int) or isinstance(dur, bool) or dur < 0:
         return _api_response(
             {"error": "Field 'duration_seconds' must be a non-negative integer."},
@@ -2562,7 +2607,6 @@ async def put_user_watch_progress(request: Request, video_id: str) -> JSONRespon
             cache_control="private, no-store",
         )
 
-    is_played = body_dict.get("is_played")
     if not isinstance(is_played, bool):
         return _api_response(
             {"error": "Field 'is_played' must be a boolean."},
@@ -2570,7 +2614,6 @@ async def put_user_watch_progress(request: Request, video_id: str) -> JSONRespon
             cache_control="private, no-store",
         )
 
-    pct = body_dict.get("played_percentage")
     if pct is not None:
         if not isinstance(pct, (int, float)) or isinstance(pct, bool) or pct < 0.0 or pct > 100.0:
             return _api_response(
@@ -2578,6 +2621,73 @@ async def put_user_watch_progress(request: Request, video_id: str) -> JSONRespon
                 status_code=status.HTTP_400_BAD_REQUEST,
                 cache_control="private, no-store",
             )
+    return None
+
+
+def _upsert_user_watch_progress(
+    request: Request,
+    token: str,
+    clean_id: str,
+    pos: int,
+    dur: int,
+    played_percentage: float,
+    is_played: bool,
+    last_watched_at: datetime.datetime,
+) -> JSONResponse:
+    """Upsert watch progress for the session owner under the canonical video ID."""
+    conn = _db_connection(request)
+    try:
+        try:
+            session = _verify_client_session(conn, token)
+        except AuthenticationFailed as exc:
+            return _api_response(
+                {"error": str(exc)},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                cache_control="private, no-store",
+            )
+        user_id = session["user_id"]
+        canonical_id = _resolve_canonical_video_id(conn, clean_id)
+
+        conn.execute(
+            "INSERT INTO client_user_watch_progress ("
+            "user_id, video_id, position_seconds, duration_seconds, played_percentage, is_played, last_watched_at, created_at, updated_at"
+            ") VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) "
+            "ON CONFLICT (user_id, video_id) DO UPDATE SET "
+            "position_seconds = EXCLUDED.position_seconds, "
+            "duration_seconds = EXCLUDED.duration_seconds, "
+            "played_percentage = EXCLUDED.played_percentage, "
+            "is_played = EXCLUDED.is_played, "
+            "last_watched_at = EXCLUDED.last_watched_at, "
+            "updated_at = CURRENT_TIMESTAMP",
+            (user_id, canonical_id, pos, dur, played_percentage, is_played, last_watched_at),
+        )
+        conn.commit()
+        return _api_response({"ok": True}, status_code=status.HTTP_200_OK, cache_control="private, no-store")
+    finally:
+        conn.close()
+
+
+@router.put("/api/v1/user/watch/{video_id:path}")
+@router.put("/api/v1/me/progress/{video_id:path}")
+async def put_user_watch_progress(request: Request, video_id: str) -> JSONResponse:
+    """Upsert authenticated owner-scoped watch progress for a video, resolving canonical duplicate aliases."""
+    try:
+        token = _extract_bearer_token(request)
+        clean_id = _validate_progress_video_id(video_id)
+    except (AuthenticationFailed, BoundedValidationError, HTTPException) as exc:
+        return _auth_validation_error_response(exc)
+
+    body_dict, err_resp = await _parse_json_object(request)
+    if err_resp is not None:
+        return err_resp
+    assert body_dict is not None
+
+    pos = body_dict.get("position_seconds")
+    dur = body_dict.get("duration_seconds")
+    is_played = body_dict.get("is_played")
+    field_err = _progress_field_error(pos, dur, is_played, body_dict.get("played_percentage"))
+    if field_err is not None:
+        return field_err
     played_percentage = round(min(100.0, max(0.0, (pos / dur) * 100.0)), 2) if dur > 0 else 0.0
 
     if "last_watched_at" in body_dict and body_dict["last_watched_at"] is not None:
@@ -2599,39 +2709,17 @@ async def put_user_watch_progress(request: Request, video_id: str) -> JSONRespon
     else:
         last_watched_at = datetime.datetime.now(datetime.timezone.utc)
 
-    def _execute():
-        conn = _db_connection(request)
-        try:
-            try:
-                session = _verify_client_session(conn, token)
-            except AuthenticationFailed as exc:
-                return _api_response(
-                    {"error": str(exc)},
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    cache_control="private, no-store",
-                )
-            user_id = session["user_id"]
-            canonical_id = _resolve_canonical_video_id(conn, clean_id)
-
-            conn.execute(
-                "INSERT INTO client_user_watch_progress ("
-                "user_id, video_id, position_seconds, duration_seconds, played_percentage, is_played, last_watched_at, created_at, updated_at"
-                ") VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) "
-                "ON CONFLICT (user_id, video_id) DO UPDATE SET "
-                "position_seconds = EXCLUDED.position_seconds, "
-                "duration_seconds = EXCLUDED.duration_seconds, "
-                "played_percentage = EXCLUDED.played_percentage, "
-                "is_played = EXCLUDED.is_played, "
-                "last_watched_at = EXCLUDED.last_watched_at, "
-                "updated_at = CURRENT_TIMESTAMP",
-                (user_id, canonical_id, pos, dur, played_percentage, is_played, last_watched_at),
-            )
-            conn.commit()
-            return _api_response({"ok": True}, status_code=status.HTTP_200_OK, cache_control="private, no-store")
-        finally:
-            conn.close()
-
-    return await _run_in_thread(_execute)
+    return await _run_in_thread(
+        _upsert_user_watch_progress,
+        request,
+        token,
+        clean_id,
+        pos,
+        dur,
+        played_percentage,
+        is_played,
+        last_watched_at,
+    )
 
 
 @router.delete("/api/v1/user/watch/{video_id:path}")

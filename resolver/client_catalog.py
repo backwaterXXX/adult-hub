@@ -296,7 +296,70 @@ def _determine_is_hd(height: int | None, width: int | None) -> bool | None:
     return None
 
 
-def _format_performer_refs(  # noqa: C901
+def _resolve_vetted_performer(
+    catalog: Mapping[str, tuple[str, str] | str],
+    raw_id: str,
+    raw_name: str,
+) -> tuple[str, str] | None:
+    """Look up a performer in the vetted catalog map by raw ID, or by name when no ID is given."""
+    val = None
+    if raw_id and raw_id in catalog:
+        val = catalog[raw_id]
+    elif (not raw_id) and raw_name and raw_name.lower() in catalog:
+        val = catalog[raw_name.lower()]
+    if val is None:
+        return None
+    if isinstance(val, tuple) and len(val) >= 2:
+        return str(val[0]), str(val[1])
+    if isinstance(val, str):
+        return str(val), raw_name or str(val)
+    return None
+
+
+def _vetted_performer_ref(v_id: str, v_name: str, base_artwork_url: str) -> PerformerRef:
+    """Build a performer reference whose artwork points at the vetted catalog performer."""
+    photo = f"{base_artwork_url}/performer/{quote(v_id, safe='')}"
+    return PerformerRef(id=v_id, name=v_name, photo_url=photo)
+
+
+def _performer_ref_from_mapping(
+    item: dict,
+    catalog: Mapping[str, tuple[str, str] | str],
+    base_artwork_url: str,
+) -> PerformerRef | None:
+    """Format one performer object ({id, name}) as a reference, or None when it has neither."""
+    raw_id = str(item.get("id") or "").strip()
+    raw_name = str(item.get("name") or "").strip()
+    vetted = _resolve_vetted_performer(catalog, raw_id, raw_name)
+    if vetted:
+        v_id, v_name = vetted
+        return _vetted_performer_ref(v_id, v_name, base_artwork_url)
+    if raw_id:
+        # Unresolved raw_id: preserve distinct ID
+        return PerformerRef(id=raw_id, name=raw_name or raw_id, photo_url=None)
+    if raw_name:
+        return PerformerRef(id=f"name:{raw_name}", name=raw_name, photo_url=None)
+    # If no raw_name and no raw_id, ignore item
+    return None
+
+
+def _performer_ref_from_name(
+    item: str,
+    catalog: Mapping[str, tuple[str, str] | str],
+    base_artwork_url: str,
+) -> PerformerRef | None:
+    """Format one bare performer name as a reference, or None when the name is blank."""
+    clean_name = item.strip()
+    if not clean_name:
+        return None
+    vetted = _resolve_vetted_performer(catalog, "", clean_name)
+    if vetted:
+        v_id, v_name = vetted
+        return _vetted_performer_ref(v_id, v_name, base_artwork_url)
+    return PerformerRef(id=f"name:{clean_name}", name=clean_name, photo_url=None)
+
+
+def _format_performer_refs(
     raw_performers: Any,
     performers_catalog_map: Mapping[str, tuple[str, str] | str] | None = None,
     base_artwork_url: str = "/api/v1/artwork",
@@ -313,46 +376,15 @@ def _format_performer_refs(  # noqa: C901
     refs: list[PerformerRef] = []
     catalog = performers_catalog_map or {}
 
-    def _resolve_vetted(raw_id: str, raw_name: str) -> tuple[str, str] | None:
-        val = None
-        if raw_id and raw_id in catalog:
-            val = catalog[raw_id]
-        elif (not raw_id) and raw_name and raw_name.lower() in catalog:
-            val = catalog[raw_name.lower()]
-        if val is None:
-            return None
-        if isinstance(val, tuple) and len(val) >= 2:
-            return str(val[0]), str(val[1])
-        if isinstance(val, str):
-            return str(val), raw_name or str(val)
-        return None
-
     for item in items:
         if isinstance(item, dict):
-            raw_id = str(item.get("id") or "").strip()
-            raw_name = str(item.get("name") or "").strip()
-            vetted = _resolve_vetted(raw_id, raw_name)
-            if vetted:
-                v_id, v_name = vetted
-                photo = f"{base_artwork_url}/performer/{quote(v_id, safe='')}"
-                refs.append(PerformerRef(id=v_id, name=v_name, photo_url=photo))
-            elif raw_id:
-                # Unresolved raw_id: preserve distinct ID
-                refs.append(PerformerRef(id=raw_id, name=raw_name or raw_id, photo_url=None))
-            elif raw_name:
-                refs.append(PerformerRef(id=f"name:{raw_name}", name=raw_name, photo_url=None))
-            # If no raw_name and no raw_id, ignore item
+            ref = _performer_ref_from_mapping(item, catalog, base_artwork_url)
         elif isinstance(item, str):
-            clean_name = item.strip()
-            if not clean_name:
-                continue
-            vetted = _resolve_vetted("", clean_name)
-            if vetted:
-                v_id, v_name = vetted
-                photo = f"{base_artwork_url}/performer/{quote(v_id, safe='')}"
-                refs.append(PerformerRef(id=v_id, name=v_name, photo_url=photo))
-            else:
-                refs.append(PerformerRef(id=f"name:{clean_name}", name=clean_name, photo_url=None))
+            ref = _performer_ref_from_name(item, catalog, base_artwork_url)
+        else:
+            continue
+        if ref is not None:
+            refs.append(ref)
 
     return refs
 
@@ -431,7 +463,130 @@ def serialize_client_video(
     )
 
 
-def _lookup_user_states(  # noqa: C901
+def _lookup_favorited_canonical_ids(
+    conn: Any,
+    clean_u_id: str,
+    clean_v_ids: list[str],
+    has_sources: bool,
+    has_decisions: bool,
+) -> set[str]:
+    """Return the requested canonical video IDs the user has favorited, directly or through aliases."""
+    union_parts = [
+        "SELECT cuf.video_id AS target_id FROM client_user_favorites cuf WHERE cuf.user_id = %s"
+    ]
+    params: list[Any] = [clean_u_id]
+    if has_sources:
+        union_parts.append(
+            "SELECT vs.video_id AS target_id FROM client_user_favorites cuf "
+            "JOIN video_sources vs ON vs.source_id = cuf.video_id AND vs.is_active = 1 "
+            "WHERE cuf.user_id = %s"
+        )
+        params.append(clean_u_id)
+    if has_decisions:
+        union_parts.append(
+            "SELECT vdd.keeper_id AS target_id FROM client_user_favorites cuf "
+            "JOIN video_duplicate_decisions vdd ON vdd.loser_id = cuf.video_id AND vdd.state = 'active' "
+            "WHERE cuf.user_id = %s"
+        )
+        params.append(clean_u_id)
+
+    fav_sql = (
+        f"SELECT DISTINCT target_id FROM ({' UNION ALL '.join(union_parts)}) v_target "
+        f"WHERE target_id = ANY(%s)"
+    )
+    params.append(clean_v_ids)
+    rows = conn.execute(fav_sql, params).fetchall()
+    favorited: set[str] = set()
+    for r in rows:
+        val = r[0] if isinstance(r, (list, tuple)) else r["target_id"]
+        if val:
+            favorited.add(str(val))
+    return favorited
+
+
+def _lookup_progress_map(
+    conn: Any,
+    clean_u_id: str,
+    clean_v_ids: list[str],
+    has_sources: bool,
+    has_decisions: bool,
+) -> dict[str, dict[str, Any]]:
+    """Return the owner's latest watch progress keyed by requested canonical video ID."""
+    wp_union_parts = [
+        "SELECT wp.video_id AS wp_vid, wp.video_id AS target_id FROM client_user_watch_progress wp WHERE wp.user_id = %s"
+    ]
+    wp_params: list[Any] = [clean_u_id]
+    if has_sources:
+        wp_union_parts.append(
+            "SELECT wp.video_id AS wp_vid, vs.video_id AS target_id FROM client_user_watch_progress wp "
+            "JOIN video_sources vs ON vs.source_id = wp.video_id AND vs.is_active = 1 WHERE wp.user_id = %s"
+        )
+        wp_params.append(clean_u_id)
+    if has_decisions:
+        wp_union_parts.append(
+            "SELECT wp.video_id AS wp_vid, vdd.keeper_id AS target_id FROM client_user_watch_progress wp "
+            "JOIN video_duplicate_decisions vdd ON vdd.loser_id = wp.video_id AND vdd.state = 'active' WHERE wp.user_id = %s"
+        )
+        wp_params.append(clean_u_id)
+
+    wp_sql = f"""
+            SELECT DISTINCT ON (v_target.target_id)
+                v_target.target_id,
+                wp.position_seconds,
+                wp.duration_seconds,
+                wp.played_percentage,
+                wp.is_played
+            FROM ({' UNION ALL '.join(wp_union_parts)}) v_target
+            JOIN client_user_watch_progress wp ON wp.user_id = %s AND wp.video_id = v_target.wp_vid
+            WHERE v_target.target_id = ANY(%s)
+            ORDER BY v_target.target_id, wp.last_watched_at DESC, wp.played_percentage DESC
+        """
+    all_wp_params = [*wp_params, clean_u_id, clean_v_ids]
+    wp_rows = conn.execute(wp_sql, all_wp_params).fetchall()
+    progress_map: dict[str, dict[str, Any]] = {}
+    for r in wp_rows:
+        tid = str(r[0] if isinstance(r, (list, tuple)) else r["target_id"])
+        pos = int(r[1] if isinstance(r, (list, tuple)) else r["position_seconds"])
+        dur = int(r[2] if isinstance(r, (list, tuple)) else r["duration_seconds"])
+        pct = float(r[3] if isinstance(r, (list, tuple)) else r["played_percentage"])
+        is_p = bool(r[4] if isinstance(r, (list, tuple)) else r["is_played"])
+        progress_map[tid] = {
+            "position_seconds": pos,
+            "duration_seconds": dur,
+            "played_percentage": pct,
+            "is_played": is_p,
+        }
+    return progress_map
+
+
+def _user_state_results(
+    clean_v_ids: list[str],
+    favorited_canonical_ids: set[str],
+    progress_map: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Combine favorite flags and watch progress into one state entry per requested video ID."""
+    results: dict[str, dict[str, Any]] = {}
+    for vid in clean_v_ids:
+        is_fav = vid in favorited_canonical_ids
+        if vid in progress_map:
+            p = progress_map[vid]
+            results[vid] = {
+                "is_favorite": is_fav,
+                "position_seconds": p["position_seconds"],
+                "played_percentage": p["played_percentage"],
+                "is_played": p["is_played"],
+            }
+        else:
+            results[vid] = {
+                "is_favorite": is_fav,
+                "position_seconds": 0,
+                "played_percentage": 0.0,
+                "is_played": False,
+            }
+    return results
+
+
+def _lookup_user_states(
     conn: Any,
     tables: set[str],
     user_id: str,
@@ -457,101 +612,15 @@ def _lookup_user_states(  # noqa: C901
 
     favorited_canonical_ids: set[str] = set()
     if has_favorites:
-        union_parts = [
-            "SELECT cuf.video_id AS target_id FROM client_user_favorites cuf WHERE cuf.user_id = %s"
-        ]
-        params: list[Any] = [clean_u_id]
-        if has_sources:
-            union_parts.append(
-                "SELECT vs.video_id AS target_id FROM client_user_favorites cuf "
-                "JOIN video_sources vs ON vs.source_id = cuf.video_id AND vs.is_active = 1 "
-                "WHERE cuf.user_id = %s"
-            )
-            params.append(clean_u_id)
-        if has_decisions:
-            union_parts.append(
-                "SELECT vdd.keeper_id AS target_id FROM client_user_favorites cuf "
-                "JOIN video_duplicate_decisions vdd ON vdd.loser_id = cuf.video_id AND vdd.state = 'active' "
-                "WHERE cuf.user_id = %s"
-            )
-            params.append(clean_u_id)
-
-        fav_sql = (
-            f"SELECT DISTINCT target_id FROM ({' UNION ALL '.join(union_parts)}) v_target "
-            f"WHERE target_id = ANY(%s)"
+        favorited_canonical_ids = _lookup_favorited_canonical_ids(
+            conn, clean_u_id, clean_v_ids, has_sources, has_decisions,
         )
-        params.append(clean_v_ids)
-        rows = conn.execute(fav_sql, params).fetchall()
-        for r in rows:
-            val = r[0] if isinstance(r, (list, tuple)) else r["target_id"]
-            if val:
-                favorited_canonical_ids.add(str(val))
-
     progress_map: dict[str, dict[str, Any]] = {}
     if has_progress:
-        wp_union_parts = [
-            "SELECT wp.video_id AS wp_vid, wp.video_id AS target_id FROM client_user_watch_progress wp WHERE wp.user_id = %s"
-        ]
-        wp_params: list[Any] = [clean_u_id]
-        if has_sources:
-            wp_union_parts.append(
-                "SELECT wp.video_id AS wp_vid, vs.video_id AS target_id FROM client_user_watch_progress wp "
-                "JOIN video_sources vs ON vs.source_id = wp.video_id AND vs.is_active = 1 WHERE wp.user_id = %s"
-            )
-            wp_params.append(clean_u_id)
-        if has_decisions:
-            wp_union_parts.append(
-                "SELECT wp.video_id AS wp_vid, vdd.keeper_id AS target_id FROM client_user_watch_progress wp "
-                "JOIN video_duplicate_decisions vdd ON vdd.loser_id = wp.video_id AND vdd.state = 'active' WHERE wp.user_id = %s"
-            )
-            wp_params.append(clean_u_id)
-
-        wp_sql = f"""
-            SELECT DISTINCT ON (v_target.target_id)
-                v_target.target_id,
-                wp.position_seconds,
-                wp.duration_seconds,
-                wp.played_percentage,
-                wp.is_played
-            FROM ({' UNION ALL '.join(wp_union_parts)}) v_target
-            JOIN client_user_watch_progress wp ON wp.user_id = %s AND wp.video_id = v_target.wp_vid
-            WHERE v_target.target_id = ANY(%s)
-            ORDER BY v_target.target_id, wp.last_watched_at DESC, wp.played_percentage DESC
-        """
-        all_wp_params = [*wp_params, clean_u_id, clean_v_ids]
-        wp_rows = conn.execute(wp_sql, all_wp_params).fetchall()
-        for r in wp_rows:
-            tid = str(r[0] if isinstance(r, (list, tuple)) else r["target_id"])
-            pos = int(r[1] if isinstance(r, (list, tuple)) else r["position_seconds"])
-            dur = int(r[2] if isinstance(r, (list, tuple)) else r["duration_seconds"])
-            pct = float(r[3] if isinstance(r, (list, tuple)) else r["played_percentage"])
-            is_p = bool(r[4] if isinstance(r, (list, tuple)) else r["is_played"])
-            progress_map[tid] = {
-                "position_seconds": pos,
-                "duration_seconds": dur,
-                "played_percentage": pct,
-                "is_played": is_p,
-            }
-
-    results: dict[str, dict[str, Any]] = {}
-    for vid in clean_v_ids:
-        is_fav = vid in favorited_canonical_ids
-        if vid in progress_map:
-            p = progress_map[vid]
-            results[vid] = {
-                "is_favorite": is_fav,
-                "position_seconds": p["position_seconds"],
-                "played_percentage": p["played_percentage"],
-                "is_played": p["is_played"],
-            }
-        else:
-            results[vid] = {
-                "is_favorite": is_fav,
-                "position_seconds": 0,
-                "played_percentage": 0.0,
-                "is_played": False,
-            }
-    return results
+        progress_map = _lookup_progress_map(
+            conn, clean_u_id, clean_v_ids, has_sources, has_decisions,
+        )
+    return _user_state_results(clean_v_ids, favorited_canonical_ids, progress_map)
 
 
 # ---------------------------------------------------------------------------
@@ -804,7 +873,254 @@ def client_sort_clause(sort: str, direction: str | None = None, *, effective_tit
         return f"v.first_seen {dir_sql} NULLS LAST, v.id ASC"
 
 
-def query_catalog_videos(  # noqa: C901
+def _append_channel_filter(
+    conditions: list[str],
+    params: list[Any],
+    channel_id: str,
+    disabled_set: set[str],
+    has_sources: bool,
+) -> None:
+    """Append the explicit Telegram channel filter, honouring disabled channels and aliases."""
+    canon_ch = canonical_channel_id(channel_id)
+    disabled_canons = {canonical_channel_id(d) for d in disabled_set}
+    if canon_ch in disabled_canons or channel_id in disabled_set:
+        conditions.append("FALSE")
+    else:
+        aliases = list(channel_aliases(channel_id))
+        patterns = [_escape_channel_like_pattern(a) for a in aliases]
+        if has_sources:
+            conditions.append(
+                """(
+                        (v.id LIKE ANY(%s))
+                        OR EXISTS (
+                            SELECT 1 FROM video_sources vs
+                            WHERE vs.video_id = v.id
+                              AND vs.provider = 'telegram'
+                              AND vs.channel_id = ANY(%s)
+                              AND vs.is_active = 1
+                        )
+                    )"""
+            )
+            params.extend([patterns, aliases])
+        else:
+            conditions.append("v.id LIKE ANY(%s)")
+            params.append(patterns)
+
+
+def _append_search_filter(
+    conditions: list[str],
+    params: list[Any],
+    q: str | None,
+    columns: set[str],
+    has_overrides: bool,
+) -> None:
+    """Append a literal, case-insensitive search over public text fields only."""
+    # Search public text only: title, plot, studio (and v.id)
+    # Strictly never search raw performer or tag JSON columns to prevent exposing non-public fields.
+    if q and str(q).strip():
+        search_term = str(q).strip()
+        escaped_q = _escape_like_pattern(search_term)
+        search_val = f"%{escaped_q}%"
+        search_parts = ["COALESCE(v.id, '') ILIKE %s ESCAPE '\\'"]
+        search_params = [search_val]
+        for field_name in ("title", "plot", "studio"):
+            if field_name in columns:
+                search_parts.append(
+                    f"COALESCE({_effective_value(field_name, columns, has_overrides)}::text, '') ILIKE %s ESCAPE '\\'"
+                )
+                search_params.append(search_val)
+        conditions.append("(" + " OR ".join(search_parts) + ")")
+        params.extend(search_params)
+
+
+def _append_exact_filters(
+    conditions: list[str],
+    params: list[Any],
+    category: str | None,
+    tag: str | None,
+    studio: str | None,
+    columns: set[str],
+    has_overrides: bool,
+) -> None:
+    """Append the exact-match category, tag and studio filters."""
+    if category and str(category).strip():
+        cat_val = str(category).strip()
+        conditions.append("v.categories ? %s")
+        params.append(cat_val)
+
+    if tag and str(tag).strip():
+        tag_val = str(tag).strip()
+        tag_expr = _effective_value("tags", columns, has_overrides)
+        conditions.append(f"{tag_expr} ? %s")
+        params.append(tag_val)
+
+    if studio and str(studio).strip():
+        studio_val = str(studio).strip()
+        studio_expr = _effective_value("studio", columns, has_overrides)
+        # Exact studio matching (case-insensitive) without substring wildcards
+        conditions.append(f"lower(COALESCE({studio_expr}::text, '')) = lower(%s)")
+        params.append(studio_val)
+
+
+def _performer_id_matches(conn: Any, tables: set[str], clean_pid: str) -> tuple[list[str], list[str]]:
+    """Return the catalog IDs and display names that an ID-only performer filter should match."""
+    matching_ids: list[str] = [clean_pid]
+    matching_names: list[str] = []
+    if "performer_catalog" in tables:
+        p_rows = conn.execute(
+            "SELECT name FROM performer_catalog WHERE id = %s AND active = true",
+            (clean_pid,),
+        ).fetchall()
+        for pr in p_rows:
+            matching_names.append(str(pr[0] if isinstance(pr, (list, tuple)) else pr["name"]))
+    if "performer_catalog_aliases" in tables:
+        a_rows = conn.execute(
+            "SELECT c.id, c.name FROM performer_catalog_aliases a JOIN performer_catalog c ON c.id = a.performer_id WHERE a.performer_id = %s AND a.approved = true AND c.active = true",
+            (clean_pid,),
+        ).fetchall()
+        for ar in a_rows:
+            c_id = str(ar[0] if isinstance(ar, (list, tuple)) else ar["id"])
+            if c_id not in matching_ids:
+                matching_ids.append(c_id)
+            matching_names.append(str(ar[1] if isinstance(ar, (list, tuple)) else ar["name"]))
+    return matching_ids, matching_names
+
+
+def _append_performer_filter(
+    conditions: list[str],
+    params: list[Any],
+    conn: Any,
+    tables: set[str],
+    columns: set[str],
+    has_overrides: bool,
+    performer_id: str | None,
+) -> None:
+    """Append the performer filter for a 'name:' display name or a catalog/raw performer ID."""
+    if performer_id and str(performer_id).strip():
+        clean_pid = str(performer_id).strip()
+        perf_expr = _effective_value("performers", columns, has_overrides)
+        if clean_pid.startswith("name:"):
+            target_name = clean_pid[5:].strip()
+            # Explicit name filter: match string or ID-less object by name
+            conditions.append(
+                f"""EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(
+                        CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
+                    ) elem
+                    WHERE (
+                        (jsonb_typeof(elem) = 'string' AND lower(elem #>> '{{}}') = lower(%s))
+                        OR (jsonb_typeof(elem) = 'object' AND (elem ->> 'id' IS NULL OR elem ->> 'id' = '') AND lower(elem ->> 'name') = lower(%s))
+                    )
+                )"""
+            )
+            params.extend([target_name, target_name])
+        else:
+            # ID-only lookup: find vetted catalog matches by ID (or vetted alias by ID)
+            matching_ids, matching_names = _performer_id_matches(conn, tables, clean_pid)
+
+            if matching_names:
+                id_placeholders = ", ".join(["%s"] * len(matching_ids))
+                name_placeholders = ", ".join(["%s"] * len(matching_names))
+                conditions.append(
+                    f"""EXISTS (
+                        SELECT 1 FROM jsonb_array_elements(
+                            CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
+                        ) elem
+                        WHERE (
+                            (jsonb_typeof(elem) = 'object' AND elem ->> 'id' IN ({id_placeholders}))
+                            OR ((jsonb_typeof(elem) = 'string' OR elem ->> 'id' IS NULL OR elem ->> 'id' = '') AND lower(COALESCE(elem ->> 'name', elem #>> '{{}}')) IN ({name_placeholders}))
+                        )
+                    )"""
+                )
+                params.extend(matching_ids)
+                params.extend([n.lower() for n in matching_names])
+            else:
+                # Unresolved raw ID: ONLY match elem ->> 'id' = %s, never match by name!
+                conditions.append(
+                    f"""EXISTS (
+                        SELECT 1 FROM jsonb_array_elements(
+                            CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
+                        ) elem
+                        WHERE jsonb_typeof(elem) = 'object' AND elem ->> 'id' = %s
+                    )"""
+                )
+                params.append(clean_pid)
+
+
+def _append_favorite_filter(
+    conditions: list[str],
+    params: list[Any],
+    tables: set[str],
+    has_sources: bool,
+    user_id: str | None,
+    is_favorite: bool | None,
+) -> None:
+    """Append the favorite or not-favorite filter scoped to the signed-in user."""
+    if is_favorite is not None:
+        if not user_id or "client_user_favorites" not in tables:
+            if is_favorite:
+                conditions.append("FALSE")
+        else:
+            fav_parts = ["cuf.video_id = v.id"]
+            if has_sources:
+                fav_parts.append(
+                    "EXISTS (SELECT 1 FROM video_sources vs WHERE vs.video_id = v.id AND vs.source_id = cuf.video_id AND vs.is_active = 1)"
+                )
+            if "video_duplicate_decisions" in tables:
+                fav_parts.append(
+                    "EXISTS (SELECT 1 FROM video_duplicate_decisions vdd WHERE vdd.keeper_id = v.id AND vdd.loser_id = cuf.video_id AND vdd.state = 'active')"
+                )
+            fav_condition = f"EXISTS (SELECT 1 FROM client_user_favorites cuf WHERE cuf.user_id = %s AND ({' OR '.join(fav_parts)}))"
+            if is_favorite:
+                conditions.append(fav_condition)
+                params.append(str(user_id).strip())
+            else:
+                conditions.append(f"NOT {fav_condition}")
+                params.append(str(user_id).strip())
+
+
+def _video_projection_sql(columns: set[str], has_overrides: bool) -> str:
+    """Return the SELECT list for canonical catalog video rows."""
+    select_fields = [
+        "v.id",
+        f"{_effective_value('title', columns, has_overrides)} AS title",
+        "v.duration",
+        f"{_effective_value('date_released', columns, has_overrides)} AS date_released",
+        "v.first_seen",
+        f"{_effective_value('studio', columns, has_overrides)} AS studio",
+        f"{_effective_value('plot', columns, has_overrides)} AS plot",
+        "v.categories",
+        f"{_effective_value('tags', columns, has_overrides)} AS tags",
+        f"{_effective_value('performers', columns, has_overrides)} AS performers",
+        "v.file_size_bytes",
+    ]
+    if "width" in columns:
+        select_fields.append("v.width")
+    if "height" in columns:
+        select_fields.append("v.height")
+
+    return ", ".join(select_fields)
+
+
+def _performer_lookup_keys(rows: Any) -> tuple[set[str], set[str]]:
+    """Collect performer display names and raw IDs from a page of video rows."""
+    all_perf_names: set[str] = set()
+    all_perf_ids: set[str] = set()
+    for row in rows:
+        perfs = _json_value(_row_val(row, "performers"), [])
+        if isinstance(perfs, list):
+            for p in perfs:
+                if isinstance(p, str) and p.strip():
+                    all_perf_names.add(p.strip())
+                elif isinstance(p, dict):
+                    if p.get("name") and str(p["name"]).strip():
+                        all_perf_names.add(str(p["name"]).strip())
+                    if p.get("id") and str(p["id"]).strip():
+                        all_perf_ids.add(str(p["id"]).strip())
+    return all_perf_names, all_perf_ids
+
+
+def query_catalog_videos(
     conn: Any,
     *,
     q: str | None = None,
@@ -846,161 +1162,20 @@ def query_catalog_videos(  # noqa: C901
 
     # 2. Source-Aware Channel Filter (explicit Telegram provider only)
     if channel_id:
-        canon_ch = canonical_channel_id(channel_id)
-        disabled_canons = {canonical_channel_id(d) for d in disabled_set}
-        if canon_ch in disabled_canons or channel_id in disabled_set:
-            conditions.append("FALSE")
-        else:
-            aliases = list(channel_aliases(channel_id))
-            patterns = [_escape_channel_like_pattern(a) for a in aliases]
-            if has_sources:
-                conditions.append(
-                    """(
-                        (v.id LIKE ANY(%s))
-                        OR EXISTS (
-                            SELECT 1 FROM video_sources vs
-                            WHERE vs.video_id = v.id
-                              AND vs.provider = 'telegram'
-                              AND vs.channel_id = ANY(%s)
-                              AND vs.is_active = 1
-                        )
-                    )"""
-                )
-                params.extend([patterns, aliases])
-            else:
-                conditions.append("v.id LIKE ANY(%s)")
-                params.append(patterns)
+        _append_channel_filter(conditions, params, channel_id, disabled_set, has_sources)
 
     # 3. Search Query (q) with literal LIKE wildcard escaping
-    # Search public text only: title, plot, studio (and v.id)
-    # Strictly never search raw performer or tag JSON columns to prevent exposing non-public fields.
-    if q and str(q).strip():
-        search_term = str(q).strip()
-        escaped_q = _escape_like_pattern(search_term)
-        search_val = f"%{escaped_q}%"
-        search_parts = ["COALESCE(v.id, '') ILIKE %s ESCAPE '\\'"]
-        search_params = [search_val]
-        for field_name in ("title", "plot", "studio"):
-            if field_name in columns:
-                search_parts.append(
-                    f"COALESCE({_effective_value(field_name, columns, has_overrides)}::text, '') ILIKE %s ESCAPE '\\'"
-                )
-                search_params.append(search_val)
-        conditions.append("(" + " OR ".join(search_parts) + ")")
-        params.extend(search_params)
+    _append_search_filter(conditions, params, q, columns, has_overrides)
 
     # 4. Exact Filter Semantics
-    if category and str(category).strip():
-        cat_val = str(category).strip()
-        conditions.append("v.categories ? %s")
-        params.append(cat_val)
-
-    if tag and str(tag).strip():
-        tag_val = str(tag).strip()
-        tag_expr = _effective_value("tags", columns, has_overrides)
-        conditions.append(f"{tag_expr} ? %s")
-        params.append(tag_val)
-
-    if studio and str(studio).strip():
-        studio_val = str(studio).strip()
-        studio_expr = _effective_value("studio", columns, has_overrides)
-        # Exact studio matching (case-insensitive) without substring wildcards
-        conditions.append(f"lower(COALESCE({studio_expr}::text, '')) = lower(%s)")
-        params.append(studio_val)
-
-    if performer_id and str(performer_id).strip():
-        clean_pid = str(performer_id).strip()
-        perf_expr = _effective_value("performers", columns, has_overrides)
-        if clean_pid.startswith("name:"):
-            target_name = clean_pid[5:].strip()
-            # Explicit name filter: match string or ID-less object by name
-            conditions.append(
-                f"""EXISTS (
-                    SELECT 1 FROM jsonb_array_elements(
-                        CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
-                    ) elem
-                    WHERE (
-                        (jsonb_typeof(elem) = 'string' AND lower(elem #>> '{{}}') = lower(%s))
-                        OR (jsonb_typeof(elem) = 'object' AND (elem ->> 'id' IS NULL OR elem ->> 'id' = '') AND lower(elem ->> 'name') = lower(%s))
-                    )
-                )"""
-            )
-            params.extend([target_name, target_name])
-        else:
-            # ID-only lookup: find vetted catalog matches by ID (or vetted alias by ID)
-            matching_ids: list[str] = [clean_pid]
-            matching_names: list[str] = []
-            if "performer_catalog" in tables:
-                p_rows = conn.execute(
-                    "SELECT name FROM performer_catalog WHERE id = %s AND active = true",
-                    (clean_pid,),
-                ).fetchall()
-                for pr in p_rows:
-                    matching_names.append(str(pr[0] if isinstance(pr, (list, tuple)) else pr["name"]))
-            if "performer_catalog_aliases" in tables:
-                a_rows = conn.execute(
-                    "SELECT c.id, c.name FROM performer_catalog_aliases a JOIN performer_catalog c ON c.id = a.performer_id WHERE a.performer_id = %s AND a.approved = true AND c.active = true",
-                    (clean_pid,),
-                ).fetchall()
-                for ar in a_rows:
-                    c_id = str(ar[0] if isinstance(ar, (list, tuple)) else ar["id"])
-                    if c_id not in matching_ids:
-                        matching_ids.append(c_id)
-                    matching_names.append(str(ar[1] if isinstance(ar, (list, tuple)) else ar["name"]))
-
-            if matching_names:
-                id_placeholders = ", ".join(["%s"] * len(matching_ids))
-                name_placeholders = ", ".join(["%s"] * len(matching_names))
-                conditions.append(
-                    f"""EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(
-                            CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
-                        ) elem
-                        WHERE (
-                            (jsonb_typeof(elem) = 'object' AND elem ->> 'id' IN ({id_placeholders}))
-                            OR ((jsonb_typeof(elem) = 'string' OR elem ->> 'id' IS NULL OR elem ->> 'id' = '') AND lower(COALESCE(elem ->> 'name', elem #>> '{{}}')) IN ({name_placeholders}))
-                        )
-                    )"""
-                )
-                params.extend(matching_ids)
-                params.extend([n.lower() for n in matching_names])
-            else:
-                # Unresolved raw ID: ONLY match elem ->> 'id' = %s, never match by name!
-                conditions.append(
-                    f"""EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(
-                            CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
-                        ) elem
-                        WHERE jsonb_typeof(elem) = 'object' AND elem ->> 'id' = %s
-                    )"""
-                )
-                params.append(clean_pid)
+    _append_exact_filters(conditions, params, category, tag, studio, columns, has_overrides)
+    _append_performer_filter(conditions, params, conn, tables, columns, has_overrides, performer_id)
 
     if min_duration is not None and int(min_duration) > 0:
         conditions.append("v.duration >= %s")
         params.append(int(min_duration))
 
-    if is_favorite is not None:
-        if not user_id or "client_user_favorites" not in tables:
-            if is_favorite:
-                conditions.append("FALSE")
-        else:
-            fav_parts = ["cuf.video_id = v.id"]
-            if has_sources:
-                fav_parts.append(
-                    "EXISTS (SELECT 1 FROM video_sources vs WHERE vs.video_id = v.id AND vs.source_id = cuf.video_id AND vs.is_active = 1)"
-                )
-            if "video_duplicate_decisions" in tables:
-                fav_parts.append(
-                    "EXISTS (SELECT 1 FROM video_duplicate_decisions vdd WHERE vdd.keeper_id = v.id AND vdd.loser_id = cuf.video_id AND vdd.state = 'active')"
-                )
-            fav_condition = f"EXISTS (SELECT 1 FROM client_user_favorites cuf WHERE cuf.user_id = %s AND ({' OR '.join(fav_parts)}))"
-            if is_favorite:
-                conditions.append(fav_condition)
-                params.append(str(user_id).strip())
-            else:
-                conditions.append(f"NOT {fav_condition}")
-                params.append(str(user_id).strip())
+    _append_favorite_filter(conditions, params, tables, has_sources, user_id, is_favorite)
 
     # WHERE and JOIN clauses
     where_sql = (" WHERE " + " AND ".join(conditions)) if conditions else ""
@@ -1019,25 +1194,7 @@ def query_catalog_videos(  # noqa: C901
     safe_limit = max(1, min(int(limit), 200))
 
     # Projection
-    select_fields = [
-        "v.id",
-        f"{_effective_value('title', columns, has_overrides)} AS title",
-        "v.duration",
-        f"{_effective_value('date_released', columns, has_overrides)} AS date_released",
-        "v.first_seen",
-        f"{_effective_value('studio', columns, has_overrides)} AS studio",
-        f"{_effective_value('plot', columns, has_overrides)} AS plot",
-        "v.categories",
-        f"{_effective_value('tags', columns, has_overrides)} AS tags",
-        f"{_effective_value('performers', columns, has_overrides)} AS performers",
-        "v.file_size_bytes",
-    ]
-    if "width" in columns:
-        select_fields.append("v.width")
-    if "height" in columns:
-        select_fields.append("v.height")
-
-    projection_sql = ", ".join(select_fields)
+    projection_sql = _video_projection_sql(columns, has_overrides)
 
     query_sql = f"""
         SELECT {projection_sql}
@@ -1048,19 +1205,7 @@ def query_catalog_videos(  # noqa: C901
     rows = conn.execute(query_sql, [*params, safe_limit, safe_offset]).fetchall()
 
     # Performer names and raw IDs batch lookup
-    all_perf_names: set[str] = set()
-    all_perf_ids: set[str] = set()
-    for row in rows:
-        perfs = _json_value(_row_val(row, "performers"), [])
-        if isinstance(perfs, list):
-            for p in perfs:
-                if isinstance(p, str) and p.strip():
-                    all_perf_names.add(p.strip())
-                elif isinstance(p, dict):
-                    if p.get("name") and str(p["name"]).strip():
-                        all_perf_names.add(str(p["name"]).strip())
-                    if p.get("id") and str(p["id"]).strip():
-                        all_perf_ids.add(str(p["id"]).strip())
+    all_perf_names, all_perf_ids = _performer_lookup_keys(rows)
     perf_catalog_map = _lookup_performers_catalog(
         conn, tables, names=list(all_perf_names), raw_ids=list(all_perf_ids)
     )
@@ -1090,41 +1235,34 @@ def query_catalog_videos(  # noqa: C901
     )
 
 
-def query_catalog_video_detail(  # noqa: C901
-    conn: Any,
-    video_id: str,
-    *,
-    user_id: str | None = None,
-    disabled_channel_ids: set[str] | None = None,
-    config_sources: Sequence[dict[str, Any]] | None = None,
-) -> VideoItem | None:
-    """Query full video details by canonical ID, resolving duplicate merge aliases."""
-    if not video_id or not str(video_id).strip():
+def _resolve_video_detail_target(conn: Any, tables: set[str], clean_id: str) -> str | None:
+    """Return the canonical video ID for a requested ID, or None when the video is hidden."""
+    if "video_duplicate_decisions" not in tables:
+        return clean_id
+    row = conn.execute(
+        "SELECT keeper_id FROM video_duplicate_decisions WHERE loser_id = %s AND state = 'active'",
+        (clean_id,),
+    ).fetchone()
+    if not row:
+        return clean_id
+    keeper_id = str(row[0] if isinstance(row, (list, tuple)) else row["keeper_id"])
+    # If keeper_id == loser_id, item was quarantined/hidden -> unavailable
+    if keeper_id == clean_id:
         return None
+    return keeper_id
 
-    if hasattr(conn, "row_factory") and conn.row_factory is not Record:
-        conn.row_factory = Record
 
-    clean_id = str(video_id).strip()
-    tables, columns = _tables_and_columns(conn)
+def _fetch_video_detail_row(
+    conn: Any,
+    tables: set[str],
+    columns: set[str],
+    target_id: str,
+    disabled_channel_ids: set[str] | None,
+    config_sources: Sequence[dict[str, Any]] | None,
+):
+    """Fetch the visible canonical video row for detail views, or None."""
     has_overrides = "video_metadata_overrides" in tables
-    has_decisions = "video_duplicate_decisions" in tables
 
-    # 1. Alias Resolution for Merged Duplicates
-    target_id = clean_id
-    if has_decisions:
-        row = conn.execute(
-            "SELECT keeper_id FROM video_duplicate_decisions WHERE loser_id = %s AND state = 'active'",
-            (clean_id,),
-        ).fetchone()
-        if row:
-            keeper_id = str(row[0] if isinstance(row, (list, tuple)) else row["keeper_id"])
-            # If keeper_id == loser_id, item was quarantined/hidden -> unavailable
-            if keeper_id == clean_id:
-                return None
-            target_id = keeper_id
-
-    # 2. Query target canonical video using shared visibility conditions
     disabled_set = _extract_disabled_channel_ids(
         configured=config_sources,
         explicit_disabled=disabled_channel_ids,
@@ -1163,11 +1301,11 @@ def query_catalog_video_detail(  # noqa: C901
     projection_sql = ", ".join(select_fields)
 
     query_sql = f"SELECT {projection_sql} FROM videos v{join_overrides}{where_sql} LIMIT 1"
-    row = conn.execute(query_sql, params).fetchone()
-    if not row:
-        return None
+    return conn.execute(query_sql, params).fetchone()
 
-    # Performer catalog lookup
+
+def _lookup_video_performers_catalog(conn: Any, tables: set[str], row: Any) -> dict:
+    """Map the performers stored on a video row to their vetted catalog entries."""
     perf_catalog_map = {}
     perfs = _json_value(_row_val(row, "performers"), [])
     if isinstance(perfs, list):
@@ -1184,6 +1322,41 @@ def query_catalog_video_detail(  # noqa: C901
         perf_catalog_map = _lookup_performers_catalog(
             conn, tables, names=names, raw_ids=raw_ids
         )
+    return perf_catalog_map
+
+
+def query_catalog_video_detail(
+    conn: Any,
+    video_id: str,
+    *,
+    user_id: str | None = None,
+    disabled_channel_ids: set[str] | None = None,
+    config_sources: Sequence[dict[str, Any]] | None = None,
+) -> VideoItem | None:
+    """Query full video details by canonical ID, resolving duplicate merge aliases."""
+    if not video_id or not str(video_id).strip():
+        return None
+
+    if hasattr(conn, "row_factory") and conn.row_factory is not Record:
+        conn.row_factory = Record
+
+    clean_id = str(video_id).strip()
+    tables, columns = _tables_and_columns(conn)
+
+    # 1. Alias Resolution for Merged Duplicates
+    target_id = _resolve_video_detail_target(conn, tables, clean_id)
+    if target_id is None:
+        return None
+
+    # 2. Query target canonical video using shared visibility conditions
+    row = _fetch_video_detail_row(
+        conn, tables, columns, target_id, disabled_channel_ids, config_sources,
+    )
+    if not row:
+        return None
+
+    # Performer catalog lookup
+    perf_catalog_map = _lookup_video_performers_catalog(conn, tables, row)
 
     user_state = None
     if user_id:
@@ -1911,54 +2084,26 @@ def query_catalog_performers(
     )
 
 
-def query_catalog_performer_detail(  # noqa: C901
-    conn: Any,
-    performer_id: str,
-    *,
-    base_artwork_url: str = "/api/v1/artwork",
-) -> PerformerDetail | None:
-    """Get metadata, movie count, and biographical details for a performer."""
-    clean_id = performer_id.strip()
-    if not clean_id:
-        return None
-
-    is_explicit_name = clean_id.startswith("name:")
-    if is_explicit_name:
-        raw_name = clean_id[5:].strip()
-        lookup_id = None
-    else:
-        lookup_id = clean_id
-        raw_name = None
-
-    tables = _get_existing_tables(conn)
-    columns = _get_table_columns(conn, "videos")
-    has_overrides = "video_metadata_overrides" in tables
-    join_overrides = " LEFT JOIN video_metadata_overrides mo ON mo.video_id = v.id" if has_overrides else ""
-    perf_expr = _effective_value("performers", columns, has_overrides)
-
-    canonical_id: str | None = None
-    canonical_name: str | None = None
-    is_vetted = False
-
-    if is_explicit_name and raw_name:
-        # Explicit name: lookup by name or alias in vetted catalog
-        if "performer_catalog" in tables:
-            row = conn.execute(
-                """
+def _lookup_vetted_performer_by_name(conn: Any, tables: set[str], raw_name: str) -> tuple[str, str] | None:
+    """Find an active vetted performer by display name or approved alias. Returns (id, name) or None."""
+    if "performer_catalog" in tables:
+        row = conn.execute(
+            """
                 SELECT id, name FROM performer_catalog
                 WHERE lower(name) = lower(%s) AND active = true
                 ORDER BY CASE WHEN name = %s THEN 0 ELSE 1 END, id ASC
                 LIMIT 1
                 """,
-                (raw_name, raw_name),
-            ).fetchone()
-            if row:
-                canonical_id = str(row[0] if isinstance(row, (list, tuple)) else row["id"]).strip()
-                canonical_name = str(row[1] if isinstance(row, (list, tuple)) else row["name"]).strip()
-                is_vetted = True
-            elif "performer_catalog_aliases" in tables:
-                arow = conn.execute(
-                    """
+            (raw_name, raw_name),
+        ).fetchone()
+        if row:
+            return (
+                str(row[0] if isinstance(row, (list, tuple)) else row["id"]).strip(),
+                str(row[1] if isinstance(row, (list, tuple)) else row["name"]).strip(),
+            )
+    if "performer_catalog" in tables and "performer_catalog_aliases" in tables:
+        arow = conn.execute(
+            """
                     SELECT c.id, c.name
                     FROM performer_catalog_aliases a
                     JOIN performer_catalog c ON c.id = a.performer_id
@@ -1967,35 +2112,36 @@ def query_catalog_performer_detail(  # noqa: C901
                     ORDER BY CASE WHEN a.alias = %s THEN 0 ELSE 1 END, c.id ASC, a.id ASC
                     LIMIT 1
                     """,
-                    (raw_name, raw_name),
-                ).fetchone()
-                if arow:
-                    canonical_id = str(arow[0] if isinstance(arow, (list, tuple)) else arow["id"]).strip()
-                    canonical_name = str(arow[1] if isinstance(arow, (list, tuple)) else arow["name"]).strip()
-                    is_vetted = True
+            (raw_name, raw_name),
+        ).fetchone()
+        if arow:
+            return (
+                str(arow[0] if isinstance(arow, (list, tuple)) else arow["id"]).strip(),
+                str(arow[1] if isinstance(arow, (list, tuple)) else arow["name"]).strip(),
+            )
+    return None
 
-        if not canonical_name:
-            canonical_id = f"name:{raw_name}"
-            canonical_name = raw_name
-    elif lookup_id:
-        # ID-only lookup: do NOT match on display name or aliases of different people!
-        if "performer_catalog" in tables:
-            row = conn.execute(
-                """
+
+def _lookup_vetted_performer_by_id(conn: Any, tables: set[str], lookup_id: str) -> tuple[str, str] | None:
+    """Find an active vetted performer by catalog ID or approved alias. Returns (id, name) or None."""
+    if "performer_catalog" in tables:
+        row = conn.execute(
+            """
                 SELECT id, name FROM performer_catalog
                 WHERE id = %s AND active = true
                 ORDER BY id ASC
                 LIMIT 1
                 """,
-                (lookup_id,),
-            ).fetchone()
-            if row:
-                canonical_id = str(row[0] if isinstance(row, (list, tuple)) else row["id"]).strip()
-                canonical_name = str(row[1] if isinstance(row, (list, tuple)) else row["name"]).strip()
-                is_vetted = True
-            elif "performer_catalog_aliases" in tables:
-                arow = conn.execute(
-                    """
+            (lookup_id,),
+        ).fetchone()
+        if row:
+            return (
+                str(row[0] if isinstance(row, (list, tuple)) else row["id"]).strip(),
+                str(row[1] if isinstance(row, (list, tuple)) else row["name"]).strip(),
+            )
+    if "performer_catalog" in tables and "performer_catalog_aliases" in tables:
+        arow = conn.execute(
+            """
                     SELECT c.id, c.name
                     FROM performer_catalog_aliases a
                     JOIN performer_catalog c ON c.id = a.performer_id
@@ -2004,17 +2150,21 @@ def query_catalog_performer_detail(  # noqa: C901
                     ORDER BY c.id ASC, a.id ASC
                     LIMIT 1
                     """,
-                    (lookup_id,),
-                ).fetchone()
-                if arow:
-                    canonical_id = str(arow[0] if isinstance(arow, (list, tuple)) else arow["id"]).strip()
-                    canonical_name = str(arow[1] if isinstance(arow, (list, tuple)) else arow["name"]).strip()
-                    is_vetted = True
+            (lookup_id,),
+        ).fetchone()
+        if arow:
+            return (
+                str(arow[0] if isinstance(arow, (list, tuple)) else arow["id"]).strip(),
+                str(arow[1] if isinstance(arow, (list, tuple)) else arow["name"]).strip(),
+            )
+    return None
 
-        if not canonical_name:
-            # Check if this raw ID exists as an unresolved raw ID in videos
-            v_row = conn.execute(
-                f"""
+
+def _lookup_unresolved_performer_name(conn: Any, join_overrides: str, perf_expr: str, lookup_id: str) -> str | None:
+    """Return the display name stored with an unresolved raw performer ID in videos, or None."""
+    # Check if this raw ID exists as an unresolved raw ID in videos
+    v_row = conn.execute(
+        f"""
                 SELECT elem ->> 'name'
                 FROM videos v{join_overrides},
                 LATERAL jsonb_array_elements(
@@ -2027,14 +2177,188 @@ def query_catalog_performer_detail(  # noqa: C901
                 ORDER BY v.id ASC
                 LIMIT 1
                 """,
-                (lookup_id,),
-            ).fetchone()
-            if v_row:
-                canonical_id = lookup_id
-                canonical_name = str(v_row[0] if isinstance(v_row, (list, tuple)) else v_row["name"]).strip()
-            else:
+        (lookup_id,),
+    ).fetchone()
+    if not v_row:
+        return None
+    return str(v_row[0] if isinstance(v_row, (list, tuple)) else v_row["name"]).strip()
+
+
+def _resolve_performer_identity(
+    conn: Any,
+    tables: set[str],
+    clean_id: str,
+    join_overrides: str,
+    perf_expr: str,
+) -> tuple[str | None, str | None, bool] | None:
+    """Resolve a requested performer ID or name to (canonical_id, canonical_name, is_vetted).
+
+    Returns None when the requested ID is unknown and matches no video, which callers report as 404.
+    """
+    is_explicit_name = clean_id.startswith("name:")
+    if is_explicit_name:
+        raw_name = clean_id[5:].strip()
+        lookup_id = None
+    else:
+        lookup_id = clean_id
+        raw_name = None
+
+    canonical_id: str | None = None
+    canonical_name: str | None = None
+    is_vetted = False
+
+    if is_explicit_name and raw_name:
+        # Explicit name: lookup by name or alias in vetted catalog
+        resolved = _lookup_vetted_performer_by_name(conn, tables, raw_name)
+        if resolved:
+            canonical_id, canonical_name = resolved
+            is_vetted = True
+
+        if not canonical_name:
+            canonical_id = f"name:{raw_name}"
+            canonical_name = raw_name
+    elif lookup_id:
+        # ID-only lookup: do NOT match on display name or aliases of different people!
+        resolved = _lookup_vetted_performer_by_id(conn, tables, lookup_id)
+        if resolved:
+            canonical_id, canonical_name = resolved
+            is_vetted = True
+
+        if not canonical_name:
+            unresolved_name = _lookup_unresolved_performer_name(conn, join_overrides, perf_expr, lookup_id)
+            if unresolved_name is None:
                 # Unmatched ID not found in catalog and not found in any video: 404
                 return None
+            canonical_id = lookup_id
+            canonical_name = unresolved_name
+
+    return canonical_id, canonical_name, is_vetted
+
+
+def _lookup_performer_bio(conn: Any, tables: set[str], canonical_name: str):
+    """Return (bio, birth, nationality, aliases) from performer_bios, or empty values when no row matches."""
+    bio_cols = _get_table_columns(conn, "performer_bios")
+    nat_sql = "nationality" if "nationality" in bio_cols else "''"
+    b_row = conn.execute(
+        f"SELECT bio, birth, aliases, {nat_sql} FROM performer_bios WHERE lower(name) = lower(%s) ORDER BY CASE WHEN name = %s THEN 0 ELSE 1 END, updated_at DESC NULLS LAST, name ASC LIMIT 1",
+        (canonical_name, canonical_name),
+    ).fetchone()
+    if not b_row:
+        return None, None, None, []
+    bio_val = str(b_row[0] or "").strip()
+    birth_val = str(b_row[1] or "").strip()
+    nat_val = str(b_row[3] or "").strip()
+    aliases = _json_value(b_row[2], [])
+    if not isinstance(aliases, list):
+        aliases = []
+    return bio_val or None, birth_val or None, nat_val or None, aliases
+
+
+def _merge_catalog_aliases(conn: Any, canonical_name: str, aliases: list[str]) -> list[str]:
+    """Append approved performer_aliases rows for a canonical name to the alias list."""
+    a_rows = conn.execute(
+        "SELECT alias FROM performer_aliases WHERE lower(canonical) = lower(%s)",
+        (canonical_name,),
+    ).fetchall()
+    for ar in a_rows:
+        al = str(ar[0] if isinstance(ar, (list, tuple)) else ar["alias"]).strip()
+        if al and al not in aliases:
+            aliases.append(al)
+    return aliases
+
+
+def _performer_has_photo(conn: Any, canonical_name: str) -> bool:
+    """Return True when performer_photos holds a non-empty thumbnail for the performer."""
+    p_row = conn.execute(
+        "SELECT thumb FROM performer_photos WHERE lower(name) = lower(%s) ORDER BY CASE WHEN name = %s THEN 0 ELSE 1 END, updated_at DESC NULLS LAST, name ASC LIMIT 1",
+        (canonical_name, canonical_name),
+    ).fetchone()
+    return bool(p_row and (p_row[0] if isinstance(p_row, (list, tuple)) else p_row["thumb"]))
+
+
+def _performer_video_match(
+    perf_expr: str,
+    canonical_id: str | None,
+    canonical_name: str | None,
+    is_vetted: bool,
+) -> tuple[list[str], list[Any]]:
+    """Return the extra WHERE clause and params that select videos featuring this performer."""
+    if canonical_id and canonical_id.startswith("name:"):
+        clause = f"""EXISTS (
+                SELECT 1 FROM jsonb_array_elements(
+                    CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
+                ) elem
+                WHERE (
+                    (jsonb_typeof(elem) = 'string' AND lower(elem #>> '{{}}') = lower(%s))
+                    OR (jsonb_typeof(elem) = 'object' AND (elem ->> 'id' IS NULL OR elem ->> 'id' = '') AND lower(elem ->> 'name') = lower(%s))
+                )
+            )"""
+        return [clause], [canonical_name, canonical_name]
+    if is_vetted and canonical_id:
+        clause = f"""EXISTS (
+                SELECT 1 FROM jsonb_array_elements(
+                    CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
+                ) elem
+                WHERE (
+                    (jsonb_typeof(elem) = 'object' AND elem ->> 'id' = %s)
+                    OR ((jsonb_typeof(elem) = 'string' OR elem ->> 'id' IS NULL OR elem ->> 'id' = '') AND lower(COALESCE(elem ->> 'name', elem #>> '{{}}')) = lower(%s))
+                )
+            )"""
+        return [clause], [canonical_id, canonical_name]
+    if canonical_id:
+        # Unresolved raw ID: ONLY match elem ->> 'id' = %s without mapping to different same-name performer!
+        clause = f"""EXISTS (
+                SELECT 1 FROM jsonb_array_elements(
+                    CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
+                ) elem
+                WHERE jsonb_typeof(elem) = 'object' AND elem ->> 'id' = %s
+            )"""
+        return [clause], [canonical_id]
+    return [], []
+
+
+def _count_performer_videos(conn: Any, join_overrides: str, conditions: list[str], params: list[Any]) -> int:
+    """Count distinct visible videos matching the WHERE conditions."""
+    where_sql = "WHERE " + " AND ".join(conditions)
+    count_row = conn.execute(f"SELECT COUNT(DISTINCT v.id) FROM videos v{join_overrides} {where_sql}", params).fetchone()
+    return int(count_row[0] if count_row else 0)
+
+
+def _performer_in_catalog(conn: Any, tables: set[str], canonical_id: str | None) -> bool:
+    """Return True when a vetted, active performer_catalog row exists for a non-name canonical ID."""
+    if "performer_catalog" in tables and canonical_id and not canonical_id.startswith("name:"):
+        return bool(
+            conn.execute(
+                "SELECT 1 FROM performer_catalog WHERE id = %s AND active = true LIMIT 1",
+                (canonical_id,),
+            ).fetchone()
+        )
+    return False
+
+
+def query_catalog_performer_detail(
+    conn: Any,
+    performer_id: str,
+    *,
+    base_artwork_url: str = "/api/v1/artwork",
+) -> PerformerDetail | None:
+    """Get metadata, movie count, and biographical details for a performer."""
+    clean_id = performer_id.strip()
+    if not clean_id:
+        return None
+
+    is_explicit_name = clean_id.startswith("name:")
+
+    tables = _get_existing_tables(conn)
+    columns = _get_table_columns(conn, "videos")
+    has_overrides = "video_metadata_overrides" in tables
+    join_overrides = " LEFT JOIN video_metadata_overrides mo ON mo.video_id = v.id" if has_overrides else ""
+    perf_expr = _effective_value("performers", columns, has_overrides)
+
+    identity = _resolve_performer_identity(conn, tables, clean_id, join_overrides, perf_expr)
+    if identity is None:
+        return None
+    canonical_id, canonical_name, is_vetted = identity
 
     # Bio, birth, nationality, aliases
     bio: str | None = None
@@ -2046,44 +2370,17 @@ def query_catalog_performer_detail(  # noqa: C901
     populate_bio_photo = is_vetted or is_explicit_name
 
     if populate_bio_photo and "performer_bios" in tables and canonical_name:
-        bio_cols = _get_table_columns(conn, "performer_bios")
-        nat_sql = "nationality" if "nationality" in bio_cols else "''"
-        b_row = conn.execute(
-            f"SELECT bio, birth, aliases, {nat_sql} FROM performer_bios WHERE lower(name) = lower(%s) ORDER BY CASE WHEN name = %s THEN 0 ELSE 1 END, updated_at DESC NULLS LAST, name ASC LIMIT 1",
-            (canonical_name, canonical_name),
-        ).fetchone()
-        if b_row:
-            bio_val = str(b_row[0] or "").strip()
-            birth_val = str(b_row[1] or "").strip()
-            nat_val = str(b_row[3] or "").strip()
-            bio = bio_val or None
-            birth = birth_val or None
-            nationality = nat_val or None
-            aliases = _json_value(b_row[2], [])
-            if not isinstance(aliases, list):
-                aliases = []
+        bio, birth, nationality, aliases = _lookup_performer_bio(conn, tables, canonical_name)
 
     if populate_bio_photo and "performer_aliases" in tables and canonical_name:
-        a_rows = conn.execute(
-            "SELECT alias FROM performer_aliases WHERE lower(canonical) = lower(%s)",
-            (canonical_name,),
-        ).fetchall()
-        for ar in a_rows:
-            al = str(ar[0] if isinstance(ar, (list, tuple)) else ar["alias"]).strip()
-            if al and al not in aliases:
-                aliases.append(al)
+        aliases = _merge_catalog_aliases(conn, canonical_name, aliases)
 
     aliases = sorted(set(aliases))
 
     # Photos
     has_photo = False
     if populate_bio_photo and "performer_photos" in tables and canonical_name:
-        p_row = conn.execute(
-            "SELECT thumb FROM performer_photos WHERE lower(name) = lower(%s) ORDER BY CASE WHEN name = %s THEN 0 ELSE 1 END, updated_at DESC NULLS LAST, name ASC LIMIT 1",
-            (canonical_name, canonical_name),
-        ).fetchone()
-        if p_row and (p_row[0] if isinstance(p_row, (list, tuple)) else p_row["thumb"]):
-            has_photo = True
+        has_photo = _performer_has_photo(conn, canonical_name)
 
     # Safe same-origin artwork URL when performer has photo
     photo_url: str | None = (
@@ -2097,59 +2394,14 @@ def query_catalog_performer_detail(  # noqa: C901
     conditions, params = _build_visibility_conditions(
         tables, columns, disabled_channel_ids=disabled_set or None, table_alias="v"
     )
-    if canonical_id and canonical_id.startswith("name:"):
-        conditions.append(
-            f"""EXISTS (
-                SELECT 1 FROM jsonb_array_elements(
-                    CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
-                ) elem
-                WHERE (
-                    (jsonb_typeof(elem) = 'string' AND lower(elem #>> '{{}}') = lower(%s))
-                    OR (jsonb_typeof(elem) = 'object' AND (elem ->> 'id' IS NULL OR elem ->> 'id' = '') AND lower(elem ->> 'name') = lower(%s))
-                )
-            )"""
-        )
-        params.extend([canonical_name, canonical_name])
-    elif is_vetted and canonical_id:
-        conditions.append(
-            f"""EXISTS (
-                SELECT 1 FROM jsonb_array_elements(
-                    CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
-                ) elem
-                WHERE (
-                    (jsonb_typeof(elem) = 'object' AND elem ->> 'id' = %s)
-                    OR ((jsonb_typeof(elem) = 'string' OR elem ->> 'id' IS NULL OR elem ->> 'id' = '') AND lower(COALESCE(elem ->> 'name', elem #>> '{{}}')) = lower(%s))
-                )
-            )"""
-        )
-        params.extend([canonical_id, canonical_name])
-    elif canonical_id:
-        # Unresolved raw ID: ONLY match elem ->> 'id' = %s without mapping to different same-name performer!
-        conditions.append(
-            f"""EXISTS (
-                SELECT 1 FROM jsonb_array_elements(
-                    CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
-                ) elem
-                WHERE jsonb_typeof(elem) = 'object' AND elem ->> 'id' = %s
-            )"""
-        )
-        params.append(canonical_id)
-
-    where_sql = "WHERE " + " AND ".join(conditions)
-    count_row = conn.execute(f"SELECT COUNT(DISTINCT v.id) FROM videos v{join_overrides} {where_sql}", params).fetchone()
-    video_count = int(count_row[0] if count_row else 0)
+    match_conditions, match_params = _performer_video_match(perf_expr, canonical_id, canonical_name, is_vetted)
+    conditions.extend(match_conditions)
+    params.extend(match_params)
+    video_count = _count_performer_videos(conn, join_overrides, conditions, params)
 
     # 404 Guard: if 0 videos and no bio/photo/catalog presence, return None
     if video_count == 0 and bio is None and not has_photo:
-        is_in_catalog = False
-        if "performer_catalog" in tables and canonical_id and not canonical_id.startswith("name:"):
-            is_in_catalog = bool(
-                conn.execute(
-                    "SELECT 1 FROM performer_catalog WHERE id = %s AND active = true LIMIT 1",
-                    (canonical_id,),
-                ).fetchone()
-            )
-        if not is_in_catalog:
+        if not _performer_in_catalog(conn, tables, canonical_id):
             return None
 
     return PerformerDetail(
@@ -2163,4 +2415,3 @@ def query_catalog_performer_detail(  # noqa: C901
         birth=birth,
         aliases=aliases,
     )
-

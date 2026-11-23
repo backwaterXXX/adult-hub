@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import secrets
 import time
-from typing import Any
+from typing import Any, NoReturn
 
 from common.client_auth.crypto import (
     TokenValidationError,
@@ -228,7 +228,62 @@ def authenticate_by_password(
     }
 
 
-def refresh_session_token(conn, refresh_token: str) -> dict[str, Any]:  # noqa: C901
+def _fetch_spent_token_row(conn, token_hash: str):
+    """Return the spent-token row (session_id) for a refresh token hash, or None."""
+    spent_cursor = conn.execute(
+        "SELECT session_id FROM client_session_spent_tokens WHERE token_hash = %s",
+        (token_hash,),
+    )
+    return spent_cursor.fetchone()
+
+
+def _find_replayed_session_row(conn, incoming_hash: str):
+    """Look up an incoming refresh token hash among spent tokens and previous refresh hashes."""
+    spent_row = _fetch_spent_token_row(conn, incoming_hash)
+    if not spent_row:
+        prev_cursor = conn.execute(
+            "SELECT id FROM client_sessions WHERE previous_refresh_token_hash = %s",
+            (incoming_hash,),
+        )
+        spent_row = prev_cursor.fetchone()
+    return spent_row
+
+
+def _revoke_replayed_session(conn, session_id) -> NoReturn:
+    """Revoke a session whose refresh token was replayed, commit immediately, and reject the request."""
+    conn.execute(
+        "UPDATE client_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE id = %s",
+        (session_id,),
+    )
+    conn.commit()
+    raise AuthenticationFailed("Refresh token replayed. Session has been revoked.")
+
+
+def _lock_refresh_session_row(conn, incoming_hash: str):
+    """Lock the session row matching the refresh token hash, or reject the token."""
+    # Match both active refresh_token_hash and previous_refresh_token_hash under lock
+    # so concurrent rotations wait on the exact session row and deterministically trigger replay revocation!
+    cursor = conn.execute(
+        "SELECT s.id, s.user_id, s.device_id, s.device_name, "
+        "(s.refresh_expires_at <= CURRENT_TIMESTAMP) AS is_expired, s.revoked_at, "
+        "s.refresh_token_hash, s.previous_refresh_token_hash, u.username, u.is_active "
+        "FROM client_sessions s "
+        "JOIN client_users u ON s.user_id = u.id "
+        "WHERE s.refresh_token_hash = %s OR s.previous_refresh_token_hash = %s "
+        "FOR UPDATE OF s",
+        (incoming_hash, incoming_hash),
+    )
+    row = cursor.fetchone()
+    if row:
+        return row
+    # Check spent tokens table again in case token was rotated multiple times
+    spent_row = _fetch_spent_token_row(conn, incoming_hash)
+    if spent_row:
+        _revoke_replayed_session(conn, spent_row[0])
+    raise AuthenticationFailed("Invalid refresh token")
+
+
+def refresh_session_token(conn, refresh_token: str) -> dict[str, Any]:
     """Refresh an access token using single-use rotation with row locking and persistent replay detection.
 
     Enforces RFC 6819 strict rotation without insecure grace windows.
@@ -243,57 +298,13 @@ def refresh_session_token(conn, refresh_token: str) -> dict[str, Any]:  # noqa: 
 
     # 1. Persistent Replay Detection:
     # Check spent tokens table AND previous_refresh_token_hash on sessions
-    spent_cursor = conn.execute(
-        "SELECT session_id FROM client_session_spent_tokens WHERE token_hash = %s",
-        (incoming_hash,),
-    )
-    spent_row = spent_cursor.fetchone()
-    if not spent_row:
-        prev_cursor = conn.execute(
-            "SELECT id FROM client_sessions WHERE previous_refresh_token_hash = %s",
-            (incoming_hash,),
-        )
-        spent_row = prev_cursor.fetchone()
-
+    spent_row = _find_replayed_session_row(conn, incoming_hash)
     if spent_row:
         # Compromised family: immediately revoke session in DB and commit!
-        compromised_session_id = spent_row[0]
-        conn.execute(
-            "UPDATE client_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE id = %s",
-            (compromised_session_id,),
-        )
-        conn.commit()
-        raise AuthenticationFailed("Refresh token replayed. Session has been revoked.")
+        _revoke_replayed_session(conn, spent_row[0])
 
     # 2. Active Token Lookup with Row Locking (FOR UPDATE)
-    # Match both active refresh_token_hash and previous_refresh_token_hash under lock
-    # so concurrent rotations wait on the exact session row and deterministically trigger replay revocation!
-    cursor = conn.execute(
-        "SELECT s.id, s.user_id, s.device_id, s.device_name, "
-        "(s.refresh_expires_at <= CURRENT_TIMESTAMP) AS is_expired, s.revoked_at, "
-        "s.refresh_token_hash, s.previous_refresh_token_hash, u.username, u.is_active "
-        "FROM client_sessions s "
-        "JOIN client_users u ON s.user_id = u.id "
-        "WHERE s.refresh_token_hash = %s OR s.previous_refresh_token_hash = %s "
-        "FOR UPDATE OF s",
-        (incoming_hash, incoming_hash),
-    )
-    row = cursor.fetchone()
-    if not row:
-        # Check spent tokens table again in case token was rotated multiple times
-        spent_cursor = conn.execute(
-            "SELECT session_id FROM client_session_spent_tokens WHERE token_hash = %s",
-            (incoming_hash,),
-        )
-        spent_row = spent_cursor.fetchone()
-        if spent_row:
-            conn.execute(
-                "UPDATE client_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE id = %s",
-                (spent_row[0],),
-            )
-            conn.commit()
-            raise AuthenticationFailed("Refresh token replayed. Session has been revoked.")
-        raise AuthenticationFailed("Invalid refresh token")
+    row = _lock_refresh_session_row(conn, incoming_hash)
 
     (
         session_id,
@@ -314,12 +325,7 @@ def refresh_session_token(conn, refresh_token: str) -> dict[str, Any]:  # noqa: 
     # If incoming hash is not current_refresh_hash (e.g. it equals previous_refresh_hash,
     # or another concurrent transaction rotated it while this transaction waited for the row lock):
     if current_refresh_hash != incoming_hash:
-        conn.execute(
-            "UPDATE client_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE id = %s",
-            (session_id,),
-        )
-        conn.commit()
-        raise AuthenticationFailed("Refresh token replayed. Session has been revoked.")
+        _revoke_replayed_session(conn, session_id)
 
     if not is_active:
         raise AuthenticationFailed("User account is disabled")
@@ -360,12 +366,7 @@ def refresh_session_token(conn, refresh_token: str) -> dict[str, Any]:  # noqa: 
     )
     if update_cur.rowcount == 0:
         # Concurrent rotation occurred! Revoke session family and deny
-        conn.execute(
-            "UPDATE client_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE id = %s",
-            (session_id,),
-        )
-        conn.commit()
-        raise AuthenticationFailed("Refresh token replayed. Session has been revoked.")
+        _revoke_replayed_session(conn, session_id)
 
     # Record spent token in persistent spent token table
     conn.execute(
@@ -565,19 +566,9 @@ def approve_pairing(conn, pairing_code: str, approver_user_id: str | None = None
     return {"approved": True, "device_name": device_name}
 
 
-def poll_pairing_status(conn, secret: str, client_ip: str) -> dict[str, Any]:  # noqa: C901
-    """Poll TV pairing status using private secret.
-
-    Atomic claim and one-time token issuance.
-    Strictly prevents database writes for unknown pairing secrets.
-    Poll count increments and rate limits for legitimate sessions are committed immediately to DB.
-    """
-    if not isinstance(secret, str) or not secret:
-        raise BoundedValidationError("Pairing secret is required")
-
-    secret_hash = _safe_hash_token(secret, name="secret")
-
-    # 1. Lock row for status check FIRST before performing any rate limit writes
+def _lock_pairing_row(conn, secret_hash: str):
+    """Lock the pairing session row for a secret hash. Unknown secrets cause no database writes."""
+    # Lock row for status check FIRST before performing any rate limit writes
     # Prevents database writes/bloat for bogus or unknown pairing secrets
     cursor = conn.execute(
         "SELECT p.id, p.device_name, p.device_id, p.user_id, p.status, p.poll_attempts, "
@@ -594,6 +585,103 @@ def poll_pairing_status(conn, secret: str, client_ip: str) -> dict[str, Any]:  #
     if not row:
         # Unknown pairing secret: strictly zero writes to database (prevents table bloat & denial of service)
         raise PairingNotFoundOrExpired("Pairing session not found")
+    return row
+
+
+def _mark_pairing_expired(conn, session_id) -> None:
+    """Set a pairing session to expired and commit immediately."""
+    conn.execute(
+        "UPDATE client_pairing_sessions SET status = 'expired' WHERE id = %s",
+        (session_id,),
+    )
+    conn.commit()
+
+
+def _exchange_approved_pairing(
+    conn,
+    session_id,
+    user_id,
+    device_id,
+    device_name,
+    is_active,
+    username,
+) -> dict[str, Any]:
+    """Atomically exchange an approved pairing for a new client session and return its tokens."""
+    # Atomic claim: one-time exchange
+    update_cur = conn.execute(
+        "UPDATE client_pairing_sessions SET "
+        "status = 'exchanged', "
+        "exchanged_at = CURRENT_TIMESTAMP "
+        "WHERE id = %s AND status = 'approved' AND expires_at > CURRENT_TIMESTAMP",
+        (session_id,),
+    )
+    if update_cur.rowcount == 0:
+        raise PairingAlreadyExchanged("Pairing session has already been exchanged")
+
+    # Validate that user_id is non-null and user is active
+    if not user_id or not is_active:
+        conn.execute(
+            "UPDATE client_pairing_sessions SET status = 'revoked' WHERE id = %s",
+            (session_id,),
+        )
+        conn.commit()
+        raise AuthenticationFailed("User account associated with pairing is inactive or invalid")
+
+    access_token = generate_token("ah_tok_")
+    refresh_token = generate_token("ah_ref_")
+
+    access_hash = hash_token(access_token)
+    refresh_hash = hash_token(refresh_token)
+
+    now_epoch = time.time()
+    access_expires_epoch = now_epoch + ACCESS_TOKEN_LIFETIME_SECONDS
+    refresh_expires_epoch = now_epoch + REFRESH_TOKEN_LIFETIME_SECONDS
+
+    client_session_id = f"sess_{secrets.token_hex(16)}"
+    conn.execute(
+        "INSERT INTO client_sessions ("
+        "id, user_id, device_id, device_name, access_token_hash, refresh_token_hash, "
+        "access_expires_at, refresh_expires_at"
+        ") VALUES (%s, %s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s))",
+        (
+            client_session_id,
+            user_id,
+            device_id or "tv-paired",
+            device_name or "Android TV",
+            access_hash,
+            refresh_hash,
+            access_expires_epoch,
+            refresh_expires_epoch,
+        ),
+    )
+    conn.commit()
+
+    return {
+        "status": "approved",
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": ACCESS_TOKEN_LIFETIME_SECONDS,
+        "refresh_token": refresh_token,
+        "user": {
+            "id": user_id,
+            "username": username or "owner",
+        },
+    }
+
+
+def poll_pairing_status(conn, secret: str, client_ip: str) -> dict[str, Any]:
+    """Poll TV pairing status using private secret.
+
+    Atomic claim and one-time token issuance.
+    Strictly prevents database writes for unknown pairing secrets.
+    Poll count increments and rate limits for legitimate sessions are committed immediately to DB.
+    """
+    if not isinstance(secret, str) or not secret:
+        raise BoundedValidationError("Pairing secret is required")
+
+    secret_hash = _safe_hash_token(secret, name="secret")
+
+    row = _lock_pairing_row(conn, secret_hash)
 
     (
         session_id,
@@ -622,20 +710,12 @@ def poll_pairing_status(conn, secret: str, client_ip: str) -> dict[str, Any]:  #
     conn.commit()
 
     if new_attempts > MAX_PAIRING_POLLS:
-        conn.execute(
-            "UPDATE client_pairing_sessions SET status = 'expired' WHERE id = %s",
-            (session_id,),
-        )
-        conn.commit()
+        _mark_pairing_expired(conn, session_id)
         raise RateLimitExceeded("Maximum polling attempts exceeded for this pairing session")
 
     # Check expiry
     if is_expired:
-        conn.execute(
-            "UPDATE client_pairing_sessions SET status = 'expired' WHERE id = %s",
-            (session_id,),
-        )
-        conn.commit()
+        _mark_pairing_expired(conn, session_id)
         raise PairingNotFoundOrExpired("Pairing session has expired")
 
     if status == "pending":
@@ -645,66 +725,9 @@ def poll_pairing_status(conn, secret: str, client_ip: str) -> dict[str, Any]:  #
         }
 
     if status == "approved":
-        # Atomic claim: one-time exchange
-        update_cur = conn.execute(
-            "UPDATE client_pairing_sessions SET "
-            "status = 'exchanged', "
-            "exchanged_at = CURRENT_TIMESTAMP "
-            "WHERE id = %s AND status = 'approved' AND expires_at > CURRENT_TIMESTAMP",
-            (session_id,),
+        return _exchange_approved_pairing(
+            conn, session_id, user_id, device_id, device_name, is_active, username,
         )
-        if update_cur.rowcount == 0:
-            raise PairingAlreadyExchanged("Pairing session has already been exchanged")
-
-        # Validate that user_id is non-null and user is active
-        if not user_id or not is_active:
-            conn.execute(
-                "UPDATE client_pairing_sessions SET status = 'revoked' WHERE id = %s",
-                (session_id,),
-            )
-            conn.commit()
-            raise AuthenticationFailed("User account associated with pairing is inactive or invalid")
-
-        access_token = generate_token("ah_tok_")
-        refresh_token = generate_token("ah_ref_")
-
-        access_hash = hash_token(access_token)
-        refresh_hash = hash_token(refresh_token)
-
-        now_epoch = time.time()
-        access_expires_epoch = now_epoch + ACCESS_TOKEN_LIFETIME_SECONDS
-        refresh_expires_epoch = now_epoch + REFRESH_TOKEN_LIFETIME_SECONDS
-
-        client_session_id = f"sess_{secrets.token_hex(16)}"
-        conn.execute(
-            "INSERT INTO client_sessions ("
-            "id, user_id, device_id, device_name, access_token_hash, refresh_token_hash, "
-            "access_expires_at, refresh_expires_at"
-            ") VALUES (%s, %s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s))",
-            (
-                client_session_id,
-                user_id,
-                device_id or "tv-paired",
-                device_name or "Android TV",
-                access_hash,
-                refresh_hash,
-                access_expires_epoch,
-                refresh_expires_epoch,
-            ),
-        )
-        conn.commit()
-
-        return {
-            "status": "approved",
-            "access_token": access_token,
-            "token_type": "Bearer",
-            "expires_in": ACCESS_TOKEN_LIFETIME_SECONDS,
-            "refresh_token": refresh_token,
-            "user": {
-                "id": user_id,
-                "username": username or "owner",
-            },
-        }
 
     if status == "exchanged":
         raise PairingAlreadyExchanged("Pairing session has already been exchanged")
