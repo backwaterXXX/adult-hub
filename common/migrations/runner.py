@@ -105,6 +105,25 @@ SQUASH_MARKERS: tuple[tuple[str, str], ...] = (
     ),
 )
 
+USER_STATE_TABLES: tuple[str, ...] = (
+    "client_users",
+    "client_user_watch_progress",
+    "client_user_favorites",
+)
+
+AUTH_TABLES: tuple[str, ...] = (
+    "client_session_spent_tokens",
+    "client_sessions",
+    "client_pairing_sessions",
+    "client_auth_rate_limits",
+)
+
+PRESERVED_RECREATE_TABLES: tuple[str, ...] = (
+    *USER_STATE_TABLES,
+    "client_sessions",
+    "client_session_spent_tokens",
+)
+
 APPLICATION_TABLES: tuple[str, ...] = (
     "video_sources",
     "video_categories",
@@ -157,6 +176,8 @@ APPLICATION_TABLES: tuple[str, ...] = (
     "admin_quality_acknowledgements",
     "external_metadata_attempts",
     "metadata_review_proposals",
+    *USER_STATE_TABLES,
+    *AUTH_TABLES,
 )
 
 
@@ -427,12 +448,25 @@ def apply_migrations(
 
 def recreate_database(
     conn_or_url: db.Connection | str | None = None,
+    *,
+    preserve_user_state: bool = True,
     **kwargs: Any,
 ) -> list[MigrationRecord]:
-    """Drop all hub tables and run all versioned migrations from scratch."""
+    """Drop hub tables and run all versioned migrations from scratch.
+
+    By default, user state tables (`USER_STATE_TABLES`) are preserved across
+    recreation while all prior application tables are dropped and rebuilt.
+    Pass ``preserve_user_state=False`` to drop user state tables as well.
+    """
     conn, owned = _resolve_connection(conn_or_url)
     try:
-        all_to_drop = (*APPLICATION_TABLES, SCHEMA_MIGRATIONS_TABLE)
+        if preserve_user_state:
+            tables_to_drop = [
+                table for table in APPLICATION_TABLES if table not in PRESERVED_RECREATE_TABLES
+            ]
+        else:
+            tables_to_drop = list(APPLICATION_TABLES)
+        all_to_drop = (*tables_to_drop, SCHEMA_MIGRATIONS_TABLE)
         with conn:
             for table in all_to_drop:
                 conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")

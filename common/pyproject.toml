@@ -12,7 +12,7 @@ dependencies = ["PyYAML==6.0.3", "psycopg[binary]==3.2.10"]
 # The project root (this directory) IS the `common` package directory
 # (it holds __init__.py + config_loader.py), so map the package name to ".".
 [tool.setuptools]
-packages = ["common", "common.migrations"]
+packages = ["common", "common.migrations", "common.client_auth"]
 package-dir = { common = "." }
 
 # The resolver image installs this package as a wheel (resolver/Dockerfile), so

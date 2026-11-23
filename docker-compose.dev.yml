@@ -69,6 +69,7 @@ services:
       ADMIN_WORKER_CAPABILITIES_PATH: /data/cache/worker-capabilities.json
       BACKUP_DIR: /data/backups
       ADMIN_PUBLIC: "false"
+      ADULT_HUB_ENABLE_DESKTOP_API: "${ADULT_HUB_ENABLE_DESKTOP_API:-false}"
       ADMIN_WRITE_TOKEN: dev-only-local
       ADMIN_DUPLICATE_TOKEN: dev-only-local
       PUBLIC_DOMAIN: dev.invalid

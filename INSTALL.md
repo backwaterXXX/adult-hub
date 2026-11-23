@@ -41,6 +41,10 @@ For a fast three-command setup on a new system, see the [Quick Start in README.m
    - [Recommended Jellyfin Library Configuration](#recommended-jellyfin-library-configuration)
    - [Optional API Key Integration](#optional-api-key-integration)
 9. [Reverse Proxy and Network Configuration](#9-reverse-proxy-and-network-configuration)
+   - [Routing Requirements](#routing-requirements)
+   - [Adult Hub Client API v1](#adult-hub-client-api-v1)
+   - [Example Caddy Configuration](#example-caddy-configuration)
+   - [Trusted Proxy Configuration](#trusted-proxy-configuration)
 10. [Troubleshooting and Common Issues](#10-troubleshooting-and-common-issues)
 11. [Operational Limitations and Safety Bounds](#11-operational-limitations-and-safety-bounds)
 12. [Verification Scope and Runtime Limits](#12-verification-scope-and-runtime-limits)
@@ -626,9 +630,42 @@ When accessing Adult Hub from remote devices or outside your home network, use a
 ### Routing Requirements
 
 - **Stream Playback & Artwork**: Route `/admin/play/*` and `/admin/api/thumb*` to the **Resolver** service (`http://127.0.0.1:8090`). These endpoints are needed by remote companion players.
+- **Client API v1**: Route `/api/v1/*` to the **Resolver** service (`http://127.0.0.1:8090`), preserving the prefix. Requires setting `ADULT_HUB_ENABLE_DESKTOP_API=true`.
 - **Management Interface**: Restrict `/admin/*` access to trusted networks (LAN / VPN) or protect it with reverse proxy authentication. Do not publish `/admin/*` publicly without explicit access controls.
 - **Jellyfin App**: Route all other requests (including root `/` and Jellyfin web app paths) to the **Jellyfin** service (`http://127.0.0.1:8096`).
 - Ensure client-facing URLs in STRM files use HTTPS by setting `RESOLVER_PUBLIC_URL` in `.env` (e.g., `RESOLVER_PUBLIC_URL=https://hub.example.com`).
+
+### Adult Hub Client API v1
+
+For deployments supporting direct client applications (such as the desktop client) using the Client API v1:
+
+- **Service Opt-In**: The Client API mount is opt-in and disabled by default. Set `ADULT_HUB_ENABLE_DESKTOP_API=true` in `.env` for the resolver service to mount `/api/v1/*`.
+- **Prefix Preservation**: Route `/api/v1/*` to the Resolver service (`127.0.0.1:8090`), preserving the full path prefix. Do **not** use `handle_path` or strip the `/api/v1` prefix.
+- **Security & Headers**: Keep `/admin*` behind trusted networks or reverse proxy authentication—do not expose administrative interfaces publicly. Keep HTTPS enforced and forward standard proxy headers including `Host` and `X-Forwarded-Proto`.
+- **Trusted Proxy IPs**: Allow exact reverse proxy IP address(es) via the existing `FORWARDED_ALLOW_IPS` or `RESOLVER_TRUSTED_PROXY_IPS` configuration in `.env` (e.g. `RESOLVER_TRUSTED_PROXY_IPS=127.0.0.1,::1` or `FORWARDED_ALLOW_IPS=127.0.0.1`) so client IP addresses and protocols are securely recognized.
+
+#### Caddy Snippet
+
+```caddy
+# Forward Adult Hub Client API v1 to Resolver (preserve path prefix)
+handle /api/v1/* {
+    reverse_proxy 127.0.0.1:8090
+}
+```
+
+#### Operator Verification
+
+After configuring the reverse proxy and starting the service with `ADULT_HUB_ENABLE_DESKTOP_API=true`, verify the endpoint using `curl`:
+
+```sh
+curl -i https://hub.example.com/api/v1/version
+```
+
+Expected response: HTTP `200 OK` JSON with `api_version`, `server_version`, and `capabilities`:
+
+```json
+{"api_version":"1.0.0","server_version":"0.4.15","capabilities":{"auth":true,"catalog":true,"channels":true,"playback":true,"user":true}}
+```
 
 ### Example Caddy Configuration
 
@@ -639,6 +676,11 @@ hub.example.com {
         reverse_proxy 127.0.0.1:8090
     }
     handle /admin/api/thumb* {
+        reverse_proxy 127.0.0.1:8090
+    }
+
+    # Forward Client API v1 to Resolver (preserve prefix: do not use handle_path)
+    handle /api/v1/* {
         reverse_proxy 127.0.0.1:8090
     }
 
@@ -665,7 +707,7 @@ hub.example.com {
 
 ### Trusted Proxy Configuration
 
-To ensure Uvicorn correctly identifies client IP addresses and protocols behind a reverse proxy, configure `RESOLVER_TRUSTED_PROXY_IPS` in `.env` (e.g., `RESOLVER_TRUSTED_PROXY_IPS=127.0.0.1,::1`).
+To ensure Uvicorn correctly identifies client IP addresses and protocols behind a reverse proxy, configure `RESOLVER_TRUSTED_PROXY_IPS` or `FORWARDED_ALLOW_IPS` in `.env` (e.g., `RESOLVER_TRUSTED_PROXY_IPS=127.0.0.1,::1` or `FORWARDED_ALLOW_IPS=127.0.0.1`).
 
 ---
 

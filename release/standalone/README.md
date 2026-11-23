@@ -49,6 +49,10 @@ Compose starts the database, executes schema migrations, and launches Jellyfin, 
 - **Adult Hub Admin Panel:** [http://127.0.0.1:8090/admin/](http://127.0.0.1:8090/admin/) (or your configured LAN IP and port). Enter your `ADMIN_WRITE_TOKEN` in the panel.
 - **Jellyfin Media Server:** [http://127.0.0.1:8096/](http://127.0.0.1:8096/) (or your configured LAN IP and port). Complete Jellyfin's first-run setup wizard and add a library pointing to `/media/adult`.
 
+### Client API v1 (Optional)
+
+If standalone users need direct Client API access (e.g. for desktop client applications), the API is opt-in: set `ADULT_HUB_ENABLE_DESKTOP_API=true` in `.env`. When exposing through a reverse proxy, see the [Reverse Proxy and Network Configuration](../../INSTALL.md#adult-hub-client-api-v1) guide in `INSTALL.md` for the `/api/v1/*` proxy route and trusted header requirements.
+
 ## Updating
 
 To update all services to the latest published images:

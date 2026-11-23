@@ -17,8 +17,12 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+DOCKER_COMPOSE = ROOT / "docker-compose.yml"
+DEV_COMPOSE = ROOT / "docker-compose.dev.yml"
 STANDALONE_COMPOSE = ROOT / "compose.standalone.yml"
 RELEASE_COMPOSE = ROOT / "release/standalone/docker-compose.yml"
+ENV_EXAMPLE = ROOT / ".env.example"
+RELEASE_ENV_EXAMPLE = ROOT / "release/standalone/.env.example"
 
 # (service, variable name) -> reason. Variables present only in compose.standalone.yml.
 # Empty: both files currently expose the same variable names in every service.
@@ -40,11 +44,31 @@ def _load_services(path: Path) -> dict:
     return document["services"]
 
 
-def _env_names(service: dict) -> set[str]:
+def _parse_uncommented_env(path: Path) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        name, sep, value = stripped.partition("=")
+        if sep:
+            mapping[name.strip()] = value.strip()
+    return mapping
+
+
+def _normalize_env(service: dict) -> dict[str, str]:
     environment = service.get("environment") or {}
     if isinstance(environment, dict):
-        return {str(name) for name in environment}
-    return {str(item).split("=", 1)[0] for item in environment}
+        return {str(name): "" if value is None else str(value) for name, value in environment.items()}
+    mapping: dict[str, str] = {}
+    for item in environment:
+        name, sep, value = str(item).partition("=")
+        mapping[name] = value if sep else ""
+    return mapping
+
+
+def _env_names(service: dict) -> set[str]:
+    return set(_normalize_env(service))
 
 
 class StandaloneComposeParityTest(unittest.TestCase):
@@ -89,6 +113,47 @@ class StandaloneComposeParityTest(unittest.TestCase):
             "Environment names only in release/standalone/docker-compose.yml differ from the allowlist. "
             "Copy the variable to compose.standalone.yml or add a reason to the allowlist.",
         )
+
+    def test_resolver_desktop_api_environment_default_false(self) -> None:
+        compose_files = [
+            DOCKER_COMPOSE,
+            DEV_COMPOSE,
+            STANDALONE_COMPOSE,
+            RELEASE_COMPOSE,
+        ]
+        target_key = "ADULT_HUB_ENABLE_DESKTOP_API"
+        expected_value = "${ADULT_HUB_ENABLE_DESKTOP_API:-false}"
+        for path in compose_files:
+            with self.subTest(file=path.name):
+                services = _load_services(path)
+                self.assertIn("resolver", services, f"resolver service not found in {path.name}")
+                env = _normalize_env(services["resolver"])
+                self.assertIn(target_key, env, f"{target_key} missing from resolver in {path.name}")
+                self.assertEqual(
+                    env[target_key],
+                    expected_value,
+                    f"{target_key} in {path.name} does not map to {expected_value}",
+                )
+
+        env_files = [
+            ENV_EXAMPLE,
+            RELEASE_ENV_EXAMPLE,
+        ]
+        expected_env_value = "false"
+        for path in env_files:
+            rel_name = str(path.relative_to(ROOT))
+            with self.subTest(env_file=rel_name):
+                env = _parse_uncommented_env(path)
+                self.assertIn(
+                    target_key,
+                    env,
+                    f"Uncommented {target_key} missing from {rel_name}",
+                )
+                self.assertEqual(
+                    env[target_key],
+                    expected_env_value,
+                    f"{target_key} in {rel_name} does not map to {expected_env_value}",
+                )
 
 
 if __name__ == "__main__":

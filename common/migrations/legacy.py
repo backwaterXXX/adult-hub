@@ -95,6 +95,12 @@ from common.migrations.m0067_scene_fingerprints_schedule import (
 from common.migrations.m0068_phash_generation_schedule import (
     migration as phash_generation_schedule,
 )
+from common.migrations.m0069_direct_play_user_state import (
+    migration as direct_play_user_state,
+)
+from common.migrations.m0070_client_auth import (
+    migration as client_auth,
+)
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -167,4 +173,6 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     telegram_accounts,
     scene_fingerprints_schedule,
     phash_generation_schedule,
+    direct_play_user_state,
+    client_auth,
 )

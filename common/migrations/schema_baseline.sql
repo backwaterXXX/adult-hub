@@ -260,6 +260,94 @@ CREATE TABLE public.system_schedules (
     CONSTRAINT system_schedules_check CHECK ((((cron_expression IS NOT NULL) AND (length(cron_expression) >= 1) AND (length(cron_expression) <= 100) AND (legacy_interval_minutes IS NULL) AND (legacy_daily_at IS NULL) AND (needs_conversion = false)) OR ((cron_expression IS NULL) AND (needs_conversion = true) AND (((legacy_interval_minutes IS NOT NULL) AND (legacy_interval_minutes >= 15) AND (legacy_interval_minutes <= 43200) AND (legacy_daily_at IS NULL)) OR ((legacy_interval_minutes IS NULL) AND (legacy_daily_at IS NOT NULL) AND (legacy_daily_at ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'::text))))))
 );
 
+CREATE TABLE IF NOT EXISTS public.client_users (
+    id text NOT NULL,
+    username text NOT NULL,
+    password_hash text NOT NULL,
+    is_admin boolean DEFAULT false NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT client_users_pkey PRIMARY KEY (id)
+);
+
+CREATE TABLE IF NOT EXISTS public.client_user_watch_progress (
+    user_id text NOT NULL,
+    video_id text NOT NULL,
+    position_seconds integer DEFAULT 0 NOT NULL,
+    duration_seconds integer DEFAULT 0 NOT NULL,
+    played_percentage double precision DEFAULT 0.0 NOT NULL,
+    is_played boolean DEFAULT false NOT NULL,
+    last_watched_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT client_user_watch_progress_pkey PRIMARY KEY (user_id, video_id),
+    CONSTRAINT client_user_watch_progress_position_seconds_check CHECK ((position_seconds >= 0)),
+    CONSTRAINT client_user_watch_progress_duration_seconds_check CHECK ((duration_seconds >= 0)),
+    CONSTRAINT client_user_watch_progress_played_percentage_check CHECK (((played_percentage >= (0)::double precision) AND (played_percentage <= (100)::double precision))),
+    CONSTRAINT client_user_watch_progress_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.client_users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS public.client_user_favorites (
+    user_id text NOT NULL,
+    video_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT client_user_favorites_pkey PRIMARY KEY (user_id, video_id),
+    CONSTRAINT client_user_favorites_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.client_users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS public.client_sessions (
+    id text NOT NULL,
+    user_id text NOT NULL,
+    device_id text NOT NULL,
+    device_name text DEFAULT '' NOT NULL,
+    access_token_hash text NOT NULL,
+    refresh_token_hash text NOT NULL,
+    previous_refresh_token_hash text,
+    access_expires_at timestamp with time zone NOT NULL,
+    refresh_expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT client_sessions_pkey PRIMARY KEY (id),
+    CONSTRAINT client_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.client_users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS public.client_session_spent_tokens (
+    session_id text NOT NULL,
+    token_hash text NOT NULL,
+    spent_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT client_session_spent_tokens_pkey PRIMARY KEY (token_hash),
+    CONSTRAINT client_session_spent_tokens_session_fkey FOREIGN KEY (session_id) REFERENCES public.client_sessions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS public.client_pairing_sessions (
+    id text NOT NULL,
+    pairing_code text NOT NULL,
+    normalized_code text NOT NULL,
+    secret_hash text NOT NULL,
+    device_name text DEFAULT '' NOT NULL,
+    device_id text DEFAULT '' NOT NULL,
+    user_id text,
+    status text DEFAULT 'pending' NOT NULL,
+    poll_attempts integer DEFAULT 0 NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    approved_at timestamp with time zone,
+    exchanged_at timestamp with time zone,
+    client_ip text DEFAULT '' NOT NULL,
+    CONSTRAINT client_pairing_sessions_pkey PRIMARY KEY (id),
+    CONSTRAINT client_pairing_sessions_status_check CHECK (status IN ('pending', 'approved', 'exchanged', 'expired', 'revoked')),
+    CONSTRAINT client_pairing_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.client_users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.client_auth_rate_limits (
+    rate_key text NOT NULL,
+    window_epoch bigint NOT NULL,
+    attempts integer DEFAULT 1 NOT NULL,
+    CONSTRAINT client_auth_rate_limits_pkey PRIMARY KEY (rate_key, window_epoch)
+);
+
 CREATE TABLE public.dead_streams (
     video_id text NOT NULL,
     reason text,
@@ -1000,6 +1088,36 @@ CREATE INDEX idx_admin_schedules_due ON public.admin_schedules USING btree (next
 
 CREATE INDEX idx_system_schedules_due ON public.system_schedules USING btree (next_run_at) WHERE (enabled = true);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_client_users_username ON public.client_users USING btree (lower(username));
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_client_users_single_owner ON public.client_users USING btree (is_admin) WHERE (is_admin = true);
+
+CREATE INDEX IF NOT EXISTS idx_client_user_watch_progress_video_id ON public.client_user_watch_progress USING btree (video_id);
+
+CREATE INDEX IF NOT EXISTS idx_client_user_watch_progress_recent ON public.client_user_watch_progress USING btree (user_id, last_watched_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_client_user_favorites_video_id ON public.client_user_favorites USING btree (video_id);
+
+CREATE INDEX IF NOT EXISTS idx_client_user_favorites_created ON public.client_user_favorites USING btree (user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_client_sessions_access_hash ON public.client_sessions USING btree (access_token_hash);
+
+CREATE INDEX IF NOT EXISTS idx_client_sessions_refresh_hash ON public.client_sessions USING btree (refresh_token_hash);
+
+CREATE INDEX IF NOT EXISTS idx_client_sessions_prev_refresh ON public.client_sessions USING btree (previous_refresh_token_hash);
+
+CREATE INDEX IF NOT EXISTS idx_client_sessions_user_device ON public.client_sessions USING btree (user_id, device_id);
+
+CREATE INDEX IF NOT EXISTS idx_client_session_spent_session ON public.client_session_spent_tokens USING btree (session_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_client_pairing_live_code ON public.client_pairing_sessions USING btree (normalized_code) WHERE (status = ANY (ARRAY['pending'::text, 'approved'::text]));
+
+CREATE INDEX IF NOT EXISTS idx_client_pairing_secret ON public.client_pairing_sessions USING btree (secret_hash);
+
+CREATE INDEX IF NOT EXISTS idx_client_pairing_expires ON public.client_pairing_sessions USING btree (expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_client_auth_rate_limits_window ON public.client_auth_rate_limits USING btree (window_epoch);
+
 CREATE INDEX idx_diagnostic_reports_ended ON public.diagnostic_reports USING btree (ended_at DESC);
 
 CREATE INDEX idx_external_metadata_attempts_due ON public.external_metadata_attempts USING btree (entity_type, source, next_attempt_at, entity_key);
@@ -1170,4 +1288,3 @@ ALTER TABLE ONLY public.video_visual_signatures
 
 ALTER TABLE ONLY public.telegram_account_channels
     ADD CONSTRAINT telegram_account_channels_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.telegram_accounts(account_id) ON DELETE CASCADE;
-

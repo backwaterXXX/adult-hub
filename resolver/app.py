@@ -59,6 +59,10 @@ async def handle_request_validation_error(request: Request, exc: RequestValidati
     # Keep v1's standard response while presenting the documented v2 contract.
     if request.url.path.startswith("/admin/api/v2/"):
         return v2_error_response(400, "Invalid request parameters.")
+    if request.url.path.startswith("/api/v1/"):
+        resp = await request_validation_exception_handler(request, exc)
+        resp.headers["Cache-Control"] = "private, no-store"
+        return resp
     return await request_validation_exception_handler(request, exc)
 
 
@@ -67,6 +71,11 @@ async def prevent_admin_v2_api_caching(request: Request, call_next):
     response = await call_next(request)
     if request.url.path.startswith("/admin/api/v2/"):
         response.headers["Cache-Control"] = "no-store"
+    elif request.url.path == "/api/v1" or request.url.path.startswith("/api/v1/"):
+        if request.url.path != "/api/v1/version":
+            response.headers["Cache-Control"] = "private, no-store"
+        elif response.status_code >= 400 or "no-store" in response.headers.get("Cache-Control", ""):
+            response.headers["Cache-Control"] = "private, no-store"
     return response
 
 
@@ -874,6 +883,11 @@ async def proxy_fetch_response(request: Request, url: str, cache_key: Optional[s
 
 
 app.include_router(api)
+
+# Explicit opt-in staging for Desktop API slice (disabled by default)
+from resolver.desktop_api import mount_desktop_api
+
+mount_desktop_api(app)
 
 
 def _legacy_redirect(request: Request, new_path: str):

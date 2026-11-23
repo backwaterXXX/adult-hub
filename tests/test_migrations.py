@@ -400,6 +400,8 @@ class TestMigrationsEngine(PgTestCase):
             (66, "0066_telegram_accounts"),
             (67, "0067_scene_fingerprints_schedule"),
             (68, "0068_phash_generation_schedule"),
+            (69, "0069_direct_play_user_state"),
+            (70, "0070_client_auth"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):
