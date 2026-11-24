@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import Optional
 import logging
 
-from common.telegram_metadata import extract_telegram_metadata, resolve_explicit_cast
+from common.telegram_metadata import (
+    build_cast_index,
+    extract_telegram_metadata,
+    resolve_explicit_cast,
+)
 from common.title_cleaning import clean_title_text
 from resolver.providers.base import VideoItem
 from resolver.providers.telegram_messages import (
@@ -20,6 +24,32 @@ from resolver.providers.telegram_messages import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Indexing the external catalogue costs hundreds of milliseconds, and a single
+# history batch maps up to 500 messages against the same records. Cache the
+# derived views by the identity of the rows they came from, so a reloaded
+# catalogue rebuilds them while a cached one reuses them.
+_CAST_VIEW_CACHE: dict = {"head": None, "tail": None, "size": 0,
+                          "cast_index": None, "external": None}
+
+
+def _cast_views(catalog) -> tuple[dict, list]:
+    """Return the explicit-cast index and external rows for this catalogue."""
+    if not catalog:
+        return {}, []
+    head, tail = catalog[0], catalog[-1]
+    cached = _CAST_VIEW_CACHE
+    if cached["size"] == len(catalog) and cached["head"] is head and cached["tail"] is tail:
+        return cached["cast_index"], cached["external"]
+    cast_index = build_cast_index(catalog)
+    external = [
+        row for row in catalog
+        if isinstance(row, dict)
+        and str(row.get("id") or "").startswith(("stashdb:", "theporndb:", "fansdb:"))
+    ]
+    cached.update(head=head, tail=tail, size=len(catalog),
+                  cast_index=cast_index, external=external)
+    return cast_index, external
 
 
 def prepare_legacy_catalog(known_performers, aliases):
@@ -58,13 +88,13 @@ def _load_catalog(load_performer_catalog_fn) -> list:
         return []
 
 
-def _signature_cast(extracted: dict, catalog) -> tuple:
+def _signature_cast(extracted: dict, catalog, cast_index=None) -> tuple:
     """Return (cast names, cast source), promoting a verified channel signature to the cast."""
     cast_names = extracted["performer_names"]
     cast_source = extracted["performer_source"]
     if not cast_names and extracted["signature_name_candidates"]:
         signature_names, signature_ids = resolve_explicit_cast(
-            extracted["signature_name_candidates"], catalog,
+            extracted["signature_name_candidates"], catalog, cast_index=cast_index,
         )
         if signature_ids and all(signature_ids):
             cast_names = extracted["signature_name_candidates"]
@@ -74,11 +104,14 @@ def _signature_cast(extracted: dict, catalog) -> tuple:
     return cast_names, cast_source
 
 
-def _performer_resolution(cast_names, cast_source, exact_records, catalog, extracted) -> tuple:
+def _performer_resolution(cast_names, cast_source, exact_records, catalog, extracted,
+                         cast_index=None) -> tuple:
     """Return (performers, performer_resolution) from the explicit cast, catalogue credits, or neither."""
     if cast_names:
         try:
-            resolved_names, resolved_ids = resolve_explicit_cast(cast_names, catalog)
+            resolved_names, resolved_ids = resolve_explicit_cast(
+                cast_names, catalog, cast_index=cast_index,
+            )
         except Exception:
             resolved_names, resolved_ids = list(cast_names), [""] * len(cast_names)
         # Do not run legacy normalization here: it strips demonyms and
@@ -181,19 +214,15 @@ def message_to_video_impl(
         catalog = _load_catalog(load_performer_catalog_fn)
         if catalog and prepared_catalog is None:
             prepared_catalog = prepare_catalog(catalog)
-        cast_names, cast_source = _signature_cast(extracted, catalog)
-        external_catalog = [
-            row for row in catalog
-            if isinstance(row, dict)
-            and str(row.get("id") or "").startswith(("stashdb:", "theporndb:", "fansdb:"))
-        ]
+        cast_index, external_catalog = _cast_views(catalog)
+        cast_names, cast_source = _signature_cast(extracted, catalog, cast_index)
         credit_text = ", ".join(cast_names) if cast_names else caption
         exact_records, proposals = match_catalog(
             [("caption", credit_text)], external_catalog,
             prepared=prepared_catalog if external_catalog and prepared_catalog else None,
         )
         performers, performer_resolution = _performer_resolution(
-            cast_names, cast_source, exact_records, catalog, extracted,
+            cast_names, cast_source, exact_records, catalog, extracted, cast_index,
         )
     except Exception:
         performers, proposals, performer_resolution = [], [], None

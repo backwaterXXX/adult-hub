@@ -118,7 +118,31 @@ def extract_telegram_metadata(caption: str, channel_title: str = "") -> dict:
     }
 
 
-def resolve_explicit_cast(names: Iterable[str], catalog: Iterable[dict]) -> tuple[list[str], list[str]]:
+def build_cast_index(catalog: Iterable[dict]) -> dict[str, dict[str, dict]]:
+    """Index external catalogue rows by every normalized name and alias.
+
+    Building this walks the whole catalogue, so callers that resolve casts for
+    many messages should build it once and pass it as ``cast_index``.
+    """
+    from common.performer_catalog import normalize_name
+
+    aliases: dict[str, dict[str, dict]] = {}
+    for row in catalog:
+        if not isinstance(row, dict):
+            continue
+        performer_id = str(row.get("id") or "")
+        if not performer_id.startswith(("stashdb:", "theporndb:", "fansdb:")):
+            continue
+        for value in [row.get("name"), *(row.get("aliases") or [])]:
+            key = normalize_name(str(value or ""))
+            if key:
+                aliases.setdefault(key, {})[performer_id] = row
+    return aliases
+
+
+def resolve_explicit_cast(names: Iterable[str], catalog: Iterable[dict], *,
+                          cast_index: dict[str, dict[str, dict]] | None = None
+                          ) -> tuple[list[str], list[str]]:
     """Resolve whole cast-field entries to external identities when unique.
 
     Unknown names from an explicitly labeled cast field are retained literally;
@@ -126,18 +150,7 @@ def resolve_explicit_cast(names: Iterable[str], catalog: Iterable[dict]) -> tupl
     """
     from common.performer_catalog import normalize_name
 
-    external_catalog = [
-        row for row in catalog
-        if isinstance(row, dict)
-        and str(row.get("id") or "").startswith(("stashdb:", "theporndb:", "fansdb:"))
-    ]
-    aliases: dict[str, dict[str, dict]] = {}
-    for row in external_catalog:
-        performer_id = str(row.get("id") or "")
-        for value in [row.get("name"), *(row.get("aliases") or [])]:
-            key = normalize_name(str(value or ""))
-            if key:
-                aliases.setdefault(key, {})[performer_id] = row
+    aliases = cast_index if cast_index is not None else build_cast_index(catalog)
 
     resolved_names: list[str] = []
     resolved_ids: list[str] = []

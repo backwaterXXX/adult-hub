@@ -262,6 +262,31 @@ class TestMessageToVideo(unittest.TestCase):
         item = message_to_video(msg, "Some Channel")
         self.assertTrue(item.title)
 
+    def test_the_cast_index_is_built_once_for_repeated_messages(self):
+        """A history page maps hundreds of messages against one catalogue."""
+
+        from common.telegram_metadata import build_cast_index
+        from resolver.providers import telegram_item_mapping as mapping
+
+        catalog = [
+            {"id": "stashdb:1", "name": "Alice Wonder", "aliases": ["Alice W"]},
+            {"id": "stashdb:2", "name": "Bob Builder", "aliases": []},
+        ]
+        builds = []
+
+        def counting(cat):
+            builds.append(len(cat))
+            return build_cast_index(cat)
+
+        mapping._CAST_VIEW_CACHE.update(head=None, tail=None, size=0,
+                                        cast_index=None, external=None)
+        with patch.object(mapping, "build_cast_index", counting), \
+                patch.object(mapping, "_load_catalog", lambda _load: catalog):
+            message_to_video(_video_message(), "Some Channel")
+            message_to_video(_video_message(), "Some Channel")
+
+        self.assertEqual(builds, [2], "the catalogue is indexed once, not once per message")
+
     def test_text_only_returns_none_or_raises(self):
         msg = {"channel_id": -1001, "message_id": 7, "text": "hello"}
         try:

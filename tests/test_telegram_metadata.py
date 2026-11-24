@@ -6,7 +6,11 @@ import unittest
 from unittest.mock import patch
 import yaml
 
-from common.telegram_metadata import extract_telegram_metadata, resolve_explicit_cast
+from common.telegram_metadata import (
+    build_cast_index,
+    extract_telegram_metadata,
+    resolve_explicit_cast,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +57,23 @@ class TestTelegramMetadataSignature(unittest.TestCase):
         resolved_names, resolved_ids = resolve_explicit_cast(names, catalog)
         self.assertEqual(resolved_names, ["Alice Wonder", "Unknown Performer"])
         self.assertEqual(resolved_ids, ["stashdb:111", ""])
+
+    def test_a_prebuilt_cast_index_gives_the_same_answer(self):
+        """Callers that map many messages index the catalogue once."""
+
+        catalog = [
+            {"id": "stashdb:111", "name": "Alice Wonder", "aliases": ["Alice W"]},
+            {"id": "stashdb:222", "name": "Bob Builder", "aliases": []},
+            {"id": "local:1", "name": "Not External", "aliases": []},
+        ]
+        names = ["Alice W", "Bob Builder", "Local Stranger"]
+
+        expected = resolve_explicit_cast(names, catalog)
+        actual = resolve_explicit_cast(names, catalog, cast_index=build_cast_index(catalog))
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual, (["Alice Wonder", "Bob Builder", "Local Stranger"],
+                                  ["stashdb:111", "stashdb:222", ""]))
 
 
 class TestDeploymentConfigContract(unittest.TestCase):

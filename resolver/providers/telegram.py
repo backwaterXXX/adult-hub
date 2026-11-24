@@ -350,6 +350,26 @@ async def login(phone: str, code: Optional[str] = None,
 # ---------------------------------------------------------------------------
 
 
+def _map_history_messages(messages, category_id, title, kp, am, prepared_catalog,
+                          ch_cfg, min_duration):
+    """Map one history page to video items away from the event loop.
+
+    Per-message caption parsing and cast resolution are CPU work: a page of 500
+    messages held the loop long enough for the watchdog to restart Uvicorn.
+    """
+    videos = []
+    for msg in messages:
+        item = message_to_video(
+            _message_to_dict(msg, category_id), title,
+            known_performers=kp, aliases=am,
+            prepared_catalog=prepared_catalog,
+        )
+        if item and passes_duration_filter(item.duration, min_duration=min_duration) \
+                and passes_tag_filter(item, ch_cfg):
+            videos.append(item)
+    return videos
+
+
 class TelegramProvider(BaseProvider):
     """Provider MTProto: prywatne kanaly jako kategorie (etap 1, bez hashtagow)."""
 
@@ -451,18 +471,11 @@ class TelegramProvider(BaseProvider):
                 client, entity, page=page, max_pages=1,
                 offset_id=offset_id, limit=limit
             )
-            videos: List[VideoItem] = []
             kp, am, prepared_catalog = await asyncio.to_thread(_load_performer_snapshot)
-            for msg in messages:
-                item = message_to_video(
-                    _message_to_dict(msg, category_id), title,
-                    known_performers=kp, aliases=am,
-                    prepared_catalog=prepared_catalog,
-                )
-                if (item is not None and passes_duration_filter(item.duration, min_duration=effective_min_dur)
-                        and passes_tag_filter(item, ch_cfg)):
-                    videos.append(item)
-            return videos
+            return await asyncio.to_thread(
+                _map_history_messages, messages, category_id, title, kp, am,
+                prepared_catalog, ch_cfg, effective_min_dur,
+            )
 
     async def get_history_batch(self, category_id: str, *, offset_id: Optional[int] = None,
                                 limit: int = 100) -> dict:
@@ -475,18 +488,12 @@ class TelegramProvider(BaseProvider):
             cfg = _get_config()
             ch_cfg = cfg.get_telegram_channel(category_id) if cfg else None
             messages = await _fetch_history(client, entity, offset_id=offset_id, limit=limit)
-            videos = []
             kp, am, prepared_catalog = await asyncio.to_thread(_load_performer_snapshot)
-            for msg in messages:
-                item = message_to_video(
-                    _message_to_dict(msg, category_id), title,
-                    known_performers=kp, aliases=am,
-                    prepared_catalog=prepared_catalog,
-                )
-                if (item and passes_duration_filter(item.duration,
-                        min_duration=ch_cfg.min_duration_seconds if ch_cfg else _get_min_duration())
-                        and passes_tag_filter(item, ch_cfg)):
-                    videos.append(item)
+            videos = await asyncio.to_thread(
+                _map_history_messages, messages, category_id, title, kp, am,
+                prepared_catalog, ch_cfg,
+                ch_cfg.min_duration_seconds if ch_cfg else _get_min_duration(),
+            )
             videos = [item.__dict__ for item in videos]
             cursor = min((int(msg.id) for msg in messages), default=None)
             head = max((int(msg.id) for msg in messages), default=None)
