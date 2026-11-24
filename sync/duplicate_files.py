@@ -17,14 +17,25 @@ def _write_catalog_backup(conn: db.Connection, op_dir: Path, loser_ids: list) ->
     video_cols = db.table_columns(conn, "videos")
     sf_cols = db.table_columns(conn, "synced_files")
     vc_cols = db.table_columns(conn, "video_categories")
+    vs_cols = db.table_columns(conn, "video_sources")
     for loser in loser_ids:
         video_row = conn.execute("SELECT * FROM videos WHERE id=%s", (loser,)).fetchone()
         files = conn.execute("SELECT * FROM synced_files WHERE video_id=%s", (loser,)).fetchall()
         cats = conn.execute("SELECT * FROM video_categories WHERE video_id=%s", (loser,)).fetchall()
+        source_rows = conn.execute(
+            "SELECT * FROM video_sources WHERE video_id=%s ORDER BY priority, source_id", (loser,)
+        ).fetchall()
+        clean_sources = []
+        for r in source_rows:
+            d = dict(zip(vs_cols, r))
+            if hasattr(d.get("created_at"), "isoformat"):
+                d["created_at"] = d["created_at"].isoformat()
+            clean_sources.append(d)
         payload.append({
             "video": dict(zip(video_cols, video_row)) if video_row else None,
             "synced_files": [dict(zip(sf_cols, r)) for r in files],
             "categories": [dict(zip(vc_cols, r)) for r in cats],
+            "sources": clean_sources,
         })
     tmp = backup_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False))

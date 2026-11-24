@@ -15,6 +15,7 @@ except (ImportError, ModuleNotFoundError):
 
 _channel_ids = source_removal._channel_ids
 _remove_sync_history = source_removal._remove_sync_history
+_source_match_clause = source_removal._source_match_clause
 remove_telegram_channel = source_removal.remove_telegram_channel
 
 
@@ -122,13 +123,13 @@ class FakeConnection:
         return FakeCursor(matching)
 
     def _select_telegram_sources(self, params):
-        aliases = set(params[0]) if params else set()
+        aliases = {str(a).strip() for a in params[0]} if params else set()
         prefixes = params[1:]
         matching = []
         for row in self.data.get("video_sources", []):
-            vid, sid, prov, cid, is_act = row
+            vid, sid, prov, cid, is_act = row[:5]
             if prov == "telegram":
-                if cid in aliases or any(_sql_like_match(sid, p) for p in prefixes):
+                if str(cid or "").strip() in aliases or any(_sql_like_match(sid, p) for p in prefixes):
                     matching.append((vid, sid))
         return FakeCursor(matching)
 
@@ -218,18 +219,18 @@ class FakeConnection:
         return None
 
     def _delete_telegram_sources(self, params):
-        aliases = set(params[0])
+        aliases = {str(a).strip() for a in params[0]} if params else set()
         prefixes = params[1:]
         self.data["video_sources"] = [
             r for r in self.data.get("video_sources", [])
-            if not (r[2] == "telegram" and (r[3] in aliases or any(_sql_like_match(r[1], p) for p in prefixes)))
+            if not (r[2] == "telegram" and (str(r[3] or "").strip() in aliases or any(_sql_like_match(r[1], p) for p in prefixes)))
         ]
         return FakeCursor(rowcount=1)
 
     def _delete_channel_state(self, params):
-        aliases = set(params[0])
+        aliases = {str(a).strip() for a in params[0]} if params else set()
         self.data["telegram_channel_state"] = [
-            c for c in self.data.get("telegram_channel_state", []) if c not in aliases
+            c for c in self.data.get("telegram_channel_state", []) if str(c).strip() not in aliases
         ]
         return FakeCursor(rowcount=1)
 
@@ -273,7 +274,99 @@ class TestSourceRemoval(unittest.TestCase):
         self.assertEqual(_channel_ids("-10012345"), {"-10012345", "12345"})
         self.assertEqual(_channel_ids("12345"), {"-10012345", "12345"})
         self.assertEqual(_channel_ids("-12345"), {"-10012345", "-12345"})
+        self.assertEqual(_channel_ids(" -12345 "), {"-10012345", "-12345"})
         self.assertIn("-10012345", _channel_ids(" -12345 "))
+
+    def test_source_match_clause_sql_generation_and_parameters(self):
+        """Prove the production PostgreSQL SQL normalization clause and parameters are exact."""
+        aliases = ["-100123", "123"]
+        prefixes = ["telegram:-100123:", "telegram:123:"]
+        sql_clause, params = _source_match_clause(aliases, prefixes)
+
+        # 1. SQL condition must use TRIM(channel_id) = ANY(%s) for PostgreSQL
+        self.assertIn("TRIM(channel_id) = ANY(%s)", sql_clause)
+        self.assertIn("source_id LIKE %s ESCAPE '\\'", sql_clause)
+        self.assertEqual(
+            sql_clause,
+            "TRIM(channel_id) = ANY(%s) OR source_id LIKE %s ESCAPE '\\' OR source_id LIKE %s ESCAPE '\\'",
+        )
+
+        # 2. Parameters must bind normalized aliases list first, then escaped LIKE patterns
+        self.assertEqual(params[0], ["-100123", "123"])
+        self.assertEqual(params[1], "telegram:-100123:%")
+        self.assertEqual(params[2], "telegram:123:%")
+
+        # 3. Wildcard escaping in prefixes: _, %, \
+        wildcard_prefixes = ["telegram:@chan_name%with\\slash:"]
+        sql_clause_wc, params_wc = _source_match_clause(
+            ["@chan_name%with\\slash"], wildcard_prefixes
+        )
+        self.assertEqual(
+            sql_clause_wc,
+            "TRIM(channel_id) = ANY(%s) OR source_id LIKE %s ESCAPE '\\'",
+        )
+        self.assertEqual(params_wc[0], ["@chan_name%with\\slash"])
+        self.assertEqual(params_wc[1], "telegram:@chan\\_name\\%with\\\\slash:%")
+
+    def test_remove_telegram_channel_rejects_none_and_empty_and_whitespace_ids(self):
+        """Validate at public entry before acquiring locks or mutating anything."""
+        conn = FakeConnection({})
+        services = FakeServices()
+        invalid_ids = [None, "", "   ", "\t\n", " " * 50, 12345, [], {}]
+        for bad_id in invalid_ids:
+            with self.subTest(bad_id=bad_id):
+                with self.assertRaises(ValueError) as ctx:
+                    remove_telegram_channel(
+                        conn, self.media_dir, bad_id, "job-fail", services, self._record_progress  # type: ignore
+                    )
+                self.assertIn("Channel removal requires a valid Telegram channel ID.", str(ctx.exception))
+                # Ensure no SQL queries executed, no progress recorded
+                self.assertEqual(conn.sql_log, [])
+                self.assertEqual(self.progress_calls, [])
+
+    def test_channel_ids_rejects_none_and_empty_and_whitespace_ids(self):
+        """Prevent empty, None, or whitespace-only channel IDs from widening queries."""
+        invalid_ids = [None, "", "   ", "\t\n", 12345, [], {}]
+        for bad_id in invalid_ids:
+            with self.subTest(bad_id=bad_id):
+                with self.assertRaises(ValueError) as ctx:
+                    _channel_ids(bad_id)  # type: ignore
+                self.assertIn("Channel removal requires a valid Telegram channel ID.", str(ctx.exception))
+
+    def test_remove_sync_history_rejects_none_and_empty_and_whitespace_ids(self):
+        """Prevent empty, None, or whitespace-only channel IDs in history removal."""
+        invalid_ids = [None, "", "   ", "\t\n", 12345]
+        for bad_id in invalid_ids:
+            with self.subTest(bad_id=bad_id):
+                with self.assertRaises(ValueError) as ctx:
+                    _remove_sync_history(bad_id)  # type: ignore
+                self.assertIn("Channel removal requires a valid Telegram channel ID.", str(ctx.exception))
+
+    def test_source_matches_whitespace_normalization_regression(self):
+        """Whitespace normalization regression coverage for _source_matches.
+
+        Tests sync history source filter / source entry strings and channel aliases,
+        including leading whitespace before 'telegram:' and padded alias candidates.
+        Note: database video_sources.source_id is an internal synthetic canonical
+        identifier (telegram:<clean_id>:<msg>) and is never padded in the database model.
+        """
+        # Leading whitespace before 'telegram:'
+        self.assertTrue(source_removal._source_matches("   telegram:-100123", {"-100123"}))
+        self.assertTrue(source_removal._source_matches("   telegram:-100123   ", {"-100123"}))
+        self.assertTrue(source_removal._source_matches(" \t telegram: -100123 \n", {"-100123"}))
+
+        # Padded alias candidate in channel_ids
+        self.assertTrue(source_removal._source_matches("telegram:-100123", {"   -100123   "}))
+        self.assertTrue(source_removal._source_matches("   telegram:-100123   ", {"   -100123   "}))
+        self.assertTrue(source_removal._source_matches("  12345  ", {"   12345   "}))
+
+        # Padded alias candidate matching supergroup alias
+        self.assertTrue(source_removal._source_matches("  telegram:12345  ", {" 12345 "}))
+
+        # Non-matching cases
+        self.assertFalse(source_removal._source_matches("   telegram:-100999   ", {"-100123"}))
+        self.assertFalse(source_removal._source_matches("not-a-source", {"-100123"}))
+        self.assertFalse(source_removal._source_matches(None, {"-100123"}))
 
     @patch.object(source_removal, "_acquire_channel_removal_lock", return_value=None)
     @patch.object(source_removal, "_verify_channel_not_configured", return_value=None)
@@ -606,6 +699,54 @@ class TestSourceRemoval(unittest.TestCase):
         self.assertEqual(updated["runs"][0]["sources"][0]["source"], "telegram:-100999")
         self.assertEqual(updated["runs"][1]["run_id"], 3)
 
+    def test_remove_sync_history_with_padded_filters_and_sources(self):
+        """Verify counting semantics: runs_removed vs history_source_rows_removed.
+
+        Counting semantics in _remove_sync_history:
+        - When an entire run matches the channel (via source_filter), runs_removed is
+          incremented and the run is pruned. Its internal sources are not counted in
+          rows_removed.
+        - When a multi-source run is retained, rows_removed counts the matching source
+          rows pruned from that run.
+        Therefore, in this test:
+        - Run 1 (source_filter matching): 1 run removed (runs_removed=1).
+        - Run 2 (source_filter None, 1 matching source): 1 source row removed (rows_removed=1).
+        Total expected: runs_removed=1, rows_removed=1.
+        """
+        history_file = self.root / "sync_history_padded.json"
+        content = {
+            "runs": [
+                {
+                    "run_id": 1,
+                    "source_filter": "   telegram:-100123   ",
+                    "sources": [{"source": "   telegram: -100123   ", "imported": 5}],
+                },
+                {
+                    "run_id": 2,
+                    "source_filter": None,
+                    "sources": [
+                        {"source": " \t telegram:-100123 \n", "imported": 2},
+                        {"source": "telegram:-100999", "imported": 10},
+                    ],
+                },
+            ]
+        }
+        history_file.write_text(json.dumps(content), encoding="utf-8")
+
+        with patch.dict(os.environ, {"SYNC_HISTORY_FILE": str(history_file)}):
+            runs_removed, rows_removed = _remove_sync_history("  123  ")
+
+        self.assertEqual(runs_removed, 1, "Run 1 must be counted as 1 removed run")
+        self.assertEqual(
+            rows_removed, 1,
+            "Only the pruned source row from retained Run 2 is counted in rows_removed",
+        )
+        updated = json.loads(history_file.read_text(encoding="utf-8"))
+        self.assertEqual(len(updated["runs"]), 1)
+        self.assertEqual(updated["runs"][0]["run_id"], 2)
+        self.assertEqual(len(updated["runs"][0]["sources"]), 1)
+        self.assertEqual(updated["runs"][0]["sources"][0]["source"], "telegram:-100999")
+
     @patch.object(source_removal, "_acquire_channel_removal_lock", return_value=None)
     @patch.object(source_removal, "_release_channel_removal_lock")
     @patch.object(source_removal, "_verify_channel_not_configured")
@@ -692,6 +833,255 @@ class TestSourceRemoval(unittest.TestCase):
         self.assertNotIn(v_slash, conn.deleted["videos"])
         self.assertEqual(conn.data["videos"], {v_slash})
 
+    @patch.object(source_removal, "_acquire_channel_removal_lock", return_value=None)
+    @patch.object(source_removal, "_verify_channel_not_configured", return_value=None)
+    @patch.object(source_removal, "_remove_sync_history", return_value=(0, 0))
+    def test_multiple_source_rows_and_aliases_preserved_when_alternate_active_remains(
+        self, mock_history, mock_verify, mock_lock
+    ):
+        """Canonical video and alternate active/inactive sources remain when target channel is removed."""
+        v_id = "telegram:-100123:video_shared"
+        rel_path = "target/video_shared.strm"
+        strm_file = self.media_dir / rel_path
+        strm_file.parent.mkdir(parents=True, exist_ok=True)
+        strm_file.write_text("http://stream-shared", encoding="utf-8")
+        nfo_file = strm_file.with_suffix(".nfo")
+        nfo_file.write_text("<movie/>", encoding="utf-8")
+        jpg_file = strm_file.with_suffix(".jpg")
+        jpg_file.write_bytes(b"\xff\xd8\xff")
+
+        data = {
+            "videos": {v_id},
+            "synced_files": [(v_id, rel_path)],
+            "video_sources": [
+                (v_id, f"{v_id}:src1", "telegram", "-100123", 1),
+                (v_id, "telegram:123:video_shared:src2", "telegram", "123", 0),
+                (v_id, f"{v_id}:src3", "telegram", "-100123", 1),
+                (v_id, "telegram:-100999:video_shared:alt_act", "telegram", "-100999", 1),
+                (v_id, "telegram:-100999:video_shared:alt_inact", "telegram", "-100999", 0),
+                (v_id, "exampleweb:shared_1", "exampleweb", None, 1),
+            ],
+            "telegram_channel_state": ["-100123", "-100999"],
+        }
+        conn = FakeConnection(data)
+        services = FakeServices()
+
+        res = remove_telegram_channel(
+            conn, self.media_dir, "-100123", "job-multi-src", services, self._record_progress
+        )
+
+        self.assertEqual(res["videos_deleted"], 0)
+        self.assertEqual(res["files_deleted"], 0)
+        self.assertEqual(res["synced_files_deleted"], 0)
+        self.assertEqual(res["shared_videos_preserved"], 1)
+
+        # Canonical video and files remain intact
+        self.assertIn(v_id, conn.data["videos"])
+        self.assertTrue(strm_file.exists())
+        self.assertTrue(nfo_file.exists())
+        self.assertTrue(jpg_file.exists())
+        self.assertEqual(conn.data["synced_files"], [(v_id, rel_path)])
+
+        # Target channel source rows removed; alternate active, inactive, and other providers kept
+        remaining_sids = {r[1] for r in conn.data["video_sources"]}
+        self.assertNotIn(f"{v_id}:src1", remaining_sids)
+        self.assertNotIn("telegram:123:video_shared:src2", remaining_sids)
+        self.assertNotIn(f"{v_id}:src3", remaining_sids)
+        self.assertIn("telegram:-100999:video_shared:alt_act", remaining_sids)
+        self.assertIn("telegram:-100999:video_shared:alt_inact", remaining_sids)
+        self.assertIn("exampleweb:shared_1", remaining_sids)
+
+    @patch.object(source_removal, "_acquire_channel_removal_lock", return_value=None)
+    @patch.object(source_removal, "_verify_channel_not_configured", return_value=None)
+    @patch.object(source_removal, "_remove_sync_history", return_value=(0, 0))
+    def test_removal_by_owner_alias_preserves_canonical_video_and_alternate_sources(
+        self, mock_history, mock_verify, mock_lock
+    ):
+        """Invoking removal with channel alias ('123') removes all aliases and keeps alternate sources."""
+        v_id = "telegram:-100123:alias_shared"
+        rel_path = "target/alias_shared.strm"
+        strm_file = self.media_dir / rel_path
+        strm_file.parent.mkdir(parents=True, exist_ok=True)
+        strm_file.write_text("http://stream-alias", encoding="utf-8")
+
+        data = {
+            "videos": {v_id},
+            "synced_files": [(v_id, rel_path)],
+            "video_sources": [
+                (v_id, f"{v_id}:1", "telegram", "-100123", 1),
+                (v_id, "telegram:123:alias_shared:2", "telegram", "123", 1),
+                (v_id, "telegram:-100888:alias_shared:alt_act", "telegram", "-100888", 1),
+                (v_id, "telegram:-100888:alias_shared:alt_inact", "telegram", "-100888", 0),
+            ],
+            "telegram_channel_state": ["-100123", "-100888"],
+        }
+        conn = FakeConnection(data)
+        services = FakeServices()
+
+        res = remove_telegram_channel(
+            conn, self.media_dir, "123", "job-alias-rem", services, self._record_progress
+        )
+
+        self.assertEqual(res["videos_deleted"], 0)
+        self.assertEqual(res["shared_videos_preserved"], 1)
+        self.assertIn(v_id, conn.data["videos"])
+        self.assertTrue(strm_file.exists())
+
+        remaining_sids = {r[1] for r in conn.data["video_sources"]}
+        self.assertNotIn(f"{v_id}:1", remaining_sids)
+        self.assertNotIn("telegram:123:alias_shared:2", remaining_sids)
+        self.assertIn("telegram:-100888:alias_shared:alt_act", remaining_sids)
+        self.assertIn("telegram:-100888:alias_shared:alt_inact", remaining_sids)
+
+    @patch.object(source_removal, "_acquire_channel_removal_lock", return_value=None)
+    @patch.object(source_removal, "_verify_channel_not_configured", return_value=None)
+    @patch.object(source_removal, "_remove_sync_history", return_value=(0, 0))
+    def test_canonical_video_deleted_when_final_playable_source_removed(
+        self, mock_history, mock_verify, mock_lock
+    ):
+        """When only inactive alternate sources remain, final-source condition is met and video is deleted."""
+        v_id = "telegram:-100123:final_v"
+        rel_path = "target/final_v.strm"
+        strm_file = self.media_dir / rel_path
+        strm_file.parent.mkdir(parents=True, exist_ok=True)
+        strm_file.write_text("http://stream-final", encoding="utf-8")
+        nfo_file = strm_file.with_suffix(".nfo")
+        nfo_file.write_text("<movie/>", encoding="utf-8")
+        jpg_file = strm_file.with_suffix(".jpg")
+        jpg_file.write_bytes(b"\xff\xd8\xff")
+        fail_file = strm_file.with_suffix(".thumb_fail")
+        fail_file.write_text("fail", encoding="utf-8")
+
+        data = {
+            "videos": {v_id},
+            "synced_files": [(v_id, rel_path)],
+            "video_sources": [
+                (v_id, f"{v_id}:src", "telegram", "-100123", 1),
+                (v_id, "telegram:123:final_v:old", "telegram", "123", 0),
+                (v_id, "telegram:-100999:final_v:dead", "telegram", "-100999", 0),
+            ],
+            "telegram_channel_state": ["-100123"],
+        }
+        conn = FakeConnection(data)
+        services = FakeServices()
+
+        res = remove_telegram_channel(
+            conn, self.media_dir, "-100123", "job-final-src", services, self._record_progress
+        )
+
+        self.assertEqual(res["videos_deleted"], 1)
+        self.assertEqual(res["files_deleted"], 4)
+        self.assertEqual(res["synced_files_deleted"], 1)
+        self.assertEqual(res["shared_videos_preserved"], 0)
+
+        # Video and managed files deleted
+        self.assertNotIn(v_id, conn.data["videos"])
+        self.assertFalse(strm_file.exists())
+        self.assertFalse(nfo_file.exists())
+        self.assertFalse(jpg_file.exists())
+        self.assertFalse(fail_file.exists())
+        self.assertEqual(conn.data["synced_files"], [])
+        self.assertEqual([r for r in conn.data["video_sources"] if r[0] == v_id], [])
+
+    @patch.object(source_removal, "_acquire_channel_removal_lock", return_value=None)
+    @patch.object(source_removal, "_verify_channel_not_configured", return_value=None)
+    @patch.object(source_removal, "_remove_sync_history", return_value=(0, 0))
+    def test_canonical_owned_by_alternate_channel_retained_and_target_sources_removed(
+        self, mock_history, mock_verify, mock_lock
+    ):
+        """Canonical video belonging to another channel retains its canonical video while target sources are deleted."""
+        v_keeper = "telegram:-100999:keeper"
+        rel_path = "target/keeper.strm"
+        strm_file = self.media_dir / rel_path
+        strm_file.parent.mkdir(parents=True, exist_ok=True)
+        strm_file.write_text("http://stream-keeper", encoding="utf-8")
+
+        data = {
+            "videos": {v_keeper},
+            "synced_files": [(v_keeper, rel_path)],
+            "video_sources": [
+                (v_keeper, "telegram:-100999:keeper", "telegram", "-100999", 1),
+                (v_keeper, "telegram:-100123:loser_1", "telegram", "-100123", 1),
+                (v_keeper, "telegram:123:loser_2", "telegram", "123", 0),
+            ],
+            "telegram_channel_state": ["-100123", "-100999"],
+        }
+        conn = FakeConnection(data)
+        services = FakeServices()
+
+        res = remove_telegram_channel(
+            conn, self.media_dir, "-100123", "job-keeper-test", services, self._record_progress
+        )
+
+        self.assertEqual(res["videos_deleted"], 0)
+        self.assertEqual(res["shared_videos_preserved"], 1)
+        self.assertIn(v_keeper, conn.data["videos"])
+        self.assertTrue(strm_file.exists())
+
+        remaining_sids = {r[1] for r in conn.data["video_sources"]}
+        self.assertIn("telegram:-100999:keeper", remaining_sids)
+        self.assertNotIn("telegram:-100123:loser_1", remaining_sids)
+        self.assertNotIn("telegram:123:loser_2", remaining_sids)
+
+    @patch.object(source_removal, "_acquire_channel_removal_lock", return_value=None)
+    @patch.object(source_removal, "_verify_channel_not_configured", return_value=None)
+    @patch.object(source_removal, "_remove_sync_history", return_value=(0, 0))
+    def test_removal_with_padded_channel_id_and_padded_source_channel_id(
+        self, mock_history, mock_verify, mock_lock
+    ):
+        """Padded raw channel ID is normalized consistently before all operations.
+
+        Verifies:
+        - Lock acquisition receives normalized ID.
+        - Config verification receives normalized ID.
+        - History removal receives normalized ID.
+        - Source matching matches target despite padded channel_id in video_sources.
+        - Channel-state cleanup receives normalized aliases and is executed.
+        - Result dictionary contains normalized channel_id.
+        """
+        raw_input = "   -100123   "
+        norm_cid = "-100123"
+        v_target = f"telegram:{norm_cid}:1"
+        rel_path = "chan/vid.strm"
+        full_strm = self.media_dir / rel_path
+        full_strm.parent.mkdir(parents=True, exist_ok=True)
+        full_strm.write_text("stream", encoding="utf-8")
+
+        data = {
+            "videos": {v_target},
+            "synced_files": [(v_target, rel_path)],
+            "video_sources": [
+                (v_target, f"{v_target}:src", "telegram", "  -100123  ", 1),
+            ],
+            "telegram_channel_state": ["-100123"],
+        }
+        conn = FakeConnection(data)
+        services = FakeServices()
+
+        res = remove_telegram_channel(
+            conn, self.media_dir, raw_input, "job-padded", services, self._record_progress
+        )
+
+        # 1. Calls must observe normalized channel ID, not raw padded string
+        mock_lock.assert_called_once_with(norm_cid)
+        mock_verify.assert_called_once_with(norm_cid)
+        mock_history.assert_called_once_with(norm_cid)
+
+        # 2. Deletions and result verification
+        self.assertEqual(res["channel_id"], norm_cid)
+        self.assertEqual(res["videos_deleted"], 1)
+        self.assertNotIn(v_target, conn.data["videos"])
+        self.assertEqual(conn.data["video_sources"], [])
+
+        # 3. Channel state cleanup assertion
+        self.assertEqual(conn.data["telegram_channel_state"], [])
+        state_deletes = [
+            (sql, params) for sql, params in conn.sql_log
+            if "DELETE FROM telegram_channel_state" in sql
+        ]
+        self.assertEqual(len(state_deletes), 1)
+        self.assertEqual(state_deletes[0][1], (sorted(_channel_ids(norm_cid)),))
+
     def test_sql_like_escaping_against_real_sqlite_engine(self):
         """Execute the exact generated SQL query against a real SQL database."""
         import sqlite3
@@ -717,6 +1107,18 @@ class TestSourceRemoval(unittest.TestCase):
             matched = [r[0] for r in sconn.execute(query, params).fetchall()]
 
             self.assertEqual(matched, ["telegram:@example_channel_contract:100"])
+
+            # Regression assertion against real SQLite test path for padded channel_id values (Finding 2)
+            padded_channel_id = "   @example_channel_contract   "
+            padded_aliases = sorted(source_removal._channel_ids(padded_channel_id))
+            padded_prefixes = [f"telegram:{value}:" for value in padded_aliases]
+            padded_conditions = ["id LIKE ? ESCAPE '\\'" for _ in padded_prefixes]
+            padded_params = [source_removal._escape_like_prefix(p) for p in padded_prefixes]
+
+            padded_query = "SELECT id FROM videos WHERE provider='telegram' AND (" + " OR ".join(padded_conditions) + ")"
+            padded_matched = [r[0] for r in sconn.execute(padded_query, padded_params).fetchall()]
+
+            self.assertEqual(padded_matched, ["telegram:@example_channel_contract:100"])
         finally:
             sconn.close()
 

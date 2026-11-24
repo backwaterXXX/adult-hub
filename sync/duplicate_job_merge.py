@@ -99,7 +99,8 @@ class _KeeperMerge:
 
 def _attach_keeper_source(conn, keeper: str, now) -> None:
     keeper_channel = keeper.split(':')[1] if ':' in keeper and len(keeper.split(':')) >= 2 else ''
-    conn.execute('INSERT INTO video_sources\n                        (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at)\n                        VALUES (%s, %s, %s, %s, %s, %s, 1, 1, %s)\n                        ON CONFLICT (source_id) DO NOTHING', (keeper, keeper, 'telegram', keeper, f"https://t.me/c/{(keeper_channel[4:] if keeper_channel.startswith('-100') else keeper_channel.lstrip('-'))}" if keeper_channel else '', keeper_channel, now))
+    created_ts = _epoch(now)
+    conn.execute('INSERT INTO video_sources\n                        (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at)\n                        VALUES (%s, %s, %s, %s, %s, %s, 1, 1, %s)\n                        ON CONFLICT (source_id) DO NOTHING', (keeper, keeper, 'telegram', keeper, f"https://t.me/c/{(keeper_channel[4:] if keeper_channel.startswith('-100') else keeper_channel.lstrip('-'))}" if keeper_channel else '', keeper_channel, created_ts))
 
 
 def _collect_loser_candidates(merge: _KeeperMerge, l_vid: dict, loser_overrides: dict,
@@ -134,8 +135,26 @@ def _copy_scene_match_and_thumbnail(k_vid: dict, l_vid: dict) -> None:
 
 
 def _attach_loser_source(conn, keeper: str, loser: str, now) -> None:
+    conn.execute(
+        'UPDATE video_sources '
+        'SET video_id=%s, '
+        '    priority=CASE WHEN priority < 2 THEN 2 ELSE priority END '
+        'WHERE video_id=%s',
+        (keeper, loser),
+    )
     l_channel = loser.split(':')[1] if ':' in loser and len(loser.split(':')) >= 2 else ''
-    conn.execute('INSERT INTO video_sources\n                            (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at)\n                            VALUES (%s, %s, %s, %s, %s, %s, 2, 1, %s)\n                            ON CONFLICT (source_id) DO UPDATE SET\n                                video_id=EXCLUDED.video_id, provider=EXCLUDED.provider,\n                                provider_ref=EXCLUDED.provider_ref, source_url=EXCLUDED.source_url,\n                                channel_id=EXCLUDED.channel_id, priority=EXCLUDED.priority,\n                                is_active=EXCLUDED.is_active, created_at=EXCLUDED.created_at', (keeper, loser, 'telegram', loser, f"https://t.me/c/{(l_channel[4:] if l_channel.startswith('-100') else l_channel.lstrip('-'))}" if l_channel else '', l_channel, now))
+    created_ts = _epoch(now)
+    conn.execute(
+        'INSERT INTO video_sources '
+        '    (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at) '
+        'VALUES (%s, %s, %s, %s, %s, %s, 2, 1, %s) '
+        'ON CONFLICT (source_id) DO UPDATE SET '
+        '    video_id=EXCLUDED.video_id, '
+        '    priority=CASE WHEN video_sources.priority < 2 THEN 2 ELSE video_sources.priority END',
+        (keeper, loser, 'telegram', loser,
+         f"https://t.me/c/{(l_channel[4:] if l_channel.startswith('-100') else l_channel.lstrip('-'))}" if l_channel else '',
+         l_channel, created_ts),
+    )
 
 
 def _merge_loser_sets(merge: _KeeperMerge, l_vid: dict) -> None:
@@ -168,7 +187,49 @@ def _retire_loser_rows(conn, keeper: str, loser: str, job_id, snapshot: dict, no
     conn.execute('DELETE FROM synced_files WHERE video_id=%s', (loser,))
     conn.execute('DELETE FROM videos WHERE id=%s', (loser,))
     evidence = str(payload.get('evidence') or '')
-    conn.execute("INSERT INTO video_duplicate_decisions (loser_id,keeper_id,operation_id,state,created_at,snapshot,rules_version,evidence) VALUES (%s,%s,%s,'active',%s,%s,%s,%s)", (loser, keeper, job_id, now, _core.json.dumps(snapshot, ensure_ascii=False), payload.get('rules_version'), evidence))
+    conn.execute(
+        "INSERT INTO video_duplicate_decisions (loser_id,keeper_id,operation_id,state,created_at,snapshot,rules_version,evidence) "
+        "VALUES (%s,%s,%s,'active',%s,%s,%s,%s) "
+        "ON CONFLICT (loser_id) DO UPDATE SET "
+        "keeper_id=EXCLUDED.keeper_id, operation_id=EXCLUDED.operation_id, "
+        "state=EXCLUDED.state, snapshot=EXCLUDED.snapshot, rules_version=EXCLUDED.rules_version, evidence=EXCLUDED.evidence",
+        (loser, keeper, job_id, now, _core.json.dumps(snapshot, ensure_ascii=False), payload.get('rules_version'), evidence),
+    )
+
+
+def _check_source_inventory(conn, loser: str, snapshot: dict) -> list[dict]:
+    vs_cols = _core.db.table_columns(conn, 'video_sources')
+    source_rows = conn.execute(
+        'SELECT * FROM video_sources WHERE video_id=%s ORDER BY priority, source_id',
+        (loser,),
+    ).fetchall()
+    clean_sources = []
+    for r in source_rows:
+        d = dict(zip(vs_cols, r))
+        if d.get('created_at') is not None:
+            d['created_at'] = _iso_timestamp(d['created_at'])
+        clean_sources.append(d)
+    if 'sources' in snapshot and snapshot.get('sources') is not None:
+        snap_sources = snapshot.get('sources') or []
+        snap_by_id = {str(s.get('source_id')): s for s in snap_sources if s.get('source_id')}
+        live_by_id = {str(s.get('source_id')): s for s in clean_sources if s.get('source_id')}
+        if set(snap_by_id) != set(live_by_id):
+            raise ValueError(
+                f"Source inventory changed after snapshot for item '{loser}'; "
+                "operation requires a new plan."
+            )
+        stable_fields = ('video_id', 'provider', 'provider_ref', 'source_url', 'channel_id', 'priority', 'is_active')
+        for s_id, snap_s in snap_by_id.items():
+            live_s = live_by_id[s_id]
+            for field in stable_fields:
+                snap_val = str(snap_s.get(field) or '') if field not in ('priority', 'is_active') else int(snap_s.get(field) or 0)
+                live_val = str(live_s.get(field) or '') if field not in ('priority', 'is_active') else int(live_s.get(field) or 0)
+                if snap_val != live_val:
+                    raise ValueError(
+                        f"Source inventory changed after snapshot for item '{loser}'; "
+                        "operation requires a new plan."
+                    )
+    return clean_sources
 
 
 def _merge_loser(conn, merge: _KeeperMerge, keeper: str, job_id, payload: dict, snapshot: dict, now) -> None:
@@ -194,6 +255,10 @@ def _merge_loser(conn, merge: _KeeperMerge, keeper: str, job_id, payload: dict, 
     loser_override_time = _epoch(loser_override_row[1]) if loser_override_row else 0.0
     _collect_loser_candidates(merge, l_vid, loser_overrides, loser_override_time)
     _copy_scene_match_and_thumbnail(merge.k_vid, l_vid)
+    if conn.execute('SELECT 1 FROM videos WHERE id=%s', (loser,)).fetchone():
+        clean_sources = _check_source_inventory(conn, loser, snapshot)
+        if 'sources' not in snapshot:
+            snapshot['sources'] = clean_sources
     _attach_loser_source(conn, keeper, loser, now)
     _merge_loser_sets(merge, l_vid)
     _pick_metadata_winners(merge)

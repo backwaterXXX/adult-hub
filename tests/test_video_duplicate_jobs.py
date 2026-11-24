@@ -11,6 +11,7 @@ from pg_helper import PgTestCase
 from test_support import load_sync_module
 
 sync = load_sync_module()
+from sync import duplicate_jobs as duplicate_jobs_core
 from resolver.video_duplicates import enqueue_job
 from common.job_queue import retry_job
 from common.admin_operations import (
@@ -98,12 +99,11 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         self.assertTrue(list(quarantine.rglob("*.jpg")))
 
         # Check video_sources registration
-        sources = self.conn.execute(
-            "SELECT video_id, source_id, priority, is_active FROM video_sources WHERE video_id=%s ORDER BY priority",
-            (self.keeper,)).fetchall()
-        self.assertEqual(len(sources), 2)
-        self.assertEqual(sources[0], (self.keeper, self.keeper, 1, 1))
-        self.assertEqual(sources[1], (self.keeper, self.loser, 2, 1))
+        loser_source = self.conn.execute(
+            "SELECT video_id, source_id, priority, is_active FROM video_sources WHERE source_id=%s",
+            (self.loser,),
+        ).fetchone()
+        self.assertEqual(loser_source, (self.keeper, self.loser, 2, 1))
 
         collected = {self.loser: {"video": {"id": self.loser}, "genres": set(), "tags": set()}}
         self.assertEqual(sync.flush_collected(collected, self.conn, self.media, "test"), 0)
@@ -119,7 +119,13 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         self.assertTrue((self.media / f"{basename}.jpg").exists())
         state = self.conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (undo_id,)).fetchone()[0]
         self.assertEqual(state, "done")
-        self.assertIsNone(self.conn.execute("SELECT 1 FROM video_sources WHERE source_id=%s", (self.loser,)).fetchone())
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT video_id, source_id, priority, is_active FROM video_sources WHERE source_id=%s",
+                (self.loser,),
+            ).fetchone(),
+            (self.loser, self.loser, 1, 1),
+        )
 
 
     def test_hide_merges_metadata_fusion(self):
@@ -263,6 +269,49 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         self.assertTrue((self.media / f"{basename}.strm").exists())
         self.assertEqual(self.conn.execute(
             "SELECT state FROM video_duplicate_jobs WHERE id=%s", (undo_id,)).fetchone()[0], "done")
+
+
+    def test_quarantine_and_undo_when_loser_strm_absent_preserves_video_sources(self):
+        basename = sync.stable_media_basename(self.loser)
+        strm_path = self.media / f"{basename}.strm"
+        strm_path.unlink()
+
+        initial_source = self.conn.execute(
+            "SELECT video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active "
+            "FROM video_sources WHERE video_id=%s",
+            (self.loser,),
+        ).fetchone()
+        self.assertIsNotNone(initial_source)
+
+        job_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM video_sources WHERE video_id=%s", (self.loser,)).fetchone())
+
+        undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(
+            self.conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (undo_id,)).fetchone()[0],
+            "done",
+        )
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
+
+        restored_source = self.conn.execute(
+            "SELECT video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active "
+            "FROM video_sources WHERE video_id=%s",
+            (self.loser,),
+        ).fetchone()
+        self.assertEqual(restored_source, initial_source)
+        self.assertEqual(restored_source[0], self.loser)
+        self.assertEqual(restored_source[1], self.loser)
+        self.assertEqual(restored_source[2], "telegram")
+        self.assertEqual(restored_source[3], self.loser)
+        self.assertEqual(restored_source[4], "https://t.me/c/1/1")
+        self.assertEqual(restored_source[5], "-1001")
+        self.assertEqual(restored_source[6], 1)
+        self.assertEqual(restored_source[7], 1)
 
 
     def test_restore_operation_plan_runs_existing_undo_worker_end_to_end(self):
@@ -658,6 +707,358 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         self.assertEqual(self.conn.execute(
             "SELECT state FROM video_duplicate_decisions WHERE loser_id=%s", (self.loser,)).fetchone()[0], "active")
 
+
+    def test_undo_rejects_source_ownership_conflict(self):
+        self._confirm_duplicate(self.keeper, self.loser)
+        job_id = enqueue_job(self.db_path, "hide", {
+            "keeper_id": self.keeper, "loser_ids": [self.loser],
+        })
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+
+        other_video = "telegram:-1001:9:other"
+        self._add_video(other_video)
+        with self.conn:
+            self.conn.execute("UPDATE video_sources SET video_id=%s WHERE source_id=%s", (other_video, self.loser))
+
+        undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+        state, result = self.conn.execute(
+            "SELECT state, result FROM video_duplicate_jobs WHERE id=%s", (undo_id,)
+        ).fetchone()
+        self.assertEqual(state, "failed")
+        self.assertIn("is now owned by another video", json.loads(result)["error"])
+
+
+    def test_undo_reassigned_row_restore_failure(self):
+        self._confirm_duplicate(self.keeper, self.loser)
+        job_id = enqueue_job(self.db_path, "hide", {
+            "keeper_id": self.keeper, "loser_ids": [self.loser],
+        })
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+
+        other_video = "telegram:-1001:9:other"
+        self._add_video(other_video)
+
+        orig_record_progress = duplicate_jobs_core._record_job_progress
+
+        def race_on_saving_catalog(conn, job_id, stage, **kwargs):
+            if stage == "saving_catalog":
+                conn.execute("UPDATE video_sources SET video_id=%s WHERE source_id=%s", (other_video, self.loser))
+            return orig_record_progress(conn, job_id, stage, **kwargs)
+
+        undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
+        with patch.object(duplicate_jobs_core, "_record_job_progress", side_effect=race_on_saving_catalog):
+            with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+                self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+
+        state, result = self.conn.execute(
+            "SELECT state, result FROM video_duplicate_jobs WHERE id=%s", (undo_id,)
+        ).fetchone()
+        self.assertEqual(state, "failed")
+        self.assertIn("was not restored (possibly reassigned to another video in a race)", json.loads(result)["error"])
+
+
+    def test_merge_undo_source_restoration(self):
+        self._confirm_duplicate(self.keeper, self.loser)
+        job_id = enqueue_job(self.db_path, "hide", {
+            "keeper_id": self.keeper, "loser_ids": [self.loser],
+        })
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+
+        keeper_sources = self.conn.execute(
+            "SELECT video_id, source_id, priority FROM video_sources WHERE video_id=%s ORDER BY priority",
+            (self.keeper,),
+        ).fetchall()
+        self.assertEqual(len(keeper_sources), 2)
+        self.assertEqual(keeper_sources[0], (self.keeper, self.keeper, 1))
+        self.assertEqual(keeper_sources[1], (self.keeper, self.loser, 2))
+
+        undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+
+        self.assertEqual(self.conn.execute(
+            "SELECT state FROM video_duplicate_jobs WHERE id=%s", (undo_id,)
+        ).fetchone()[0], "done")
+
+        keeper_sources_after = self.conn.execute(
+            "SELECT video_id, source_id, priority FROM video_sources WHERE video_id=%s",
+            (self.keeper,),
+        ).fetchall()
+        self.assertEqual(keeper_sources_after, [(self.keeper, self.keeper, 1)])
+
+        loser_sources_after = self.conn.execute(
+            "SELECT video_id, source_id, priority, created_at FROM video_sources WHERE video_id=%s",
+            (self.loser,),
+        ).fetchall()
+        self.assertEqual(len(loser_sources_after), 1)
+        self.assertEqual(loser_sources_after[0][0], self.loser)
+        self.assertEqual(loser_sources_after[0][1], self.loser)
+        self.assertIsNotNone(loser_sources_after[0][3])
+
+
+    def test_undo_legacy_snapshot_without_sources(self):
+        self._confirm_duplicate(self.keeper, self.loser)
+        job_id = enqueue_job(self.db_path, "hide", {
+            "keeper_id": self.keeper, "loser_ids": [self.loser],
+        })
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+
+        row = self.conn.execute(
+            "SELECT snapshot FROM video_duplicate_decisions WHERE operation_id=%s", (job_id,)
+        ).fetchone()
+        snap = json.loads(row[0])
+        snap.pop("sources", None)
+        with self.conn:
+            self.conn.execute(
+                "UPDATE video_duplicate_decisions SET snapshot=%s WHERE operation_id=%s",
+                (json.dumps(snap), job_id),
+            )
+
+        undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+
+        state = self.conn.execute(
+            "SELECT state FROM video_duplicate_jobs WHERE id=%s", (undo_id,)
+        ).fetchone()[0]
+        self.assertEqual(state, "done")
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM video_sources WHERE source_id=%s AND video_id=%s", (self.loser, self.keeper)
+        ).fetchone())
+        loser_sources = self.conn.execute(
+            "SELECT video_id, source_id, provider, priority, is_active FROM video_sources WHERE video_id=%s",
+            (self.loser,),
+        ).fetchall()
+        self.assertEqual(len(loser_sources), 1)
+        self.assertEqual(loser_sources[0][0], self.loser)
+        self.assertEqual(loser_sources[0][1], self.loser)
+        self.assertEqual(loser_sources[0][2], "telegram")
+        self.assertEqual(loser_sources[0][3], 1)
+        self.assertEqual(loser_sources[0][4], 1)
+
+    def test_post_catalog_commit_resume_succeeds_for_quarantine_and_hide(self):
+        # 1. Quarantine post-catalog-commit retry
+        job_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
+        with patch.object(sync, "trigger_jellyfin_refresh", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                sync.process_video_duplicate_jobs(self.conn, self.media)
+
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
+        self.assertEqual(self.conn.execute(
+            "SELECT state FROM video_duplicate_decisions WHERE loser_id=%s", (self.loser,)).fetchone()[0], "active")
+        self.assertEqual(self.conn.execute(
+            "SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0], "processing")
+
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(self.conn.execute(
+            "SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0], "done")
+
+        # 2. Hide post-catalog-commit retry
+        other_loser = "telegram:-1001:3:otherloser"
+        self._add_video(other_loser)
+        self._confirm_duplicate(self.keeper, other_loser)
+
+        hide_id = enqueue_job(self.db_path, "hide", {
+            "keeper_id": self.keeper, "loser_ids": [other_loser],
+        })
+        with patch.object(sync, "trigger_jellyfin_refresh", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                sync.process_video_duplicate_jobs(self.conn, self.media)
+
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (other_loser,)).fetchone())
+        self.assertEqual(self.conn.execute(
+            "SELECT state FROM video_duplicate_decisions WHERE loser_id=%s", (other_loser,)).fetchone()[0], "active")
+        self.assertEqual(self.conn.execute(
+            "SELECT state FROM video_duplicate_jobs WHERE id=%s", (hide_id,)).fetchone()[0], "processing")
+
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(self.conn.execute(
+            "SELECT state FROM video_duplicate_jobs WHERE id=%s", (hide_id,)).fetchone()[0], "done")
+
+
+class TestDuplicateJobSourceAdapter(unittest.TestCase):
+    def test_restore_single_source_record_normalizes_created_at(self):
+        from datetime import datetime, timezone
+        from unittest.mock import MagicMock
+        from common.db import _adapt_epoch_sql
+        from sync.duplicate_job_undo import _restore_single_source_record
+
+        valid_cols = {"video_id", "source_id", "provider", "provider_ref", "source_url", "channel_id", "priority", "is_active", "created_at"}
+
+        # Case 1: ISO string timestamp
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.rowcount = 1
+        record = {
+            "source_id": "telegram:-1001:1:src",
+            "provider": "telegram",
+            "created_at": "2024-01-15T10:00:00Z",
+        }
+        _restore_single_source_record(mock_conn, record, "video-1", "keeper-1", valid_cols)
+        call_args = mock_conn.execute.call_args
+        sql, params = call_args[0]
+        adapted = _adapt_epoch_sql(sql)
+        self.assertIn("to_timestamp(%s)", adapted)
+        col_names = sql[len("INSERT INTO video_sources ("):sql.index(")")].split(",")
+        created_at_idx = col_names.index("created_at")
+        self.assertIsInstance(params[created_at_idx], float)
+        expected_epoch = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc).timestamp()
+        self.assertEqual(params[created_at_idx], expected_epoch)
+
+        # Case 2: Numeric int/float timestamp unchanged
+        mock_conn.reset_mock()
+        record = {
+            "source_id": "telegram:-1001:1:src",
+            "created_at": 1700000000,
+        }
+        _restore_single_source_record(mock_conn, record, "video-1", "keeper-1", valid_cols)
+        sql, params = mock_conn.execute.call_args[0]
+        col_names = sql[len("INSERT INTO video_sources ("):sql.index(")")].split(",")
+        created_at_idx = col_names.index("created_at")
+        self.assertEqual(params[created_at_idx], 1700000000)
+
+        # Case 3: Datetime object converted via timestamp()
+        mock_conn.reset_mock()
+        dt_val = datetime(2024, 2, 1, 12, 0, 0, tzinfo=timezone.utc)
+        record = {
+            "source_id": "telegram:-1001:1:src",
+            "created_at": dt_val,
+        }
+        _restore_single_source_record(mock_conn, record, "video-1", "keeper-1", valid_cols)
+        sql, params = mock_conn.execute.call_args[0]
+        col_names = sql[len("INSERT INTO video_sources ("):sql.index(")")].split(",")
+        created_at_idx = col_names.index("created_at")
+        self.assertEqual(params[created_at_idx], dt_val.timestamp())
+
+        # Case 4: Missing (None) -> current epoch
+        mock_conn.reset_mock()
+        record = {
+            "source_id": "telegram:-1001:1:src",
+            "created_at": None,
+        }
+        _restore_single_source_record(mock_conn, record, "video-1", "keeper-1", valid_cols)
+        sql, params = mock_conn.execute.call_args[0]
+        col_names = sql[len("INSERT INTO video_sources ("):sql.index(")")].split(",")
+        created_at_idx = col_names.index("created_at")
+        self.assertIsInstance(params[created_at_idx], float)
+
+    def test_merge_attach_sources_pass_numeric_epoch_to_adapter(self):
+        from datetime import datetime, timezone
+        from unittest.mock import MagicMock
+        from common.db import _adapt_epoch_sql
+        from sync.duplicate_job_merge import _attach_keeper_source, _attach_loser_source
+
+        mock_conn = MagicMock()
+        now = 1705312800.0
+
+        # Keeper source
+        _attach_keeper_source(mock_conn, "telegram:-1001:2:keeper", now)
+        sql, params = mock_conn.execute.call_args[0]
+        adapted = _adapt_epoch_sql(sql)
+        self.assertIn("to_timestamp(%s)", adapted)
+        self.assertEqual(params[-1], 1705312800.0)
+
+        # Loser source
+        mock_conn.reset_mock()
+        _attach_loser_source(mock_conn, "telegram:-1001:2:keeper", "telegram:-1001:1:loser", now)
+        sql, params = mock_conn.execute.call_args_list[-1][0]
+        adapted = _adapt_epoch_sql(sql)
+        self.assertIn("to_timestamp(%s)", adapted)
+        self.assertEqual(params[-1], 1705312800.0)
+
+        # Datetime object as now
+        dt_now = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+        mock_conn.reset_mock()
+        _attach_keeper_source(mock_conn, "telegram:-1001:2:keeper", dt_now)
+        sql, params = mock_conn.execute.call_args[0]
+        self.assertEqual(params[-1], dt_now.timestamp())
+
+    def test_legacy_source_preflight_and_restore_exact_primary_source(self):
+        from unittest.mock import MagicMock
+        from sync.duplicate_job_undo import _check_undo_sources, _is_exact_primary_source, _restore_fallback_source
+
+        video_id = "telegram:-1001:1:loser"
+        keeper_id = "telegram:-1001:2:keeper"
+
+        # Exact primary row tuple: (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active)
+        primary_row = (video_id, video_id, "telegram", video_id, "https://t.me/c/1/1", "-1001", 1, 1)
+        self.assertTrue(_is_exact_primary_source(primary_row, video_id))
+
+        # Check preflight accepts exact primary row for legacy snapshot (snapshot without 'sources')
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchall.return_value = [primary_row]
+        legacy_snapshot = {"video": {"id": video_id}, "keeper_after": {"video": {"id": keeper_id}}}
+        _check_undo_sources(mock_conn, legacy_snapshot, video_id, keeper_id)
+
+        # Check restore leaves exact primary row in place without UPDATE
+        mock_conn.reset_mock()
+        mock_conn.execute.return_value.fetchone.return_value = primary_row
+        _restore_fallback_source(mock_conn, video_id, keeper_id)
+        # Should only execute SELECT, no UPDATE
+        self.assertEqual(mock_conn.execute.call_count, 1)
+        sql = mock_conn.execute.call_args[0][0]
+        self.assertTrue(sql.strip().startswith("SELECT"))
+
+    def test_legacy_source_preflight_and_restore_synthetic_fallback_source(self):
+        from unittest.mock import MagicMock
+        from sync.duplicate_job_undo import _check_undo_sources, _is_synthetic_fallback_source, _restore_fallback_source
+
+        video_id = "telegram:-1001:1:loser"
+        keeper_id = "telegram:-1001:2:keeper"
+
+        # Synthetic fallback row: video_id is keeper, source_id is loser, priority is 2
+        synthetic_row = (keeper_id, video_id, "telegram", video_id, "https://t.me/c/1", "-1001", 2, 1)
+        self.assertTrue(_is_synthetic_fallback_source(synthetic_row, video_id, keeper_id))
+
+        synthetic_row_msg = (keeper_id, video_id, "telegram", video_id, "https://t.me/c/1/1", "-1001", 2, 1)
+        self.assertTrue(_is_synthetic_fallback_source(synthetic_row_msg, video_id, keeper_id))
+
+        # Check preflight accepts synthetic fallback row
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchall.return_value = [synthetic_row]
+        legacy_snapshot = {"video": {"id": video_id}, "keeper_after": {"video": {"id": keeper_id}}}
+        _check_undo_sources(mock_conn, legacy_snapshot, video_id, keeper_id)
+
+        # Check restore rehomes synthetic row to video_id with priority 1
+        mock_conn.reset_mock()
+        mock_conn.execute.return_value.fetchone.return_value = synthetic_row
+        mock_conn.execute.return_value.rowcount = 1
+        _restore_fallback_source(mock_conn, video_id, keeper_id)
+        self.assertEqual(mock_conn.execute.call_count, 2)
+        update_sql, update_params = mock_conn.execute.call_args_list[1][0]
+        self.assertIn("UPDATE video_sources", update_sql)
+        self.assertEqual(update_params, (video_id, video_id, keeper_id))
+
+    def test_legacy_source_preflight_and_restore_rejects_foreign_owner(self):
+        from unittest.mock import MagicMock
+        from sync.duplicate_job_undo import _check_undo_sources, _restore_fallback_source
+
+        video_id = "telegram:-1001:1:loser"
+        keeper_id = "telegram:-1001:2:keeper"
+        other_id = "telegram:-1001:9:other"
+
+        foreign_row = (other_id, video_id, "telegram", video_id, "https://t.me/c/1", "-1001", 1, 1)
+
+        # Preflight rejection
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchall.return_value = [foreign_row]
+        legacy_snapshot = {"video": {"id": video_id}, "keeper_after": {"video": {"id": keeper_id}}}
+        with self.assertRaisesRegex(ValueError, "is now owned by another video"):
+            _check_undo_sources(mock_conn, legacy_snapshot, video_id, keeper_id)
+
+        # Restore rejection
+        mock_conn.reset_mock()
+        mock_conn.execute.return_value.fetchone.return_value = foreign_row
+        with self.assertRaisesRegex(RuntimeError, "was not restored \\(possibly reassigned to another video in a race\\)"):
+            _restore_fallback_source(mock_conn, video_id, keeper_id)
 
 
 if __name__ == "__main__":

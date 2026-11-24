@@ -11,7 +11,7 @@ from sync.duplicate_job_files import (
     _append_sidecar_moves, _check_journal_ids, _load_recovery_snapshots,
     _move_hidden_files,
 )
-from sync.duplicate_job_merge import _merge_keeper_metadata
+from sync.duplicate_job_merge import _check_source_inventory, _iso_timestamp, _merge_keeper_metadata
 
 
 def _require_pair_evidence(conn, pair_evidence, keeper: str, losers: list, manual_review: bool) -> None:
@@ -67,7 +67,7 @@ def _check_hide_fingerprints(video_rows: dict, fingerprints: dict) -> None:
 
 
 def _check_hide_losers(conn, keeper: str, losers: list, validation_ids: list, video_rows: dict,
-                       active_decisions: set, services) -> None:
+                       active_decisions: set, services, job_id: str | None = None) -> None:
     pair_keys = {tuple(sorted((keeper, loser))) for loser in losers}
     pair_left_ids = list(dict.fromkeys(pair[0] for pair in pair_keys))
     pair_right_ids = list(dict.fromkeys(pair[1] for pair in pair_keys))
@@ -87,6 +87,8 @@ def _check_hide_losers(conn, keeper: str, losers: list, validation_ids: list, vi
     active_edges = {(str(row[0]), str(row[1])) for row in decision_rows}
     for loser in losers:
         if loser not in video_rows:
+            if job_id and conn.execute("SELECT 1 FROM video_duplicate_decisions WHERE loser_id=%s AND operation_id=%s AND state='active'", (loser, job_id)).fetchone():
+                continue
             raise ValueError(f'Item to hide no longer exists: {loser}')
         pair_left, pair_right = sorted((keeper, loser))
         if (pair_left, pair_right) in dismissed_pairs:
@@ -94,7 +96,10 @@ def _check_hide_losers(conn, keeper: str, losers: list, validation_ids: list, vi
         if services.video_is_disabled(loser):
             raise ValueError('Source of this item is disabled; decision was not saved.')
         if loser in active_decisions:
-            raise ValueError('Item already has an active deduplication decision.')
+            if job_id and conn.execute("SELECT 1 FROM video_duplicate_decisions WHERE loser_id=%s AND operation_id=%s AND state='active'", (loser, job_id)).fetchone():
+                pass
+            else:
+                raise ValueError('Item already has an active deduplication decision.')
         if (keeper, loser) in active_edges:
             raise ValueError('Decision would create a cycle.')
 
@@ -135,12 +140,22 @@ def _build_hide_snapshots(conn, losers: list, revision_snapshots: dict, op_dir, 
             for shared in source_snapshot.get('shared_paths', [])
         }
         file_snapshots = _hide_file_snapshots(files, shared_paths, op_dir, media_dir, services)
-        snapshots.append({
+        snap_item = {
             'video': video,
             'synced_files': files,
             'categories': cats,
             'files': file_snapshots,
-        })
+        }
+        if 'sources' in source_snapshot:
+            raw_sources = source_snapshot.get('sources') or []
+            clean_sources = []
+            for s in raw_sources:
+                sd = dict(s)
+                if sd.get('created_at') is not None:
+                    sd['created_at'] = _iso_timestamp(sd['created_at'])
+                clean_sources.append(sd)
+            snap_item['sources'] = clean_sources
+        snapshots.append(snap_item)
 
 
 def _run_hide(conn, job_id, payload, media_dir, services, quarantine_root, now, run) -> dict:
@@ -166,7 +181,7 @@ def _run_hide(conn, job_id, payload, media_dir, services, quarantine_root, now, 
     if keeper in active_decisions:
         raise ValueError('Keeper item is already hidden; choose an active item.')
     _check_hide_fingerprints(video_rows, fingerprints)
-    _check_hide_losers(conn, keeper, losers, validation_ids, video_rows, active_decisions, services)
+    _check_hide_losers(conn, keeper, losers, validation_ids, video_rows, active_decisions, services, job_id=job_id)
     _check_expected_revisions(keeper, expected_revisions, revision_snapshots)
     quarantine_root.mkdir(parents=True, exist_ok=True)
     op_dir = quarantine_root / job_id
@@ -178,12 +193,19 @@ def _run_hide(conn, job_id, payload, media_dir, services, quarantine_root, now, 
     snapshots = recovery_snapshots if recovery_snapshots is not None else []
     if recovery_snapshots is None and losers:
         _build_hide_snapshots(conn, losers, revision_snapshots, op_dir, media_dir, services, snapshots)
+    for snap in snapshots:
+        loser_id = snap['video']['id']
+        if conn.execute('SELECT 1 FROM videos WHERE id=%s', (loser_id,)).fetchone():
+            clean_sources = _check_source_inventory(conn, loser_id, snap)
+            if 'sources' not in snap:
+                snap['sources'] = clean_sources
     _core._store_job_result_field(conn, job_id, 'operation_id', job_id)
     _core._store_job_result_field(conn, job_id, 'snapshots', snapshots)
     _move_hidden_files(conn, job_id, snapshots, services, run)
     _core._record_job_progress(conn, job_id, 'saving_catalog')
     with conn:
         _merge_keeper_metadata(conn, keeper, job_id, payload, snapshots, media_dir, services, now)
+    _core._store_job_result_field(conn, job_id, 'snapshots', snapshots)
     run.catalog_committed = True
     refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'hidden', services)
     result = {'operation_id': job_id, 'hidden': losers, 'keeper_id': keeper, 'local_state': 'hidden', 'jellyfin_refresh': 'updated' if refreshed else 'failed'}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import unittest
+from datetime import datetime, timezone
 
 
 from common import db
@@ -110,6 +111,19 @@ class TestActiveMigrationValidation(unittest.TestCase):
     def test_active_migrations_must_be_ordered(self):
         with self.assertRaisesRegex(ValueError, "ordered by version"):
             _validate_active_migrations((self._migration(2), self._migration(1)))
+
+    def test_m0071_registration(self):
+        from common.migrations.m0071_telegram_sources_backfill import (
+            current_migration,
+            migration,
+        )
+        self.assertEqual(migration.version, 71)
+        self.assertEqual(migration.name, "0071_telegram_sources_backfill")
+        self.assertEqual(current_migration.version, 23)
+        self.assertEqual(current_migration.name, "0023_telegram_sources_backfill")
+        from common.migrations.runner import CURRENT_MIGRATIONS, MIGRATIONS
+        self.assertIn(current_migration, CURRENT_MIGRATIONS)
+        self.assertIn(current_migration, MIGRATIONS)
 
 
 class TestMigrationsEngine(PgTestCase):
@@ -402,6 +416,7 @@ class TestMigrationsEngine(PgTestCase):
             (68, "0068_phash_generation_schedule"),
             (69, "0069_direct_play_user_state"),
             (70, "0070_client_auth"),
+            (71, "0071_telegram_sources_backfill"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):
@@ -558,6 +573,157 @@ class TestMigrationsEngine(PgTestCase):
         row = self.conn.execute("SELECT stashdb_url, pbc_url FROM performer_bios WHERE name = 'Test Star'").fetchone()
         self.assertEqual(row[0], "https://stashdb.org/performers/uuid-123")
         self.assertEqual(row[1], "")
+
+    def test_m0071_telegram_sources_backfill(self):
+        build_pre_squash_schema(self.conn, through_version=70)
+        t_first_seen = int(datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc).timestamp())
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration, first_seen) VALUES (%s, %s, %s, %s, %s)",
+                ("telegram:-100123:42:1", "telegram", "Tg Canonical 1", 600, t_first_seen),
+            )
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration, first_seen) VALUES (%s, %s, %s, %s, %s)",
+                ("telegram:-5:99:2", "telegram", "Tg Canonical 2", 600, None),
+            )
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, %s, %s, %s)",
+                ("telegram:-100123:42", "telegram", "Tg Non-canonical", 600),
+            )
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, %s, %s, %s)",
+                ("web:site:1:1", "web", "Web Video", 600),
+            )
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, %s, %s, %s)",
+                ("telegram:-100456:77:3", "telegram", "Tg With Source", 600),
+            )
+            self.conn.execute(
+                "INSERT INTO video_sources (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)",
+                ("telegram:-100456:77:3", "telegram:-100456:77:3", "telegram", "custom_ref", "https://custom.url", "-100456", 3, 0),
+            )
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, %s, %s, %s)",
+                ("telegram:-100789:88:4", "telegram", "Tg With Alt Source", 600),
+            )
+            self.conn.execute(
+                "INSERT INTO video_sources (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)",
+                ("telegram:-100789:88:4", "telegram:-100999:11:9", "telegram", "alt_ref", "https://alt.url", "-100999", 1, 1),
+            )
+            # Case 2: source row already owns source_id == videos.id for donor video, but video_id points at recipient
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, %s, %s, %s)",
+                ("telegram:-100333:55:5", "telegram", "Tg Donor Video", 600),
+            )
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, %s, %s, %s)",
+                ("telegram:-100333:55:6", "telegram", "Tg Recipient Video", 600),
+            )
+            self.conn.execute(
+                "INSERT INTO video_sources (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)",
+                ("telegram:-100333:55:6", "telegram:-100333:55:5", "telegram", "attached_ref", "https://custom.donor.url", "-100333", 2, 1),
+            )
+
+        apply_migrations(self.conn)
+
+        row1 = self.conn.execute(
+            "SELECT video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at "
+            "FROM video_sources WHERE video_id = %s AND source_id = %s",
+            ("telegram:-100123:42:1", "telegram:-100123:42:1"),
+        ).fetchone()
+        self.assertIsNotNone(row1)
+        self.assertEqual(row1[:8], (
+            "telegram:-100123:42:1", "telegram:-100123:42:1", "telegram", "telegram:-100123:42:1",
+            "https://t.me/c/123/42", "-100123", 1, 1,
+        ))
+        self.assertEqual(row1[8], t_first_seen)
+
+        row2 = self.conn.execute(
+            "SELECT video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at "
+            "FROM video_sources WHERE video_id = %s AND source_id = %s",
+            ("telegram:-5:99:2", "telegram:-5:99:2"),
+        ).fetchone()
+        self.assertIsNotNone(row2)
+        self.assertEqual(row2[:8], (
+            "telegram:-5:99:2", "telegram:-5:99:2", "telegram", "telegram:-5:99:2",
+            "", "-5", 1, 1,
+        ))
+        self.assertIsNotNone(row2[8])
+
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM video_sources WHERE video_id = %s", ("telegram:-100123:42",)
+        ).fetchone())
+
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM video_sources WHERE video_id = %s", ("web:site:1:1",)
+        ).fetchone())
+
+        row5 = self.conn.execute(
+            "SELECT provider_ref, source_url, priority, is_active "
+            "FROM video_sources WHERE video_id = %s AND source_id = %s",
+            ("telegram:-100456:77:3", "telegram:-100456:77:3"),
+        ).fetchone()
+        self.assertEqual(row5, ("custom_ref", "https://custom.url", 3, 0))
+
+        # Regression: existing alternate source at priority 1 is preserved unchanged, no competing primary source created
+        sources6 = self.conn.execute(
+            "SELECT source_id, priority, is_active FROM video_sources WHERE video_id = %s ORDER BY priority",
+            ("telegram:-100789:88:4",),
+        ).fetchall()
+        self.assertEqual(len(sources6), 1)
+        self.assertEqual(sources6[0], ("telegram:-100999:11:9", 1, 1))
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM video_sources WHERE video_id = %s AND source_id = %s",
+            ("telegram:-100789:88:4", "telegram:-100789:88:4"),
+        ).fetchone())
+        row_alt = self.conn.execute(
+            "SELECT provider_ref, source_url, channel_id, priority, is_active "
+            "FROM video_sources WHERE video_id = %s AND source_id = %s",
+            ("telegram:-100789:88:4", "telegram:-100999:11:9"),
+        ).fetchone()
+        self.assertEqual(row_alt, ("alt_ref", "https://alt.url", "-100999", 1, 1))
+
+        # Donor source row owned by recipient video is preserved; donor has no fabricated source
+        row_attached = self.conn.execute(
+            "SELECT video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active "
+            "FROM video_sources WHERE source_id = %s",
+            ("telegram:-100333:55:5",),
+        ).fetchone()
+        self.assertEqual(row_attached, (
+            "telegram:-100333:55:6", "telegram:-100333:55:5", "telegram", "attached_ref",
+            "https://custom.donor.url", "-100333", 2, 1,
+        ))
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM video_sources WHERE video_id = %s",
+            ("telegram:-100333:55:5",),
+        ).fetchone())
+        recipient_sources = self.conn.execute(
+            "SELECT source_id, priority, is_active FROM video_sources WHERE video_id = %s ORDER BY priority",
+            ("telegram:-100333:55:6",),
+        ).fetchall()
+        self.assertEqual(len(recipient_sources), 1)
+        self.assertEqual(recipient_sources[0], ("telegram:-100333:55:5", 2, 1))
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM video_sources WHERE video_id = %s AND source_id = %s",
+            ("telegram:-100333:55:6", "telegram:-100333:55:6"),
+        ).fetchone())
+
+        # Idempotency regression: apply migration directly a second time and compare rows
+        source_query = (
+            "SELECT video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at "
+            "FROM video_sources ORDER BY video_id, source_id"
+        )
+        sources_before = self.conn.execute(source_query).fetchall()
+
+        from common.migrations.m0071_telegram_sources_backfill import migration as m0071
+        with self.conn:
+            m0071.apply(self.conn)
+
+        sources_after = self.conn.execute(source_query).fetchall()
+        self.assertEqual(sources_before, sources_after)
 
 
 class TestMigrationRecoverability(PgTestCase):

@@ -15,17 +15,19 @@ logger = logging.getLogger(__name__)
 
 
 def _channel_ids(channel_id: str) -> set[str]:
+    if not isinstance(channel_id, str) or not channel_id.strip():
+        raise ValueError("Channel removal requires a valid Telegram channel ID.")
+    clean = channel_id.strip()
     try:
         from common.managed_sources import channel_aliases
-        return channel_aliases(channel_id)
+        raw = channel_aliases(clean)
     except ImportError:
-        clean = channel_id.strip()
-        values = {channel_id, clean}
+        raw = {clean}
         if clean.startswith("-100"):
-            values.add(clean[4:])
+            raw.add(clean[4:])
         else:
-            values.add("-100" + clean.lstrip("-"))
-        return values
+            raw.add("-100" + clean.lstrip("-"))
+    return {str(cid).strip() for cid in raw if str(cid).strip()}
 
 
 def _escape_like_prefix(prefix: str) -> str:
@@ -36,12 +38,15 @@ def _escape_like_prefix(prefix: str) -> str:
 def _source_matches(value, channel_ids: set[str]) -> bool:
     if not isinstance(value, str):
         return False
-    candidate = value.removeprefix("telegram:")
-    return candidate in channel_ids
+    candidate = value.strip().removeprefix("telegram:").strip()
+    return candidate in {str(cid).strip() for cid in channel_ids}
 
 
 def _acquire_channel_removal_lock(channel_id: str, timeout: float = 30.0):
     """Acquire a channel-scoped lock so this channel cannot be concurrently removed or re-added."""
+    if not isinstance(channel_id, str) or not channel_id.strip():
+        raise ValueError("Channel removal requires a valid Telegram channel ID.")
+    channel_id = channel_id.strip()
     from common.managed_sources import channel_lock_path
 
     target = channel_lock_path(channel_id)
@@ -73,6 +78,9 @@ def _release_channel_removal_lock(lock_file):
 
 def _verify_channel_not_configured(channel_id: str, timeout: float = 30.0) -> None:
     """Verify that the channel is disabled/removed in effective config within a bounded timeout."""
+    if not isinstance(channel_id, str) or not channel_id.strip():
+        raise ValueError("Channel removal requires a valid Telegram channel ID.")
+    channel_id = channel_id.strip()
     from common.config_loader import find_config_file, read_base_config
     from common.managed_sources import apply_overrides, config_lock, overrides_path, read_overrides
 
@@ -102,6 +110,7 @@ def _verify_channel_not_configured(channel_id: str, timeout: float = 30.0) -> No
 
 
 def _remove_sync_history(channel_id: str) -> tuple[int, int]:
+    aliases = _channel_ids(channel_id)
     path = Path(os.getenv("SYNC_HISTORY_FILE", "/data/cache/sync_history.json"))
     if not path.exists():
         return 0, 0
@@ -112,7 +121,6 @@ def _remove_sync_history(channel_id: str) -> tuple[int, int]:
     if not isinstance(report, dict) or not isinstance(report.get("runs"), list):
         raise RuntimeError("Sync history has an invalid structure; channel deletion is incomplete.")
 
-    aliases = _channel_ids(channel_id)
     retained = []
     removed_runs = 0
     removed_source_rows = 0
@@ -146,7 +154,7 @@ def _remove_sync_history(channel_id: str) -> tuple[int, int]:
 
 def _source_match_clause(aliases, prefixes):
     """SQL condition and parameters selecting ``video_sources`` rows owned by the channel."""
-    source_conditions = ["channel_id = ANY(%s)"]
+    source_conditions = ["TRIM(channel_id) = ANY(%s)"]
     source_params: list[Any] = [aliases]
     for prefix in prefixes:
         source_conditions.append("source_id LIKE %s ESCAPE '\\'")
@@ -198,6 +206,7 @@ def _deletable_videos(conn, tables, candidate_ids, target_source_ids, aliases) -
             v_id = str(s_row[0])
             video_sources_map.setdefault(v_id, []).append(s_row)
 
+    aliases_set = {str(a).strip() for a in aliases}
     for video_id in sorted(existing_ids):
         other_active = False
         if "video_sources" in tables:
@@ -205,7 +214,7 @@ def _deletable_videos(conn, tables, candidate_ids, target_source_ids, aliases) -
             other_active = any(
                 bool(row[4]) and not (
                     str(row[1]) in target_source_ids
-                    or (str(row[2]) == "telegram" and str(row[3] or "") in aliases)
+                    or (str(row[2]) == "telegram" and str(row[3] or "").strip() in aliases_set)
                 )
                 for row in rows
             )
@@ -308,8 +317,9 @@ def remove_telegram_channel(conn, media_dir: Path, channel_id: str, job_id: str,
     its catalog data is being removed. The queue worker also holds the global
     sync lock, so history writes and catalog syncs cannot overlap this cleanup.
     """
-    if not isinstance(channel_id, str) or not channel_id or len(channel_id) > 256:
+    if not isinstance(channel_id, str) or not channel_id.strip() or len(channel_id.strip()) > 256:
         raise ValueError("Channel removal requires a valid Telegram channel ID.")
+    channel_id = channel_id.strip()
 
     channel_lock = _acquire_channel_removal_lock(channel_id)
     try:

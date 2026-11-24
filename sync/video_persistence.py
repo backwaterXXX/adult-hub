@@ -233,6 +233,63 @@ def persist_prepared_video(
         if genre and not genre.startswith("Browse"):
             conn.execute("INSERT INTO video_categories (video_id, category) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                          (comp_id, genre))
+    _record_primary_video_source(conn, comp_id, provider, video, time_fn=time_fn)
+
+
+def _record_primary_video_source(
+    conn: db.Connection,
+    comp_id: str,
+    provider: str,
+    video: Dict[str, Any],
+    time_fn: Callable[[], float] = time.time,
+) -> None:
+    """Record primary playable source in video_sources for Telegram videos in the same transaction."""
+    if provider != "telegram":
+        return
+
+    channel_id = str(video.get("channel_id") or "").strip()
+    message_id = str(video.get("message_id") or "").strip()
+    parts = comp_id.split(":")
+    if not channel_id and len(parts) >= 2:
+        channel_id = parts[1]
+    if not message_id and len(parts) >= 3:
+        message_id = parts[2]
+    channel_id = channel_id or None
+
+    source_url = str(video.get("source_url") or "").strip()
+    if not source_url:
+        if (
+            channel_id
+            and channel_id.startswith("-100")
+            and channel_id[4:].isdigit()
+            and message_id
+            and message_id.isdigit()
+        ):
+            source_url = f"https://t.me/c/{channel_id[4:]}/{message_id}"
+        else:
+            source_url = ""
+
+    provider_ref = str(video.get("provider_ref") or comp_id)
+    now = int(time_fn())
+
+    cur = conn.execute("""
+        INSERT INTO video_sources (
+            video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, 1, 1, %s)
+        ON CONFLICT (source_id) DO UPDATE SET
+            provider = EXCLUDED.provider,
+            provider_ref = EXCLUDED.provider_ref,
+            source_url = COALESCE(NULLIF(EXCLUDED.source_url, ''), video_sources.source_url),
+            channel_id = COALESCE(NULLIF(EXCLUDED.channel_id, ''), video_sources.channel_id)
+        WHERE video_sources.video_id = EXCLUDED.video_id
+        RETURNING video_sources.video_id
+    """, (comp_id, comp_id, provider, provider_ref, source_url, channel_id, now))
+
+    row = cur.fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"video_sources conflict: source_id '{comp_id}' is already owned by another video"
+        )
 
 
 def register_stream_file(conn: db.Connection, prepared: Dict[str, Any],

@@ -69,6 +69,25 @@ class SyncIntegrityTests(PgTestCase):
         self.assertEqual({p.read_text().split("/admin/play/")[1].split("/stream")[0] for p in files},
                          {"exampleweb:123", "thirdweb:123"})
 
+    def test_telegram_sync_records_primary_source_in_same_transaction(self):
+        sync_module.sync_unique_video(self.video("telegram", "-100123:55", "Tg Title"), set(), set(), self.media, self.conn)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM videos WHERE id='telegram:-100123:55'").fetchone()[0], 1)
+        src = self.conn.execute(
+            "SELECT video_id, source_id, provider, source_url, channel_id, priority, is_active FROM video_sources WHERE video_id='telegram:-100123:55'"
+        ).fetchone()
+        self.assertEqual(src, ("telegram:-100123:55", "telegram:-100123:55", "telegram", "https://t.me/c/123/55", "-100123", 1, 1))
+
+    def test_telegram_sync_resync_preserves_priority_and_is_active(self):
+        sync_module.sync_unique_video(self.video("telegram", "-100123:55", "Tg Title"), set(), set(), self.media, self.conn)
+        self.conn.execute("UPDATE video_sources SET priority = 5, is_active = 0 WHERE video_id = 'telegram:-100123:55'")
+        self.conn.commit()
+
+        sync_module.sync_unique_video(self.video("telegram", "-100123:55", "Tg Title 2"), set(), set(), self.media, self.conn)
+        src = self.conn.execute(
+            "SELECT priority, is_active FROM video_sources WHERE video_id='telegram:-100123:55'"
+        ).fetchone()
+        self.assertEqual(src, (5, 0))
+
     def test_stream_url_is_refreshed_when_public_address_changes(self):
         old_url = sync_module.RESOLVER_PUBLIC_URL
         self.addCleanup(setattr, sync_module, "RESOLVER_PUBLIC_URL", old_url)

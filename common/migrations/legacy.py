@@ -101,6 +101,9 @@ from common.migrations.m0069_direct_play_user_state import (
 from common.migrations.m0070_client_auth import (
     migration as client_auth,
 )
+from common.migrations.m0071_telegram_sources_backfill import (
+    migration as telegram_sources_backfill,
+)
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -175,4 +178,5 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     phash_generation_schedule,
     direct_play_user_state,
     client_auth,
+    telegram_sources_backfill,
 )

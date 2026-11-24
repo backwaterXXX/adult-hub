@@ -4,6 +4,7 @@ Moved verbatim from duplicate_job_worker.py. Names are read through the
 duplicate_jobs compatibility facade (``_core``), as they were before the move.
 """
 from __future__ import annotations
+from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,119 @@ def _check_undo_collisions(conn, snapshot: dict) -> None:
             raise ValueError('File path is currently used by another entry.')
 
 
+def _is_valid_fallback_source_url(surl: str | None, video_id: str) -> bool:
+    surl_str = str(surl or '').rstrip('/')
+    if not surl_str:
+        return True
+    l_channel = video_id.split(':')[1] if ':' in video_id and len(video_id.split(':')) >= 2 else ''
+    channel_num = (l_channel[4:] if l_channel.startswith('-100') else l_channel.lstrip('-')) if l_channel else ''
+    default_url = f"https://t.me/c/{channel_num}" if channel_num else ''
+    if default_url:
+        return surl_str == default_url or surl_str.startswith(f"{default_url}/")
+    return surl_str.startswith("https://t.me/")
+
+
+def _is_synthetic_fallback_source(row, video_id: str, k_id: str | None) -> bool:
+    if row is None:
+        return False
+    if isinstance(row, dict):
+        v_id, s_id = row.get('video_id'), row.get('source_id')
+        prov, pref = row.get('provider'), row.get('provider_ref')
+        surl, cid = row.get('source_url'), row.get('channel_id')
+        prio, act = row.get('priority'), row.get('is_active')
+    elif len(row) >= 8:
+        v_id, s_id, prov, pref, surl, cid, prio, act = row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7]
+    else:
+        v_id, prov, pref, surl, cid, prio, act = row[0], row[1], row[2], row[3], row[4], row[5], row[6]
+        s_id = None
+
+    if str(v_id) != str(k_id) or (s_id is not None and str(s_id) != str(video_id)):
+        return False
+    if str(prov) != 'telegram':
+        return False
+    if not pref or not (str(pref) == str(video_id) or str(video_id).endswith(str(pref))):
+        return False
+    if int(prio or 0) < 2 or int(act or 0) != 1:
+        return False
+    l_channel = video_id.split(':')[1] if ':' in video_id and len(video_id.split(':')) >= 2 else ''
+    cid_str = str(cid or '')
+    if l_channel and cid_str and cid_str != l_channel:
+        return False
+    return _is_valid_fallback_source_url(surl, video_id)
+
+
+def _is_exact_primary_source(row, video_id: str) -> bool:
+    if row is None:
+        return False
+    if isinstance(row, dict):
+        v_id, s_id = row.get('video_id'), row.get('source_id')
+        prov, pref = row.get('provider'), row.get('provider_ref')
+    elif len(row) >= 4:
+        v_id, s_id, prov, pref = row[0], row[1], row[2], row[3]
+    else:
+        return False
+
+    if str(v_id) != str(video_id) or str(s_id) != str(video_id):
+        return False
+    if str(prov) != 'telegram' or not pref:
+        return False
+    return str(pref) == str(video_id) or str(video_id).endswith(str(pref))
+
+
+def _check_legacy_undo_sources(conn, snapshot: dict, video_id: str, k_id: str | None) -> None:
+    existing_sources = conn.execute(
+        'SELECT video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active '
+        'FROM video_sources WHERE video_id=%s OR source_id=%s',
+        (video_id, video_id),
+    ).fetchall()
+    is_quarantine = (k_id == video_id) or (
+        not snapshot.get('keeper_before')
+        and not snapshot.get('keeper_after')
+        and not snapshot.get('_decision_keeper_id')
+    )
+    if not is_quarantine and not existing_sources:
+        raise ValueError(
+            f"Cannot safely reconstruct source inventory for '{video_id}' from legacy snapshot; "
+            "undo cannot proceed."
+        )
+    for s_row in existing_sources:
+        s_vid = s_row[0] if not isinstance(s_row, dict) else s_row.get('video_id')
+        if is_quarantine:
+            if str(s_vid) != str(video_id):
+                raise ValueError(
+                    f"Source row for '{video_id}' is now owned by another video ('{s_vid}'); "
+                    "undo cannot proceed."
+                )
+        else:
+            if str(s_vid) not in (str(k_id), str(video_id)):
+                raise ValueError(
+                    f"Source row for '{video_id}' is now owned by another video ('{s_vid}'); "
+                    "undo cannot proceed."
+                )
+            if not _is_exact_primary_source(s_row, video_id) and not _is_synthetic_fallback_source(s_row, video_id, k_id):
+                raise ValueError(
+                    f"Cannot safely reconstruct source inventory for '{video_id}' from legacy snapshot; "
+                    "undo cannot proceed."
+                )
+
+
+def _check_undo_sources(conn, snapshot: dict, video_id: str, k_id: str | None) -> None:
+    if 'sources' in snapshot and snapshot.get('sources') is not None:
+        for record in snapshot.get('sources') or []:
+            source_id = record.get('source_id')
+            if not source_id:
+                continue
+            row = conn.execute('SELECT video_id FROM video_sources WHERE source_id=%s', (source_id,)).fetchone()
+            if row and row[0] not in (k_id, video_id):
+                raise ValueError(
+                    f"Source row '{source_id}' is now owned by another video ('{row[0]}'); "
+                    "undo cannot proceed."
+                )
+        return
+
+    _check_legacy_undo_sources(conn, snapshot, video_id, k_id)
+
+
 def _check_undo_snapshots(conn, snapshots: list, media_dir, quarantine_root, resuming_undo: bool) -> None:
     for snapshot in snapshots:
         video_id = snapshot['video']['id']
@@ -52,6 +166,12 @@ def _check_undo_snapshots(conn, snapshots: list, media_dir, quarantine_root, res
         _check_undo_collisions(conn, snapshot)
         if not resuming_undo and any((_core.Path(move['source']).exists() for move in snapshot.get('files', []))):
             raise ValueError('Target path exists; not overwritten.')
+        k_id = (
+            snapshot.get('_decision_keeper_id')
+            or snapshot.get('keeper_before', {}).get('video', {}).get('id')
+            or snapshot.get('keeper_after', {}).get('video', {}).get('id')
+        )
+        _check_undo_sources(conn, snapshot, video_id, k_id)
 
 
 def _restore_undo_files(conn, job_id, snapshots: list, services, run, resuming_undo: bool) -> None:
@@ -79,6 +199,110 @@ def _restore_undo_files(conn, job_id, snapshots: list, services, run, resuming_u
             _core._record_job_progress(conn, job_id, 'restoring_files', completed=restored_count, total=file_total)
 
 
+def _restore_fallback_source(conn, video_id: str, k_id: str | None) -> None:
+    if not k_id:
+        return
+    row = conn.execute(
+        'SELECT video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active '
+        'FROM video_sources WHERE source_id=%s',
+        (video_id,),
+    ).fetchone()
+    if not row:
+        raise RuntimeError(
+            f"Cannot safely restore source row for '{video_id}' from legacy snapshot: "
+            "matched fallback source is missing or invalid."
+        )
+    v_id = row[0] if not isinstance(row, dict) else row.get('video_id')
+    if str(v_id) not in (str(k_id), str(video_id)):
+        raise RuntimeError(
+            f"Source row '{video_id}' was not restored (possibly reassigned to another video in a race)."
+        )
+    if _is_exact_primary_source(row, video_id):
+        return
+    if not _is_synthetic_fallback_source(row, video_id, k_id):
+        raise RuntimeError(
+            f"Cannot safely restore source row for '{video_id}' from legacy snapshot: "
+            "matched fallback source is missing or invalid."
+        )
+    cur = conn.execute(
+        'UPDATE video_sources SET video_id=%s, priority=1 WHERE source_id=%s AND video_id=%s',
+        (video_id, video_id, k_id),
+    )
+    if cur.rowcount == 0:
+        raise RuntimeError(
+            f"Source row '{video_id}' was not restored (possibly reassigned to another video in a race)."
+        )
+
+
+def _restore_single_source_record(conn, record: dict, video_id: str, k_id: str | None, valid_cols: set) -> None:
+    source_id = record.get('source_id')
+    s_rec = {k: v for k, v in record.items() if k in valid_cols and k != 'id'}
+    s_rec['video_id'] = video_id
+    s_rec['source_id'] = source_id
+    if 'provider' not in s_rec:
+        s_rec['provider'] = source_id.split(':', 1)[0] if ':' in source_id else 'telegram'
+    created_at = s_rec.get('created_at')
+    if created_at is None:
+        s_rec['created_at'] = _core.time.time()
+    elif isinstance(created_at, (int, float)):
+        s_rec['created_at'] = created_at
+    elif hasattr(created_at, 'timestamp'):
+        s_rec['created_at'] = created_at.timestamp()
+    elif isinstance(created_at, str):
+        try:
+            s_rec['created_at'] = float(created_at)
+        except ValueError:
+            try:
+                s_rec['created_at'] = datetime.fromisoformat(created_at).timestamp()
+            except ValueError:
+                s_rec['created_at'] = _core.time.time()
+    s_names = [c for c in s_rec if c in valid_cols]
+    s_updates = [name for name in s_names if name != 'source_id']
+    if s_updates:
+        s_assignments = ', '.join(f'{name}=EXCLUDED.{name}' for name in s_updates)
+        where_clause = f" WHERE video_sources.video_id IN ({','.join(['%s'] * (2 if k_id else 1))})"
+        where_params = [k_id, video_id] if k_id else [video_id]
+        cur = conn.execute(
+            f"INSERT INTO video_sources ({','.join(s_names)}) "
+            f"VALUES ({','.join('%s' for _ in s_names)}) "
+            f"ON CONFLICT (source_id) DO UPDATE SET {s_assignments}{where_clause}",
+            [*[s_rec[n] for n in s_names], *where_params],
+        )
+    else:
+        cur = conn.execute(
+            f"INSERT INTO video_sources ({','.join(s_names)}) "
+            f"VALUES ({','.join('%s' for _ in s_names)}) "
+            f"ON CONFLICT (source_id) DO NOTHING",
+            [s_rec[n] for n in s_names],
+        )
+    if cur.rowcount == 0:
+        raise RuntimeError(
+            f"Source row '{source_id}' was not restored (possibly reassigned to another video in a race)."
+        )
+
+
+def _restore_sources_snapshot(conn, video_id: str, snapshot: dict, k_id: str | None) -> None:
+    sources = snapshot.get('sources')
+    is_quarantine = (k_id == video_id) or (not snapshot.get('keeper_before') and not snapshot.get('keeper_after') and not snapshot.get('_decision_keeper_id'))
+    if sources is None:
+        if not is_quarantine:
+            _restore_fallback_source(conn, video_id, k_id)
+        return
+
+    restored_ids = set()
+    valid_cols = set(_core.db.table_columns(conn, 'video_sources'))
+    for record in sources:
+        source_id = record.get('source_id')
+        if not source_id:
+            continue
+        restored_ids.add(source_id)
+        _restore_single_source_record(conn, record, video_id, k_id, valid_cols)
+
+    if video_id not in restored_ids:
+        if k_id and not is_quarantine:
+            conn.execute('DELETE FROM video_sources WHERE source_id=%s AND video_id=%s', (video_id, k_id))
+
+
 def _restore_snapshot_rows(conn, snapshot: dict) -> None:
     video = snapshot['video']
     names = list(video)
@@ -104,7 +328,12 @@ def _restore_snapshot_rows(conn, snapshot: dict) -> None:
              override_snapshot.get('revision', 1), override_snapshot.get('updated_at')),
         )
     conn.execute("UPDATE video_duplicate_decisions SET state='undone' WHERE loser_id=%s", (video['id'],))
-    conn.execute('DELETE FROM video_sources WHERE source_id=%s', (video['id'],))
+    k_id = (
+        snapshot.get('_decision_keeper_id')
+        or snapshot.get('keeper_before', {}).get('video', {}).get('id')
+        or snapshot.get('keeper_after', {}).get('video', {}).get('id')
+    )
+    _restore_sources_snapshot(conn, video['id'], snapshot, k_id)
 
 
 def _restore_keeper_video_fields(conn, keeper_id: str, current: dict, old_video: dict, new_video: dict) -> None:
@@ -187,10 +416,17 @@ def _restore_keeper_metadata(conn, snapshots: list, media_dir, services, now) ->
 def _run_undo(conn, job_id, payload, media_dir, services, quarantine_root, now, run) -> dict:
     """Restore the items of a previous duplicate operation from their undo snapshots."""
     operation = str(payload['operation_id'])
-    rows = conn.execute("SELECT loser_id,snapshot FROM video_duplicate_decisions WHERE operation_id=%s AND state='active'", (operation,)).fetchall()
+    rows = conn.execute(
+        "SELECT loser_id,snapshot,keeper_id FROM video_duplicate_decisions WHERE operation_id=%s AND state='active'",
+        (operation,),
+    ).fetchall()
     if not rows:
         raise ValueError('No active decision found to undo.')
-    snapshots = [_core.json.loads(r[1]) for r in rows]
+    snapshots = []
+    for r in rows:
+        s = _core.json.loads(r[1])
+        s['_decision_keeper_id'] = r[2]
+        snapshots.append(s)
     job_stage_row = conn.execute('SELECT result FROM video_duplicate_jobs WHERE id=%s', (job_id,)).fetchone()
     try:
         resuming_undo = bool(job_stage_row and job_stage_row[0] and ('undo_snapshots' in _core.json.loads(job_stage_row[0])))

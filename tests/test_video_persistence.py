@@ -485,6 +485,193 @@ class TestVideoPersistence(PgTestCase):
         self.assertEqual(publication_pending_ids(self.conn, 10), ["testprov:v9"],
                          "the row is otherwise a genuine publication candidate")
 
+    def test_telegram_video_records_primary_playable_source_in_same_transaction(self):
+        services = self._make_services()
+        video = {
+            "provider": "telegram",
+            "provider_video_id": "-100123:42:1",
+            "title": "Telegram Scene 42",
+            "duration": 600,
+            "performers": ["Alice"],
+        }
+        sync_unique_video(
+            video=video,
+            genres={"Action"},
+            tags={"tag1"},
+            target_dir=self.media_dir,
+            conn=self.conn,
+            commit=True,
+            _prepare_only=False,
+            services=services,
+        )
+        vid_id = "telegram:-100123:42:1"
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM videos WHERE id=%s", (vid_id,)).fetchone()[0], 1)
+        src_row = self.conn.execute(
+            "SELECT video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active "
+            "FROM video_sources WHERE video_id=%s",
+            (vid_id,),
+        ).fetchone()
+        self.assertIsNotNone(src_row)
+        self.assertEqual(src_row, (
+            vid_id, vid_id, "telegram", vid_id, "https://t.me/c/123/42", "-100123", 1, 1
+        ))
+
+    def test_telegram_video_unsupported_channel_id_leaves_source_url_blank(self):
+        services = self._make_services()
+        video = {
+            "provider": "telegram",
+            "provider_video_id": "-5:99:1",
+            "title": "Small Group Video",
+            "duration": 600,
+        }
+        sync_unique_video(
+            video=video,
+            genres={"Action"},
+            tags={"tag1"},
+            target_dir=self.media_dir,
+            conn=self.conn,
+            commit=True,
+            _prepare_only=False,
+            services=services,
+        )
+        vid_id = "telegram:-5:99:1"
+        src_row = self.conn.execute(
+            "SELECT video_id, source_id, source_url, channel_id, priority, is_active "
+            "FROM video_sources WHERE video_id=%s",
+            (vid_id,),
+        ).fetchone()
+        self.assertIsNotNone(src_row)
+        self.assertEqual(src_row, (vid_id, vid_id, "", "-5", 1, 1))
+
+    def test_non_telegram_video_does_not_record_video_source(self):
+        services = self._make_services()
+        video = {
+            "provider": "testprov",
+            "provider_video_id": "v200",
+            "title": "Web Scene 200",
+            "duration": 600,
+            "performers": ["Bob"],
+        }
+        sync_unique_video(
+            video=video,
+            genres={"Action"},
+            tags={"tag1"},
+            target_dir=self.media_dir,
+            conn=self.conn,
+            commit=True,
+            _prepare_only=False,
+            services=services,
+        )
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM videos WHERE id='testprov:v200'").fetchone()[0], 1)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM video_sources WHERE video_id='testprov:v200'").fetchone()[0], 0)
+
+    def test_telegram_primary_source_survives_sidecar_file_write_failure(self):
+        services = self._make_services(
+            write_stream_file=MagicMock(side_effect=OSError("Disk full")),
+            create_nfo_file=self._write_nfo_from_catalog,
+        )
+        vid_id = "telegram:-100123:55:1"
+        collected = {
+            vid_id: {
+                "video": {"provider": "telegram", "provider_video_id": "-100123:55:1",
+                          "title": "Unpublished Telegram Video", "duration": 600, "performers": ["Alice"]},
+                "genres": {"Action"},
+                "tags": {"tagA"},
+            },
+        }
+        with self.assertRaisesRegex(RuntimeError, "file write: OSError"):
+            flush_collected(collected=collected, conn=self.conn, media_dir=self.media_dir,
+                            source_name="Telegram", raise_on_error=True, services=services)
+
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM videos WHERE id=%s", (vid_id,)).fetchone()[0], 1)
+        src_row = self.conn.execute(
+            "SELECT video_id, source_id, priority, is_active FROM video_sources WHERE video_id=%s",
+            (vid_id,),
+        ).fetchone()
+        self.assertEqual(src_row, (vid_id, vid_id, 1, 1))
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM synced_files WHERE video_id=%s", (vid_id,)).fetchone()[0], 0)
+
+    def test_batch_flush_collected_records_primary_sources_and_rolls_back_on_failure(self):
+        calls = 0
+        def fail_on_second(conn, prep):
+            nonlocal calls
+            calls += 1
+            persist_prepared_video(conn, prep)
+            if calls == 2:
+                raise OSError("simulated persist failure")
+
+        services = self._make_services(persist_prepared_video=fail_on_second)
+        collected = {
+            "telegram:-1001:1": {
+                "video": {"provider": "telegram", "provider_video_id": "-1001:1", "title": "Vid 1", "duration": 600},
+                "genres": {"Action"},
+                "tags": set(),
+            },
+            "telegram:-1001:2": {
+                "video": {"provider": "telegram", "provider_video_id": "-1001:2", "title": "Vid 2", "duration": 600},
+                "genres": {"Comedy"},
+                "tags": set(),
+            },
+        }
+        written = flush_collected(collected=collected, conn=self.conn, media_dir=self.media_dir, services=services)
+        self.assertEqual(written, 0)
+        self.assertFalse(self.conn.in_transaction)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM videos WHERE id LIKE 'telegram:-1001:%'").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM video_sources WHERE video_id LIKE 'telegram:-1001:%'").fetchone()[0], 0)
+
+    def test_telegram_primary_source_idempotent_and_protects_other_canonical_owner(self):
+        services = self._make_services()
+        keeper_id = "telegram:-1001:99:keeper"
+        loser_id = "telegram:-1002:88:loser"
+
+        sync_unique_video(
+            video={"provider": "telegram", "provider_video_id": "-1001:99:keeper", "title": "Keeper", "duration": 600},
+            genres=set(), tags=set(), target_dir=self.media_dir, conn=self.conn, commit=True, services=services,
+        )
+        self.conn.execute(
+            "INSERT INTO video_sources (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at) "
+            "VALUES (%s, %s, 'telegram', %s, 'https://t.me/c/2/88', '-1002', 2, 1, 1000)",
+            (keeper_id, loser_id, loser_id),
+        )
+        self.conn.commit()
+
+        # Re-syncing loser video must RAISE and rollback: video/source pair cannot partially commit
+        with self.assertRaisesRegex(RuntimeError, "already owned by another video"):
+            sync_unique_video(
+                video={"provider": "telegram", "provider_video_id": "-1002:88:loser", "title": "Loser", "duration": 600},
+                genres=set(), tags=set(), target_dir=self.media_dir, conn=self.conn, commit=True, services=services,
+            )
+        # Loser video row must not exist in videos (transaction rolled back)
+        self.assertEqual(
+            self.conn.execute("SELECT count(*) FROM videos WHERE id=%s", (loser_id,)).fetchone()[0],
+            0,
+            "Video persistence must be rolled back on source conflict",
+        )
+        # Source row remains owned by keeper
+        src = self.conn.execute(
+            "SELECT video_id, source_id, priority FROM video_sources WHERE source_id=%s",
+            (loser_id,),
+        ).fetchone()
+        self.assertEqual(src, (keeper_id, loser_id, 2), "Must not overwrite source owned by different canonical video")
+
+        # Demote and deactivate keeper to verify re-sync does not reset priority or is_active
+        self.conn.execute(
+            "UPDATE video_sources SET priority = 5, is_active = 0 WHERE source_id=%s",
+            (keeper_id,),
+        )
+        self.conn.commit()
+
+        # Repeated sync of keeper is idempotent and does not reset priority or is_active
+        sync_unique_video(
+            video={"provider": "telegram", "provider_video_id": "-1001:99:keeper", "title": "Keeper Updated", "duration": 600},
+            genres=set(), tags=set(), target_dir=self.media_dir, conn=self.conn, commit=True, services=services,
+        )
+        keeper_src = self.conn.execute(
+            "SELECT video_id, source_id, priority, is_active FROM video_sources WHERE source_id=%s",
+            (keeper_id,),
+        ).fetchone()
+        self.assertEqual(keeper_src, (keeper_id, keeper_id, 5, 0), "Re-sync must not reset priority or is_active")
+
 
 class TestVideoPersistenceChannelHints(unittest.TestCase):
     def setUp(self):
@@ -703,6 +890,180 @@ class TestVideoPersistenceChannelHints(unittest.TestCase):
                 warned = warn_if_channel_hints_missing(mock_logger)
                 self.assertFalse(warned)
                 mock_logger.warning.assert_not_called()
+
+
+class TestVideoSourcesPersistenceUnit(unittest.TestCase):
+    def test_record_primary_video_source_skips_non_telegram(self):
+        from sync.video_persistence import _record_primary_video_source
+        conn = MagicMock()
+        _record_primary_video_source(conn, "testprov:123", "testprov", {"duration": 600})
+        conn.execute.assert_not_called()
+
+    def test_record_primary_video_source_executes_expected_sql_for_telegram(self):
+        from sync.video_persistence import _record_primary_video_source
+        conn = MagicMock()
+        _record_primary_video_source(
+            conn,
+            "telegram:-100123:42:1",
+            "telegram",
+            {"duration": 600},
+            time_fn=lambda: 1700000000.0,
+        )
+        self.assertEqual(conn.execute.call_count, 1)
+        sql, params = conn.execute.call_args[0]
+        self.assertIn("INSERT INTO video_sources", sql)
+        self.assertIn("WHERE video_sources.video_id = EXCLUDED.video_id", sql)
+        self.assertIn("RETURNING video_sources.video_id", sql)
+        update_clause = sql.split("DO UPDATE SET")[1].split("WHERE")[0]
+        self.assertNotIn("priority", update_clause)
+        self.assertNotIn("is_active", update_clause)
+        self.assertEqual(params, (
+            "telegram:-100123:42:1",
+            "telegram:-100123:42:1",
+            "telegram",
+            "telegram:-100123:42:1",
+            "https://t.me/c/123/42",
+            "-100123",
+            1700000000,
+        ))
+
+    def test_record_primary_video_source_unsupported_small_group_id(self):
+        from sync.video_persistence import _record_primary_video_source
+        conn = MagicMock()
+        _record_primary_video_source(
+            conn,
+            "telegram:-5:42",
+            "telegram",
+            {"duration": 600},
+            time_fn=lambda: 1700000000.0,
+        )
+        self.assertEqual(conn.execute.call_count, 1)
+        _, params = conn.execute.call_args[0]
+        self.assertEqual(params[4], "", "Small-group channel must leave source_url blank")
+        self.assertEqual(params[5], "-5")
+
+    def test_record_primary_video_source_unsupported_missing_message_id(self):
+        from sync.video_persistence import _record_primary_video_source
+        conn = MagicMock()
+        _record_primary_video_source(
+            conn,
+            "telegram:-100123",
+            "telegram",
+            {"duration": 600},
+            time_fn=lambda: 1700000000.0,
+        )
+        self.assertEqual(conn.execute.call_count, 1)
+        _, params = conn.execute.call_args[0]
+        self.assertEqual(params[4], "", "Missing message ID must leave source_url blank")
+        self.assertEqual(params[5], "-100123")
+
+    def test_record_primary_video_source_custom_channel_and_source_url(self):
+        from sync.video_persistence import _record_primary_video_source
+        conn = MagicMock()
+        _record_primary_video_source(
+            conn,
+            "telegram:fallback:99",
+            "telegram",
+            {
+                "channel_id": "-1009999",
+                "source_url": "https://t.me/c/custom/99",
+                "provider_ref": "custom_ref",
+                "duration": 600,
+            },
+            time_fn=lambda: 1700000000.0,
+        )
+        self.assertEqual(conn.execute.call_count, 1)
+        sql, params = conn.execute.call_args[0]
+        self.assertEqual(params, (
+            "telegram:fallback:99",
+            "telegram:fallback:99",
+            "telegram",
+            "custom_ref",
+            "https://t.me/c/custom/99",
+            "-1009999",
+            1700000000,
+        ))
+
+    def test_record_primary_video_source_raises_on_conflict_with_different_video(self):
+        from sync.video_persistence import _record_primary_video_source
+        conn = MagicMock()
+        # Simulate DO UPDATE WHERE false no-op (no rows returned by RETURNING)
+        conn.execute.return_value.fetchone.return_value = None
+        with self.assertRaisesRegex(RuntimeError, "already owned by another video"):
+            _record_primary_video_source(
+                conn,
+                "telegram:-100123:42:1",
+                "telegram",
+                {"duration": 600},
+                time_fn=lambda: 1700000000.0,
+            )
+
+    def test_persist_prepared_video_calls_record_source_in_same_conn(self):
+        from sync.video_persistence import persist_prepared_video
+        conn = MagicMock()
+        prepared = {
+            "comp_id": "telegram:-100123:42",
+            "provider": "telegram",
+            "title": "Title",
+            "video": {"duration": 600},
+            "genres": set(),
+            "tags": [],
+            "studio": "",
+        }
+        persist_prepared_video(conn, prepared, time_fn=lambda: 1700000000.0)
+        calls = [c[0][0] for c in conn.execute.call_args_list]
+        video_indexes = [i for i, c in enumerate(calls) if "INSERT INTO videos" in c]
+        source_indexes = [i for i, c in enumerate(calls) if "INSERT INTO video_sources" in c]
+        self.assertEqual(len(video_indexes), 1, "Exactly one INSERT INTO videos must be performed")
+        self.assertEqual(len(source_indexes), 1, "Exactly one INSERT INTO video_sources must be performed")
+        self.assertLess(
+            video_indexes[0],
+            source_indexes[0],
+            "Video persistence must precede source recording on the same connection",
+        )
+        conn.commit.assert_not_called()
+        conn.rollback.assert_not_called()
+
+    def test_sync_unique_video_rolls_back_on_source_conflict(self):
+        from sync.video_persistence import sync_unique_video
+
+        conn = MagicMock()
+        # Simulate fetchone returning None for video_sources RETURNING query
+        def fake_execute(sql, params=None):
+            cur = MagicMock()
+            if "INSERT INTO video_sources" in sql:
+                cur.fetchone.return_value = None
+            else:
+                cur.fetchone.return_value = ("2026-01-01 00:00:00",)
+            return cur
+
+        conn.execute.side_effect = fake_execute
+
+        services = MagicMock()
+        services.stable_media_basename.return_value = "tg_1"
+        services.map_categories.return_value = set()
+        services.normalize_performers = lambda p: list(p)
+        services.time_fn.return_value = 1700000000.0
+        services.thumbnail_urls.return_value = ("", "")
+        services.load_performer_thumbs.return_value = {}
+        services.format_dateadded.return_value = "2026-01-01 00:00:00"
+
+        from sync.video_persistence import persist_prepared_video
+        services.persist_prepared_video = lambda c, p: persist_prepared_video(c, p)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaisesRegex(RuntimeError, "already owned by another video"):
+                sync_unique_video(
+                    video={"provider": "telegram", "provider_video_id": "-100123:42:1", "duration": 600},
+                    genres=set(),
+                    tags=set(),
+                    target_dir=Path(tmpdir),
+                    conn=conn,
+                    commit=True,
+                    services=services,
+                )
+        conn.rollback.assert_called_once()
+        conn.commit.assert_not_called()
 
 
 if __name__ == "__main__":
