@@ -57,6 +57,7 @@ def build_artwork_generation_jobs(conn, media_dir: Path, *, limit: int = MAX_ART
     rows = conn.execute(
         "SELECT v.id,v.duration,sf.file_path FROM videos v "
         "JOIN synced_files sf ON sf.video_id=v.id "
+        f"WHERE COALESCE(v.playable, 1) != 0{_dead_stream_exclusion(conn)} "
         "ORDER BY v.first_seen DESC NULLS LAST,v.last_seen DESC NULLS LAST,sf.file_path"
     ).fetchall()
     from sync.media_files import resolve_media_path
@@ -79,6 +80,23 @@ def build_artwork_generation_jobs(conn, media_dir: Path, *, limit: int = MAX_ART
         if len(jobs) >= limit:
             break
     return jobs
+
+
+def _dead_stream_exclusion(conn) -> str:
+    """Return the dead-stream filter for this schema, or nothing when absent.
+
+    Denylisted corpses never stream again, so generating artwork for them only
+    burns Telegram bandwidth and adds failure noise to the job list.
+    """
+    from common import db
+
+    try:
+        tables = db.table_names(conn)
+    except Exception:
+        return ""
+    if "dead_streams" not in tables:
+        return ""
+    return " AND NOT EXISTS (SELECT 1 FROM dead_streams ds WHERE ds.video_id = v.id)"
 
 
 def _default_bumper_hashes():

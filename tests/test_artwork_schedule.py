@@ -17,15 +17,20 @@ from sync.artwork_schedule import (
 
 
 class FakeConnection:
-    def __init__(self, rows):
+    def __init__(self, rows, tables=("videos", "synced_files")):
         self.rows = rows
+        self.tables = tables
         self.sql = ""
+        self._last_sql = ""
 
     def execute(self, sql, _params=None):
         self.sql = sql
+        self._last_sql = sql
         return self
 
     def fetchall(self):
+        if "pg_catalog.pg_tables" in self._last_sql:
+            return [(name,) for name in self.tables]
         return self.rows
 
 
@@ -80,6 +85,34 @@ class ArtworkScheduleTests(unittest.TestCase):
             link = media / "linked.jpg"
             link.symlink_to(target)
             self.assertFalse(artwork_needs_generation(link, bumper_hashes=set()))
+
+
+    def test_dead_and_unplayable_videos_are_skipped(self):
+        """Denylisted and unplayable videos must not consume a generation slot."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media = Path(temp_dir)
+            (media / "missing.strm").write_text("stream", encoding="utf-8")
+            conn = FakeConnection(
+                [("telegram:1", 600, "missing.strm")],
+                tables=("videos", "synced_files", "dead_streams"),
+            )
+
+            jobs = build_artwork_generation_jobs(conn, media, limit=5, bumper_hashes=set())
+
+        self.assertIn("COALESCE(v.playable, 1) != 0", conn.sql)
+        self.assertIn("NOT EXISTS (SELECT 1 FROM dead_streams", conn.sql)
+        self.assertEqual(len(jobs), 1)
+
+    def test_dead_stream_filter_is_optional_for_older_schemas(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media = Path(temp_dir)
+            (media / "missing.strm").write_text("stream", encoding="utf-8")
+            conn = FakeConnection([("telegram:1", 600, "missing.strm")], tables=("videos",))
+
+            build_artwork_generation_jobs(conn, media, limit=5, bumper_hashes=set())
+
+        self.assertIn("COALESCE(v.playable, 1) != 0", conn.sql)
+        self.assertNotIn("dead_streams", conn.sql)
 
 
 if __name__ == "__main__":

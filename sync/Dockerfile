@@ -36,6 +36,7 @@ COPY tools/__init__.py ./tools/__init__.py
 COPY tools/benchmark_catalog_search.py ./tools/benchmark_catalog_search.py
 COPY tools/backfill_telegram_file_sizes.py ./tools/backfill_telegram_file_sizes.py
 COPY tools/download_performer_artwork.py ./tools/download_performer_artwork.py
+COPY tools/cleanup_dead_streams.py ./tools/cleanup_dead_streams.py
 
 # Run as non-root: /data and /cache are volume-mounted read-write in
 # compose, so they are writable for appuser (the database lives in Postgres).
