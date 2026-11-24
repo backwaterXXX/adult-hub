@@ -591,6 +591,23 @@ class TestMaintenanceAheadOfTheScans(SyncPassHarness):
             "warning"))
         self.assertTrue(self.sink("sync_telegram_channel_pipeline").called, "the scans still run")
 
+    def test_a_missing_jellyfin_skips_its_publishing_but_keeps_duplicate_upkeep(self):
+        """Jellyfin is an optional viewer, so an unset URL must not cost the pass anything."""
+
+        self.use_core(config=self.config).JELLYFIN_URL = ""
+
+        self.assertTrue(self.sync())
+
+        for name in ("sync_jellyfin_telegram_metadata", "trigger_jellyfin_refresh",
+                     "sync_jellyfin_titles"):
+            self.assertFalse(self.sink(name).called, name)
+        self.assertFalse(self.sink("sync_jellyfin_people").called, "person pages stay unpublished")
+        self.assertTrue(
+            self.sink("safe_process_duplicate_jobs_checkpoint").called,
+            "duplicate upkeep is DB-only and must still run")
+        self.assertTrue(self.sink("cleanup_retention").called, "the rest of the pass still runs")
+        self.assertNotIn("jellyfin-refresh", [stage[0] for stage in self.core.stages],
+                         "an empty Jellyfin stage must not be recorded")
 
 
 class TestTheCoreFacadeImport(unittest.TestCase):

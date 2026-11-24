@@ -7,6 +7,12 @@ services:
     image: jellyfin/jellyfin:12.4
     container_name: jellyfin
     restart: unless-stopped
+    # Optional viewer. The TV app and the resolver serve catalog and playback
+    # themselves, so nothing in the stack waits for Jellyfin. Start it with
+    # 'docker compose --profile jellyfin up -d jellyfin' when its web UI or
+    # DLNA is wanted, and set JELLYFIN_URL/JELLYFIN_API_KEY to re-enable the
+    # publishing passes.
+    profiles: ["jellyfin"]
     # Runs as the host owner of the /config and /cache data (uid/gid 1000). GPU access comes from
     # the video (44) and render (992) groups below, which match the /dev/dri device owners.
     user: "1000:1000"
@@ -133,9 +139,6 @@ services:
       - selfhost
     depends_on:
       resolver:
-        condition: service_healthy
-      # Sync pushes library refreshes to Jellyfin; wait until its /health responds.
-      jellyfin:
         condition: service_healthy
     healthcheck:
       # Freshness of the worker capabilities heartbeat (published every 5s, stale after 15s).

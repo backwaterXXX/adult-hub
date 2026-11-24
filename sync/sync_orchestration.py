@@ -530,6 +530,13 @@ def _run_jellyfin_stage(sp: _SyncPass) -> None:
     # before queueing the global scan so targeted refreshes avoid its backlog.
     # New entries import their locked NFO during the scan; the next run verifies
     # their metadata and records the durable hash state.
+    # Duplicate upkeep lives in this stage but is DB-only, so it runs even when
+    # the optional Jellyfin viewer is not deployed.
+    if not _core.JELLYFIN_URL:
+        _core.logger.debug("Jellyfin stage skipped: JELLYFIN_URL is not set")
+        _run_duplicate_jobs_checkpoint(sp.conn, sp.collected)
+        return
+
     jellyfin_active = sp.recorder.open("jellyfin-refresh")
     jellyfin_problems: list = []
     try:
