@@ -65,6 +65,21 @@ def _healthy() -> bool:
         return False
 
 
+def _dump_child_stacks(child: subprocess.Popen) -> None:
+    """Ask Uvicorn for a thread dump before deciding to restart it.
+
+    SIGUSR1 is handled by ``faulthandler`` in the app, which prints every
+    thread's stack into the container log. A restart that follows this dump can
+    then be traced back to the frame that blocked the event loop.
+    """
+    if child.poll() is not None:
+        return
+    try:
+        child.send_signal(signal.SIGUSR1)
+    except (OSError, ValueError):
+        _log("could not request a stack dump from Uvicorn", logging.WARNING)
+
+
 def _stop_child(child: subprocess.Popen) -> None:
     if child.poll() is not None:
         return
@@ -189,6 +204,9 @@ def _watch_child(child: subprocess.Popen, workers, started_at: float) -> tuple[s
             else:
                 failures += 1
                 _log(f"healthcheck failed ({failures}/{FAILURES_TO_RESTART})", logging.WARNING)
+                if failures == 2:
+                    # One failure can be a hiccup; two means the loop is stuck.
+                    _dump_child_stacks(child)
                 if failures >= FAILURES_TO_RESTART:
                     _stop_child(child)
                     return ("process is alive but health endpoint stayed unresponsive "

@@ -1,7 +1,9 @@
 import os
 import time
 import asyncio
+import faulthandler
 import inspect
+import signal
 from contextlib import asynccontextmanager
 from common import db
 from common.job_queue import ALL_ACTIONS
@@ -219,8 +221,23 @@ async def _on_shutdown():
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     """Application lifespan: clean up resources on shutdown (H-7: replaces deprecated on_event)."""
+    _enable_stall_dump()
     yield
     await _on_shutdown()
+
+
+def _enable_stall_dump() -> None:
+    """Dump every thread's stack on SIGUSR1 so a stalled loop can be diagnosed.
+
+    The supervisor sends SIGUSR1 when its health checks keep failing, which
+    turns a silent restart into a log entry naming the frame that blocked the
+    event loop. Registering also keeps the signal from terminating the process.
+    """
+    try:
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    except (AttributeError, OSError, ValueError, RuntimeError):
+        logger.debug("Stack dump on SIGUSR1 is unavailable on this platform")
+
 
 app.router.lifespan_context = _lifespan
 

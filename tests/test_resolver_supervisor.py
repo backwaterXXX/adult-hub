@@ -47,6 +47,35 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn(child, [call.args[0] for call in stop.call_args_list])
         supervisor._stop_requested = False
 
+    def test_a_stalled_child_is_asked_for_a_stack_dump_once(self):
+        worker, visual, child = Mock(), Mock(), Mock()
+        for process in (worker, visual, child):
+            process.poll.return_value = None
+            process.pid = 1
+        events = []
+        def sleep(_):
+            if len(events) >= 4:
+                supervisor._stop_requested = True
+        def health():
+            events.append('check')
+            return False
+        supervisor._stop_requested = False
+        with patch.object(supervisor.signal, 'signal'), patch.object(supervisor.subprocess, 'Popen', side_effect=[worker, visual, child]), \
+             patch.object(supervisor, '_healthy', side_effect=health), patch.object(supervisor, '_sleep', side_effect=sleep), \
+             patch.object(supervisor, '_stop_child'), patch.object(supervisor, 'STARTUP_GRACE', 0), \
+             patch.object(supervisor, 'FAILURES_TO_RESTART', 4):
+            self.assertEqual(supervisor.main(), 0)
+        child.send_signal.assert_called_once_with(supervisor.signal.SIGUSR1)
+        supervisor._stop_requested = False
+
+    def test_an_exited_child_gets_no_stack_dump(self):
+        child = Mock()
+        child.poll.return_value = 0
+
+        supervisor._dump_child_stacks(child)
+
+        child.send_signal.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
