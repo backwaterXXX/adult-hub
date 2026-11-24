@@ -1130,6 +1130,7 @@ def query_catalog_videos(
     studio: str | None = None,
     tag: str | None = None,
     min_duration: int | None = None,
+    max_duration: int | None = None,
     sort: str = "latest",
     direction: str | None = None,
     offset: int = 0,
@@ -1174,6 +1175,12 @@ def query_catalog_videos(
     if min_duration is not None and int(min_duration) > 0:
         conditions.append("v.duration >= %s")
         params.append(int(min_duration))
+
+    # An upper bound turns the duration filter into a real range, so the client
+    # can offer "under 15 minutes" without filtering a single page locally.
+    if max_duration is not None and int(max_duration) > 0:
+        conditions.append("v.duration <= %s")
+        params.append(int(max_duration))
 
     _append_favorite_filter(conditions, params, tables, has_sources, user_id, is_favorite)
 

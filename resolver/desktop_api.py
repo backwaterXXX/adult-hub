@@ -752,6 +752,7 @@ async def get_catalog_videos(
     performer: str | None = None,
     performer_id: str | None = None,
     min_duration: int | None = Query(None, ge=0),
+    max_duration: int | None = Query(None, ge=0),
     is_favorite: bool | None = Query(None),
 ) -> JSONResponse:
     """Browse and search canonical catalog videos with deterministic sorting and filtering."""
@@ -799,6 +800,7 @@ async def get_catalog_videos(
                 studio=clean_studio,
                 performer_id=clean_performer,
                 min_duration=min_duration,
+                max_duration=max_duration,
                 sort=sort,
                 direction=clean_direction,
                 offset=offset,

@@ -653,6 +653,32 @@ class TestClientCatalogPostgresIntegration(PgTestCase):
         self.assertEqual(len(set(all_paged)), 5)
         self.assertEqual(len(all_paged), 5)
 
+    def test_duration_range_filter_bounds_both_ends(self):
+        """Duration filters keep only items inside the requested minute range."""
+        with self.conn:
+            for vid_id, duration in (("item_s", 600), ("item_m", 1200), ("item_l", 3000)):
+                self.conn.execute(
+                    "INSERT INTO videos (id, provider, title, duration, first_seen, playable) "
+                    "VALUES (%s, 'telegram', %s, %s, '2026-10-01 12:00:00+00', 1)",
+                    (f"telegram:-100123:{vid_id}:100", vid_id, duration),
+                )
+
+        short = query_catalog_videos(self.conn, max_duration=900)
+        self.assertEqual(short.total_count, 1)
+        self.assertEqual(short.items[0].duration_seconds, 600)
+
+        medium = query_catalog_videos(self.conn, min_duration=900, max_duration=2400)
+        self.assertEqual(medium.total_count, 1)
+        self.assertEqual(medium.items[0].duration_seconds, 1200)
+
+        long_items = query_catalog_videos(self.conn, min_duration=2400)
+        self.assertEqual(long_items.total_count, 1)
+        self.assertEqual(long_items.items[0].duration_seconds, 3000)
+
+        # A bound of zero is treated as "no bound", matching min_duration.
+        unbounded = query_catalog_videos(self.conn, max_duration=0)
+        self.assertEqual(unbounded.total_count, 3)
+
     def test_sql_ordering_across_adjacent_offset_pages_both_directions(self):
         """SQL ordering across adjacent offset pages preserves deterministic sequence in both directions."""
         with self.conn:
