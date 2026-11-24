@@ -26,6 +26,7 @@ from common.client_auth.service import (
     poll_pairing_status,
     refresh_session_token,
     revoke_session_token,
+    update_user_password,
     verify_access_token,
 )
 
@@ -52,6 +53,7 @@ __all__ = [
     "poll_pairing_status",
     "refresh_session_token",
     "revoke_session_token",
+    "update_user_password",
     "verify_access_token",
     "verify_password",
 ]

@@ -136,6 +136,66 @@ def bootstrap_owner(conn, username: str, password: str) -> dict[str, Any]:
     return {"id": row[0], "username": row[1]}
 
 
+def update_user_password(conn, username: str, password: str) -> dict[str, Any]:
+    """Securely update the password for an existing active user account via local operator path.
+
+    Enforces password bounds (MIN_PASSWORD_LEN = 8, MAX_PASSWORD_LEN = 128),
+    rejects unknown or inactive accounts, updates scrypt password hash,
+    and atomically revokes all active sessions and user pairing sessions,
+    and expires unassigned pending pairing sessions when updating an admin account.
+    Rolls back transaction on any failure path so locks are never held.
+    Passwords are never logged or stored in plain text.
+    """
+    if not isinstance(username, str) or not username.strip():
+        raise BoundedValidationError("Username is required")
+    username = username.strip()
+    _validate_bounds(password, "Password", MIN_PASSWORD_LEN, MAX_PASSWORD_LEN)
+
+    try:
+        # Use row lock FOR UPDATE on client_users within transaction
+        cursor = conn.execute(
+            "SELECT id, username, is_active, is_admin FROM client_users WHERE lower(username) = lower(%s) FOR UPDATE",
+            (username,),
+        )
+        user_row = cursor.fetchone()
+        if not user_row:
+            conn.rollback()
+            raise ValueError(f"User '{username}' does not exist.")
+
+        user_id, canonical_username, is_active, is_admin = user_row
+        if not is_active:
+            conn.rollback()
+            raise ValueError(f"User '{canonical_username}' is inactive.")
+
+        pwd_hash = hash_password(password)
+
+        conn.execute(
+            "UPDATE client_users SET password_hash = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+            (pwd_hash, user_id),
+        )
+        conn.execute(
+            "UPDATE client_sessions SET revoked_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP "
+            "WHERE user_id = %s AND revoked_at IS NULL",
+            (user_id,),
+        )
+        conn.execute(
+            "UPDATE client_pairing_sessions SET status = 'revoked' "
+            "WHERE user_id = %s AND status IN ('pending', 'approved')",
+            (user_id,),
+        )
+        if is_admin:
+            conn.execute(
+                "UPDATE client_pairing_sessions SET status = 'expired' "
+                "WHERE user_id IS NULL AND status = 'pending'"
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    return {"id": user_id, "username": canonical_username}
+
+
 def authenticate_by_password(
     conn,
     username: str,
@@ -175,15 +235,18 @@ def authenticate_by_password(
 
     # Kiro (7): Set SAME denial for disabled / non-existing accounts
     if not user_row:
+        conn.rollback()
         dummy_verify(password)
         raise AuthenticationFailed("Invalid username or password")
 
     user_id, canonical_username, pwd_hash, is_active = user_row
     if not is_active:
+        conn.rollback()
         dummy_verify(password)
         raise AuthenticationFailed("Invalid username or password")
 
     if not verify_password(password, pwd_hash):
+        conn.rollback()
         raise AuthenticationFailed("Invalid username or password")
 
     # Issue tokens
@@ -198,23 +261,39 @@ def authenticate_by_password(
     refresh_expires_epoch = now_epoch + REFRESH_TOKEN_LIFETIME_SECONDS
 
     session_id = f"sess_{secrets.token_hex(16)}"
-    conn.execute(
-        "INSERT INTO client_sessions ("
-        "id, user_id, device_id, device_name, access_token_hash, refresh_token_hash, "
-        "access_expires_at, refresh_expires_at"
-        ") VALUES (%s, %s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s))",
-        (
-            session_id,
-            user_id,
-            device_id,
-            device_name,
-            access_hash,
-            refresh_hash,
-            access_expires_epoch,
-            refresh_expires_epoch,
-        ),
-    )
-    conn.commit()
+    try:
+        # Re-verify credentials under FOR SHARE row lock:
+        # Ensures that if a password update or revocation occurred while password was verifying,
+        # or is currently committing under FOR UPDATE, we re-check and reject stale sessions.
+        lock_cur = conn.execute(
+            "SELECT password_hash, is_active FROM client_users WHERE id = %s FOR SHARE",
+            (user_id,),
+        )
+        current_row = lock_cur.fetchone()
+        if not current_row or not current_row[1] or current_row[0] != pwd_hash:
+            conn.rollback()
+            raise AuthenticationFailed("Invalid username or password")
+
+        conn.execute(
+            "INSERT INTO client_sessions ("
+            "id, user_id, device_id, device_name, access_token_hash, refresh_token_hash, "
+            "access_expires_at, refresh_expires_at"
+            ") VALUES (%s, %s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s))",
+            (
+                session_id,
+                user_id,
+                device_id,
+                device_name,
+                access_hash,
+                refresh_hash,
+                access_expires_epoch,
+                refresh_expires_epoch,
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
     return {
         "access_token": access_token,
