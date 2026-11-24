@@ -3,7 +3,7 @@
 Covers:
 - Offline unit tests:
   - Honest version & capability discovery for Desktop (/api/v1/version)
-  - TV pairing routes strictly excluded from Desktop app (no pair/init, pair/status, approve)
+  - TV pairing routes mounted on Desktop app with strict query param and admin guards
   - Query parameter rejection on auth endpoints
   - Non-dict JSON payload rejection on auth endpoints
   - Pre-auth bounded body reads (rejection of oversized payloads > 32KB)
@@ -48,6 +48,20 @@ from tests.pg_helper import PgTestCase
 desktop_test_app = create_desktop_integration_app()
 
 
+def get_all_routes(router):
+    routes = []
+    for r in getattr(router, "routes", []):
+        if hasattr(r, "original_router"):
+            routes.extend(get_all_routes(r.original_router))
+        elif hasattr(r, "router"):
+            routes.extend(get_all_routes(r.router))
+        elif hasattr(r, "routes"):
+            routes.extend(get_all_routes(r))
+        else:
+            routes.append(r)
+    return routes
+
+
 class TestDesktopApiOffline(unittest.TestCase):
     """Offline unit tests executable in hermetic sandboxes without database access."""
 
@@ -65,7 +79,7 @@ class TestDesktopApiOffline(unittest.TestCase):
 
         caps = data.get("capabilities", {})
         self.assertTrue(caps.get("desktop_api"))
-        self.assertFalse(caps.get("tv_pairing"))
+        self.assertTrue(caps.get("tv_pairing"))
         self.assertTrue(caps.get("direct_play"))
         self.assertFalse(caps.get("user_state"))
         self.assertFalse(caps.get("transcoding"))
@@ -78,12 +92,145 @@ class TestDesktopApiOffline(unittest.TestCase):
         self.assertEqual(endpoints.get("artwork"), "/api/v1/artwork")
         self.assertNotIn("pair", endpoints)
 
-    def test_pairing_routes_strictly_not_mounted_on_desktop_app(self):
-        """Desktop app excludes all TV pairing endpoints and Admin V2 approval."""
+    def test_pairing_routes_mounted_and_guarded_on_desktop_app(self):
+        """Desktop app mounts TV pairing endpoints and Admin V2 approval with strict guards."""
         client = TestClient(desktop_test_app)
-        self.assertEqual(client.post("/api/v1/auth/pair/init").status_code, 404)
-        self.assertEqual(client.post("/api/v1/auth/pair/status").status_code, 404)
-        self.assertEqual(client.post("/admin/api/v2/pairing/approve").status_code, 404)
+
+        # 1. pair/init is mounted: query params rejected
+        res_init_qp = client.post("/api/v1/auth/pair/init?query=bad")
+        self.assertEqual(res_init_qp.status_code, 400)
+        self.assertEqual(res_init_qp.headers.get("cache-control"), "private, no-store")
+        self.assertIn("Query parameters are strictly prohibited", res_init_qp.json()["error"])
+
+        # pair/init rejects non-dict JSON body
+        res_init_list = client.post("/api/v1/auth/pair/init", json=["bad", "payload"])
+        self.assertEqual(res_init_list.status_code, 400)
+        self.assertEqual(res_init_list.headers.get("cache-control"), "private, no-store")
+        self.assertIn("JSON object", res_init_list.json()["error"])
+
+        # pair/init rejects oversized payload (>32KB)
+        oversized = "x" * (33 * 1024)
+        res_init_over = client.post("/api/v1/auth/pair/init", json={"device_name": oversized})
+        self.assertEqual(res_init_over.status_code, 400)
+        self.assertEqual(res_init_over.headers.get("cache-control"), "private, no-store")
+        self.assertIn("exceeds maximum size", res_init_over.json()["error"])
+
+        # 2. pair/status is mounted: query params rejected
+        res_stat_qp = client.post("/api/v1/auth/pair/status?secret=leaked")
+        self.assertEqual(res_stat_qp.status_code, 400)
+        self.assertEqual(res_stat_qp.headers.get("cache-control"), "private, no-store")
+        self.assertIn("prohibited", res_stat_qp.json()["error"].lower())
+
+        # pair/status without secret returns 401
+        res_stat_nosec = client.post("/api/v1/auth/pair/status", json={})
+        self.assertEqual(res_stat_nosec.status_code, 401)
+        self.assertEqual(res_stat_nosec.headers.get("cache-control"), "private, no-store")
+
+        # pair/status with malformed/NUL secret returns 400
+        res_stat_nul = client.post("/api/v1/auth/pair/status", json={"secret": "pair_sec_\x00evil"})
+        self.assertEqual(res_stat_nul.status_code, 400)
+        self.assertEqual(res_stat_nul.headers.get("cache-control"), "private, no-store")
+
+        # 3. TV pairing approval (/admin/api/v2/pairing/approve) is NOT exposed on Desktop API
+        res_appr_desktop = client.post("/admin/api/v2/pairing/approve", json={"pairing_code": "842-195"})
+        self.assertIn(res_appr_desktop.status_code, (404, 405))
+        self.assertNotIn("/admin/api/v2/pairing/approve", [getattr(r, "path", "") for r in get_all_routes(client.app.router)])
+
+    def test_route_boundary_pairing_and_admin_separation(self):
+        """Focused route-boundary verification:
+        1. pairing-init/status available only when opted in
+        2. approval remains protected on the admin surface
+        3. Desktop API does not expose admin approval
+        4. No duplicate route registrations across intended surfaces
+        """
+        from resolver.desktop_api import router as desktop_router, create_desktop_integration_app
+        from resolver.client_auth_routes import pairing_router, admin_pairing_router
+        from resolver import admin as admin_module
+
+        # 1. Pairing-init and pairing-status are available when opted in
+        desktop_client = TestClient(create_desktop_integration_app())
+        res_init_qp = desktop_client.post("/api/v1/auth/pair/init?query=forbidden")
+        self.assertEqual(res_init_qp.status_code, 400)
+        self.assertEqual(res_init_qp.headers.get("cache-control"), "private, no-store")
+
+        res_status = desktop_client.post("/api/v1/auth/pair/status", json={})
+        self.assertEqual(res_status.status_code, 401)
+        self.assertEqual(res_status.headers.get("cache-control"), "private, no-store")
+
+        # When not opted in (default resolver app without opt-in flag), pairing routes are not served
+        default_client = TestClient(resolver_production_app)
+        res_default_init = default_client.post("/api/v1/auth/pair/init", json={})
+        self.assertIn(res_default_init.status_code, (307, 404, 405))
+
+        res_default_stat = default_client.post("/api/v1/auth/pair/status", json={})
+        self.assertIn(res_default_stat.status_code, (307, 404, 405))
+
+        # 2. Desktop API strictly does NOT expose admin approval
+        res_appr_desktop = desktop_client.post("/admin/api/v2/pairing/approve", json={"pairing_code": "123-456"})
+        self.assertIn(res_appr_desktop.status_code, (404, 405))
+        desktop_routes = [getattr(r, "path", "") for r in get_all_routes(desktop_client.app.router)]
+        self.assertNotIn("/admin/api/v2/pairing/approve", desktop_routes)
+
+        # 3. Production app mounts approval exactly once at /admin/api/v2/pairing/approve
+        # and enforces admin write-token and origin protections with private, no-store responses
+        prod_approval_routes = [
+            r for r in get_all_routes(resolver_production_app.router)
+            if getattr(r, "path", "") == "/admin/api/v2/pairing/approve"
+        ]
+        self.assertEqual(len(prod_approval_routes), 1)
+
+        # Unauthenticated -> 403 (route is reachable, but denied)
+        res_admin_noauth = default_client.post("/admin/api/v2/pairing/approve", json={"pairing_code": "123-456"})
+        self.assertEqual(res_admin_noauth.status_code, 403)
+        self.assertEqual(res_admin_noauth.headers.get("cache-control"), "private, no-store")
+
+        # Client token -> 403
+        res_admin_client = default_client.post(
+            "/admin/api/v2/pairing/approve",
+            json={"pairing_code": "123-456"},
+            headers={"Authorization": "Bearer ah_tok_client_fake"},
+        )
+        self.assertEqual(res_admin_client.status_code, 403)
+        self.assertEqual(res_admin_client.headers.get("cache-control"), "private, no-store")
+
+        # Matching admin token with invalid origin -> 403
+        with patch.object(admin_module, "_write_token", return_value="secret_admin_tok"), \
+             patch.object(admin_module, "_capabilities", return_value={"read_only": False}):
+            res_admin_badorigin = default_client.post(
+                "/admin/api/v2/pairing/approve",
+                json={"pairing_code": "123-456"},
+                headers={
+                    "Authorization": "Bearer secret_admin_tok",
+                    "Origin": "http://evil.attacker.com",
+                },
+            )
+            self.assertEqual(res_admin_badorigin.status_code, 403)
+            self.assertEqual(res_admin_badorigin.headers.get("cache-control"), "private, no-store")
+
+            # Matching admin token with matching origin -> reaches execution (e.g. 400 for bad pairing code / DB)
+            res_admin_ok = default_client.post(
+                "/admin/api/v2/pairing/approve",
+                json={"pairing_code": "123-456"},
+                headers={
+                    "Authorization": "Bearer secret_admin_tok",
+                    "Origin": "http://testserver",
+                },
+            )
+            self.assertNotEqual(res_admin_ok.status_code, 403)
+            self.assertEqual(res_admin_ok.headers.get("cache-control"), "private, no-store")
+
+        # 4. No duplicates: verify each route path has exactly one registration for each method
+        for router_obj, name in [
+            (desktop_router, "Desktop API"),
+            (pairing_router, "Pairing Router"),
+            (admin_pairing_router, "Admin Pairing Router"),
+        ]:
+            seen = set()
+            for r in router_obj.routes:
+                for method in getattr(r, "methods", ["GET"]):
+                    key = (method, getattr(r, "path", ""))
+                    self.assertNotIn(key, seen, f"Duplicate route {key} in {name}")
+                    seen.add(key)
 
     def test_auth_endpoints_reject_query_parameters(self):
         """Authentication endpoints return 400 if secrets or parameters appear in query string."""
@@ -980,7 +1127,7 @@ class TestDesktopApiOffline(unittest.TestCase):
         - Exactly one public /api/v1/version route is mounted across effective app routes and owned by get_version_discovery
         - Version response advertises Desktop API and direct_play capabilities
         - Public catalog and playback routes are mounted and return 401 (not legacy 307) without Bearer
-        - Client API pairing routes remain unmounted (404/405)
+        - Client API pairing routes are mounted and active
         - Disabled default resolver app still returns 307 redirect for version, catalog, and playback endpoints
         """
         env = dict(os.environ)
@@ -1038,9 +1185,10 @@ res_play = client.get("/api/v1/playback/capabilities", follow_redirects=False)
 assert res_play.status_code == 401, f"Expected 401, got {res_play.status_code}"
 assert res_play.headers.get("cache-control") == "private, no-store"
 
-assert not [r for r in routes if str(getattr(r, "path", "")).startswith("/api/v1/auth/pair")], "pairing routes must not be mounted"
-res_pair = client.post("/api/v1/auth/pair/init")
-assert res_pair.status_code in (404, 405), f"Expected 404/405, got {res_pair.status_code}"
+pair_routes = [r for r in routes if str(getattr(r, "path", "")).startswith("/api/v1/auth/pair")]
+assert len(pair_routes) >= 2, f"Expected pairing routes mounted, found {len(pair_routes)}"
+res_pair = client.post("/api/v1/auth/pair/init?query=forbidden")
+assert res_pair.status_code == 400, f"Expected 400 for query params on pair/init, got {res_pair.status_code}"
 
 result = {
     "version_route_count": len(version_routes),
@@ -1079,7 +1227,7 @@ print("__PAYLOAD_START__" + json.dumps(result) + "__PAYLOAD_END__")
         self.assertEqual(ver.get("status"), "ok")
         caps = ver.get("capabilities", {})
         self.assertTrue(caps.get("desktop_api"))
-        self.assertFalse(caps.get("tv_pairing"))
+        self.assertTrue(caps.get("tv_pairing"))
         self.assertTrue(caps.get("direct_play"))
         self.assertFalse(caps.get("user_state"))
         self.assertFalse(caps.get("transcoding"))
@@ -1093,7 +1241,7 @@ print("__PAYLOAD_START__" + json.dumps(result) + "__PAYLOAD_END__")
         self.assertEqual(data["catalog_cache_control"], "private, no-store")
         self.assertEqual(data["playback_status"], 401)
         self.assertEqual(data["playback_cache_control"], "private, no-store")
-        self.assertIn(data["pair_status"], (404, 405))
+        self.assertEqual(data["pair_status"], 400)
 
         # Disabled default must redirect legacy paths. Run in a child process with the flag explicitly false,
         # so the result does not depend on the runner's environment or import order.

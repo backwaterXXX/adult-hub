@@ -3,12 +3,12 @@
 Provides:
 - Honest Desktop version and capability discovery (/api/v1/version)
 - Authenticated login and single-use refresh token rotation (/api/v1/auth/login, /api/v1/auth/refresh, /api/v1/auth/revoke)
+- TV device pairing flow (/api/v1/auth/pair/init, /api/v1/auth/pair/status)
 - Authenticated read-only catalog queries:
   - GET /api/v1/catalog/videos (canonical browse and search with filtering)
   - GET /api/v1/catalog/videos/{video_id} (canonical detail with alias resolution)
   - GET /api/v1/catalog/channels (registered Telegram channels catalog)
   - GET /api/v1/catalog/channels/{channel_id} (channel detail)
-- Strictly omits TV pairing and pairing approval (no /api/v1/auth/pair/*, no pairing approval)
 - Zero metadata leaks: no local filesystem paths (.strm, .nfo), no raw Telegram URLs/credentials,
   no internal admin audit fields, no is_admin exposure in client models
 - Strict Cache-Control: private, no-store on sensitive endpoints and error paths
@@ -307,11 +307,11 @@ async def _read_bounded_body(request: Request, max_bytes: int = MAX_AUTH_BODY_BY
     content_length = request.headers.get("content-length")
     if content_length:
         try:
-            cl = int(content_length)
-            if cl > max_bytes:
-                raise BoundedValidationError(f"Request body exceeds maximum size of {max_bytes} bytes")
-        except ValueError:
-            pass
+            cl: int | None = int(content_length)
+        except (ValueError, TypeError):
+            cl = None
+        if cl is not None and cl > max_bytes:
+            raise BoundedValidationError(f"Request body exceeds maximum size of {max_bytes} bytes")
 
     body = bytearray()
     async for chunk in request.stream():
@@ -430,7 +430,7 @@ async def get_version_discovery() -> JSONResponse:
         "status": "ok",
         "capabilities": {
             "desktop_api": True,
-            "tv_pairing": False,
+            "tv_pairing": True,
             "direct_play": True,
             "user_state": False,
             "transcoding": False,
@@ -721,6 +721,15 @@ async def post_revoke(request: Request) -> JSONResponse:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             cache_control="private, no-store",
         )
+
+
+# ---------------------------------------------------------------------------
+# TV Device Pairing Endpoints
+# ---------------------------------------------------------------------------
+
+from resolver.client_auth_routes import pairing_router  # noqa: E402
+
+router.include_router(pairing_router)
 
 
 # ---------------------------------------------------------------------------
@@ -3061,7 +3070,10 @@ def create_desktop_integration_app(db_url: str | None = None) -> FastAPI:
     @integration_app.middleware("http")
     async def _enforce_no_store_on_api_v1(request: Request, call_next):
         response = await call_next(request)
-        if request.url.path == "/api/v1" or request.url.path.startswith("/api/v1/"):
+        if (
+            request.url.path == "/api/v1"
+            or request.url.path.startswith("/api/v1/")
+        ):
             if request.url.path != "/api/v1/version":
                 response.headers["Cache-Control"] = "private, no-store"
             elif response.status_code >= 400 or "no-store" in response.headers.get("Cache-Control", ""):

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import logging
 import os
 from typing import Any
@@ -52,7 +53,10 @@ from resolver import admin as admin_module
 logger = logging.getLogger("adult_hub.client_auth")
 
 router = APIRouter(tags=["Client Auth"])
+pairing_router = APIRouter(tags=["TV Pairing"])
+admin_pairing_router = APIRouter(tags=["Admin Pairing"])
 
+MAX_AUTH_BODY_BYTES: int = 32 * 1024  # 32 KB maximum pre-auth payload size
 _TEST_DB_URL: str | None = None
 
 
@@ -74,6 +78,8 @@ def _db_connection(request: Request | None = None) -> db.Connection:
         app_url = getattr(request.app.state, "db_url", None)
         if app_url:
             return db.connect(app_url)
+        if getattr(request.app.state, "isolated_desktop_app", False):
+            raise RuntimeError("Database connection not configured for isolated test app")
     if _TEST_DB_URL is not None:
         return db.connect(_TEST_DB_URL)
     url = (os.getenv("DATABASE_URL") or os.getenv("STANDALONE_DATABASE_URL") or "").strip()
@@ -108,13 +114,45 @@ def _auth_response(data: dict[str, Any], status_code: int = 200) -> JSONResponse
     )
 
 
+async def _read_bounded_body(request: Request, max_bytes: int = MAX_AUTH_BODY_BYTES) -> bytes:
+    """Read request body up to max_bytes.
+
+    Rejects payloads exceeding max_bytes with BoundedValidationError.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            cl: int | None = int(content_length)
+        except (ValueError, TypeError):
+            cl = None
+        if cl is not None and cl > max_bytes:
+            raise BoundedValidationError(f"Request body exceeds maximum size of {max_bytes} bytes")
+
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > max_bytes:
+            raise BoundedValidationError(f"Request body exceeds maximum size of {max_bytes} bytes")
+    return bytes(body)
+
+
 async def _parse_json_object(request: Request) -> tuple[dict[str, Any] | None, JSONResponse | None]:
     """Parse request body and guarantee it is a bounded JSON object (dict).
 
     Rejects non-dict JSON bodies (lists, numbers, strings, booleans, null) with 400 Bad Request.
     """
     try:
-        data = await request.json()
+        raw_body = await _read_bounded_body(request, max_bytes=MAX_AUTH_BODY_BYTES)
+    except BoundedValidationError as exc:
+        return None, _auth_response({"error": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        return None, _auth_response({"error": "Failed to read request body"}, status_code=status.HTTP_400_BAD_REQUEST)
+
+    if not raw_body or not raw_body.strip():
+        return None, _auth_response({"error": "Invalid JSON body"}, status_code=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        data = json.loads(raw_body.decode("utf-8"))
     except Exception:
         return None, _auth_response({"error": "Invalid JSON body"}, status_code=status.HTTP_400_BAD_REQUEST)
     if not isinstance(data, dict):
@@ -174,6 +212,19 @@ def _admin_write_guard(request: Request) -> JSONResponse | None:
             status_code=status.HTTP_403_FORBIDDEN,
             headers={"Cache-Control": "private, no-store"},
         )
+
+    origin = request.headers.get("origin")
+    if origin:
+        from resolver import admin_security
+
+        if not admin_security.write_authorized(
+            request, blocked=False, public=admin_module.ADMIN_PUBLIC, token=token
+        ):
+            return JSONResponse(
+                {"error": "Authorization and matching Origin required.", **caps},
+                status_code=status.HTTP_403_FORBIDDEN,
+                headers={"Cache-Control": "private, no-store"},
+            )
 
     return None
 
@@ -342,13 +393,41 @@ async def post_revoke(request: Request) -> JSONResponse:
         finally:
             conn.close()
 
-    await _run_in_thread(_execute)
-    return _auth_response({"revoked": True}, status_code=status.HTTP_200_OK)
+    try:
+        await _run_in_thread(_execute)
+        return _auth_response({"revoked": True}, status_code=status.HTTP_200_OK)
+    except Exception as exc:
+        logger.exception("Unexpected error during session revocation: %s", exc)
+        return _auth_response(
+            {"error": "Session revocation failed"},
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+async def _parse_optional_json_object(request: Request) -> tuple[dict[str, Any] | None, JSONResponse | None]:
+    """Parse optional request body and guarantee it is empty or a bounded JSON object (dict)."""
+    try:
+        raw_body = await _read_bounded_body(request, max_bytes=MAX_AUTH_BODY_BYTES)
+    except BoundedValidationError as exc:
+        return None, _auth_response({"error": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        return None, _auth_response({"error": "Failed to read request body"}, status_code=status.HTTP_400_BAD_REQUEST)
+
+    if not raw_body or not raw_body.strip():
+        return {}, None
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        return None, _auth_response({"error": "Invalid JSON body"}, status_code=status.HTTP_400_BAD_REQUEST)
+    if not isinstance(payload, dict):
+        return None, _auth_response({"error": "Request body must be a JSON object"}, status_code=status.HTTP_400_BAD_REQUEST)
+    return payload, None
 
 
 # --- TV Device Pairing Flow ---
 
-@router.post("/api/v1/auth/pair/init")
+@pairing_router.post("/api/v1/auth/pair/init")
 async def post_pair_init(request: Request) -> JSONResponse:
     """Initiate a 10-foot TV pairing session, generating a 6-digit code and private secret."""
     if request.query_params:
@@ -357,13 +436,9 @@ async def post_pair_init(request: Request) -> JSONResponse:
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    body = await request.body()
-    if body and body.strip():
-        payload, err_resp = await _parse_json_object(request)
-        if err_resp:
-            return err_resp
-    else:
-        payload = {}
+    payload, err_resp = await _parse_optional_json_object(request)
+    if err_resp:
+        return err_resp
 
     device_name = payload.get("device_name", "")
     device_id = payload.get("device_id", "")
@@ -408,14 +483,12 @@ async def _read_pair_secret(request: Request, authorization: str | None) -> tupl
     if authorization and authorization.lower().startswith("bearer "):
         secret = authorization[7:].strip()
     else:
-        body = await request.body()
-        if body and body.strip():
-            payload, err_resp = await _parse_json_object(request)
-            if err_resp:
-                return "", err_resp
-            secret = payload.get("secret", "")
+        payload, err_resp = await _parse_optional_json_object(request)
+        if err_resp:
+            return "", err_resp
+        secret = payload.get("secret", "")
 
-    if not secret:
+    if not isinstance(secret, str) or not secret:
         return "", _auth_response(
             {"error": "Pairing secret must be provided in Authorization header or JSON body"},
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -428,7 +501,7 @@ async def _read_pair_secret(request: Request, authorization: str | None) -> tupl
     return secret, None
 
 
-@router.post("/api/v1/auth/pair/status")
+@pairing_router.post("/api/v1/auth/pair/status")
 async def post_pair_status(
     request: Request,
     authorization: str | None = Header(None),
@@ -523,7 +596,7 @@ async def _handle_admin_pairing_approval(request: Request) -> JSONResponse:
         return _auth_response({"error": "Pairing approval failed"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@router.post("/admin/api/v2/pairing/approve")
+@admin_pairing_router.post("/admin/api/v2/pairing/approve")
 async def post_admin_pairing_approve(request: Request) -> JSONResponse:
     """Approve TV pairing session out-of-band under the correct Admin V2 route prefix."""
     return await _handle_admin_pairing_approval(request)

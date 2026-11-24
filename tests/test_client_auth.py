@@ -69,13 +69,37 @@ except ModuleNotFoundError as e:
     else:
         raise
 
-from resolver.client_auth_routes import router as client_auth_router, set_test_db_url, _db_connection, _admin_write_guard
+from resolver.client_auth_routes import (
+    router as client_auth_router,
+    pairing_router,
+    admin_pairing_router,
+    set_test_db_url,
+    _db_connection,
+    _admin_write_guard,
+)
 from resolver import admin as admin_module
 from starlette.requests import Request
+
+
+def get_all_routes(router):
+    routes = []
+    for r in getattr(router, "routes", []):
+        if hasattr(r, "original_router"):
+            routes.extend(get_all_routes(r.original_router))
+        elif hasattr(r, "router"):
+            routes.extend(get_all_routes(r.router))
+        elif hasattr(r, "routes"):
+            routes.extend(get_all_routes(r))
+        else:
+            routes.append(r)
+    return routes
+
 
 # Candidate test app for Stage 2 auth endpoint testing while unapproved on default Resolver app
 auth_test_app = FastAPI()
 auth_test_app.include_router(client_auth_router)
+auth_test_app.include_router(pairing_router)
+auth_test_app.include_router(admin_pairing_router)
 
 
 class TestClientAuthOffline(unittest.TestCase):
@@ -219,6 +243,53 @@ class TestClientAuthOffline(unittest.TestCase):
         self.assertEqual(res4.status_code, 400)
         self.assertIn("null", res4.json().get("error", "").lower())
 
+    def test_bounded_body_content_length_and_invalid_json(self):
+        """Oversize Content-Length is reliably rejected, non-integer Content-Length handled, and invalid JSON error preserved."""
+        client = TestClient(auth_test_app)
+
+        # 1. Oversize Content-Length rejected with 400
+        res_cl = client.post(
+            "/api/v1/auth/login",
+            content=b'{"username": "a", "password": "b"}',
+            headers={"Content-Length": "999999", "Content-Type": "application/json"},
+        )
+        self.assertEqual(res_cl.status_code, 400)
+        self.assertEqual(res_cl.headers.get("cache-control"), "private, no-store")
+        self.assertIn("exceeds maximum size", res_cl.json().get("error", ""))
+
+        # 2. Non-integer Content-Length does not crash with ValueError and reads body
+        res_bad_cl = client.post(
+            "/api/v1/auth/login",
+            content=b"not a valid json {",
+            headers={"Content-Length": "not-an-int", "Content-Type": "application/json"},
+        )
+        self.assertEqual(res_bad_cl.status_code, 400)
+        self.assertEqual(res_bad_cl.headers.get("cache-control"), "private, no-store")
+        self.assertEqual(res_bad_cl.json().get("error"), "Invalid JSON body")
+
+        # 3. Empty body returns 400 with Invalid JSON body
+        res_empty = client.post(
+            "/api/v1/auth/login",
+            content=b"",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(res_empty.status_code, 400)
+        self.assertEqual(res_empty.headers.get("cache-control"), "private, no-store")
+        self.assertEqual(res_empty.json().get("error"), "Invalid JSON body")
+
+    def test_isolated_db_selector_revoke_error_handling(self):
+        """Isolated test app DB selector raises RuntimeError in post_revoke, caught as 500 with private, no-store."""
+        isolated_app = FastAPI()
+        isolated_app.state.isolated_desktop_app = True
+        isolated_app.state.db_url = None
+        isolated_app.include_router(client_auth_router)
+
+        client = TestClient(isolated_app)
+        res = client.post("/api/v1/auth/revoke", json={"refresh_token": "ah_ref_valid_token_1234567890"})
+        self.assertEqual(res.status_code, 500)
+        self.assertEqual(res.headers.get("cache-control"), "private, no-store")
+        self.assertEqual(res.json().get("error"), "Session revocation failed")
+
     def test_canonical_production_db_resolution(self):
         """Runtime auth DB connection resolves via canonical config and never falls back to TEST_DATABASE_URL in production."""
         set_test_db_url(None)
@@ -277,6 +348,24 @@ class TestClientAuthOffline(unittest.TestCase):
             res = _admin_write_guard(valid_req)
             self.assertIsNone(res)
 
+        # 5. Matching token with mismatching origin -> 403
+        req_bad_origin = Request({
+            "type": "http",
+            "method": "POST",
+            "path": "/admin/api/v2/pairing/approve",
+            "headers": [
+                (b"authorization", b"Bearer super_admin_secret"),
+                (b"origin", b"http://evil.com"),
+                (b"host", b"localhost:8080"),
+            ],
+        })
+        with patch.object(admin_module, "_admin_blocked", return_value=False), \
+             patch.object(admin_module, "_capabilities", return_value={"read_only": False}), \
+             patch.object(admin_module, "_write_token", return_value="super_admin_secret"):
+            res = _admin_write_guard(req_bad_origin)
+            self.assertIsNotNone(res)
+            self.assertEqual(res.status_code, 403)
+
     def test_admin_pairing_approval_strict_guard(self):
         """Admin pairing approval strictly enforces nonempty token, denying client tokens or missing auth."""
         client = TestClient(auth_test_app)
@@ -334,12 +423,14 @@ class TestClientAuthOffline(unittest.TestCase):
         res_pair = client.post("/api/v1/auth/pair/init", json={"device_name": "tv"})
         self.assertIn(res_pair.status_code, (404, 405))
         res_approve = client.post("/admin/api/v2/pairing/approve", json={"pairing_code": "123-456"})
-        self.assertEqual(res_approve.status_code, 404)
+        self.assertEqual(res_approve.status_code, 403)
+        self.assertEqual(res_approve.headers.get("cache-control"), "private, no-store")
 
-        app_post_routes = [getattr(r, "path", "") for r in app.routes if "POST" in getattr(r, "methods", set())]
+        app_post_routes = [getattr(r, "path", "") for r in get_all_routes(app.router) if "POST" in getattr(r, "methods", set())]
         self.assertNotIn("/api/v1/auth/login", app_post_routes)
         self.assertNotIn("/api/v1/auth/pair/init", app_post_routes)
-        self.assertNotIn("/admin/api/v2/pairing/approve", app_post_routes)
+        self.assertIn("/admin/api/v2/pairing/approve", app_post_routes)
+        self.assertEqual(app_post_routes.count("/admin/api/v2/pairing/approve"), 1)
 
         # Existing legacy and health routes remain mounted and unchanged
         routes = [getattr(r, "path", "") for r in app.routes]
