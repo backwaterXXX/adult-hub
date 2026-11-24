@@ -2297,9 +2297,11 @@ def _performer_photo_names(conn: Any, names: list[str]) -> set[str]:
     wanted = sorted({name.lower() for name in names if name})
     if not wanted:
         return set()
+    # Only a local file can be served by the artwork route: an upstream thumbnail URL is
+    # deliberately never proxied, so advertising it would hand the client a URL that 404s.
     rows = conn.execute(
         "SELECT DISTINCT lower(name) FROM performer_photos "
-        "WHERE lower(name) = ANY(%s) AND thumb IS NOT NULL AND thumb <> ''",
+        "WHERE lower(name) = ANY(%s) AND thumb IS NOT NULL AND thumb <> '' AND left(thumb, 4) <> 'http'",
         (wanted,),
     ).fetchall()
     return {str(row[0] if isinstance(row, (list, tuple)) else row["name"]) for row in rows}

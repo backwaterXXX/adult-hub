@@ -801,7 +801,8 @@ class TestClientCatalogPostgresIntegration(PgTestCase):
         self.assertEqual(detail_canon.video_count, 2)
 
     def test_performer_list_exposes_artwork_only_when_a_photo_is_stored(self):
-        """The performer listing advertises artwork only for performers that have a thumbnail."""
+        """Artwork is advertised only when the artwork route can actually serve it: a performer
+        with a local thumbnail gets the URL, a performer with an upstream URL gets None."""
         with self.conn:
             self.conn.execute("""
                 INSERT INTO performer_catalog (id, source, source_id, name, active)
@@ -810,7 +811,8 @@ class TestClientCatalogPostgresIntegration(PgTestCase):
             """)
             self.conn.execute("""
                 INSERT INTO performer_photos (name, thumb)
-                VALUES ('Photo Star', 'thumbs/photo-star.jpg')
+                VALUES ('Photo Star', 'thumbs/photo-star.jpg'),
+                       ('No Photo Star', 'https://cdn.example.test/no-photo-star.webp')
             """)
             self.conn.execute("""
                 INSERT INTO videos (id, provider, title, duration, playable, performers)
