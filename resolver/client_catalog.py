@@ -2065,15 +2065,31 @@ def query_catalog_performers(
             has_more=False,
         )
 
-    items = [
-        PerformerRef(
-            id=str(r[0] if isinstance(r, (list, tuple)) else r["id"]).strip(),
-            name=str(r[1] if isinstance(r, (list, tuple)) else r["name"]).strip(),
-            photo_url=None,
-            video_count=int(r[2] if isinstance(r, (list, tuple)) else r["video_count"]),
+    # The artwork route resolves a performer id to its thumbnail, so a performer with a stored
+    # photo gets its artwork URL. Clients that ask for photo_only filter on this field.
+    photo_names = (
+        _performer_photo_names(conn, [str(r[1] if isinstance(r, (list, tuple)) else r["name"]) for r in rows])
+        if "performer_photos" in tables
+        else set()
+    )
+    artwork_base = base_artwork_url.rstrip("/")
+    items = []
+    for r in rows:
+        performer_id = str(r[0] if isinstance(r, (list, tuple)) else r["id"]).strip()
+        performer_name = str(r[1] if isinstance(r, (list, tuple)) else r["name"]).strip()
+        has_photo = performer_name.lower() in photo_names
+        items.append(
+            PerformerRef(
+                id=performer_id,
+                name=performer_name,
+                photo_url=(
+                    f"{artwork_base}/performer/{quote(performer_id, safe='')}"
+                    if has_photo and artwork_base
+                    else None
+                ),
+                video_count=int(r[2] if isinstance(r, (list, tuple)) else r["video_count"]),
+            )
         )
-        for r in rows
-    ]
 
     return PaginatedPerformers(
         items=items,
@@ -2274,6 +2290,19 @@ def _performer_has_photo(conn: Any, canonical_name: str) -> bool:
         (canonical_name, canonical_name),
     ).fetchone()
     return bool(p_row and (p_row[0] if isinstance(p_row, (list, tuple)) else p_row["thumb"]))
+
+
+def _performer_photo_names(conn: Any, names: list[str]) -> set[str]:
+    """Return the lowercased performer names that hold a non-empty thumbnail."""
+    wanted = sorted({name.lower() for name in names if name})
+    if not wanted:
+        return set()
+    rows = conn.execute(
+        "SELECT DISTINCT lower(name) FROM performer_photos "
+        "WHERE lower(name) = ANY(%s) AND thumb IS NOT NULL AND thumb <> ''",
+        (wanted,),
+    ).fetchall()
+    return {str(row[0] if isinstance(row, (list, tuple)) else row["name"]) for row in rows}
 
 
 def _performer_video_match(

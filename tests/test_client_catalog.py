@@ -40,6 +40,7 @@ from resolver.client_catalog import (
     client_sort_clause,
     query_catalog_channel_detail,
     query_catalog_channels,
+    query_catalog_performers,
     query_catalog_video_detail,
     query_catalog_videos,
     serialize_client_video,
@@ -798,6 +799,33 @@ class TestClientCatalogPostgresIntegration(PgTestCase):
         detail_canon = query_catalog_channel_detail(self.conn, "555", config_sources=[])
         self.assertIsNotNone(detail_canon)
         self.assertEqual(detail_canon.video_count, 2)
+
+    def test_performer_list_exposes_artwork_only_when_a_photo_is_stored(self):
+        """The performer listing advertises artwork only for performers that have a thumbnail."""
+        with self.conn:
+            self.conn.execute("""
+                INSERT INTO performer_catalog (id, source, source_id, name, active)
+                VALUES ('stashdb:uuid-photo', 'stashdb', 'photo', 'Photo Star', true),
+                       ('stashdb:uuid-nophoto', 'stashdb', 'nophoto', 'No Photo Star', true)
+            """)
+            self.conn.execute("""
+                INSERT INTO performer_photos (name, thumb)
+                VALUES ('Photo Star', 'thumbs/photo-star.jpg')
+            """)
+            self.conn.execute("""
+                INSERT INTO videos (id, provider, title, duration, playable, performers)
+                VALUES
+                    ('telegram:-100123:91:901', 'telegram', 'Photo Star Video', 900, 1, '["Photo Star"]'::jsonb),
+                    ('telegram:-100123:92:902', 'telegram', 'No Photo Video', 900, 1, '["No Photo Star"]'::jsonb)
+            """)
+
+        page = query_catalog_performers(self.conn, limit=50)
+        by_name = {item.name: item for item in page.items}
+        self.assertEqual(
+            by_name["Photo Star"].photo_url,
+            "/api/v1/artwork/performer/stashdb%3Auuid-photo",
+        )
+        self.assertIsNone(by_name["No Photo Star"].photo_url)
 
     def test_regression_photo_url_leakage_and_strict_origin(self):
         """Regression: Stored performer photo_url or upstream URL is never passed into client DTO;
