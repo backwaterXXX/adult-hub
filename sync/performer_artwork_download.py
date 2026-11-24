@@ -80,6 +80,20 @@ def stored_thumb_path(media_dir: Path, name: str) -> str:
     return target.relative_to(Path(media_dir).resolve()).as_posix()
 
 
+def _catalogue_image_url(conn, name: str) -> str:
+    """Return the provider cover URL kept on the catalogue entry, if any."""
+    try:
+        row = conn.execute(
+            "SELECT image_url FROM performer_catalog "
+            "WHERE lower(name) = lower(%s) AND image_url <> '' "
+            "ORDER BY active DESC, name LIMIT 1",
+            (name,),
+        ).fetchone()
+    except Exception:  # older database without the column
+        return ""
+    return str(row[0] or "").strip() if row else ""
+
+
 def _encode_thumbnail(payload: bytes, *, min_bytes: int) -> bytes | None:
     """Validate a downloaded image payload and return a bounded JPEG."""
     from PIL import Image
@@ -176,16 +190,21 @@ def download_performer_artwork(conn, media_dir: Path, name: str, *,
         "WHERE lower(name) = lower(%s) ORDER BY name LIMIT 1",
         (name,),
     ).fetchone()
-    if row is None:
-        return {"local_state": "artwork_not_found", "reason": "no_photo_row"}
-    stored_name, thumb = str(row[0]), str(row[1] or "").strip()
+    stored_name = str(row[0]) if row else name
+    thumb = str(row[1] or "").strip() if row else ""
 
     target = artwork_target(media_dir, stored_name)
     if not thumb.casefold().startswith(("http://", "https://")):
         if thumb and target.is_file() and not target.is_symlink() and target.stat().st_size > 0:
             return {"local_state": "artwork_already_local", "path": thumb}
-        return {"local_state": "artwork_not_found",
-                "reason": "local_missing" if thumb else "no_remote_url"}
+        if not thumb:
+            # A catalogue entry can carry the provider cover even when no photo
+            # row was ever written for this identity.
+            thumb = _catalogue_image_url(conn, stored_name)
+            if not thumb:
+                return {"local_state": "artwork_not_found", "reason": "no_remote_url"}
+        else:
+            return {"local_state": "artwork_not_found", "reason": "local_missing"}
 
     url = _source_url(thumb)
     if not url:
@@ -201,8 +220,8 @@ def download_performer_artwork(conn, media_dir: Path, name: str, *,
     relative = stored_thumb_path(media_dir, stored_name)
     with conn:
         conn.execute(
-            "UPDATE performer_photos SET thumb=%s, updated_at=now() "
-            "WHERE name=%s",
-            (relative, stored_name),
+            "INSERT INTO performer_photos(name, thumb, updated_at) VALUES (%s, %s, now()) "
+            "ON CONFLICT (name) DO UPDATE SET thumb=EXCLUDED.thumb, updated_at=now()",
+            (stored_name, relative),
         )
     return {"local_state": "artwork_downloaded", "path": relative, "bytes": len(encoded)}

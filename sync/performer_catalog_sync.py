@@ -33,7 +33,7 @@ QUERY = """
 query PerformerCatalogue($page: Int!, $perPage: Int!) {
   queryPerformers(input: {gender: MALE, page: $page, per_page: $perPage, sort: UPDATED_AT, direction: DESC}) {
     count
-    performers { id name aliases gender updated deleted }
+    performers { id name aliases gender updated deleted images { url } }
   }
 }
 """
@@ -59,6 +59,19 @@ def sync_catalog_if_due(conn: db.Connection, *, interval_seconds: int = 86400) -
             ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value
         """, (key, str(now)))
     return people, aliases
+
+
+def _cover_image_url(record: dict) -> str:
+    """Return the first provider cover image URL for a catalogue record."""
+    images = record.get("images")
+    if not isinstance(images, list):
+        return ""
+    for image in images:
+        if isinstance(image, dict):
+            url = str(image.get("url") or "").strip()
+            if url.startswith("https://"):
+                return url
+    return ""
 
 
 def _post(payload, token: str):
@@ -128,13 +141,14 @@ def sync_catalog(conn: db.Connection, *, token: str | None = None,
             if not name:
                 continue
             conn.execute("""
-                INSERT INTO performer_catalog(id,source,source_id,name,updated_at,active)
-                VALUES (%s,'stashdb',%s,%s,%s,%s)
+                INSERT INTO performer_catalog(id,source,source_id,name,updated_at,active,image_url)
+                VALUES (%s,'stashdb',%s,%s,%s,%s,%s)
                 ON CONFLICT(source,source_id) DO UPDATE SET
                     name=EXCLUDED.name, updated_at=EXCLUDED.updated_at,
-                    active=EXCLUDED.active
+                    active=EXCLUDED.active,
+                    image_url=CASE WHEN EXCLUDED.image_url <> '' THEN EXCLUDED.image_url ELSE performer_catalog.image_url END
             """, (performer_id, str(record["id"]), name, _updated_epoch(record.get("updated")),
-                  not bool(record.get("deleted"))))
+                  not bool(record.get("deleted")), _cover_image_url(record)))
             conn.execute("DELETE FROM performer_catalog_aliases WHERE performer_id=%s AND origin='stashdb'",
                          (performer_id,))
             for alias in dict.fromkeys([name, *(record.get("aliases") or [])]):

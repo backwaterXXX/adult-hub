@@ -39,16 +39,31 @@ def _load_all_env() -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
-def _candidate_names(conn, *, limit: int | None, refresh: bool) -> list[str]:
+CATALOGUE_CANDIDATES_SQL = """
+SELECT c.name
+FROM performer_catalog c
+JOIN video_performers vp ON lower(vp.performer_name) = lower(c.name)
+LEFT JOIN performer_photos ph ON lower(ph.name) = lower(c.name)
+WHERE c.active
+  AND c.image_url <> ''
+  AND (ph.thumb IS NULL OR ph.thumb = '' OR ph.thumb LIKE 'https://%')
+GROUP BY c.name
+ORDER BY lower(c.name)
+"""
+
+
+def _candidate_names(conn, *, limit: int | None, refresh: bool, catalog: bool = False) -> list[str]:
     """Return performer names that still need a local thumbnail."""
-    where = "" if refresh else "WHERE thumb LIKE 'https://%'"
-    rows = conn.execute(
-        f"SELECT name FROM performer_photos {where} ORDER BY lower(name)"
-    ).fetchall()
-    names = [str(row[0]) for row in rows if str(row[0] or "").strip()]
-    if limit:
-        names = names[:limit]
-    return names
+    names: list[str] = []
+    if catalog:
+        names.extend(str(row[0]) for row in conn.execute(CATALOGUE_CANDIDATES_SQL).fetchall())
+    if not catalog:
+        where = "" if refresh else "WHERE thumb LIKE 'https://%'"
+        rows = conn.execute(f"SELECT name FROM performer_photos {where} ORDER BY lower(name)").fetchall()
+        names.extend(str(row[0]) for row in rows)
+
+    unique = list(dict.fromkeys(name for name in names if str(name or "").strip()))
+    return unique[:limit] if limit else unique
 
 
 class _Worker:
@@ -92,6 +107,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=4, help="Concurrent downloads (1-8)")
     parser.add_argument("--dry-run", action="store_true", help="List candidates without downloading")
     parser.add_argument("--refresh", action="store_true", help="Re-check rows that are already local")
+    parser.add_argument(
+        "--catalog",
+        action="store_true",
+        help="Use catalogue cover images for listed performers without a photo row",
+    )
     args = parser.parse_args(argv)
 
     _load_all_env()
@@ -101,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = db.connect(db_url)
     try:
-        names = _candidate_names(conn, limit=args.limit, refresh=args.refresh)
+        names = _candidate_names(conn, limit=args.limit, refresh=args.refresh, catalog=args.catalog)
     finally:
         conn.close()
 

@@ -11,7 +11,10 @@ from common.image_utils import compute_dhash, is_black_image, is_bumper_hash
 logger = logging.getLogger(__name__)
 
 
-MAX_ARTWORK_GENERATION_ITEMS = 100
+# The daily schedule wakes every four hours, so this cap sets the real pace of
+# the artwork backlog. 100 per run left roughly three thousand items waiting for
+# weeks; 200 clears the same backlog in days without hammering Telegram.
+MAX_ARTWORK_GENERATION_ITEMS = 200
 ARTWORK_GENERATION_OFFSET_SECONDS = 60
 
 
@@ -43,7 +46,7 @@ def artwork_needs_generation(path: Path, *, bumper_hashes=None) -> bool:
 
 def build_artwork_generation_jobs(conn, media_dir: Path, *, limit: int = MAX_ARTWORK_GENERATION_ITEMS,
                                   bumper_hashes=None) -> list[tuple[str, dict]]:
-    """Build at most 100 jobs, prioritizing recently seen videos."""
+    """Build at most ``MAX_ARTWORK_GENERATION_ITEMS`` jobs, prioritizing recently seen videos."""
     if type(limit) is not int or limit < 1:
         raise ValueError("Artwork generation batch size must be a positive integer.")
     limit = min(limit, MAX_ARTWORK_GENERATION_ITEMS)

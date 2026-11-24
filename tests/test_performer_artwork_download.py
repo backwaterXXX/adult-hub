@@ -162,13 +162,37 @@ class DownloadTests(PgTestCase):
             )
             self.assertEqual(result["local_state"], "artwork_download_failed")
 
-    def test_missing_row_reports_not_found(self):
+    def test_missing_row_without_catalogue_image_reports_not_found(self):
         with tempfile.TemporaryDirectory() as directory:
             result = performer_artwork_download.download_performer_artwork(
                 self.conn, Path(directory).resolve(), "Nobody Here", http_client=_NoCallClient(),
             )
             self.assertEqual(result["local_state"], "artwork_not_found")
-            self.assertEqual(result["reason"], "no_photo_row")
+            self.assertEqual(result["reason"], "no_remote_url")
+
+    def test_catalogue_cover_fills_a_missing_photo_row(self):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO performer_catalog (id, source, source_id, name, active, image_url) "
+                "VALUES ('stashdb:cat-1', 'stashdb', 'cat-1', 'Catalogue Star', true, "
+                "'https://stashdb.org/images/cat-1')"
+            )
+        payload = _jpeg_bytes()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            result = performer_artwork_download.download_performer_artwork(
+                self.conn, root, "Catalogue Star",
+                http_client=httpx.Client(transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, content=payload))),
+                min_bytes=200,
+            )
+            self.assertEqual(result["local_state"], "artwork_downloaded")
+            row = self.conn.execute(
+                "SELECT thumb FROM performer_photos WHERE name=%s", ("Catalogue Star",)
+            ).fetchone()
+            self.assertTrue(str(row[0]).startswith("performers/"))
+            self.assertTrue((root / str(row[0])).is_file())
 
 
 if __name__ == "__main__":

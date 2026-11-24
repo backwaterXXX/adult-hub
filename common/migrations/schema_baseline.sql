@@ -452,7 +452,8 @@ CREATE TABLE public.performer_catalog (
     source_id text NOT NULL,
     name text NOT NULL,
     updated_at timestamp with time zone,
-    active boolean DEFAULT true NOT NULL
+    active boolean DEFAULT true NOT NULL,
+    image_url text DEFAULT ''::text NOT NULL
 );
 
 CREATE TABLE public.performer_catalog_aliases (
