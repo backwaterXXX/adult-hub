@@ -69,6 +69,7 @@ class BaseHttpApiTestCase(unittest.TestCase):
         ("POST", "/admin/api/v2/performers/proposals/{proposal_id}"),
         ("POST", "/admin/api/v2/performers/proposals/reconcile"),
         ("POST", "/admin/api/v2/performers/proposal-groups/{reason}/{key}"),
+        ("POST", "/admin/api/v2/pairing/approve"),
         ("PUT", "/admin/api/v2/organize/people/{name}/profile"),
         ("POST", "/admin/api/v2/library/videos/{video_id}/generate-artwork"),
         ("POST", "/admin/api/v2/library/videos/{video_id}/download-artwork"),

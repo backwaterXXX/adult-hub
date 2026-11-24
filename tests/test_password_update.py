@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import io
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from common.client_auth.crypto import hash_password, verify_password
@@ -436,10 +437,12 @@ class TestUsernameUniquenessSchema(unittest.TestCase):
 
     def test_schema_enforces_case_insensitive_unique_username_index(self):
         """Verify the exact UNIQUE index constraint idx_client_users_username exists on lower(username)."""
-        import pathlib
+        # Resolve from this file so the check also works outside /app/adult-hub
+        # (CI checks the repository out under a different absolute path).
+        migrations_dir = Path(__file__).resolve().parents[1] / "common" / "migrations"
 
-        migration_path = pathlib.Path("/app/adult-hub/common/migrations/m0069_direct_play_user_state.py")
-        baseline_path = pathlib.Path("/app/adult-hub/common/migrations/schema_baseline.sql")
+        migration_path = migrations_dir / "m0069_direct_play_user_state.py"
+        baseline_path = migrations_dir / "schema_baseline.sql"
 
         migration_sql = migration_path.read_text(encoding="utf-8")
         baseline_sql = baseline_path.read_text(encoding="utf-8")
