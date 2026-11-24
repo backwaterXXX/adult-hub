@@ -41,7 +41,7 @@ class TestDirectPlayMigrationRegistration(unittest.TestCase):
         self.assertIn(legacy_migration, POST_BASELINE_MIGRATIONS)
         self.assertEqual(legacy_migration.version, 69)
         self.assertEqual(legacy_migration.name, "0069_direct_play_user_state")
-        self.assertEqual(POST_BASELINE_CEILING, 71)
+        self.assertEqual(POST_BASELINE_CEILING, 72)
         self.assertIn(legacy_migration, POST_BASELINE_MIGRATIONS)
         _validate_active_migrations(POST_BASELINE_MIGRATIONS)
 
@@ -177,10 +177,11 @@ class TestDirectPlayMigrationRegistration(unittest.TestCase):
         self.assertEqual(pending[0].version, 69)
         self.assertEqual(pending[0].name, "0069_direct_play_user_state")
 
-        # After applying 69, 70, and 71, replay is idempotent
+        # After applying 69, 70, 71, and 72, replay is idempotent
         applied.append(_rec(69, "0069_direct_play_user_state"))
         applied.append(_rec(70, "0070_client_auth"))
         applied.append(_rec(71, "0071_telegram_sources_backfill"))
+        applied.append(_rec(72, "0072_performer_lookup_indexes"))
         self.assertEqual(_migration_plan(applied), [])
 
     def test_lineage_b_current_forward_chain_isolation_and_no_collision(self):
@@ -196,10 +197,11 @@ class TestDirectPlayMigrationRegistration(unittest.TestCase):
         self.assertEqual(pending[0].version, 21)
         self.assertEqual(pending[0].name, "0021_direct_play_user_state")
 
-        # After applying 21, 22, and 23, replay is idempotent
+        # After applying 21, 22, 23, and 24, replay is idempotent
         applied.append(_rec(21, "0021_direct_play_user_state"))
         applied.append(_rec(22, "0022_client_auth"))
         applied.append(_rec(23, "0023_telegram_sources_backfill"))
+        applied.append(_rec(24, "0024_performer_lookup_indexes"))
         self.assertEqual(_migration_plan(applied), [])
 
     def test_old_code_rollback_nondestructive_on_migrated_database(self):
