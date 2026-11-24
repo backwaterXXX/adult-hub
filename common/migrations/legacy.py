@@ -104,6 +104,9 @@ from common.migrations.m0070_client_auth import (
 from common.migrations.m0071_telegram_sources_backfill import (
     migration as telegram_sources_backfill,
 )
+from common.migrations.m0072_performer_lookup_indexes import (
+    migration as performer_lookup_indexes,
+)
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -179,4 +182,5 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     direct_play_user_state,
     client_auth,
     telegram_sources_backfill,
+    performer_lookup_indexes,
 )

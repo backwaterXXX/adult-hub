@@ -1129,9 +1129,15 @@ CREATE INDEX idx_metadata_review_retry ON public.metadata_review_proposals USING
 
 CREATE INDEX idx_metadata_review_video ON public.metadata_review_proposals USING btree (video_id, status, created_at DESC);
 
+CREATE INDEX idx_performer_alias_lower_alias ON public.performer_catalog_aliases USING btree (lower(alias)) WHERE approved;
+
 CREATE INDEX idx_performer_alias_normalized ON public.performer_catalog_aliases USING btree (normalized);
 
+CREATE INDEX idx_performer_catalog_lower_name ON public.performer_catalog USING btree (lower(name));
+
 CREATE INDEX idx_performer_aliases_canonical_lower ON public.performer_aliases USING btree (lower(canonical));
+
+CREATE INDEX idx_performer_photos_lower_name ON public.performer_photos USING btree (lower(name));
 
 CREATE INDEX idx_sf_video_id ON public.synced_files USING btree (video_id);
 

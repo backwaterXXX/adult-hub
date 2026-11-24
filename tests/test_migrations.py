@@ -112,6 +112,19 @@ class TestActiveMigrationValidation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ordered by version"):
             _validate_active_migrations((self._migration(2), self._migration(1)))
 
+    def test_m0072_registration(self):
+        from common.migrations.m0072_performer_lookup_indexes import (
+            current_migration,
+            migration,
+        )
+        self.assertEqual(migration.version, 72)
+        self.assertEqual(migration.name, "0072_performer_lookup_indexes")
+        self.assertEqual(current_migration.version, 24)
+        self.assertEqual(current_migration.name, "0024_performer_lookup_indexes")
+        from common.migrations.runner import CURRENT_MIGRATIONS, MIGRATIONS
+        self.assertIn(current_migration, CURRENT_MIGRATIONS)
+        self.assertIn(current_migration, MIGRATIONS)
+
     def test_m0071_registration(self):
         from common.migrations.m0071_telegram_sources_backfill import (
             current_migration,
@@ -417,6 +430,7 @@ class TestMigrationsEngine(PgTestCase):
             (69, "0069_direct_play_user_state"),
             (70, "0070_client_auth"),
             (71, "0071_telegram_sources_backfill"),
+            (72, "0072_performer_lookup_indexes"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):
