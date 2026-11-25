@@ -93,6 +93,59 @@ class TestTelegramAccountRouter(unittest.IsolatedAsyncioTestCase):
             os.remove(p1)
             os.remove(p2)
 
+    async def test_a_transient_authorization_probe_is_retried(self):
+        """A locked session file fails one probe; the retry must still serve the request."""
+
+        with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as f1:
+            f1.write(b"data1")
+            p1 = f1.name
+
+        probes = []
+
+        async def flaky(account_ids):
+            probes.append(list(account_ids))
+            return [] if len(probes) == 1 else list(account_ids)
+
+        try:
+            upsert_account("acc1", label="Account 1", session_file=p1, enabled=True)
+
+            with patch(
+                "resolver.providers.telegram_router.authorized_account_ids", flaky
+            ), patch(
+                "resolver.providers.telegram_router.AUTHORIZATION_RETRY_DELAY_SECONDS", 0
+            ):
+                selected = await self.router.select_eligible_account("-100123")
+
+            self.assertEqual(selected, "acc1")
+            self.assertEqual(len(probes), 2, "the failed probe is retried exactly once")
+        finally:
+            import os
+            os.remove(p1)
+
+    async def test_no_authorized_account_after_the_retry_still_raises(self):
+        with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as f1:
+            f1.write(b"data1")
+            p1 = f1.name
+
+        async def never_authorized(_account_ids):
+            return []
+
+        try:
+            upsert_account("acc1", label="Account 1", session_file=p1, enabled=True)
+
+            with patch(
+                "resolver.providers.telegram_router.authorized_account_ids", never_authorized
+            ), patch(
+                "resolver.providers.telegram_router.AUTHORIZATION_RETRY_DELAY_SECONDS", 0
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    await self.router.select_eligible_account("-100123")
+
+            self.assertIn("no authorized Telegram account", str(ctx.exception))
+        finally:
+            import os
+            os.remove(p1)
+
     async def test_skips_cooling_down_and_inaccessible(self):
         with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as f1, \
              tempfile.NamedTemporaryFile(suffix=".session", delete=False) as f2:

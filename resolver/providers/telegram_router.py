@@ -47,6 +47,28 @@ CHANNEL_ACCESS_RECHECK_SECONDS = float(
     os.getenv("TELEGRAM_CHANNEL_RECHECK_SECONDS", 3600.0)
 )
 
+# A probe fails with a session lock or a short timeout while another client
+# saves the same session file. These failures are never cached, so one short
+# retry turns them into a slower success instead of a failed request.
+AUTHORIZATION_RETRY_DELAY_SECONDS = float(
+    os.getenv("TELEGRAM_AUTHORIZATION_RETRY_DELAY_SECONDS", "0.5")
+)
+
+
+async def _authorized_candidates(candidates: list[str], *, attempts: int = 2) -> list[str]:
+    """Return the authorized subset, retrying a probe that answered "none".
+
+    A definite "session not logged in" answer is cached by the authorization
+    layer, so the retry only re-probes accounts whose check could not complete.
+    """
+    authorized = await authorized_account_ids(candidates)
+    for _ in range(max(0, attempts - 1)):
+        if authorized:
+            break
+        await asyncio.sleep(AUTHORIZATION_RETRY_DELAY_SECONDS)
+        authorized = await authorized_account_ids(candidates)
+    return authorized
+
 _RAW_MAX_LEASES = os.getenv("TELEGRAM_MAX_CONCURRENT_LEASES_PER_ACCOUNT", "20").strip()
 try:
     _parsed_leases = int(_RAW_MAX_LEASES)
@@ -444,7 +466,7 @@ class TelegramAccountRouter:
             )
 
         # Only accounts whose session is logged in may serve requests (cached per account).
-        candidates = await authorized_account_ids(candidates)
+        candidates = await _authorized_candidates(candidates)
         if not candidates:
             raise RuntimeError(
                 f"No eligible Telegram accounts available with access to channel {clean_channel}: "
@@ -498,7 +520,7 @@ class TelegramAccountRouter:
                     f"All enabled Telegram accounts reached concurrency limit: {', '.join(at_capacity)}"
                 )
             raise RuntimeError("No enabled Telegram accounts available.")
-        candidates = await authorized_account_ids(candidates)
+        candidates = await _authorized_candidates(candidates)
         if not candidates:
             raise RuntimeError(
                 "No eligible Telegram accounts available: no authorized Telegram account is available."
