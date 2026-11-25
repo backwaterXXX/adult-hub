@@ -15,12 +15,16 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   publish-images:
     name: Build & Publish GHCR Images and Release Bundle
     runs-on: ubuntu-24.04
+    # contents: write is required by the release-asset upload at the end of this
+    # job; the workflow-level grant stays read-only for everything else.
+    permissions:
+      contents: write
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
