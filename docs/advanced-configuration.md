@@ -126,7 +126,7 @@ To connect Adult Hub to an existing PostgreSQL 17 cluster (e.g., self-hosted clu
    ```
 3. Run schema migrations:
    ```sh
-   python3 migrate_db.py
+   python3 migrate_db.py apply
    ```
 
 ### Topology C: Reverse Proxy (Caddy / Nginx)

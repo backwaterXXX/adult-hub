@@ -149,6 +149,19 @@ def _confirm_restore(conninfo: str, target_file: Path, clean: bool) -> bool:
     return True
 
 
+def _report_restore_failure(exc: Exception) -> None:
+    """Print a restore failure, explaining the one cause that has a next step."""
+    print(f"Restoration failed: {exc}", file=sys.stderr)
+    if "predates the 0.6.0 squash" in str(exc):
+        print(
+            "Hint: this dump predates the 0.6.0 schema squash. Its numbered migrations no longer "
+            "exist in this build, so the schema cannot be brought forward here: restore it with an "
+            "image of the version that wrote it (a 0.5.x dump restores and upgrades cleanly), or "
+            "recreate the database if its data is disposable.",
+            file=sys.stderr,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     conninfo = _normalize_host_url((args.db_url or "").strip())
@@ -196,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Database restored successfully.")
         return 0
     except Exception as exc:
-        print(f"Restoration failed: {exc}", file=sys.stderr)
+        _report_restore_failure(exc)
         return 1
 
 

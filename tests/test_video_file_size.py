@@ -16,15 +16,6 @@ class VideoFileSizeTests(PgTestCase):
                 (video_id,))
         return video_id
 
-    def _add_probe(self, video_id: str, size, algorithm: str = "OSHASH"):
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO video_fingerprints (video_id, algorithm, fingerprint, media_probe_data) "
-                "VALUES (%s, %s, %s, %s::jsonb)",
-                (video_id, algorithm, "0123456789abcdef",
-                 f'{{"file_size_bytes": {size}}}' if isinstance(size, int) else '{}'),
-            )
-
     def test_store_fingerprint_propagates_size_to_videos(self):
         video_id = self._video()
         scene_scrapers._store_video_fingerprint(

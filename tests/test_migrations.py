@@ -162,13 +162,6 @@ class TestMigrationsEngine(PgTestCase):
         ).fetchall()
         self.assertEqual(duplicate_rows, [])
 
-    def test_target_version_lower_than_the_baseline_selects_nothing(self):
-        _drop_everything(self.conn)
-        self.addCleanup(recreate_database, self.conn)
-        self.assertEqual(apply_migrations(self.conn, target_version=0), [])
-        self.assertFalse(get_migration_status(self.conn).is_up_to_date)
-        self.assertEqual([m.version for m in apply_migrations(self.conn, target_version=1)], [1])
-
     def test_recreate_database_clears_old_data_and_reapplies(self):
         recreate_database(self.conn)
         with self.conn:

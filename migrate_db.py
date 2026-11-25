@@ -3,7 +3,7 @@
 
 Usage:
     python3 migrate_db.py status [--db-url URL]
-    python3 migrate_db.py apply [--db-url URL] [--target N]
+    python3 migrate_db.py apply [--db-url URL]
     python3 migrate_db.py recreate [--db-url URL] [--yes]
 """
 
@@ -64,9 +64,8 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_apply(args: argparse.Namespace) -> int:
     url = _resolve_url(args)
-    target = getattr(args, "target", None)
-    print(f"Applying migrations to database... (target: {target if target is not None else 'latest'})")
-    applied = apply_migrations(url, target_version=target)
+    print("Applying migrations to database...")
+    applied = apply_migrations(url)
     if not applied:
         print("Database schema is already up to date. No migrations applied.")
     else:
@@ -108,7 +107,6 @@ def main(argv: list[str] | None = None) -> int:
 
     # apply
     p_apply = subparsers.add_parser("apply", help="Apply pending migrations", parents=[parent])
-    p_apply.add_argument("--target", type=int, default=None, help="Target migration version limit")
     p_apply.set_defaults(func=cmd_apply)
 
     # recreate

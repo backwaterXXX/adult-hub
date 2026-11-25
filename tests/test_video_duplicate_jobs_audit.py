@@ -240,6 +240,24 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
         self.assertIn("missing_stream", kinds)
 
 
+    def test_missing_stream_is_not_reported_for_a_confirmed_dead_video(self):
+        from common.job_queue import enqueue_job
+        dead_id = "telegram:-1001:dead-stream"
+        self._add_video(dead_id)
+        with self.conn:
+            self.conn.execute("UPDATE videos SET playable=0 WHERE id=%s", (dead_id,))
+        # Both entries lose their .strm; only the live one is a library problem.
+        for video_id in (self.keeper, dead_id):
+            self.media.joinpath(f"{sync.stable_media_basename(video_id)}.strm").unlink()
+
+        job_id = enqueue_job(self.db_path, "consistency_audit", {"mode": "file_consistency"})
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        findings = self.conn.execute(
+            "SELECT video_id,kind FROM admin_audit_items WHERE job_id=%s AND kind='missing_stream'",
+            (job_id,),
+        ).fetchall()
+        self.assertEqual([(row[0], row[1]) for row in findings], [(self.keeper, "missing_stream")])
+
     def test_consistency_audit_finds_nested_orphan_stream_and_artwork_without_following_symlinks(self):
         from common.job_queue import enqueue_job
         nested = self.media / "nested-managed-folder"

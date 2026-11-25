@@ -159,22 +159,15 @@ def _baseline_is_recorded(applied: list[MigrationRecord]) -> bool:
     )
 
 
-def _migration_plan(
-    applied: list[MigrationRecord],
-    target_version: int | None = None,
-) -> list[Migration]:
+def _migration_plan(applied: list[MigrationRecord]) -> list[Migration]:
     """Migrations this database still needs, by recorded history alone."""
     applied_versions = {record.version for record in applied}
     if _baseline_is_recorded(applied):
-        plan = [
+        return [
             migration for migration in MIGRATIONS
             if migration.version not in applied_versions
         ]
-    else:
-        plan = list(MIGRATIONS)
-    if target_version is not None:
-        plan = [migration for migration in plan if migration.version <= target_version]
-    return plan
+    return list(MIGRATIONS)
 
 
 def _pre_squash_history(applied: list[MigrationRecord]) -> RuntimeError:
@@ -190,7 +183,6 @@ def _pre_squash_history(applied: list[MigrationRecord]) -> RuntimeError:
 def _plan_for_connection(
     conn: db.Connection,
     applied: list[MigrationRecord],
-    target_version: int | None = None,
 ) -> list[Migration]:
     """Resolve pending migrations, refusing schemas the squash cannot upgrade.
 
@@ -199,7 +191,7 @@ def _plan_for_connection(
     either one would fail halfway or stamp an unknown schema as current, so the
     runner says no and names the escape hatch.
     """
-    plan = _migration_plan(applied, target_version)
+    plan = _migration_plan(applied)
     if plan and not _baseline_is_recorded(applied) and _has_tables(conn):
         raise _pre_squash_history(applied)
     return plan
@@ -220,14 +212,9 @@ def get_migration_status(conn_or_url: db.Connection | str | None = None) -> Migr
 
 def apply_migrations(
     conn_or_url: db.Connection | str | None = None,
-    target_version: int | None = None,
     **kwargs: Any,
 ) -> list[MigrationRecord]:
-    """Apply any unapplied migrations up to target_version (or latest if None).
-
-    The baseline builds the whole schema in one step, so an explicit target
-    below it simply selects nothing; there is no intermediate shape to stop at.
-    """
+    """Apply every migration this database still needs."""
     conn, owned = _resolve_connection(conn_or_url)
     applied_now: list[MigrationRecord] = []
     try:
@@ -238,7 +225,7 @@ def apply_migrations(
         try:
             ensure_schema_migrations_table(conn)
             applied = get_applied_migrations(conn)
-            plan = _plan_for_connection(conn, applied, target_version)
+            plan = _plan_for_connection(conn, applied)
             for migration in plan:
                 logger.info("Applying migration %04d: %s...", migration.version, migration.name)
                 with conn:

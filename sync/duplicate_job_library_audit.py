@@ -156,6 +156,12 @@ def _audit_video_file(ctx: _AuditContext, stored_path, video_id, source: dict, o
         _record_missing_metadata(ctx.conn, ctx.job_id, video_id, missing_fields)
         ctx.findings += 1
         ctx.missing_metadata_seen.add(str(video_id))
+    if source.get("playable") == 0:
+        # A confirmed dead item is expected to lack its library file: the index
+        # keeps the metadata, the stream is gone upstream. Reporting the same
+        # missing pointer on every pass buries the streams that still need
+        # attention, and no repair may recreate a pointer that cannot play.
+        return None, "", {}
     try:
         stream_path = ctx.services.resolve_media_path(stored_path, ctx.media_dir)
         kind, evidence, details = _classify_stream(ctx, stream_path)
