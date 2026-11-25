@@ -123,12 +123,27 @@ def _env_int(value, name: str, default: int) -> int:
         return default
 
 
+_JOB_BACKUP_RE = r"-job-[a-f0-9]{32}[.]dump[.]gz$"
+
+
 def _backup_prefix(name: str) -> str:
     """Return the archive family of a dump name (``adulthub``, ``adulthub-pre-...``)."""
     import re as _re
 
     match = _re.match(r"^(?P<prefix>.+?)-(?:job-[a-f0-9]{32}|[0-9]{8}-[0-9]{6})[.]dump[.]gz$", name)
     return match.group("prefix") if match else ""
+
+
+def _is_operator_backup(name: str) -> bool:
+    """Return True for an archive an operator asked for (``backup_create`` jobs).
+
+    Those are listed in the admin backup view and belong to a person, so shrinking
+    a family to its newest members must not touch them - they age out with
+    ``BACKUP_KEEP_DAYS`` like before.
+    """
+    import re as _re
+
+    return bool(_re.search(_JOB_BACKUP_RE, name))
 
 
 def _drop_backup(path, logger) -> bool:
@@ -156,6 +171,8 @@ def _expired_and_families(dest_path, cutoff, cur_resolved, logger):
             continue
         if info.st_mtime < cutoff:
             expired.append(old)
+            continue
+        if _is_operator_backup(old.name):
             continue
         family = _backup_prefix(old.name)
         if family:

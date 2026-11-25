@@ -76,6 +76,25 @@ class PruneByFamilyTest(unittest.TestCase):
 
         self.assertEqual(survivors, {current.name, newest.name})
 
+    def test_operator_requested_backups_are_never_count_pruned(self):
+        """`backup_create` archives belong to a person and stay until they age out."""
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            operator = [
+                self._dump(dest, f"adulthub-job-{index:032x}.dump.gz", age_seconds=60 * (index + 1))
+                for index in range(4)
+            ]
+            automatic = [
+                self._dump(dest, f"adulthub-pre-fuzzy-merge-2026010{index}-120000.dump.gz", 30)
+                for index in range(1, 4)
+            ]
+
+            backup.prune_old_backups(dest, keep_days=7, keep_count=1)
+
+            survivors = {path.name for path in dest.glob("*.dump.gz")}
+
+        self.assertEqual(survivors, {path.name for path in operator} | {automatic[-1].name})
+
     def test_keep_count_reads_the_environment_override(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp)
