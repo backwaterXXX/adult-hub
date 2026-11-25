@@ -14,9 +14,13 @@ logger = logging.getLogger(__name__)
 
 # The schedule wakes every four hours, so this cap sets the real pace of the
 # artwork backlog. A measured 200-job run needs about ten minutes of the single
-# worker, so 400 still finishes well inside the window while halving the time a
-# backlog needs to drain.
-MAX_ARTWORK_GENERATION_ITEMS = 400
+# worker, so 800 still finishes well inside the window while doubling the drain.
+MAX_ARTWORK_GENERATION_ITEMS = 800
+# Half of every batch is reserved for the oldest gaps. The missing files are a
+# legacy cohort (1 456 of 1 472 date from September): a newest-first batch is
+# consumed by fresh arrivals and replacements, so those items never got a slot.
+ARTWORK_BACKLOG_SHARE_NUMERATOR = 1
+ARTWORK_BACKLOG_SHARE_DENOMINATOR = 2
 ARTWORK_GENERATION_OFFSET_SECONDS = 60
 
 
@@ -46,42 +50,56 @@ def artwork_needs_generation(path: Path, *, bumper_hashes=None) -> bool:
         return False
 
 
+def _candidate_rows(conn, *, oldest_first: bool) -> list:
+    """Return playable, unfiltered candidate rows in the requested age order."""
+    order = "v.first_seen ASC NULLS LAST" if oldest_first else "v.first_seen DESC NULLS LAST"
+    return conn.execute(
+        "SELECT v.id,v.duration,sf.file_path FROM videos v "
+        "JOIN synced_files sf ON sf.video_id=v.id "
+        f"WHERE COALESCE(v.playable, 1) != 0{_dead_stream_exclusion(conn)}"
+        f"{_parked_artwork_exclusion(conn)} "
+        f"ORDER BY {order},v.last_seen DESC NULLS LAST,sf.file_path"
+    ).fetchall()
+
+
 def build_artwork_generation_jobs(conn, media_dir: Path, *, limit: int = MAX_ARTWORK_GENERATION_ITEMS,
                                   bumper_hashes=None) -> list[tuple[str, dict]]:
-    """Build at most ``MAX_ARTWORK_GENERATION_ITEMS`` jobs, prioritizing recently seen videos."""
+    """Build at most ``limit`` jobs, draining the oldest gaps and covering new items.
+
+    Selection runs in two passes: the first reserves a share of the batch for the
+    oldest entries (the legacy backlog), the second fills the rest newest first so
+    fresh arrivals still get artwork in the same run.
+    """
     if type(limit) is not int or limit < 1:
         raise ValueError("Artwork generation batch size must be a positive integer.")
     limit = min(limit, MAX_ARTWORK_GENERATION_ITEMS)
     media_dir = Path(media_dir)
     if bumper_hashes is None:
         bumper_hashes = _default_bumper_hashes()
-
-    rows = conn.execute(
-        "SELECT v.id,v.duration,sf.file_path FROM videos v "
-        "JOIN synced_files sf ON sf.video_id=v.id "
-        f"WHERE COALESCE(v.playable, 1) != 0{_dead_stream_exclusion(conn)}"
-        f"{_parked_artwork_exclusion(conn)} "
-        "ORDER BY v.first_seen DESC NULLS LAST,v.last_seen DESC NULLS LAST,sf.file_path"
-    ).fetchall()
     from sync.media_files import resolve_media_path
 
+    backlog_budget = (limit * ARTWORK_BACKLOG_SHARE_NUMERATOR) // ARTWORK_BACKLOG_SHARE_DENOMINATOR
     jobs: list[tuple[str, dict]] = []
     seen: set[str] = set()
-    for video_id, _duration, stored_path in rows:
-        video_id = str(video_id or "")
-        if not video_id or video_id in seen or not isinstance(stored_path, str) or not stored_path:
-            continue
-        seen.add(video_id)
-        if not _artwork_generation_needed(stored_path, media_dir, resolve_media_path, bumper_hashes):
-            continue
-        jobs.append(("artwork_generate", {
-            "video_id": video_id,
-            "offset_seconds": ARTWORK_GENERATION_OFFSET_SECONDS,
-            "only_if_artwork_invalid": True,
-            "file_path": stored_path,
-        }))
+    for oldest_first, budget in ((True, backlog_budget), (False, limit)):
         if len(jobs) >= limit:
             break
+        target = min(budget, limit)
+        for video_id, _duration, stored_path in _candidate_rows(conn, oldest_first=oldest_first):
+            if len(jobs) >= target:
+                break
+            video_id = str(video_id or "")
+            if not video_id or video_id in seen or not isinstance(stored_path, str) or not stored_path:
+                continue
+            seen.add(video_id)
+            if not _artwork_generation_needed(stored_path, media_dir, resolve_media_path, bumper_hashes):
+                continue
+            jobs.append(("artwork_generate", {
+                "video_id": video_id,
+                "offset_seconds": ARTWORK_GENERATION_OFFSET_SECONDS,
+                "only_if_artwork_invalid": True,
+                "file_path": stored_path,
+            }))
     return jobs
 
 

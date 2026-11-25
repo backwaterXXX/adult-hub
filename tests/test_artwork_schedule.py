@@ -199,6 +199,78 @@ class ArtworkScheduleDatabaseTests(PgTestCase):
         self.assertEqual([payload["video_id"] for _action, payload in jobs], ["telegram:transient"])
 
 
+class _OrderedConnection(FakeConnection):
+    """Fake connection that honours the two selection passes."""
+
+    def __init__(self, oldest_rows, newest_rows, tables=("videos", "synced_files")):
+        super().__init__(newest_rows, tables=tables)
+        self.oldest_rows = oldest_rows
+
+    def fetchall(self):
+        if "pg_catalog.pg_tables" in self._last_sql:
+            return [(name,) for name in self.tables]
+        if "first_seen ASC" in self._last_sql:
+            return self.oldest_rows
+        return self.rows
+
+
+class BacklogShareTest(unittest.TestCase):
+    """The legacy gap cohort must not be starved by newest-first selection."""
+
+    def _strm(self, media: Path, name: str) -> None:
+        (media / f"{name}.strm").write_text("stream", encoding="utf-8")
+
+    def test_half_of_the_batch_is_reserved_for_the_oldest_gaps(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media = Path(temp_dir)
+            oldest = []
+            newest = []
+            for index in range(6):
+                self._strm(media, f"old-{index}")
+                oldest.append((f"telegram:old-{index}", 600, f"old-{index}.strm"))
+                self._strm(media, f"new-{index}")
+                newest.append((f"telegram:new-{index}", 600, f"new-{index}.strm"))
+            conn = _OrderedConnection(oldest, newest)
+
+            jobs = build_artwork_generation_jobs(conn, media, limit=6, bumper_hashes=set())
+
+        ids = [payload["video_id"] for _action, payload in jobs]
+        self.assertEqual(len(ids), 6)
+        self.assertEqual(ids[:3], ["telegram:old-0", "telegram:old-1", "telegram:old-2"])
+        self.assertEqual(ids[3:], ["telegram:new-0", "telegram:new-1", "telegram:new-2"])
+
+    def test_overlapping_scans_do_not_queue_a_video_twice(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media = Path(temp_dir)
+            rows = []
+            for index in range(4):
+                self._strm(media, f"item-{index}")
+                rows.append((f"telegram:item-{index}", 600, f"item-{index}.strm"))
+            conn = _OrderedConnection(rows, rows)
+
+            jobs = build_artwork_generation_jobs(conn, media, limit=4, bumper_hashes=set())
+
+        ids = [payload["video_id"] for _action, payload in jobs]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(len(ids), 4)
+
+    def test_recent_pass_fills_the_batch_when_the_backlog_is_clean(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media = Path(temp_dir)
+            self._strm(media, "old-done")
+            Image.new("RGB", (80, 80), (120, 80, 35)).save(media / "old-done.jpg")
+            newest = []
+            for index in range(3):
+                self._strm(media, f"new-{index}")
+                newest.append((f"telegram:new-{index}", 600, f"new-{index}.strm"))
+            conn = _OrderedConnection([("telegram:old-done", 600, "old-done.strm")], newest)
+
+            jobs = build_artwork_generation_jobs(conn, media, limit=3, bumper_hashes=set())
+
+        ids = [payload["video_id"] for _action, payload in jobs]
+        self.assertEqual(ids, ["telegram:new-0", "telegram:new-1", "telegram:new-2"])
+
+
 class _AuditConnection:
     """Minimal connection double: records statements and serves the finding rows."""
 
