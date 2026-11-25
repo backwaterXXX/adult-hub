@@ -97,23 +97,14 @@ class LatestCursorTests(PgTestCase):
         from common.migrations import apply_migrations
         self.assertEqual(apply_migrations(self.db_url), [])
 
-    def test_legacy_upgrade_restarts_completed_history_only(self):
-        from common.migrations import apply_migrations
-        with self.conn:
-            self.conn.execute("INSERT INTO telegram_channel_state(channel_id,backfill_in_progress,backfill_cursor) VALUES ('other',1,42)")
-            self.conn.execute("DELETE FROM schema_migrations WHERE version > 1")
-            for column in ("latest_watermark", "latest_cursor", "latest_head"):
-                self.conn.execute(f"ALTER TABLE telegram_channel_state DROP COLUMN {column}")
-            self.conn.execute("INSERT INTO schema_migrations(version,name,applied_at) VALUES (53,'0053_visual_history',CURRENT_TIMESTAMP)")
-            # Historical migration records prove all preceding upgrades ran.
-            from common.migrations.legacy import POST_BASELINE_MIGRATIONS
-            for migration in POST_BASELINE_MIGRATIONS:
-                if migration.version < 53:
-                    self.conn.execute("INSERT INTO schema_migrations(version,name,applied_at) VALUES (%s,%s,CURRENT_TIMESTAMP)", (migration.version, migration.name))
-        # Derived from the chain, not written out: a migration registered after
-        # version 53 belongs in this expectation without editing the test.
-        self.assertEqual([item.version for item in apply_migrations(self.db_url)],
-                         [migration.version for migration in POST_BASELINE_MIGRATIONS
-                          if migration.version > 53])
-        rows = self.conn.execute("SELECT channel_id,backfill_in_progress,backfill_cursor FROM telegram_channel_state ORDER BY channel_id").fetchall()
-        self.assertEqual(rows, [(self.channel, 1, None), ("other", 1, 42)])
+    def test_baseline_carries_the_latest_cursor_columns(self):
+        # The cursor bookkeeping used to arrive with migration 0054; the squashed
+        # baseline owns it now, so a fresh database must have all three columns.
+        columns = {
+            row[0]
+            for row in self.conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = 'telegram_channel_state'"
+            ).fetchall()
+        }
+        self.assertLessEqual({"latest_watermark", "latest_cursor", "latest_head"}, columns)

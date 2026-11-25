@@ -15,7 +15,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 import resolver.admin_v2_phash as phash_api
-from common.migrations.m0028_phash_provenance import apply as apply_phash_provenance
 from pg_helper import PgTestCase
 
 
@@ -147,12 +146,6 @@ class ClientPhashIntakeTests(unittest.TestCase):
         self.assertEqual(result, "conflict")
         self.assertFalse(connection.committed)
         self.assertTrue(connection.rolled_back)
-
-    def test_migration_adds_a_provenance_record_per_video(self):
-        statements = []
-        apply_phash_provenance(type("Connection", (), {"execute": lambda _self, sql: statements.append(sql)})())
-        self.assertIn("video_phash_provenance", statements[0])
-        self.assertIn("submitted_by_user_id", statements[0])
 
 
 class ClientPhashStatusTests(unittest.TestCase):

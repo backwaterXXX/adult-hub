@@ -10,7 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VERSION="${1:-$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION" 2>/dev/null || echo "0.5.3")}"
+VERSION="${1:-$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION" 2>/dev/null || echo "0.6.0")}"
 SOURCE_DIR="${ROOT_DIR}/release/standalone"
 DIST_DIR="${ROOT_DIR}/dist"
 

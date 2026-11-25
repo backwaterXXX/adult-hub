@@ -206,7 +206,7 @@ To avoid PostgreSQL write amplification and database lock contention on high-fre
 - On first startup with multi-account code, if `telegram_accounts` is empty, `TelegramAccountStore` automatically registers the existing session file at `TELEGRAM_SESSION_PATH` as the `default` account. No re-login is required.
 
 ### Database Migration Safety
-- Table migration `m0066_telegram_accounts.py` (legacy v66, chain v18) creates `telegram_accounts` and `telegram_account_channels` idempotently.
+- The `telegram_accounts` and `telegram_account_channels` tables ship in the 0.6.0 schema baseline (they used to arrive with migration `m0066_telegram_accounts.py`).
 - No high-frequency operational metrics or streaming counters are written to PostgreSQL.
 - **Media IDs & Cursor Preservation**:
   - Cursors in `telegram_channel_state` (`latest_cursor`, `backfill_cursor`, `latest_watermark`) are invariant and shared.

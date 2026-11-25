@@ -439,20 +439,12 @@ class TestUsernameUniquenessSchema(unittest.TestCase):
         """Verify the exact UNIQUE index constraint idx_client_users_username exists on lower(username)."""
         # Resolve from this file so the check also works outside /app/adult-hub
         # (CI checks the repository out under a different absolute path).
-        migrations_dir = Path(__file__).resolve().parents[1] / "common" / "migrations"
-
-        migration_path = migrations_dir / "m0069_direct_play_user_state.py"
-        baseline_path = migrations_dir / "schema_baseline.sql"
-
-        migration_sql = migration_path.read_text(encoding="utf-8")
+        baseline_path = (
+            Path(__file__).resolve().parents[1] / "common" / "migrations" / "schema_baseline.sql"
+        )
         baseline_sql = baseline_path.read_text(encoding="utf-8")
 
-        # 1. Defined in migration m0069
-        self.assertIn("idx_client_users_username", migration_sql)
-        self.assertIn("CREATE UNIQUE INDEX IF NOT EXISTS idx_client_users_username", migration_sql)
-        self.assertIn("ON public.client_users (lower(username))", migration_sql)
-
-        # 2. Defined in schema_baseline.sql
+        # The squashed baseline is the only place the index is defined.
         self.assertIn("idx_client_users_username", baseline_sql)
         self.assertIn("CREATE UNIQUE INDEX IF NOT EXISTS idx_client_users_username", baseline_sql)
         self.assertIn("(lower(username))", baseline_sql)

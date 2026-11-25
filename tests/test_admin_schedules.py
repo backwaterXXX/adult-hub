@@ -9,7 +9,6 @@ from threading import Barrier
 
 from common import admin_schedules, system_schedules
 from common.admin_audit_events import list_change_events
-from common.migrations.m0055_duplicate_reconcile_opt_in import current_migration as reconcile_opt_in
 from tests.pg_helper import PgTestCase
 
 
@@ -428,10 +427,20 @@ class TestReconcileScheduleOptIn(PgTestCase):
 
     SCHEDULE_ID = "duplicate-reconcile"
 
+    def seed_schedule(self) -> None:
+        """Same row the baseline seeds: enabled state is an operator decision."""
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO admin_schedules (id,name,action,payload,schedule_type,interval_minutes,"
+                "timezone,enabled,revision,next_run_at) VALUES "
+                "(%s,'Duplicate reconciliation','duplicate_reconcile','{}','interval',15,"
+                "'Europe/Warsaw',FALSE,1,NULL) ON CONFLICT (id) DO NOTHING",
+                (self.SCHEDULE_ID,),
+            )
+
     def test_cron_edit_preserves_enabled_state_and_dispatches_without_private_config(self):
         now = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
-        with self.conn:
-            reconcile_opt_in.apply(self.conn)
+        self.seed_schedule()
         result = admin_schedules.set_reconcile_cron(self.db_url, self.SCHEDULE_ID, expression='0 3 * * *', revision=1, now=now)
         self.assertEqual(result['outcome'], 'updated')
         row = next(item for item in admin_schedules.list_schedules(self.db_url) if item['id'] == self.SCHEDULE_ID)
@@ -456,21 +465,6 @@ class TestReconcileScheduleOptIn(PgTestCase):
         self.assertEqual(admin_schedules.dispatch_due_schedules(self.db_url, now=now), 0)
         self.assertIsNone(self.row())
 
-    def test_migration_seeds_the_schedule_disabled_and_repeats_itself(self):
-        with self.conn:
-            reconcile_opt_in.apply(self.conn)
+    def test_seeded_schedule_starts_disabled(self):
+        self.seed_schedule()
         self.assertEqual(self.row(), (False, None, 1))
-        with self.conn:
-            reconcile_opt_in.apply(self.conn)
-        self.assertEqual(self.row(), (False, None, 1))
-
-    def test_migration_revokes_a_schedule_an_earlier_release_enabled(self):
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO admin_schedules (id,name,action,payload,schedule_type,interval_minutes,"
-                "timezone,enabled,revision,next_run_at) VALUES "
-                "(%s,'Duplicate reconciliation','duplicate_reconcile','{}','interval',15,"
-                "'Europe/Warsaw',TRUE,1,CURRENT_TIMESTAMP + INTERVAL '15 minutes')", (self.SCHEDULE_ID,))
-        with self.conn:
-            reconcile_opt_in.apply(self.conn)
-        self.assertEqual(self.row(), (False, None, 2))

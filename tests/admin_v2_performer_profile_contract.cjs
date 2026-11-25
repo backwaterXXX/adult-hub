@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const { adminV2Source } = require('./helpers/admin_v2_scripts.cjs');
 
 const script = adminV2Source();
-const migration = fs.readFileSync('common/migrations/m0040_performer_profile_overrides.py', 'utf8');
+const baseline = fs.readFileSync('common/migrations/schema_baseline.sql', 'utf8');
 
 assert.match(script, /id = 'personProfileBio'/, 'the details dialog exposes biography editing');
 assert.match(script, /id = 'personProfilePhoto'/, 'the details dialog exposes artwork URL editing');
@@ -26,11 +26,12 @@ assert.match(script, /profile\.pbc_url[\s\S]{0,120}PBC/,
   'the details dialog renders clickable link to PBC');
 assert.match(script, /\['Open in StashDB',\s*\['scene_match_url'\]\]/,
   'video detail renders StashDB scene match link');
-assert.match(migration, /CREATE TABLE IF NOT EXISTS performer_profile_overrides/,
+assert.match(baseline, /CREATE TABLE public\.performer_profile_overrides/,
   'manual values have revisioned storage separate from provider-owned fields');
-assert.match(migration, /DROP CONSTRAINT IF EXISTS admin_audit_events_event_type_check/,
-  'the migration replaces only the known audit event allowlist');
-assert.doesNotMatch(migration, /FOR constraint_row IN/, 'the migration must not drop unrelated audit constraints');
+assert.match(baseline, /performer_profile_overrides_revision_check/,
+  'manual values are revisioned so stale writes can be rejected');
+assert.match(baseline, /'performer_profile_update'::text/,
+  'the audit allowlist records performer profile updates');
 
 for (const providerPath of [
   'sync/pbc_backfill.py', 'sync/theporndb.py',

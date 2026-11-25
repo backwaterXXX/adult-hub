@@ -1,12 +1,9 @@
-"""Tests for versioned migrations and schema recreation engine."""
+"""Tests for the squashed migration baseline and schema recreation engine."""
 
 from __future__ import annotations
 
-import json
 import threading
 import unittest
-from datetime import datetime, timezone
-
 
 from common import db
 from common.migrations import (
@@ -19,10 +16,8 @@ from common.migrations import (
     recreate_database,
 )
 from common.migrations.base import Migration
-from common.migrations.legacy import LEGACY_MIGRATIONS, POST_BASELINE_MIGRATIONS
 from common.migrations.m0001_baseline import SCHEMA_BASELINE_SQL, migration as baseline
 from common.migrations.runner import (
-    POST_BASELINE_CEILING,
     _validate_active_migrations,
     ensure_schema_migrations_table,
 )
@@ -39,40 +34,10 @@ def _record(conn: db.Connection, version: int, name: str) -> None:
 
 def _drop_everything(conn: db.Connection) -> None:
     # Drop every table the schema actually holds, not just the managed list:
-    # other test modules create ad-hoc tables in this database, and comparing
-    # the baseline against the chain is only meaningful in a clean room.
+    # other test modules create ad-hoc tables in this database.
     with conn:
         for table in sorted(db.table_names(conn)):
             conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
-
-
-def build_pre_squash_schema(conn: db.Connection, *, through_version: int) -> None:
-    """Rebuild the schema a database had at `through_version` of the old chain.
-
-    The current baseline creates the whole schema in one step, so an interim
-    shape can only be produced by replaying the migrations that database would
-    have walked, recording history the same way the runner does.
-    """
-    _drop_everything(conn)
-    ensure_schema_migrations_table(conn)
-    with conn:
-        for migration in LEGACY_MIGRATIONS:
-            migration.apply(conn)
-            _record(conn, migration.version, migration.name)
-        conn.execute(f"DELETE FROM {SCHEMA_MIGRATIONS_TABLE}")
-        _record(conn, baseline.version, baseline.name)
-        for migration in POST_BASELINE_MIGRATIONS:
-            if migration.version > through_version:
-                break
-            migration.apply(conn)
-            _record(conn, migration.version, migration.name)
-
-
-def build_baseline_schema(conn: db.Connection) -> None:
-    """Create the schema from the squashed script without touching history."""
-    _drop_everything(conn)
-    with conn:
-        conn.execute(SCHEMA_BASELINE_SQL.read_text(encoding="utf-8"))
 
 
 SNAPSHOT_SQL = """
@@ -112,102 +77,67 @@ class TestActiveMigrationValidation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ordered by version"):
             _validate_active_migrations((self._migration(2), self._migration(1)))
 
-    def test_m0073_registration(self):
-        from common.migrations.m0073_performer_catalog_image import (
-            current_migration,
-            migration,
-        )
-        self.assertEqual(migration.version, 73)
-        self.assertEqual(migration.name, "0073_performer_catalog_image")
-        self.assertEqual(current_migration.version, 25)
-        self.assertEqual(current_migration.name, "0025_performer_catalog_image")
-        from common.migrations.runner import CURRENT_MIGRATIONS, MIGRATIONS
-        self.assertIn(current_migration, CURRENT_MIGRATIONS)
-        self.assertIn(current_migration, MIGRATIONS)
-
-    def test_m0072_registration(self):
-        from common.migrations.m0072_performer_lookup_indexes import (
-            current_migration,
-            migration,
-        )
-        self.assertEqual(migration.version, 72)
-        self.assertEqual(migration.name, "0072_performer_lookup_indexes")
-        self.assertEqual(current_migration.version, 24)
-        self.assertEqual(current_migration.name, "0024_performer_lookup_indexes")
-        from common.migrations.runner import CURRENT_MIGRATIONS, MIGRATIONS
-        self.assertIn(current_migration, CURRENT_MIGRATIONS)
-        self.assertIn(current_migration, MIGRATIONS)
-
-    def test_m0071_registration(self):
-        from common.migrations.m0071_telegram_sources_backfill import (
-            current_migration,
-            migration,
-        )
-        self.assertEqual(migration.version, 71)
-        self.assertEqual(migration.name, "0071_telegram_sources_backfill")
-        self.assertEqual(current_migration.version, 23)
-        self.assertEqual(current_migration.name, "0023_telegram_sources_backfill")
-        from common.migrations.runner import CURRENT_MIGRATIONS, MIGRATIONS
-        self.assertIn(current_migration, CURRENT_MIGRATIONS)
-        self.assertIn(current_migration, MIGRATIONS)
+    def test_chain_is_the_single_squashed_baseline(self):
+        self.assertEqual([migration.version for migration in MIGRATIONS], [1])
+        self.assertEqual(MIGRATIONS[0].name, "0001_baseline")
+        self.assertIs(MIGRATIONS[0], baseline)
 
 
 class TestMigrationsEngine(PgTestCase):
-    # Snapshot of the squashed schema, taken once per class by setUp.
-    baseline_reference: set[tuple[str, str, str]] | None = None
-
-    def setUp(self):
-        super().setUp()
-        if type(self).baseline_reference is None:
-            build_baseline_schema(self.conn)
-            type(self).baseline_reference = schema_snapshot(self.conn)
-        self.baseline_reference = type(self).baseline_reference
-
-    def test_migration_status_and_full_application(self):
-        # 1. Recreate clean test database from the squashed baseline and its forward upgrades.
+    def test_fresh_database_applies_one_baseline_and_is_then_up_to_date(self):
         applied = recreate_database(self.conn)
-        self.assertEqual([m.version for m in applied], [m.version for m in MIGRATIONS])
+        self.assertEqual([m.version for m in applied], [1])
+        self.assertEqual(applied[0].name, "0001_baseline")
 
-        # 2. Status should report up to date
         status = get_migration_status(self.conn)
         self.assertTrue(status.is_up_to_date)
-        self.assertEqual(status.current_version, MIGRATIONS[-1].version)
-        self.assertEqual(len(status.pending), 0)
-        self.assertEqual(len(status.applied), len(MIGRATIONS))
+        self.assertEqual(status.current_version, 1)
+        self.assertEqual(status.pending, [])
 
-        # 3. Check schema_migrations table contents
-        applied_records = get_applied_migrations(self.conn)
-        self.assertEqual([r.version for r in applied_records], [m.version for m in MIGRATIONS])
-        self.assertEqual(applied_records[0].name, "0001_baseline")
+        records = get_applied_migrations(self.conn)
+        self.assertEqual([(r.version, r.name) for r in records], [(1, "0001_baseline")])
 
-        # 4. Check that all expected application tables exist in PostgreSQL
         existing_tables = db.table_names(self.conn)
-        for tbl in APPLICATION_TABLES:
-            self.assertIn(tbl, existing_tables, f"Table {tbl} must exist")
+        for table in APPLICATION_TABLES:
+            self.assertIn(table, existing_tables, f"Table {table} must exist")
         self.assertIn(SCHEMA_MIGRATIONS_TABLE, existing_tables)
-        for table in (
-            "video_performers", "video_performer_migration_issues",
-            "video_metadata_migration_issues", "performer_bio_migration_issues",
-        ):
-            self.assertIn(table, existing_tables)
+
+    def test_baseline_script_covers_every_application_table(self):
+        _drop_everything(self.conn)
+        self.addCleanup(recreate_database, self.conn)
+        with self.conn:
+            self.conn.execute(SCHEMA_BASELINE_SQL.read_text(encoding="utf-8"))
+        created = set(db.table_names(self.conn)) - {SCHEMA_MIGRATIONS_TABLE}
+        self.assertEqual(created, set(APPLICATION_TABLES))
+
+    def test_baseline_seeds_the_reconcile_schedule_disabled(self):
+        recreate_database(self.conn)
+        row = self.conn.execute(
+            "SELECT enabled, next_run_at, revision, action FROM admin_schedules "
+            "WHERE id = 'duplicate-reconcile'"
+        ).fetchone()
+        self.assertEqual(row[0], False)
+        self.assertIsNone(row[1])
+        self.assertEqual(row[2], 1)
+        self.assertEqual(row[3], "duplicate_reconcile")
 
     def test_apply_migrations_is_idempotent(self):
         recreate_database(self.conn)
-        # Calling apply_migrations again should be a no-op
-        second_run = apply_migrations(self.conn)
-        self.assertEqual(second_run, [])
+        self.assertEqual(apply_migrations(self.conn), [])
+        self.assertTrue(get_migration_status(self.conn).is_up_to_date)
 
-        status = get_migration_status(self.conn)
-        self.assertTrue(status.is_up_to_date)
-        self.assertEqual(status.current_version, MIGRATIONS[-1].version)
+    def test_apply_migrations_on_an_empty_database_stamps_the_baseline(self):
+        _drop_everything(self.conn)
+        self.addCleanup(recreate_database, self.conn)
+        applied = apply_migrations(self.conn)
+        self.assertEqual([m.version for m in applied], [1])
 
     def test_concurrent_apply_migrations_is_serialized(self):
         # Containers starting together may both call apply_migrations on an
         # empty database; the advisory lock must keep the second writer from
         # hitting a duplicate-key insert in schema_migrations.
-        with self.conn:
-            for tbl in (*APPLICATION_TABLES, SCHEMA_MIGRATIONS_TABLE):
-                self.conn.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE")
+        _drop_everything(self.conn)
+        self.addCleanup(recreate_database, self.conn)
 
         results: list[list] = []
         errors: list[BaseException] = []
@@ -219,570 +149,99 @@ class TestMigrationsEngine(PgTestCase):
                 errors.append(exc)
 
         threads = [threading.Thread(target=worker) for _ in range(2)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=120)
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=120)
 
         self.assertEqual(errors, [])
-        counts = sorted(len(r) for r in results)
-        self.assertEqual(counts, [0, len(MIGRATIONS)])
-        rows = self.conn.execute(
-            f"SELECT version, COUNT(*) FROM {SCHEMA_MIGRATIONS_TABLE} GROUP BY version HAVING COUNT(*) > 1"
+        self.assertEqual(sorted(len(result) for result in results), [0, 1])
+        duplicate_rows = self.conn.execute(
+            f"SELECT version, COUNT(*) FROM {SCHEMA_MIGRATIONS_TABLE} "
+            "GROUP BY version HAVING COUNT(*) > 1"
         ).fetchall()
-        self.assertEqual(rows, [])
+        self.assertEqual(duplicate_rows, [])
 
-    def test_target_version_migration(self):
-        # Drop all tables first
-        with self.conn:
-            for tbl in (*APPLICATION_TABLES, SCHEMA_MIGRATIONS_TABLE):
-                self.conn.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE")
-
-        # Explicit old targets remain available for historical upgrade paths.
-        applied_part1 = apply_migrations(self.conn, target_version=2)
-        self.assertEqual([m.version for m in applied_part1], [1, 2])
-
-        status_part1 = get_migration_status(self.conn)
-        self.assertFalse(status_part1.is_up_to_date)
-        self.assertEqual(status_part1.current_version, 2)
-        self.assertEqual([m.version for m in status_part1.pending], list(range(3, 9)) + [1] + list(range(10, POST_BASELINE_CEILING + 1)))
-
-        # Complete remaining migrations
-        applied_part2 = apply_migrations(self.conn)
-        self.assertEqual([m.version for m in applied_part2], list(range(3, 9)) + [1] + list(range(10, POST_BASELINE_CEILING + 1)))
-
-        status_final = get_migration_status(self.conn)
-        self.assertTrue(status_final.is_up_to_date)
-        self.assertEqual(status_final.current_version, POST_BASELINE_CEILING)
-
-    def test_partial_target_is_refused_when_baseline_builds_the_schema(self):
-        # The squashed baseline has no intermediate shape to stop at, so a
-        # partial target on a fresh database would record version 1 while the
-        # schema is already current. Saying no beats pretending otherwise.
+    def test_target_version_lower_than_the_baseline_selects_nothing(self):
         _drop_everything(self.conn)
         self.addCleanup(recreate_database, self.conn)
-        with self.assertRaisesRegex(ValueError, "cannot be honoured"):
-            apply_migrations(self.conn, target_version=40)
-        self.assertEqual(get_applied_migrations(self.conn), [])
+        self.assertEqual(apply_migrations(self.conn, target_version=0), [])
+        self.assertFalse(get_migration_status(self.conn).is_up_to_date)
+        self.assertEqual([m.version for m in apply_migrations(self.conn, target_version=1)], [1])
 
     def test_recreate_database_clears_old_data_and_reapplies(self):
         recreate_database(self.conn)
         with self.conn:
-            self.conn.execute("INSERT INTO videos (id, title, duration) VALUES ('v-test-1', 'Test Video', 600)")
+            self.conn.execute(
+                "INSERT INTO videos (id, title, duration) VALUES ('v-test-1', 'Test Video', 600)")
+        self.assertIsNotNone(
+            self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone())
 
-        row = self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone()
-        self.assertEqual(row[0], "v-test-1")
-        self.conn.commit()
-
-        # Recreate should wipe data and rebuild clean schema
         applied = recreate_database(self.conn)
-        self.assertEqual(len(applied), len(MIGRATIONS))
+        self.assertEqual([m.version for m in applied], [1])
+        self.assertIsNone(
+            self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone())
 
-        row_after = self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone()
-        self.assertIsNone(row_after)
-
-    def test_baseline_script_matches_the_squashed_migration_chain(self):
-        """The two ways of reaching the current schema must agree exactly."""
-        build_pre_squash_schema(self.conn, through_version=POST_BASELINE_CEILING)
-        chain_schema = schema_snapshot(self.conn)
-        build_baseline_schema(self.conn)
-        baseline_schema = schema_snapshot(self.conn)
-
-        only_chain = {f"{kind}:{name}" for kind, name, _ in chain_schema - baseline_schema}
-        only_baseline = {f"{kind}:{name}" for kind, name, _ in baseline_schema - chain_schema}
-        self.assertEqual(only_chain, set())
-        self.assertEqual(only_baseline, set())
-
-    def test_baseline_script_covers_every_application_table(self):
-        build_baseline_schema(self.conn)
-        created = set(db.table_names(self.conn)) - {SCHEMA_MIGRATIONS_TABLE}
-        self.assertEqual(created, set(APPLICATION_TABLES))
-
-    def test_recorded_old_chain_is_up_to_date_without_replaying_ddl(self):
-        build_pre_squash_schema(self.conn, through_version=POST_BASELINE_CEILING)
-        with self.conn:
-            self.conn.execute("INSERT INTO videos (id, title, duration) VALUES ('v-old', 'Old', 600)")
-        status = get_migration_status(self.conn)
-        self.assertTrue(status.is_up_to_date)
-        self.assertEqual(status.pending, [])
-        self.assertEqual(apply_migrations(self.conn), [])
-        self.assertEqual(
-            self.conn.execute("SELECT title FROM videos WHERE id = 'v-old'").fetchone()[0], "Old"
-        )
-
-    def test_lagging_old_chain_upgrades_only_the_missing_versions(self):
-        build_pre_squash_schema(self.conn, through_version=30)
-        status = get_migration_status(self.conn)
-        self.assertEqual(
-            [migration.version for migration in status.pending],
-            [migration.version for migration in POST_BASELINE_MIGRATIONS if migration.version > 30],
-        )
-        applied = apply_migrations(self.conn)
-        self.assertEqual([migration.version for migration in applied], list(range(31, POST_BASELINE_CEILING + 1)))
-        self.assertEqual(schema_snapshot(self.conn), self.baseline_reference)
-
-    def test_existing_schema_without_history_is_refused(self):
-        # Losing schema_migrations must not let the runner declare an unknown
-        # schema current, because the squashed chain is not safe to replay.
-        build_pre_squash_schema(self.conn, through_version=30)
+    def test_database_with_tables_and_no_history_is_refused(self):
+        # A pre-0.6.0 database, or one that lost schema_migrations, must not be
+        # stamped as current: the numbered chain it needs no longer exists.
+        _drop_everything(self.conn)
         self.addCleanup(recreate_database, self.conn)
         with self.conn:
-            self.conn.execute("INSERT INTO videos (id, title, duration) VALUES ('v-lost', 'Lost', 600)")
-            self.conn.execute(f"DELETE FROM {SCHEMA_MIGRATIONS_TABLE}")
-        with self.assertRaisesRegex(RuntimeError, "history cannot be trusted"):
+            self.conn.execute("CREATE TABLE videos (id text PRIMARY KEY)")
+
+        with self.assertRaisesRegex(RuntimeError, "predates the 0.6.0 squash"):
             get_migration_status(self.conn)
-        with self.assertRaisesRegex(RuntimeError, "history cannot be trusted"):
+        with self.assertRaisesRegex(RuntimeError, "predates the 0.6.0 squash"):
             apply_migrations(self.conn)
+        # Nothing but the hand-made probe and the bookkeeping table survives.
+        self.assertEqual(
+            sorted(db.table_names(self.conn)),
+            ["schema_migrations", "videos"],
+        )
 
-    def test_interrupted_pre_squash_install_resumes_the_chain(self):
-        # An install that recorded the baseline and died before the chain ended
-        # holds no data, so finishing it is safe rather than something to refuse.
-        build_pre_squash_schema(self.conn, through_version=0)
-        with self.conn:
-            self.conn.execute(f"DELETE FROM {SCHEMA_MIGRATIONS_TABLE}")
-            _record(self.conn, baseline.version, baseline.name)
-        applied = apply_migrations(self.conn)
-        self.assertEqual([migration.version for migration in applied], list(range(10, POST_BASELINE_CEILING + 1)))
-        self.assertEqual(schema_snapshot(self.conn), self.baseline_reference)
-
-    def test_current_schema_without_history_is_stamped_not_replayed(self):
-        build_baseline_schema(self.conn)
-        applied = apply_migrations(self.conn)
-        self.assertEqual([migration.version for migration in applied], [m.version for m in MIGRATIONS])
-        self.assertTrue(get_migration_status(self.conn).is_up_to_date)
-
-    def test_current_schema_without_history_over_data_is_refused(self):
-        # Replaying CURRENT_MIGRATIONS is not a no-op: it resets Telegram
-        # backfill, disables duplicate reconciliation and rewrites schedules.
-        # Losing schema_migrations on a populated hub must abort instead.
-        build_baseline_schema(self.conn)
+    def test_database_with_old_history_but_no_baseline_is_refused(self):
+        _drop_everything(self.conn)
         self.addCleanup(recreate_database, self.conn)
         with self.conn:
-            self.conn.execute(
-                "INSERT INTO videos (id, title, duration) VALUES ('v-lost', 'Lost', 600)")
-        with self.assertRaisesRegex(RuntimeError, "history cannot be trusted"):
-            get_migration_status(self.conn)
-        with self.assertRaisesRegex(RuntimeError, "history cannot be trusted"):
+            self.conn.execute("CREATE TABLE videos (id text PRIMARY KEY)")
+            ensure_schema_migrations_table(self.conn)
+            _record(self.conn, 40, "0040_performer_profile_overrides")
+
+        with self.assertRaisesRegex(RuntimeError, "predates the 0.6.0 squash"):
             apply_migrations(self.conn)
         self.assertEqual(
-            self.conn.execute("SELECT title FROM videos WHERE id = 'v-lost'").fetchone()[0],
-            "Lost",
-        )
-        self.assertEqual(
-            self.conn.execute(f"SELECT count(*) FROM {SCHEMA_MIGRATIONS_TABLE}").fetchone()[0], 0
+            [row[0] for row in self.conn.execute(
+                f"SELECT version FROM {SCHEMA_MIGRATIONS_TABLE}").fetchall()],
+            [40],
         )
 
-    def test_existing_v8_database_is_squashed_without_rewriting_data(self):
-        recreate_database(self.conn, target_version=8)
-        self.conn.execute(
-            "INSERT INTO videos (id, title, performers, first_seen) VALUES (%s, %s, %s, %s)",
-            ("existing:v8", "Keep me", "[]", 1_700_000_000),
-        )
-        self.conn.commit()
+    def test_recorded_baseline_without_tables_rebuilds_the_schema(self):
+        # A stale history row is metadata, not a promise: a dropped schema is
+        # recreated rather than reported as up to date.
+        _drop_everything(self.conn)
+        self.addCleanup(recreate_database, self.conn)
+        ensure_schema_migrations_table(self.conn)
+        with self.conn:
+            _record(self.conn, 1, "0001_baseline")
 
-        applied = apply_migrations(self.conn)
-
-        self.assertEqual([record.version for record in applied], [1] + list(range(10, POST_BASELINE_CEILING + 1)))
-        row = self.conn.execute(
-            "SELECT title, EXTRACT(EPOCH FROM first_seen) FROM videos WHERE id = %s",
-            ("existing:v8",),
-        ).fetchone()
-        self.assertEqual(row[0], "Keep me")
-        self.assertEqual(float(row[1]), 1_700_000_000)
         self.assertTrue(get_migration_status(self.conn).is_up_to_date)
-        records = get_applied_migrations(self.conn)
-        self.assertEqual([(record.version, record.name) for record in records], [
-            (1, "0001_baseline"), (10, "0010_admin_operation_plans"), (11, "0011_video_metadata_overrides"),
-            (12, "0012_video_availability_checks"), (13, "0013_admin_audit_items"),
-            (14, "0014_admin_schedules"), (15, "0015_admin_audit_nfo_findings"),
-            (16, "0016_admin_audit_jellyfin_state"), (17, "0017_admin_audit_artwork"),
-            (18, "0018_admin_action_events"), (19, "0019_admin_change_events"),
-            (20, "0020_admin_audit_operations_schedules"), (21, "0021_performer_catalog"),
-            (22, "0022_telegram_performer_rebuild_backup"), (23, "0023_admin_quality_center"),
-            (24, "0024_admin_orphan_quarantine"), (25, "0025_admin_quality_acknowledgements"),
-            (26, "0026_external_metadata_attempts"), (27, "0027_video_fingerprints"),
-            (28, "0028_phash_provenance"), (29, "0029_oshash_media_probe"),
-            (30, "0030_video_duplicate_decision_operation_index"),
-            (31, "0031_video_scene_match_provenance"),
-            (32, "0032_history_retention_indexes"),
-            (33, "0033_video_duplicate_rules_provenance"),
-            (34, "0034_video_phash_thumbnails"),
-            (35, "0035_fuzzy_performer_reviews"),
-            (36, "0036_metadata_review_proposals"), (37, "0037_video_phash_jobs"),
-            (38, "0038_video_phash_job_processing_time"),
-            (39, "0039_drop_fuzzy_performer_reviews"),
-            (40, "0040_performer_profile_overrides"),
-            (41, "0041_performer_external_links"),
-            (42, "0042_telegram_performer_resolution"),
-            (43, "0043_telegram_unavailable_quarantine"),
-            (44, "0044_minimum_video_duration"),
-            (45, "0045_external_metadata_error_detail"),
-            (46, "0046_drop_stream_probe_columns"),
-            (47, "0047_video_file_size"),
-            (48, "0048_video_phash_job_error_detail"),
-            (49, "0049_catalog_automation"),
-            (50, "0050_duplicate_reconcile_schedule"),
-            (51, "0051_video_visual_duplicates"),
-            (52, "0052_video_visual_timestamps"),
-            (53, "0053_visual_history"),
-            (54, "0054_telegram_latest_cursor"),
-            (55, "0055_duplicate_reconcile_opt_in"),
-            (56, "0056_performer_alias_canonical_index"),
-            (57, "0057_split_phash_jobs"),
-            (58, "0058_cron_schedules"),
-            (59, "0059_metadata_proposal_retries"),
-            (60, "0060_video_job_lease_token"),
-            (61, "0061_schedule_stages"),
-            (62, "0062_artwork_generation_schedule"),
-            (63, "0063_source_removal_indexes"),
-            (64, "0064_video_duplicate_decisions_evidence"),
-            (65, "0065_system_schedules_last_job_id"),
-            (66, "0066_telegram_accounts"),
-            (67, "0067_scene_fingerprints_schedule"),
-            (68, "0068_phash_generation_schedule"),
-            (69, "0069_direct_play_user_state"),
-            (70, "0070_client_auth"),
-            (71, "0071_telegram_sources_backfill"),
-            (72, "0072_performer_lookup_indexes"),
-            (73, "0073_performer_catalog_image"),
-            (74, "0074_drop_jellyfin_person_sync"),
-            (75, "0075_drop_nfo_audit_kinds"),
-            (76, "0076_prune_superseded_audit_findings"),
-            (77, "0077_remove_dangling_synced_files"),
-        ])
-
-    def test_interim_v9_baseline_is_renumbered_to_v1(self):
-        # A database from the interim-baseline era: version 9 recorded, then the
-        # whole chain walked on top of it.
-        build_pre_squash_schema(self.conn, through_version=POST_BASELINE_CEILING)
-        self.conn.execute(
-            "INSERT INTO videos (id, title, duration) VALUES (%s, %s, 600)",
-            ("existing:v9", "Keep interim data"),
-        )
-        self.conn.execute(
-            "UPDATE schema_migrations SET version = 9, name = '0009_baseline' WHERE version = 1"
-        )
-        self.conn.commit()
-
-        applied = apply_migrations(self.conn)
-
-        # The interim baseline only needs renumbering. Later migrations are
-        # already recorded and must not be replayed over the current schema.
-        self.assertEqual([record.version for record in applied], [1])
-        row = self.conn.execute(
-            "SELECT title FROM videos WHERE id = %s", ("existing:v9",)
-        ).fetchone()
-        self.assertEqual(row[0], "Keep interim data")
-        records = get_applied_migrations(self.conn)
-        self.assertEqual([(record.version, record.name) for record in records], [
-            (1, "0001_baseline"),
-        ])
-
-    def test_admin_audit_extension_preserves_existing_rows_and_accepts_new_types(self):
-        from psycopg.types.json import Jsonb
-
-        build_pre_squash_schema(self.conn, through_version=19)
-        self.conn.execute(
-            "ALTER TABLE admin_audit_events RENAME CONSTRAINT admin_audit_events_event_type_check TO legacy_event_guard"
-        )
-        self.conn.execute(
-            "ALTER TABLE admin_audit_events RENAME CONSTRAINT admin_audit_events_object_type_check TO legacy_object_guard"
-        )
-        self.conn.execute(
-            "INSERT INTO admin_audit_events (event_key,event_type,object_type,object_id,changes) "
-            "VALUES ('existing-source-event','source_settings_update','source_configuration','managed_sources',%s)",
-            (Jsonb({"telegram.channels.-1001.studio": {"before": "Old", "after": "New"}}),),
-        )
-        self.conn.commit()
-        apply_migrations(self.conn)
-
-        existing = self.conn.execute(
-            "SELECT event_type,changes FROM admin_audit_events WHERE event_key='existing-source-event'"
-        ).fetchone()
-        self.assertEqual(existing[0], "source_settings_update")
-        existing_changes = existing[1] if isinstance(existing[1], dict) else json.loads(existing[1])
-        self.assertEqual(existing_changes["telegram.channels.-1001.studio"]["after"], "New")
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO admin_audit_events (event_key,event_type,object_type,object_id,changes) "
-                "VALUES ('operation-event','admin_operation_queued','operation_plan','plan-1',%s)",
-                (Jsonb({"state": {"before": "previewed", "after": "queued"}}),),
-            )
-            self.conn.execute(
-                "INSERT INTO admin_audit_events (event_key,event_type,object_type,object_id,changes) "
-                "VALUES ('schedule-event','schedule_created','schedule','schedule-1',%s)",
-                (Jsonb({"enabled": {"before": None, "after": True}}),),
-            )
-        from psycopg.errors import CheckViolation
-        with self.assertRaises(CheckViolation):
-            self.conn.execute(
-                "INSERT INTO admin_audit_events (event_key,event_type,object_type,object_id,changes) "
-                "VALUES ('invalid-event','unsupported_type','schedule','schedule-2',%s)",
-                (Jsonb({"enabled": {"before": None, "after": True}}),),
-            )
-        self.conn.rollback()
-
-    def test_new_migrations_preserve_auditable_metadata_and_convert_times(self):
-        recreate_database(self.conn, target_version=6)
-        self.addCleanup(apply_migrations, self.conn)
-        # Seed historical v6 data without the v8 epoch compatibility adapter.
-        self.conn._raw.execute(
-            "INSERT INTO videos (id, provider, title, performers, categories, tags, first_seen, last_seen, performers_audited_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            ("test:ordered", "test", "Ordered", '["A", "a", "B"]',
-             '["Drama", "Anal"]', '["tag"]', 1_700_000_000, 1_700_000_001,
-             1_700_000_000_000_000_000),
-        )
-        self.conn._raw.execute(
-            "INSERT INTO videos (id, provider, title, performers) VALUES (%s, %s, %s, %s)",
-            ("test:malformed", "test", "Malformed", "legacy malformed performers"),
-        )
-        self.conn._raw.execute(
-            "INSERT INTO performer_bios (name, aliases) VALUES (%s, %s)",
-            ("A", "legacy malformed aliases"),
-        )
-        self.conn.commit()
-
-        apply_migrations(self.conn)
-
-        columns = {
-            (row[0], row[1]): row[2]
-            for row in self.conn.execute(
-                "SELECT table_name, column_name, data_type FROM information_schema.columns "
-                "WHERE table_schema = current_schema() AND table_name IN ('videos', 'performer_bios')"
-            ).fetchall()
-        }
-        self.assertEqual(columns[("videos", "performers")], "jsonb")
-        self.assertEqual(columns[("performer_bios", "aliases")], "jsonb")
-        self.assertEqual(columns[("videos", "first_seen")], "timestamp with time zone")
-
-        credits = self.conn.execute(
-            "SELECT performer_name, position FROM video_performers "
-            "WHERE video_id = %s ORDER BY position", ("test:ordered",)
-        ).fetchall()
-        self.assertEqual(credits, [("A", 0), ("a", 1), ("B", 2)])
-        duplicate = self.conn.execute(
-            "SELECT occurrences, source_names, source_positions "
-            "FROM video_performer_migration_issues WHERE video_id = %s AND performer_key = %s",
-            ("test:ordered", "a"),
-        ).fetchone()
-        self.assertEqual(duplicate[0], 2)
-        self.assertEqual(json.loads(duplicate[1]), ["A", "a"])
-        self.assertEqual(duplicate[2], [0, 1])
-        self.assertEqual(
-            self.conn.execute(
-                "SELECT original_value FROM video_metadata_migration_issues "
-                "WHERE video_id = %s AND field_name = 'performers'", ("test:malformed",)
-            ).fetchone()[0],
-            "legacy malformed performers",
-        )
-        self.assertEqual(
-            self.conn.execute(
-                "SELECT original_aliases FROM performer_bio_migration_issues WHERE name = %s", ("A",)
-            ).fetchone()[0],
-            "legacy malformed aliases",
-        )
-        epoch = self.conn.execute(
-            "SELECT EXTRACT(EPOCH FROM first_seen) FROM videos WHERE id = %s", ("test:ordered",)
-        ).fetchone()[0]
-        self.assertEqual(float(epoch), 1_700_000_000)
-        audited_epoch = self.conn.execute(
-            "SELECT EXTRACT(EPOCH FROM performers_audited_at) FROM videos WHERE id = %s",
-            ("test:ordered",),
-        ).fetchone()[0]
-        self.assertEqual(float(audited_epoch), 1_700_000_000)
-
-    def test_m0041_performer_external_links_columns_and_backfill(self):
-        build_pre_squash_schema(self.conn, through_version=40)
-        self.conn.execute("INSERT INTO performer_bios (name, bio) VALUES ('Test Star', 'A bio')")
-        self.conn.execute(
-            "INSERT INTO performer_catalog (id, source, source_id, name) VALUES ('stashdb:uuid-123', 'stashdb', 'uuid-123', 'Test Star')"
-        )
-        self.conn.commit()
-
-        apply_migrations(self.conn)
-
-        row = self.conn.execute("SELECT stashdb_url, pbc_url FROM performer_bios WHERE name = 'Test Star'").fetchone()
-        self.assertEqual(row[0], "https://stashdb.org/performers/uuid-123")
-        self.assertEqual(row[1], "")
-
-    def test_m0071_telegram_sources_backfill(self):
-        build_pre_squash_schema(self.conn, through_version=70)
-        t_first_seen = int(datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc).timestamp())
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO videos (id, provider, title, duration, first_seen) VALUES (%s, %s, %s, %s, %s)",
-                ("telegram:-100123:42:1", "telegram", "Tg Canonical 1", 600, t_first_seen),
-            )
-            self.conn.execute(
-                "INSERT INTO videos (id, provider, title, duration, first_seen) VALUES (%s, %s, %s, %s, %s)",
-                ("telegram:-5:99:2", "telegram", "Tg Canonical 2", 600, None),
-            )
-            self.conn.execute(
-                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, %s, %s, %s)",
-                ("telegram:-100123:42", "telegram", "Tg Non-canonical", 600),
-            )
-            self.conn.execute(
-                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, %s, %s, %s)",
-                ("web:site:1:1", "web", "Web Video", 600),
-            )
-            self.conn.execute(
-                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, %s, %s, %s)",
-                ("telegram:-100456:77:3", "telegram", "Tg With Source", 600),
-            )
-            self.conn.execute(
-                "INSERT INTO video_sources (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)",
-                ("telegram:-100456:77:3", "telegram:-100456:77:3", "telegram", "custom_ref", "https://custom.url", "-100456", 3, 0),
-            )
-            self.conn.execute(
-                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, %s, %s, %s)",
-                ("telegram:-100789:88:4", "telegram", "Tg With Alt Source", 600),
-            )
-            self.conn.execute(
-                "INSERT INTO video_sources (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)",
-                ("telegram:-100789:88:4", "telegram:-100999:11:9", "telegram", "alt_ref", "https://alt.url", "-100999", 1, 1),
-            )
-            # Case 2: source row already owns source_id == videos.id for donor video, but video_id points at recipient
-            self.conn.execute(
-                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, %s, %s, %s)",
-                ("telegram:-100333:55:5", "telegram", "Tg Donor Video", 600),
-            )
-            self.conn.execute(
-                "INSERT INTO videos (id, provider, title, duration) VALUES (%s, %s, %s, %s)",
-                ("telegram:-100333:55:6", "telegram", "Tg Recipient Video", 600),
-            )
-            self.conn.execute(
-                "INSERT INTO video_sources (video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)",
-                ("telegram:-100333:55:6", "telegram:-100333:55:5", "telegram", "attached_ref", "https://custom.donor.url", "-100333", 2, 1),
-            )
-
-        apply_migrations(self.conn)
-
-        row1 = self.conn.execute(
-            "SELECT video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at "
-            "FROM video_sources WHERE video_id = %s AND source_id = %s",
-            ("telegram:-100123:42:1", "telegram:-100123:42:1"),
-        ).fetchone()
-        self.assertIsNotNone(row1)
-        self.assertEqual(row1[:8], (
-            "telegram:-100123:42:1", "telegram:-100123:42:1", "telegram", "telegram:-100123:42:1",
-            "https://t.me/c/123/42", "-100123", 1, 1,
-        ))
-        self.assertEqual(row1[8], t_first_seen)
-
-        row2 = self.conn.execute(
-            "SELECT video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at "
-            "FROM video_sources WHERE video_id = %s AND source_id = %s",
-            ("telegram:-5:99:2", "telegram:-5:99:2"),
-        ).fetchone()
-        self.assertIsNotNone(row2)
-        self.assertEqual(row2[:8], (
-            "telegram:-5:99:2", "telegram:-5:99:2", "telegram", "telegram:-5:99:2",
-            "", "-5", 1, 1,
-        ))
-        self.assertIsNotNone(row2[8])
-
-        self.assertIsNone(self.conn.execute(
-            "SELECT 1 FROM video_sources WHERE video_id = %s", ("telegram:-100123:42",)
-        ).fetchone())
-
-        self.assertIsNone(self.conn.execute(
-            "SELECT 1 FROM video_sources WHERE video_id = %s", ("web:site:1:1",)
-        ).fetchone())
-
-        row5 = self.conn.execute(
-            "SELECT provider_ref, source_url, priority, is_active "
-            "FROM video_sources WHERE video_id = %s AND source_id = %s",
-            ("telegram:-100456:77:3", "telegram:-100456:77:3"),
-        ).fetchone()
-        self.assertEqual(row5, ("custom_ref", "https://custom.url", 3, 0))
-
-        # Regression: existing alternate source at priority 1 is preserved unchanged, no competing primary source created
-        sources6 = self.conn.execute(
-            "SELECT source_id, priority, is_active FROM video_sources WHERE video_id = %s ORDER BY priority",
-            ("telegram:-100789:88:4",),
-        ).fetchall()
-        self.assertEqual(len(sources6), 1)
-        self.assertEqual(sources6[0], ("telegram:-100999:11:9", 1, 1))
-        self.assertIsNone(self.conn.execute(
-            "SELECT 1 FROM video_sources WHERE video_id = %s AND source_id = %s",
-            ("telegram:-100789:88:4", "telegram:-100789:88:4"),
-        ).fetchone())
-        row_alt = self.conn.execute(
-            "SELECT provider_ref, source_url, channel_id, priority, is_active "
-            "FROM video_sources WHERE video_id = %s AND source_id = %s",
-            ("telegram:-100789:88:4", "telegram:-100999:11:9"),
-        ).fetchone()
-        self.assertEqual(row_alt, ("alt_ref", "https://alt.url", "-100999", 1, 1))
-
-        # Donor source row owned by recipient video is preserved; donor has no fabricated source
-        row_attached = self.conn.execute(
-            "SELECT video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active "
-            "FROM video_sources WHERE source_id = %s",
-            ("telegram:-100333:55:5",),
-        ).fetchone()
-        self.assertEqual(row_attached, (
-            "telegram:-100333:55:6", "telegram:-100333:55:5", "telegram", "attached_ref",
-            "https://custom.donor.url", "-100333", 2, 1,
-        ))
-        self.assertIsNone(self.conn.execute(
-            "SELECT 1 FROM video_sources WHERE video_id = %s",
-            ("telegram:-100333:55:5",),
-        ).fetchone())
-        recipient_sources = self.conn.execute(
-            "SELECT source_id, priority, is_active FROM video_sources WHERE video_id = %s ORDER BY priority",
-            ("telegram:-100333:55:6",),
-        ).fetchall()
-        self.assertEqual(len(recipient_sources), 1)
-        self.assertEqual(recipient_sources[0], ("telegram:-100333:55:5", 2, 1))
-        self.assertIsNone(self.conn.execute(
-            "SELECT 1 FROM video_sources WHERE video_id = %s AND source_id = %s",
-            ("telegram:-100333:55:6", "telegram:-100333:55:6"),
-        ).fetchone())
-
-        # Idempotency regression: apply migration directly a second time and compare rows
-        source_query = (
-            "SELECT video_id, source_id, provider, provider_ref, source_url, channel_id, priority, is_active, created_at "
-            "FROM video_sources ORDER BY video_id, source_id"
-        )
-        sources_before = self.conn.execute(source_query).fetchall()
-
-        from common.migrations.m0071_telegram_sources_backfill import migration as m0071
-        with self.conn:
-            m0071.apply(self.conn)
-
-        sources_after = self.conn.execute(source_query).fetchall()
-        self.assertEqual(sources_before, sources_after)
+        self.assertEqual(recreate_database(self.conn)[0].version, 1)
+        self.assertIn("videos", db.table_names(self.conn))
 
 
 class TestMigrationRecoverability(PgTestCase):
-    """P20: verify atomicity and checkpoint-based recovery.
-
-    Migrations do not have ``down()`` functions; production recovery relies on
-    restoring a backup dump.  These tests confirm that:
-    1. A failing migration leaves the schema at the last committed state
-       (transaction atomicity — the foundation for backup/restore safety).
-    2. ``apply_migrations`` can continue from any intermediate checkpoint and
-       reach the same final schema as a full run from scratch.
-    """
+    """A failing statement must leave the schema at the last committed state."""
 
     def test_failed_migration_does_not_corrupt_schema(self):
-        """A migration that raises must leave the schema unchanged (transaction rollback)."""
         _drop_everything(self.conn)
+        self.addCleanup(recreate_database, self.conn)
         ensure_schema_migrations_table(self.conn)
-
-        # Apply the first two migrations to get a stable starting point.
-        for migration in list(MIGRATIONS)[:2]:
-            with self.conn:
-                migration.apply(self.conn)
-                _record(self.conn, migration.version, migration.name)
-
+        with self.conn:
+            baseline.apply(self.conn)
+            _record(self.conn, baseline.version, baseline.name)
         snapshot_before = schema_snapshot(self.conn)
 
-        # Simulate a migration that changes the schema then raises.
         try:
             with self.conn:
                 self.conn.execute("CREATE TABLE _test_rollback_probe (x int)")
@@ -790,51 +249,19 @@ class TestMigrationRecoverability(PgTestCase):
         except RuntimeError:
             pass
 
-        snapshot_after = schema_snapshot(self.conn)
-        self.assertEqual(
-            snapshot_before, snapshot_after,
-            "Schema was modified by a failing migration; the transaction did not roll back",
-        )
-        self.assertNotIn("_test_rollback_probe", db.table_names(self.conn),
-                         "Partial table from failed migration must not persist")
-
-    def test_apply_continues_from_checkpoint_consistently(self):
-        """Continuing apply_migrations from a mid-chain checkpoint produces the full schema."""
-        # Reference: full migration from a truly empty database.
-        _drop_everything(self.conn)
-        ensure_schema_migrations_table(self.conn)
-        apply_migrations(self.conn)
-        full_snapshot = schema_snapshot(self.conn)
-
-        # Partial apply: stop at the halfway mark, then resume.
-        _drop_everything(self.conn)
-        ensure_schema_migrations_table(self.conn)
-        halfway = len(MIGRATIONS) // 2
-        for migration in MIGRATIONS[:halfway]:
-            with self.conn:
-                migration.apply(self.conn)
-                _record(self.conn, migration.version, migration.name)
-
-        apply_migrations(self.conn)  # continues from the checkpoint
-        incremental_snapshot = schema_snapshot(self.conn)
-
-        self.assertEqual(
-            full_snapshot, incremental_snapshot,
-            "Schema from full apply must match schema from checkpoint + continue",
-        )
+        self.assertEqual(snapshot_before, schema_snapshot(self.conn))
+        self.assertNotIn("_test_rollback_probe", db.table_names(self.conn))
 
     def test_idempotent_apply_does_not_alter_schema(self):
-        """Calling apply_migrations on an up-to-date schema must leave it unchanged."""
         _drop_everything(self.conn)
+        self.addCleanup(recreate_database, self.conn)
         ensure_schema_migrations_table(self.conn)
         apply_migrations(self.conn)
         snapshot_before = schema_snapshot(self.conn)
 
-        apply_migrations(self.conn)  # should be a no-op
-        snapshot_after = schema_snapshot(self.conn)
+        apply_migrations(self.conn)
 
-        self.assertEqual(snapshot_before, snapshot_after,
-                         "Re-applying migrations on a current schema must not alter it")
+        self.assertEqual(snapshot_before, schema_snapshot(self.conn))
 
 
 if __name__ == "__main__":

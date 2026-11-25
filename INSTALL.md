@@ -78,7 +78,7 @@ The standalone release bundle is the fastest and cleanest installation method fo
 
 ### Overview and Bundle Contents
 
-The downloadable archive (`adult-hub-standalone-v0.5.3.tar.gz` or `.zip`) contains everything needed to operate the stack:
+The downloadable archive (`adult-hub-standalone-v0.6.0.tar.gz` or `.zip`) contains everything needed to operate the stack:
 
 ```
 adult-hub/
@@ -346,6 +346,17 @@ python3 migrate_db.py apply
 ```
 
 *(Note: In production, `make deploy` does not run migrations automatically; you must run `migrate_db.py apply` when deploying database schema updates.)*
+
+#### Upgrading from a pre-0.6.0 database
+
+0.6.0 squashes the schema into one tracked baseline (`schema_migrations` holds a
+single row: `1 | 0001_baseline`). The numbered upgrade chain no longer exists.
+
+- A database created by 0.5.x already records `0001_baseline`, so `apply` finds
+  nothing to do and the upgrade is a no-op.
+- An older database — or one that lost its `schema_migrations` table — is
+  refused with `Schema history predates the 0.6.0 squash`. Restore a dump
+  instead; `migrate_db.py recreate` is only for disposable data.
 
 ### Deployment with `make deploy`
 
@@ -631,7 +642,7 @@ curl -i https://hub.example.com/api/v1/version
 Expected response: HTTP `200 OK` JSON with `api_version`, `server_version`, and `capabilities`:
 
 ```json
-{"api_version":"1.0.0","supported_versions":["1.0.0"],"server_version":"0.5.3","status":"ok","capabilities":{"desktop_api":true,"tv_pairing":true,"direct_play":true,"user_state":true,"transcoding":false},"endpoints":{"auth":"/api/v1/auth","catalog":"/api/v1/catalog","channels":"/api/v1/catalog/channels","playback":"/api/v1/playback","user":"/api/v1/user","artwork":"/api/v1/artwork"}}
+{"api_version":"1.0.0","supported_versions":["1.0.0"],"server_version":"0.6.0","status":"ok","capabilities":{"desktop_api":true,"tv_pairing":true,"direct_play":true,"user_state":true,"transcoding":false},"endpoints":{"auth":"/api/v1/auth","catalog":"/api/v1/catalog","channels":"/api/v1/catalog/channels","playback":"/api/v1/playback","user":"/api/v1/user","artwork":"/api/v1/artwork"}}
 ```
 
 ### Example Caddy Configuration

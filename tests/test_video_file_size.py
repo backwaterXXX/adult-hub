@@ -6,7 +6,6 @@ import unittest
 from pg_helper import PgTestCase
 
 import sync.scene_scrapers as scene_scrapers
-from common.migrations.m0047_video_file_size import apply as apply_migration
 
 
 class VideoFileSizeTests(PgTestCase):
@@ -25,32 +24,6 @@ class VideoFileSizeTests(PgTestCase):
                 (video_id, algorithm, "0123456789abcdef",
                  f'{{"file_size_bytes": {size}}}' if isinstance(size, int) else '{}'),
             )
-
-    def test_migration_backfills_from_media_probe_data(self):
-        video_id = self._video()
-        self._add_probe(video_id, 12345678)
-        apply_migration(self.conn)
-        self.assertEqual(
-            self.conn.execute("SELECT file_size_bytes FROM videos WHERE id=%s",
-                              (video_id,)).fetchone()[0], 12345678)
-
-    def test_migration_ignores_unparsable_and_negative_sizes(self):
-        video_id = self._video()
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO video_fingerprints (video_id, algorithm, fingerprint, media_probe_data) "
-                "VALUES (%s, 'OSHASH', '0123456789abcdef', %s::jsonb)",
-                (video_id, '{"file_size_bytes": -5}'),
-            )
-            self.conn.execute(
-                "INSERT INTO video_fingerprints (video_id, algorithm, fingerprint, media_probe_data) "
-                "VALUES (%s, 'PHASH', '0123456789abcdee', %s::jsonb)",
-                (video_id, '{"file_size_bytes": "not-a-number"}'),
-            )
-        apply_migration(self.conn)
-        self.assertIsNone(
-            self.conn.execute("SELECT file_size_bytes FROM videos WHERE id=%s",
-                              (video_id,)).fetchone()[0])
 
     def test_store_fingerprint_propagates_size_to_videos(self):
         video_id = self._video()

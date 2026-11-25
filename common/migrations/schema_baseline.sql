@@ -1,14 +1,19 @@
--- Canonical baseline schema for Adult Hub (squashed from the historical
--- chain: legacy v1-v8 plus post-baseline v10-v49, and the end state of the
--- forward upgrades v50-v59 that CURRENT_MIGRATIONS replay onto a fresh base).
+-- Canonical baseline schema for Adult Hub, state after the 0.6.0 squash.
 --
--- Applied by common/migrations/m0001_baseline.py to a fresh database; existing
--- databases never re-run it. Generated with:
+-- This single script replaces the historical chain (legacy v1-v8, post-baseline
+-- v10-v77 and the interim forward upgrades); those modules no longer exist and
+-- a 0.6.0 database records exactly one row in schema_migrations (version 1,
+-- name 0001_baseline). Databases still carrying older history are refused by
+-- the runner instead of being upgraded in place.
+--
+-- Applied by common/migrations/m0001_baseline.py to a fresh database only.
+-- Generated with:
 --   pg_dump --schema-only --no-owner --no-privileges --no-tablespaces
 -- from a database built by the full historical chain, then stripped of the
 -- pg_dump preamble and the schema_migrations bookkeeping table.
--- tests/test_migrations.py asserts this script produces the same schema as that
--- chain, so edit both together when adding a migration.
+-- A new schema change is a numbered migration plus the same end-state added
+-- here; tests/test_migrations.py fails if this script stops matching the
+-- tables the runner manages.
 --
 -- One deliberate deviation from raw pg_dump output: functions are declared
 -- CREATE OR REPLACE, because recreate_database() drops tables and their
@@ -1286,3 +1291,10 @@ ALTER TABLE ONLY public.video_visual_signatures
 
 ALTER TABLE ONLY public.telegram_account_channels
     ADD CONSTRAINT telegram_account_channels_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.telegram_accounts(account_id) ON DELETE CASCADE;
+
+-- Seed data that used to arrive with migration 0055: the duplicate
+-- reconciliation schedule exists but stays disabled, so automatic merges remain
+-- an explicit operator choice. ON CONFLICT keeps a re-run harmless.
+INSERT INTO public.admin_schedules (id,name,action,payload,schedule_type,interval_minutes,timezone,enabled,revision,next_run_at)
+VALUES ('duplicate-reconcile','Duplicate reconciliation','duplicate_reconcile','{}','interval',15,'Europe/Warsaw',FALSE,1,NULL)
+ON CONFLICT (id) DO NOTHING;
