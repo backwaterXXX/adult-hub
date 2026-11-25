@@ -135,7 +135,7 @@ Management actions use the configured admin write token (`ADMIN_WRITE_TOKEN`) an
 
 - **Resolver (`resolver/`):** serves the Admin UI, management API, artwork, and on-demand Telegram streams.
 - **Sync (`sync/`):** indexes channels, maintains PostgreSQL records, generates STRM files and artwork, schedules verified PostgreSQL snapshots, and processes background work.
-- **Shared code (`common/`):** configuration validation, database access, versioned migrations, durable task queue, and client authentication.
+- **Shared code (`common/`):** configuration validation, database access, the squashed schema baseline, durable task queue, and client authentication.
 - **PostgreSQL:** stores the catalog and task queue.
 
 Telegram is the only media source provider. The standalone installer creates the initial source configuration; use the Admin panel to add channels. Provider IDs and media filenames remain stable across metadata updates.
@@ -169,3 +169,5 @@ Run individual checks with `make python-test`, `make ui-contracts`, `make js-che
 ### Releases
 
 `VERSION` defines the application version reported by the resolver and sync service. `make deploy` uses that value for image tags and the OCI version label. Keep release tags (`vX.Y.Z`), `VERSION`, source commits, and resolver/sync images aligned for deployment and rollback. Deploy compatible resolver and sync builds together.
+
+0.6.0 replaced the numbered migration chain with a single schema baseline: `schema_migrations` holds one row, and a database created by 0.5.x upgrades without work. Databases older than that are refused instead of upgraded in place, so restore a dump or rebuild — see the upgrade note in [INSTALL.md](INSTALL.md).
