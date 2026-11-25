@@ -214,7 +214,8 @@ def _resolve_stale_quality_findings(ctx: _AuditContext) -> None:
             "AND old.kind=ANY(%s) AND NOT EXISTS ("
             "SELECT 1 FROM admin_audit_items current WHERE current.job_id=%s "
             "AND current.video_id=old.video_id AND current.kind=old.kind AND current.status='open')",
-            (ctx.job_id, ["missing_stream", "unknown_mapping", "missing_artwork"]
+            (ctx.job_id, ["missing_stream", "unknown_mapping", "missing_artwork",
+                          "catalog_reference_without_video"]
              + (["missing_metadata"] if ctx.mode == "full" else []), ctx.job_id),
         )
         # Orphan findings carry no video_id, so they need their own pass: a

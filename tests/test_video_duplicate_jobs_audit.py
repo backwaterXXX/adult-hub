@@ -376,6 +376,29 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
             "a portrait registered in performer_photos must be refused",
         )
 
+    def test_complete_audit_resolves_catalog_references_that_went_away(self):
+        """A library row cleaned up by migration 0077 must not stay open forever."""
+        from common.job_queue import enqueue_job
+        stale_audit = "audit-stale-reference"
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO video_duplicate_jobs (id,action,state,payload,result,created_at,updated_at) "
+                "VALUES (%s,'consistency_audit','done','{}','{}',now(),now())", (stale_audit,)
+            )
+            self.conn.execute(
+                "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence) "
+                "VALUES (%s,'gone-video','catalog_reference_without_video','open','test')",
+                (stale_audit,),
+            )
+
+        enqueue_job(self.db_path, "consistency_audit", {"mode": "file_consistency"})
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM admin_audit_items WHERE job_id=%s AND kind='catalog_reference_without_video'",
+            (stale_audit,),
+        ).fetchone()[0], "resolved")
+
     def test_partial_walk_still_reports_the_directory_tree_it_reached(self):
         """A tight budget must not stop at the root and hide nested folders."""
         with tempfile.TemporaryDirectory() as temp_dir:
