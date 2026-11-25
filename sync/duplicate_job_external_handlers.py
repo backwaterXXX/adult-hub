@@ -433,7 +433,14 @@ def _action_history_cleanup(conn, job_id, payload, media_dir, services):
     _core._record_job_progress(conn, job_id, "pruning_history")
     from common.history_retention import prune_history
     counts = prune_history(conn)
-    return {"history_rows_removed": counts, "local_state": "history_cleanup_completed"}, False
+    # The daily system backup chains this job, so this is the only place where the
+    # retired client-auth rows are ever cleaned. Prune served rate-limit windows,
+    # expired pairing sessions and revoked sessions here or those tables grow with
+    # every pairing attempt and session refresh, forever.
+    from common.client_auth.service import prune_retired_auth_data
+    auth_counts = prune_retired_auth_data(conn)
+    return {"history_rows_removed": counts, "auth_rows_removed": auth_counts,
+            "local_state": "history_cleanup_completed"}, False
 
 
 def _action_performer_catalog(conn, job_id, payload, media_dir, services):
