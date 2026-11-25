@@ -65,6 +65,10 @@ _DIALOG_WARMUP_LIMIT = 100
 _DIALOG_WARMUP_COOLDOWN = 300.0
 _DIALOG_WARMED: Dict[str, float] = {}
 
+# A channel kept in the archive is absent from the default dialog list, so the warm-up
+# must read both folders; that was the remaining cold-start 502 after a restart.
+_ENTITY_RETRY_DELAY = 0.5
+
 _UNKNOWN_ENTITY_MARKER = "Could not find the input entity"
 
 
@@ -73,19 +77,25 @@ def _is_unknown_entity_error(exc: BaseException) -> bool:
 
 
 async def _warm_dialog_entities(client, client_key: str) -> None:
-    """Fill the client's entity cache once so numeric channel refs resolve."""
+    """Fill the client's entity cache once so numeric channel refs resolve.
+
+    Archived channels live in a separate dialog folder, so both are read; a failing
+    folder must not stop the other one from warming the cache.
+    """
     last = _DIALOG_WARMED.get(client_key)
     now = time.monotonic()
     if last is not None and now - last < _DIALOG_WARMUP_COOLDOWN:
         return
     _DIALOG_WARMED[client_key] = now
-    try:
-        await asyncio.wait_for(
-            client.get_dialogs(limit=_DIALOG_WARMUP_LIMIT),
-            timeout=get_telegram_metadata_timeout(),
-        )
-    except Exception:
-        logger.debug("Telegram dialog warm-up failed for %s", client_key, exc_info=True)
+    for archived in (False, True):
+        try:
+            await asyncio.wait_for(
+                client.get_dialogs(limit=_DIALOG_WARMUP_LIMIT, archived=archived),
+                timeout=get_telegram_metadata_timeout(),
+            )
+        except Exception:
+            logger.debug("Telegram dialog warm-up failed for %s (archived=%s)",
+                         client_key, archived, exc_info=True)
 
 
 async def _resolve_channel_entity(client, channel_ref: str, client_key: str):
@@ -104,13 +114,22 @@ async def _resolve_channel_entity(client, channel_ref: str, client_key: str):
             raise
         logger.info("Telegram channel %s is not cached yet; warming dialogs once", channel_ref)
         await _warm_dialog_entities(client, client_key)
-        try:
-            return await asyncio.wait_for(
-                client.get_entity(ref), timeout=get_telegram_metadata_timeout(),
-            )
-        except (asyncio.TimeoutError, TimeoutError) as retry_exc:
-            logger.warning("Telegram get_entity timeout for %s", channel_ref)
-            raise TimeoutError("Telegram get_entity timed out") from retry_exc
+        for attempt in range(2):
+            if attempt:
+                # The warmed access hash can land a moment after the dialog call returns.
+                await asyncio.sleep(_ENTITY_RETRY_DELAY)
+            try:
+                return await asyncio.wait_for(
+                    client.get_entity(ref), timeout=get_telegram_metadata_timeout(),
+                )
+            except (asyncio.TimeoutError, TimeoutError) as retry_exc:
+                logger.warning("Telegram get_entity timeout for %s", channel_ref)
+                raise TimeoutError("Telegram get_entity timed out") from retry_exc
+            except ValueError as retry_exc:
+                if attempt or not _is_unknown_entity_error(retry_exc):
+                    raise
+                logger.info("Telegram channel %s still unknown after the warm-up; retrying",
+                            channel_ref)
 
 
 def _client_session_key(client: Any, account_id: Optional[str] = None) -> str:

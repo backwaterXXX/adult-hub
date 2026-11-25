@@ -309,6 +309,27 @@ def _artwork_api_base() -> str:
     return base if base.endswith("/admin") else base + "/admin"
 
 
+# A resolver that just restarted answers 502 for the first stream of a channel whose
+# Telegram entity is not cached yet, and the same URL succeeds seconds later. One retry
+# turns those transient failures into artwork instead of a failed job per day.
+ARTWORK_RETRY_DELAY_SECONDS = 5.0
+ARTWORK_EXTRACTION_ATTEMPTS = 2
+
+
+def _extract_artwork_frame(extract, stream_url, dest, *, offset, timeout):
+    """Extract one frame, retrying once after a short pause on failure."""
+    delay = ARTWORK_RETRY_DELAY_SECONDS
+    for attempt in range(ARTWORK_EXTRACTION_ATTEMPTS):
+        success, error = extract(stream_url, dest, offset_seconds=offset, timeout=timeout)
+        if success:
+            return True, ""
+        if attempt + 1 < ARTWORK_EXTRACTION_ATTEMPTS:
+            logger.info("Artwork extraction failed for %s (%s); retrying in %ss",
+                        stream_url, error, delay)
+            _core.time.sleep(delay)
+    return False, error
+
+
 def _action_artwork_generate(conn, job_id, payload, media_dir, services):
     from urllib.parse import quote
     from common.image_utils import (
@@ -327,8 +348,8 @@ def _action_artwork_generate(conn, job_id, payload, media_dir, services):
 
     stream_query = f"?variant={quote(str(variant), safe='')}" if variant else ""
     stream_url = f"{api_base}/play/{quote(video_id, safe='')}/stream{stream_query}"
-    success, error = extract_video_frame(
-        stream_url, dest, offset_seconds=offset, timeout=timeout,
+    success, error = _extract_artwork_frame(
+        extract_video_frame, stream_url, dest, offset=offset, timeout=timeout,
     )
     if not success:
         try:

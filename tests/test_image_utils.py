@@ -232,6 +232,8 @@ class TestImageUtils(unittest.TestCase):
             self.assertEqual(mock_run.call_count, 2)
             for c in mock_run.call_args_list:
                 self.assertEqual(c.kwargs.get("timeout"), 90.0)
+            # ffmpeg's placeholder must not survive a failed extraction.
+            self.assertEqual(list(Path(tmp_dir).glob(".artwork-gen-*")), [])
 
     @patch("subprocess.run")
     def test_extract_video_frame_black_image_retry_passes_timeout(self, mock_run):

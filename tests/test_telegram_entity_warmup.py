@@ -13,18 +13,22 @@ from resolver.providers import telegram_message_cache as cache
 class FakeClient:
     """Client double: get_entity fails like a cold Telethon client until dialogs are read."""
 
-    def __init__(self, *, unknown_refs=(), message=None, dialogs_error=None):
+    def __init__(self, *, unknown_refs=(), message=None, dialogs_error=None,
+                 archived_error=None):
         self.unknown_refs = set(unknown_refs)
         self.message = message
         self.dialogs_error = dialogs_error
+        self.archived_error = archived_error
         self.dialogs_calls = []
         self.entity_calls = []
         self._account_id = "default"
 
-    async def get_dialogs(self, limit=None):
-        self.dialogs_calls.append(limit)
+    async def get_dialogs(self, limit=None, archived=None):
+        self.dialogs_calls.append((limit, archived))
         if self.dialogs_error is not None:
             raise self.dialogs_error
+        if archived is True and self.archived_error is not None:
+            raise self.archived_error
         self.unknown_refs.clear()
         return []
 
@@ -44,6 +48,12 @@ class WarmUpTests(unittest.IsolatedAsyncioTestCase):
         cache._ENTITY_CACHE.clear()
         cache._MESSAGE_CACHE.clear()
         cache._DIALOG_WARMED.clear()
+        self.addCleanup(setattr, cache, "_ENTITY_RETRY_DELAY", cache._ENTITY_RETRY_DELAY)
+        cache._ENTITY_RETRY_DELAY = 0
+
+    @staticmethod
+    def _warmed_folders(client):
+        return [archived for _limit, archived in client.dialogs_calls]
 
     async def test_unknown_entity_warms_dialogs_and_retries(self):
         client = FakeClient(unknown_refs={"-1001618765010"})
@@ -51,8 +61,38 @@ class WarmUpTests(unittest.IsolatedAsyncioTestCase):
         entity = await cache._resolve_channel_entity(client, "-1001618765010", "acc:default")
 
         self.assertEqual(entity, ("entity", "-1001618765010"))
-        self.assertEqual(client.dialogs_calls, [cache._DIALOG_WARMUP_LIMIT])
+        self.assertEqual(self._warmed_folders(client), [False, True])
+        self.assertEqual({limit for limit, _archived in client.dialogs_calls},
+                         {cache._DIALOG_WARMUP_LIMIT})
         self.assertEqual(client.entity_calls, ["-1001618765010", "-1001618765010"])
+
+    async def test_archived_channels_are_warmed_too(self):
+        client = FakeClient(unknown_refs={"-1001"})
+
+        await cache._resolve_channel_entity(client, "-1001", "acc:default")
+
+        self.assertEqual(self._warmed_folders(client), [False, True])
+
+    async def test_a_failing_archived_folder_still_warms_the_main_list(self):
+        client = FakeClient(unknown_refs={"-1001"}, archived_error=RuntimeError("no archive"))
+
+        entity = await cache._resolve_channel_entity(client, "-1001", "acc:default")
+
+        self.assertEqual(entity, ("entity", "-1001"))
+        self.assertEqual(self._warmed_folders(client), [False, True])
+
+    async def test_an_unknown_channel_is_retried_once_more_before_failing(self):
+        class NeverCachedClient(FakeClient):
+            async def get_dialogs(self, limit=None, archived=None):
+                self.dialogs_calls.append((limit, archived))
+                return []
+
+        client = NeverCachedClient(unknown_refs={"-1001"})
+
+        with self.assertRaises(ValueError):
+            await cache._resolve_channel_entity(client, "-1001", "acc:default")
+
+        self.assertEqual(len(client.entity_calls), 3)
 
     async def test_warmup_runs_once_per_cooldown_window(self):
         client = FakeClient(unknown_refs={"-1001", "-1002"})
@@ -60,7 +100,7 @@ class WarmUpTests(unittest.IsolatedAsyncioTestCase):
         await cache._resolve_channel_entity(client, "-1001", "acc:default")
         await cache._resolve_channel_entity(client, "-1002", "acc:default")
 
-        self.assertEqual(len(client.dialogs_calls), 1)
+        self.assertEqual(self._warmed_folders(client), [False, True])
 
     async def test_warmup_runs_again_after_the_cooldown(self):
         client = FakeClient(unknown_refs={"-1001"})
@@ -68,7 +108,7 @@ class WarmUpTests(unittest.IsolatedAsyncioTestCase):
 
         await cache._resolve_channel_entity(client, "-1001", "acc:default")
 
-        self.assertEqual(len(client.dialogs_calls), 1)
+        self.assertEqual(self._warmed_folders(client), [False, True])
 
     async def test_unrelated_value_error_is_not_warmed_and_propagates(self):
         class MissingChannelClient(FakeClient):
@@ -92,7 +132,8 @@ class WarmUpTests(unittest.IsolatedAsyncioTestCase):
             await cache._resolve_channel_entity(client, "-1001", "acc:default")
 
         self.assertIn("Could not find the input entity", str(raised.exception))
-        self.assertEqual(len(client.dialogs_calls), 1)
+        self.assertEqual(len(client.dialogs_calls), 2)
+        self.assertEqual(len(client.entity_calls), 3)
 
     async def test_get_cached_message_recovers_from_a_cold_client(self):
         message = object()
@@ -101,7 +142,7 @@ class WarmUpTests(unittest.IsolatedAsyncioTestCase):
         result = await cache._get_cached_message(client, "-1001", 42)
 
         self.assertIs(result, message)
-        self.assertEqual(len(client.dialogs_calls), 1)
+        self.assertEqual(self._warmed_folders(client), [False, True])
         self.assertIn("acc:default:-1001:42", cache._MESSAGE_CACHE)
 
     async def test_cached_message_skips_telegram_on_the_second_call(self):

@@ -406,6 +406,9 @@ def extract_video_frame(
             ], stream_url, timeout)
 
         if _frame_missing(success, tmp_path):
+            # ffmpeg leaves an empty placeholder behind; a failed attempt must not
+            # litter the media directory with .artwork-gen-* files.
+            tmp_path.unlink(missing_ok=True)
             return False, "ffmpeg failed to extract a video frame from stream."
 
         # Step 3: Check if frame is black; if so, retry with offset + 30s
