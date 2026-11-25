@@ -87,6 +87,23 @@ def _stream_entries(conn, video_id: str, media_dir: Path, media_root: Path, serv
     return streams
 
 
+def _add_publication_fields(conn, video: dict, video_id: str, services) -> None:
+    """Restore the fields a scan supplies to the NFO writer but a catalog read does not.
+
+    ``create_nfo_file`` takes the provider unique id and the per-performer
+    thumbnails from the prepared publication record. A repair that starts from
+    the catalog row alone has neither, so writing it back would silently blank
+    ``<uniqueid>`` and every ``<actor><thumb>``.
+    """
+    video["provider_video_id"] = str(video_id).split(":", 1)[-1]
+    if services.thumbnail_urls is not None:
+        public_thumb_url, _download_url = services.thumbnail_urls(video.get("thumbnail"))
+        video["thumbnail"] = public_thumb_url
+    performers = video.get("performers") or []
+    if performers and services.load_performer_thumbs is not None:
+        video["performer_thumbs"] = services.load_performer_thumbs(conn, performers)
+
+
 def _collect_target(conn, item: dict, media_dir: Path, media_root: Path, services,
                     load_metadata_state) -> _RepairTarget:
     video_id = item["video_id"]
@@ -104,6 +121,7 @@ def _collect_target(conn, item: dict, media_dir: Path, media_root: Path, service
     tags = set(state["metadata"].get("tags") or [])
     nfo_video = {**state["source"], **state["metadata"],
                  "dateadded": services.format_dateadded(state["source"].get("first_seen"))}
+    _add_publication_fields(conn, nfo_video, video_id, services)
     thumbnail_url = str(state["source"].get("thumbnail") or "").strip()
     if repair_artwork and (not thumbnail_url or services.thumbnail_urls is None
                            or services.download_image_if_missing is None):
@@ -122,13 +140,27 @@ def _restore_streams(target: _RepairTarget, services) -> int:
     return restored
 
 
+def _nfo_matches_publication(root, nfo_video: dict) -> bool:
+    """True when a regenerated NFO still carries the publication-only metadata."""
+    if root.tag != "movie":
+        return False
+    if (root.findtext("originaltitle", "") or "") != str(nfo_video.get("title") or ""):
+        return False
+    provider = str(nfo_video.get("provider") or "telegram")
+    provider_video_id = str(nfo_video.get("provider_video_id") or "")
+    if not provider_video_id:
+        return True
+    for node in root.findall("uniqueid"):
+        if node.get("type") == provider:
+            return (node.text or "").strip() == provider_video_id
+    return False
+
+
 def _write_nfos(target: _RepairTarget, services) -> int:
     written = 0
     for _stream_path, nfo_path, _existed, _artwork_path in target.streams:
         services.create_nfo_file(target.nfo_video, target.categories, target.tags, nfo_path)
-        root = ET.parse(nfo_path).getroot()
-        if (root.tag != "movie" or (root.findtext("originaltitle", "") or "")
-                != str(target.nfo_video.get("title") or "")):
+        if not _nfo_matches_publication(ET.parse(nfo_path).getroot(), target.nfo_video):
             raise RuntimeError("Generated NFO validation failed.")
         written += 1
     return written

@@ -157,8 +157,51 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
         file_path = self.conn.execute("SELECT file_path FROM synced_files WHERE video_id=%s", (video_id,)).fetchone()[0]
         nfo_path = sync.resolve_media_path(file_path, self.media).with_suffix(".nfo")
         import xml.etree.ElementTree as ET
-        self.assertEqual(ET.parse(nfo_path).getroot().findtext("originaltitle"), "Corrected title")
+        root = ET.parse(nfo_path).getroot()
+        self.assertEqual(root.findtext("originaltitle"), "Corrected title")
+        # A repair must not drop the metadata only a scan knows about.
+        self.assertEqual([node.text for node in root.findall("uniqueid") if node.get("type") == "telegram"],
+                         [video_id.split(":", 1)[1]])
         self.assertEqual(self.conn.execute("SELECT status FROM admin_audit_items WHERE id=%s", (finding_id,)).fetchone()[0], "resolved")
+
+
+    def test_audit_nfo_repair_keeps_performer_thumbnails_from_the_catalog(self):
+        video_id = "telegram:-1001:5:repairperfs"
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO performer_photos (name,thumb) VALUES ('Jane Doe','https://img.example/jane.jpg') "
+                "ON CONFLICT (name) DO UPDATE SET thumb=EXCLUDED.thumb"
+            )
+        sync.sync_unique_video({
+            "id": video_id, "provider": "telegram",
+            "provider_video_id": video_id.split(":", 1)[1],
+            "title": video_id, "duration": 600, "performers": ["Jane Doe"],
+        }, set(), set(), self.media, self.conn)
+        audit_id = "audit-repair-perf-" + video_id.rsplit(":", 1)[-1]
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO video_duplicate_jobs (id,action,state,payload,result,created_at,updated_at) "
+                "VALUES (%s,'consistency_audit','done','{}','{}',1,1)", (audit_id,)
+            )
+            finding_id = self.conn.execute(
+                "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence) "
+                "VALUES (%s,%s,'nfo_metadata_mismatch','open','test') RETURNING id", (audit_id, video_id)
+            ).fetchone()[0]
+        plan = preview_audit_repair(self.db_url, audit_id, [int(finding_id)])
+        self.assertEqual(execute_operation(self.db_url, plan["plan_id"])["outcome"], "queued")
+        with patch.object(sync, "trigger_jellyfin_refresh", return_value=True):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        file_path = self.conn.execute("SELECT file_path FROM synced_files WHERE video_id=%s", (video_id,)).fetchone()[0]
+        nfo_path = sync.resolve_media_path(file_path, self.media).with_suffix(".nfo")
+        root = ET.parse(nfo_path).getroot()
+        actor = root.find("actor")
+        self.assertIsNotNone(actor)
+        self.assertEqual(actor.findtext("name"), "Jane Doe")
+        self.assertEqual(actor.findtext("thumb"), "https://img.example/jane.jpg")
+        self.assertEqual(
+            [node.text for node in root.findall("uniqueid") if node.get("type") == "telegram"],
+            [video_id.split(":", 1)[1]],
+        )
 
 
     def test_audit_artwork_repair_uses_catalog_thumbnail_and_creates_only_missing_file(self):
