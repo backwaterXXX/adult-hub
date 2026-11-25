@@ -457,7 +457,7 @@
   function syncFiltersFromUrl() {
     const params = routeQueryParams();
     const form = $('#libraryFilters');
-    for (const name of ['q', 'channel_id', 'studio', 'performer', 'tag', 'availability', 'missing', 'sort']) {
+    for (const name of ['q', 'channel_id', 'studio', 'performer', 'tag', 'availability', 'missing', 'min_duration', 'max_duration', 'sort']) {
       const field = form.elements.namedItem(name);
       if (field) {
         const val = params.get(name) || (name === 'sort' ? 'first_seen' : '');
@@ -483,7 +483,7 @@
   function filterParams() {
     const form = $('#libraryFilters');
     const result = new URLSearchParams();
-    for (const name of ['q', 'channel_id', 'studio', 'performer', 'tag', 'availability', 'missing', 'sort']) {
+    for (const name of ['q', 'channel_id', 'studio', 'performer', 'tag', 'availability', 'missing', 'min_duration', 'max_duration', 'sort']) {
       const field = form.elements.namedItem(name);
       const value = field ? field.value.trim() : '';
       if (value) result.set(name, value);
@@ -522,7 +522,7 @@
     if (!view || !view.filters) return;
     clearLibrarySelection();
     const form = $('#libraryFilters');
-    for (const name of ['q', 'channel_id', 'studio', 'performer', 'tag', 'availability', 'missing', 'sort']) {
+    for (const name of ['q', 'channel_id', 'studio', 'performer', 'tag', 'availability', 'missing', 'min_duration', 'max_duration', 'sort']) {
       const field = form.elements.namedItem(name);
       if (field) field.value = typeof view.filters[name] === 'string' ? view.filters[name] : '';
     }

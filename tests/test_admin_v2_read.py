@@ -193,6 +193,69 @@ class TestCatalogReadContract(unittest.TestCase):
         invalid = asyncio.run(endpoint(request(), availability="maybe"))
         self.assertEqual(invalid.status_code, 400)
 
+    def test_duration_bounds_reach_the_query_and_reject_bad_ranges(self):
+        admin = admin_stub()
+        endpoint = next(
+            r.endpoint for r in admin_library_v2.build_router(admin).routes
+            if r.endpoint.__name__ == "admin_v2_library_videos"
+        )
+        with patch.object(admin_library_v2, "_run_catalog_query",
+                          return_value={"ok": True, "items": []}) as run:
+            asyncio.run(endpoint(request(), min_duration="300", max_duration="900"))
+        query = run.call_args.args[1]
+        self.assertEqual((query["min_duration"], query["max_duration"]), (300, 900))
+
+        for kwargs in ({"min_duration": "-1"}, {"max_duration": "abc"},
+                       {"min_duration": "900", "max_duration": "300"}):
+            with self.subTest(kwargs=kwargs):
+                result = asyncio.run(endpoint(request(), **kwargs))
+                self.assertEqual(result.status_code, 400)
+
+    def test_serializer_marks_parked_artwork(self):
+        video = admin_library_v2._serialize_video({
+            "id": "telegram:-100123:42", "provider": "telegram", "title": "Example",
+        }, detail=False, artwork_parked=True)
+        self.assertTrue(video["artwork_parked"])
+
+        default = admin_library_v2._serialize_video({"id": "telegram:-100123:43"}, detail=False)
+        self.assertFalse(default["artwork_parked"])
+
+    def test_duration_bounds_narrow_the_catalog_sql(self):
+        class Result:
+            def fetchone(self):
+                return {"total": 0}
+
+            def fetchall(self):
+                return []
+
+        class Connection:
+            row_factory = None
+
+            def __init__(self):
+                self.queries = []
+
+            def execute(self, sql, params=()):
+                self.queries.append((sql, params))
+                return Result()
+
+            def close(self):
+                pass
+
+        columns = set(admin_library_v2._VIDEO_OPTIONAL_COLUMNS) | {"id"}
+        conn = Connection()
+        with patch.object(admin_library_v2.db, "connect", return_value=conn), \
+             patch.object(admin_library_v2.db, "table_names", return_value={"videos"}), \
+             patch.object(admin_library_v2.db, "table_columns", return_value=columns):
+            admin_library_v2._run_catalog_query("unused", {
+                "q": "", "channel_id": "", "studio": "", "performer": "", "tag": "",
+                "availability": "all", "missing": [], "sort": "last_seen", "offset": 0, "limit": 50,
+                "min_duration": 300, "max_duration": 900,
+            })
+        count_sql, count_params = conn.queries[0]
+        self.assertIn("v.duration >= %s", count_sql)
+        self.assertIn("v.duration <= %s", count_sql)
+        self.assertEqual(count_params, [300, 900])
+
     def test_detail_returns_404_for_unknown_id(self):
         admin = admin_stub()
         endpoint = next(r.endpoint for r in admin_library_v2.build_router(admin).routes if r.endpoint.__name__ == "admin_v2_library_video")

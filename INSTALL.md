@@ -78,7 +78,7 @@ The standalone release bundle is the fastest and cleanest installation method fo
 
 ### Overview and Bundle Contents
 
-The downloadable archive (`adult-hub-standalone-v0.5.1.tar.gz` or `.zip`) contains everything needed to operate the stack:
+The downloadable archive (`adult-hub-standalone-v0.5.2.tar.gz` or `.zip`) contains everything needed to operate the stack:
 
 ```
 adult-hub/
@@ -631,7 +631,7 @@ curl -i https://hub.example.com/api/v1/version
 Expected response: HTTP `200 OK` JSON with `api_version`, `server_version`, and `capabilities`:
 
 ```json
-{"api_version":"1.0.0","supported_versions":["1.0.0"],"server_version":"0.5.1","status":"ok","capabilities":{"desktop_api":true,"tv_pairing":true,"direct_play":true,"user_state":true,"transcoding":false},"endpoints":{"auth":"/api/v1/auth","catalog":"/api/v1/catalog","channels":"/api/v1/catalog/channels","playback":"/api/v1/playback","user":"/api/v1/user","artwork":"/api/v1/artwork"}}
+{"api_version":"1.0.0","supported_versions":["1.0.0"],"server_version":"0.5.2","status":"ok","capabilities":{"desktop_api":true,"tv_pairing":true,"direct_play":true,"user_state":true,"transcoding":false},"endpoints":{"auth":"/api/v1/auth","catalog":"/api/v1/catalog","channels":"/api/v1/catalog/channels","playback":"/api/v1/playback","user":"/api/v1/user","artwork":"/api/v1/artwork"}}
 ```
 
 ### Example Caddy Configuration

@@ -43,8 +43,13 @@ _AUDIT_INVENTORY_MAX_ENTRIES = _audit_entry_limit()
 _AUDIT_INVENTORY_MAX_DEPTH = 12
 
 
-def _audit_library_inventory(media_dir: Path, registered_streams: set[str]):
-    """Return orphan same-basename file families without following symlinks."""
+def _audit_library_inventory(media_dir: Path, registered_streams: set[str],
+                             registered_sidecars: set[str] | None = None):
+    """Return orphan same-basename file families without following symlinks.
+
+    ``registered_sidecars`` carries paths registered outside ``synced_files``
+    (performer artwork); a family that holds one of them is not an orphan.
+    """
     root = Path(media_dir).resolve()
     stack = [(root, 0)]
     families: dict[tuple[str, str], list[dict]] = {}
@@ -72,7 +77,7 @@ def _audit_library_inventory(media_dir: Path, registered_streams: set[str]):
                         complete = False
         except OSError:
             complete = False
-    return _orphan_families(families, registered_streams), scanned, complete
+    return _orphan_families(families, registered_streams, registered_sidecars), scanned, complete
 
 
 def _entry_kind(entry) -> str:
@@ -96,6 +101,10 @@ def _record_family_file(entry, root: Path, families: dict) -> bool:
     if suffix not in {".strm", ".jpg"}:
         return True
     path = Path(relative)
+    # Artwork extraction writes dot-prefixed temporaries next to the target; a
+    # pass that overlaps a running extraction must not report them as orphans.
+    if path.name.startswith("."):
+        return True
     key = (path.parent.as_posix(), path.stem)
     try:
         stat = entry.stat(follow_symlinks=False)
@@ -109,7 +118,8 @@ def _record_family_file(entry, root: Path, families: dict) -> bool:
     return True
 
 
-def _orphan_families(families: dict, registered_streams: set[str]) -> list:
+def _orphan_families(families: dict, registered_streams: set[str],
+                     registered_sidecars: set[str] | None = None) -> list:
     orphans = []
     registered_families = set()
     for registered in registered_streams:
@@ -120,6 +130,8 @@ def _orphan_families(families: dict, registered_streams: set[str]) -> list:
         # Match the exact managed stream path; an orphan JPG is actionable
         # only when no registered STRM exists for its same-basename family.
         if (parent, stem) in registered_families:
+            continue
+        if registered_sidecars and any(item["path"] in registered_sidecars for item in files):
             continue
         files.sort(key=lambda item: (item["path"].casefold(), item["path"]))
         orphans.append({"files": files, "total_bytes": sum(item["size"] for item in files)})

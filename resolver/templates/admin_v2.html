@@ -111,6 +111,8 @@
                 <div class="filter-field"><label for="filterPerformer">Person</label><input id="filterPerformer" name="performer" type="text" placeholder="Any person"></div>
                 <div class="filter-field"><label for="filterTag">Tag</label><input id="filterTag" name="tag" type="text" placeholder="Any tag"></div>
                 <div class="filter-field"><label for="filterMissing">Missing data</label><select id="filterMissing" name="missing"><option value="">Any</option><option value="title">Title</option><option value="performers">People</option><option value="studio">Studio</option><option value="plot">Description</option><option value="thumbnail">Artwork</option></select></div>
+                <div class="filter-field"><label for="filterMinDuration">Min duration (s)</label><input id="filterMinDuration" name="min_duration" type="number" min="0" step="1" inputmode="numeric" placeholder="Any"></div>
+                <div class="filter-field"><label for="filterMaxDuration">Max duration (s)</label><input id="filterMaxDuration" name="max_duration" type="number" min="0" step="1" inputmode="numeric" placeholder="Any"></div>
                 <div class="filter-field sort-field"><label for="filterSort">Sort by</label><select id="filterSort" name="sort"><option value="first_seen">Recently added</option><option value="last_seen">Recently updated</option><option value="title">Title A–Z</option><option value="duration">Duration</option></select></div>
                 <button class="button button-quiet clear-filters" type="button" id="clearFilters">Clear filters</button>
               </div>

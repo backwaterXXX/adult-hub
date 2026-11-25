@@ -71,6 +71,7 @@
     const meta = create('div', 'video-meta'); meta.append(create('span', '', safeText(first(video, ['studio', 'studio_name']), 'Unknown studio')));
     const [availabilityLabel, availabilityClass] = availability(video); meta.append(create('span', `status-pill ${availabilityClass}`, availabilityLabel));
     if (video.scene_match_source) meta.append(create('span', 'status-pill pill-good', 'StashDB'));
+    if (video.artwork_parked) meta.append(create('span', 'status-pill pill-warning', 'Artwork parked'));
     const reason = unavailableReason(video);
     if (reason) meta.append(create('small', 'video-availability-reason', `${reason}${video.unavailable_detected_at ? ` · Detected ${displayTime(video.unavailable_detected_at)}` : ''}`));
     content.append(meta); button.append(thumb, content); button.addEventListener('click', () => openDetail(id, button)); card.append(selectLabel, button); return card;
@@ -86,6 +87,7 @@
     row.append(create('td', '', safeText(first(video, ['channel_name', 'channel_id', 'source_name', 'provider']))));
     const availabilityCell = create('td'); const [label, css] = availability(video); availabilityCell.append(create('span', `status-pill ${css}`, label));
     if (video.scene_match_source) availabilityCell.append(create('span', 'status-pill pill-good', 'StashDB'));
+    if (video.artwork_parked) availabilityCell.append(create('span', 'status-pill pill-warning', 'Artwork parked'));
     row.append(availabilityCell);
     row.append(create('td', 'video-availability-reason', unavailableReason(video) || '—'));
     row.append(create('td', '', video.unavailable_detected_at ? displayTime(video.unavailable_detected_at) : '—'));

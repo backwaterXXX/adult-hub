@@ -12,6 +12,7 @@ from psycopg.types.json import Jsonb
 
 from common import db
 from common.admin_operations import MAX_ORPHAN_QUARANTINE_BATCH, PLAN_TTL_SECONDS, _canonical
+from common.media_registry import performer_artwork_paths
 
 
 def _orphan_relative_posix(relative) -> PurePosixPath | None:
@@ -41,7 +42,7 @@ def _orphan_file_is_unchanged(original: Path, root: Path, identity: dict) -> boo
                        (("st_size", "size"), ("st_mtime_ns", "mtime_ns"), ("st_dev", "dev"), ("st_ino", "ino"))))
 
 
-def _safe_orphan_files(raw, media_root: Path) -> list[dict] | None:
+def _safe_orphan_files(raw, media_root: Path, registered_sidecars: set[str] | None = None) -> list[dict] | None:
     if not isinstance(raw, list) or not 1 <= len(raw) <= 25:
         return None
     files, seen, family = [], set(), None
@@ -54,7 +55,10 @@ def _safe_orphan_files(raw, media_root: Path) -> list[dict] | None:
         if posix is None:
             return None
         suffix = Path(relative).suffix.lower()
-        if suffix not in {".strm", ".jpg"} or item.get("suffix") != suffix:
+        # Performer portraits live under the media root but are registered in
+        # performer_photos, not synced_files; quarantining one would break them.
+        registered = bool(registered_sidecars) and posix.as_posix() in registered_sidecars
+        if suffix not in {".strm", ".jpg"} or item.get("suffix") != suffix or registered:
             return None
         family_key = (posix.parent.as_posix(), posix.stem)
         if family is None:
@@ -86,12 +90,13 @@ def _orphan_finding_state(conn, audit_id: str, finding_ids: list[int], media_roo
     ).fetchall()
     if len(rows) != len(finding_ids):
         return None
+    registered_sidecars = performer_artwork_paths(conn)
     items, revisions = [], {}
     for finding_id, kind, status, details in rows:
         if kind != "orphan_file" or status != "open":
             return None
         details = details if isinstance(details, dict) else json.loads(details or "{}")
-        files = _safe_orphan_files(details.get("files"), media_root)
+        files = _safe_orphan_files(details.get("files"), media_root, registered_sidecars)
         if files is None:
             return None
         revision = hashlib.sha256(_canonical(files).encode("utf-8")).hexdigest()

@@ -118,7 +118,8 @@ def _missing_fields(video) -> list[str]:
         missing.append("thumbnail")
     return missing
 
-def _serialize_video(row, *, detail: bool, local_files: dict[str, str] | None = None) -> dict[str, Any]:
+def _serialize_video(row, *, detail: bool, local_files: dict[str, str] | None = None,
+                     artwork_parked: bool = False) -> dict[str, Any]:
     get = partial(_row_value, row)
 
     performers = _json_value(get("performers"), [])
@@ -164,6 +165,7 @@ def _serialize_video(row, *, detail: bool, local_files: dict[str, str] | None = 
         "scene_match_source": get("scene_match_source"),
         "scene_match_external_id": get("scene_match_external_id"),
         "scene_match_url": get("scene_match_url"),
+        "artwork_parked": bool(artwork_parked),
         "artwork_url": f"/admin/api/v2/library/videos/{quote(str(get('id') or ''), safe='')}/artwork" if (get("id") and ((local_files and local_files.get("artwork") == "present") or (has_local_files and not detail))) else None,
     }
     if detail:

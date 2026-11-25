@@ -30,8 +30,6 @@ from common import db
 from common.client_auth.service import (
     MAX_DEVICE_ID_LEN,
     MAX_DEVICE_NAME_LEN,
-    MAX_PASSWORD_LEN,
-    MAX_USERNAME_LEN,
     AuthenticationFailed,
     BoundedValidationError,
     PairingAlreadyExchanged,
@@ -41,17 +39,13 @@ from common.client_auth.service import (
     _validate_bounds,
     _validate_optional_string,
     approve_pairing,
-    authenticate_by_password,
     initiate_pairing,
     poll_pairing_status,
-    refresh_session_token,
-    revoke_session_token,
 )
 from resolver import admin as admin_module
 
 logger = logging.getLogger("adult_hub.client_auth")
 
-router = APIRouter(tags=["Client Auth"])
 pairing_router = APIRouter(tags=["TV Pairing"])
 admin_pairing_router = APIRouter(tags=["Admin Pairing"])
 
@@ -226,150 +220,6 @@ def _admin_write_guard(request: Request) -> JSONResponse | None:
             )
 
     return None
-
-
-# --- Password Authentication ---
-
-@router.post("/api/v1/auth/login")
-async def post_login(request: Request) -> JSONResponse:
-    """Authenticate with username and password, issuing short-lived access and refresh tokens."""
-    if request.query_params:
-        return _auth_response(
-            {"error": "Query parameters are strictly prohibited on authentication endpoints."},
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    payload, err_resp = await _parse_json_object(request)
-    if err_resp:
-        return err_resp
-
-    username = payload.get("username", "")
-    password = payload.get("password", "")
-    device_name = payload.get("device_name", "")
-    device_id = payload.get("device_id", "")
-    client_ip = _extract_client_ip(request)
-
-    try:
-        _validate_bounds(username, "Username", 1, MAX_USERNAME_LEN)
-        _validate_bounds(password, "Password", 1, MAX_PASSWORD_LEN)
-        device_name = _validate_optional_string(device_name, "device_name", MAX_DEVICE_NAME_LEN)
-        device_id = _validate_optional_string(device_id, "device_id", MAX_DEVICE_ID_LEN)
-    except BoundedValidationError as exc:
-        return _auth_response({"error": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
-
-    def _execute():
-        conn = _db_connection(request)
-        try:
-            return authenticate_by_password(
-                conn,
-                username=username,
-                password=password,
-                device_name=device_name,
-                device_id=device_id,
-                client_ip=client_ip,
-            )
-        finally:
-            conn.close()
-
-    try:
-        result = await _run_in_thread(_execute)
-        return _auth_response(result, status_code=status.HTTP_200_OK)
-    except RateLimitExceeded as exc:
-        return _auth_response({"error": str(exc)}, status_code=status.HTTP_429_TOO_MANY_REQUESTS)
-    except AuthenticationFailed as exc:
-        return _auth_response({"error": str(exc)}, status_code=status.HTTP_401_UNAUTHORIZED)
-    except BoundedValidationError as exc:
-        return _auth_response({"error": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
-    except Exception as exc:
-        logger.exception("Unexpected error during login: %s", exc)
-        return _auth_response({"error": "Authentication failed"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-# --- Token Refresh & Single-Use Rotation ---
-
-@router.post("/api/v1/auth/refresh")
-async def post_refresh(request: Request) -> JSONResponse:
-    """Rotate single-use refresh token and issue new access token."""
-    if request.query_params:
-        return _auth_response(
-            {"error": "Query parameters are strictly prohibited on authentication endpoints."},
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    payload, err_resp = await _parse_json_object(request)
-    if err_resp:
-        return err_resp
-
-    refresh_token = payload.get("refresh_token", "")
-    if not refresh_token:
-        return _auth_response({"error": "refresh_token is required"}, status_code=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        _safe_hash_token(refresh_token, name="refresh_token")
-    except BoundedValidationError as exc:
-        return _auth_response({"error": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
-
-    def _execute():
-        conn = _db_connection(request)
-        try:
-            return refresh_session_token(conn, refresh_token)
-        finally:
-            conn.close()
-
-    try:
-        result = await _run_in_thread(_execute)
-        return _auth_response(result, status_code=status.HTTP_200_OK)
-    except RateLimitExceeded as exc:
-        return _auth_response({"error": str(exc)}, status_code=status.HTTP_429_TOO_MANY_REQUESTS)
-    except AuthenticationFailed as exc:
-        return _auth_response({"error": str(exc)}, status_code=status.HTTP_401_UNAUTHORIZED)
-    except BoundedValidationError as exc:
-        return _auth_response({"error": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
-    except Exception as exc:
-        logger.exception("Unexpected error during refresh: %s", exc)
-        return _auth_response({"error": "Token refresh failed"}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-# --- Session Revocation / Logout ---
-
-@router.post("/api/v1/auth/revoke")
-async def post_revoke(request: Request) -> JSONResponse:
-    """Explicitly revoke a session family."""
-    if request.query_params:
-        return _auth_response(
-            {"error": "Query parameters are strictly prohibited on authentication endpoints."},
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    payload, err_resp = await _parse_json_object(request)
-    if err_resp:
-        return err_resp
-
-    refresh_token = payload.get("refresh_token", "")
-    if not refresh_token:
-        return _auth_response({"error": "refresh_token is required"}, status_code=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        _safe_hash_token(refresh_token, name="refresh_token")
-    except BoundedValidationError as exc:
-        return _auth_response({"error": str(exc)}, status_code=status.HTTP_400_BAD_REQUEST)
-
-    def _execute():
-        conn = _db_connection(request)
-        try:
-            revoke_session_token(conn, refresh_token)
-        finally:
-            conn.close()
-
-    try:
-        await _run_in_thread(_execute)
-        return _auth_response({"revoked": True}, status_code=status.HTTP_200_OK)
-    except Exception as exc:
-        logger.exception("Unexpected error during session revocation: %s", exc)
-        return _auth_response(
-            {"error": "Session revocation failed"},
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
 
 
 async def _parse_optional_json_object(request: Request) -> tuple[dict[str, Any] | None, JSONResponse | None]:

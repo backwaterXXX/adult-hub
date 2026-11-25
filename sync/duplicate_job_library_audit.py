@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from common import db
+from common.media_registry import performer_artwork_paths
 from psycopg.types.json import Jsonb
 
 from sync import duplicate_jobs as _core
@@ -216,6 +217,17 @@ def _resolve_stale_quality_findings(ctx: _AuditContext) -> None:
             (ctx.job_id, ["missing_stream", "unknown_mapping", "missing_artwork"]
              + (["missing_metadata"] if ctx.mode == "full" else []), ctx.job_id),
         )
+        # Orphan findings carry no video_id, so they need their own pass: a
+        # complete inventory that no longer sees the file (a cleaned-up
+        # temporary, an adopted avatar) resolves the older finding.
+        ctx.conn.execute(
+            "UPDATE admin_audit_items old SET status='resolved' WHERE old.job_id<>%s "
+            "AND old.status='open' AND old.kind='orphan_file' AND NOT EXISTS ("
+            "SELECT 1 FROM admin_audit_items current WHERE current.job_id=%s "
+            "AND current.kind='orphan_file' AND current.status='open' "
+            "AND current.details->'files'->0->>'path' = old.details->'files'->0->>'path')",
+            (ctx.job_id, ctx.job_id),
+        )
 
 
 def _consistency_audit(conn, job_id: str, media_dir: Path, services, payload: dict | None = None) -> dict:
@@ -242,7 +254,10 @@ def _consistency_audit(conn, job_id: str, media_dir: Path, services, payload: di
         _audit_registered_row(ctx, index, row, len(rows))
     # Inspect only the configured library, with a hard entry/depth limit and no
     # symlink traversal. Store aggregate evidence so paths and titles stay private.
-    orphan_families, inventory_entries, inventory_complete = _core._audit_library_inventory(media_dir, registered_streams)
+    sidecars = performer_artwork_paths(conn)
+    orphan_families, inventory_entries, inventory_complete = _core._audit_library_inventory(
+        media_dir, registered_streams, sidecars,
+    )
     _store_orphan_findings(ctx, orphan_families)
     if not inventory_complete:
         services.logger.warning("Consistency audit inventory is partial (entry/depth limit or filesystem access)")

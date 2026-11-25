@@ -70,13 +70,12 @@ except ModuleNotFoundError as e:
         raise
 
 from resolver.client_auth_routes import (
-    router as client_auth_router,
-    pairing_router,
     admin_pairing_router,
     set_test_db_url,
     _db_connection,
     _admin_write_guard,
 )
+from resolver.desktop_api import router as desktop_router
 from resolver import admin as admin_module
 from starlette.requests import Request
 
@@ -95,10 +94,10 @@ def get_all_routes(router):
     return routes
 
 
-# Candidate test app for Stage 2 auth endpoint testing while unapproved on default Resolver app
+# The live Client API owns password auth and includes the TV pairing routes; the
+# default resolver app keeps them unmounted, so the tests build their own app.
 auth_test_app = FastAPI()
-auth_test_app.include_router(client_auth_router)
-auth_test_app.include_router(pairing_router)
+auth_test_app.include_router(desktop_router)
 auth_test_app.include_router(admin_pairing_router)
 
 
@@ -248,7 +247,7 @@ class TestClientAuthOffline(unittest.TestCase):
         )
         self.assertEqual(res_bad_cl.status_code, 400)
         self.assertEqual(res_bad_cl.headers.get("cache-control"), "private, no-store")
-        self.assertEqual(res_bad_cl.json().get("error"), "Invalid JSON body")
+        self.assertEqual(res_bad_cl.json().get("error"), "Request body must be a valid JSON object")
 
         # 3. Empty body returns 400 with Invalid JSON body
         res_empty = client.post(
@@ -258,20 +257,7 @@ class TestClientAuthOffline(unittest.TestCase):
         )
         self.assertEqual(res_empty.status_code, 400)
         self.assertEqual(res_empty.headers.get("cache-control"), "private, no-store")
-        self.assertEqual(res_empty.json().get("error"), "Invalid JSON body")
-
-    def test_isolated_db_selector_revoke_error_handling(self):
-        """Isolated test app DB selector raises RuntimeError in post_revoke, caught as 500 with private, no-store."""
-        isolated_app = FastAPI()
-        isolated_app.state.isolated_desktop_app = True
-        isolated_app.state.db_url = None
-        isolated_app.include_router(client_auth_router)
-
-        client = TestClient(isolated_app)
-        res = client.post("/api/v1/auth/revoke", json={"refresh_token": "ah_ref_valid_token_1234567890"})
-        self.assertEqual(res.status_code, 500)
-        self.assertEqual(res.headers.get("cache-control"), "private, no-store")
-        self.assertEqual(res.json().get("error"), "Session revocation failed")
+        self.assertEqual(res_empty.json().get("error"), "Request body must be a valid JSON object")
 
     def test_canonical_production_db_resolution(self):
         """Runtime auth DB connection resolves via canonical config and never falls back to TEST_DATABASE_URL in production."""
@@ -464,6 +450,9 @@ class TestClientAuthLive(PgTestCase):
         # Explicit test fixture injection (canonical production DB resolution requires explicit injection in tests)
         set_test_db_url(self.db_url)
         self.addCleanup(set_test_db_url, None)
+        # The live Client API reads the URL from the app state first; keep it scoped to this test.
+        auth_test_app.state.db_url = self.db_url
+        self.addCleanup(auth_test_app.state._state.pop, "db_url", None)
 
     def test_fresh_and_upgrade_schema_idempotency(self):
         """Auth migration schema runs idempotently without failing or duplicating objects."""

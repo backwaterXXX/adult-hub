@@ -236,6 +236,106 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
         self.assertGreater(result["library_inventory_entries"], 0)
 
 
+    def test_consistency_audit_ignores_performer_artwork_registered_under_performers(self):
+        """Portraits registered in performer_photos are not orphans just because they have no .strm."""
+        from common.job_queue import enqueue_job
+        performers = self.media / "performers"
+        performers.mkdir()
+        (performers / "known-portrait-ab12cd34ef.jpg").write_bytes(b"artwork")
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO performer_photos (name, thumb, updated_at) VALUES (%s, %s, now())",
+                ("Known Performer", "performers/known-portrait-ab12cd34ef.jpg"),
+            )
+
+        job_id = enqueue_job(self.db_path, "consistency_audit", {"mode": "file_consistency"})
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        orphans = self.conn.execute(
+            "SELECT details FROM admin_audit_items WHERE job_id=%s AND kind='orphan_file'",
+            (job_id,),
+        ).fetchall()
+
+        self.assertEqual(orphans, [])
+
+    def test_consistency_audit_still_flags_unregistered_artwork_under_performers(self):
+        from common.job_queue import enqueue_job
+        performers = self.media / "performers"
+        performers.mkdir()
+        (performers / "stray-portrait-ffeeddccbb.jpg").write_bytes(b"artwork")
+
+        job_id = enqueue_job(self.db_path, "consistency_audit", {"mode": "file_consistency"})
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        rows = self.conn.execute(
+            "SELECT details FROM admin_audit_items WHERE job_id=%s AND kind='orphan_file'",
+            (job_id,),
+        ).fetchall()
+
+        self.assertEqual(len(rows), 1)
+        details = rows[0][0] if isinstance(rows[0][0], dict) else json.loads(rows[0][0])
+        self.assertEqual([item["path"] for item in details["files"]], [
+            "performers/stray-portrait-ffeeddccbb.jpg",
+        ])
+
+    def test_consistency_audit_skips_dotfile_artwork_temporaries(self):
+        from common.job_queue import enqueue_job
+        (self.media / ".artwork-gen-abcd1234.jpg").write_bytes(b"")
+
+        job_id = enqueue_job(self.db_path, "consistency_audit", {"mode": "file_consistency"})
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        orphans = self.conn.execute(
+            "SELECT id FROM admin_audit_items WHERE job_id=%s AND kind='orphan_file'",
+            (job_id,),
+        ).fetchall()
+
+        self.assertEqual(orphans, [])
+
+    def test_complete_audit_resolves_orphan_findings_for_files_that_disappeared(self):
+        from common.job_queue import enqueue_job
+        stray = self.media / "nested-managed-folder"
+        stray.mkdir()
+        (stray / "temporary.jpg").write_bytes(b"artwork")
+        first_job = enqueue_job(self.db_path, "consistency_audit", {"mode": "file_consistency"})
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(self.conn.execute(
+            "SELECT count(*) FROM admin_audit_items WHERE job_id=%s AND kind='orphan_file'",
+            (first_job,),
+        ).fetchone()[0], 1)
+
+        (stray / "temporary.jpg").unlink()
+        second_job = enqueue_job(self.db_path, "consistency_audit", {"mode": "file_consistency"})
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+
+        self.assertEqual(self.conn.execute(
+            "SELECT count(*) FROM admin_audit_items WHERE job_id=%s AND kind='orphan_file'",
+            (second_job,),
+        ).fetchone()[0], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM admin_audit_items WHERE job_id=%s AND kind='orphan_file'",
+            (first_job,),
+        ).fetchone()[0], "resolved")
+
+    def test_orphan_quarantine_preview_refuses_registered_performer_artwork(self):
+        from common.admin_operation_orphan_previews import _safe_orphan_files
+        performers = self.media / "performers"
+        performers.mkdir()
+        portrait = performers / "portrait-ab12cd34ef.jpg"
+        portrait.write_bytes(b"artwork")
+        info = portrait.stat()
+        item = {
+            "path": "performers/portrait-ab12cd34ef.jpg", "suffix": ".jpg",
+            "size": info.st_size, "mtime_ns": info.st_mtime_ns,
+            "dev": info.st_dev, "ino": info.st_ino,
+        }
+
+        self.assertEqual(
+            len(_safe_orphan_files([item], self.media)), 1,
+            "an unregistered portrait stays quarantinable",
+        )
+        self.assertIsNone(
+            _safe_orphan_files([item], self.media, {"performers/portrait-ab12cd34ef.jpg"}),
+            "a portrait registered in performer_photos must be refused",
+        )
+
     def test_consistency_audit_marks_bounded_filesystem_inventory_partial(self):
         from common.job_queue import enqueue_job
         job_id = enqueue_job(self.db_path, "consistency_audit", {})

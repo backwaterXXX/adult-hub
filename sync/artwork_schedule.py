@@ -6,6 +6,7 @@ import stat
 from pathlib import Path
 import logging
 
+from common.artwork_parking import ARTWORK_FRAME_FAILURE_CODE, ARTWORK_FRAME_FAILURE_LIMIT
 from common.image_utils import compute_dhash, is_black_image, is_bumper_hash
 
 logger = logging.getLogger(__name__)
@@ -16,9 +17,6 @@ logger = logging.getLogger(__name__)
 # weeks; 200 clears the same backlog in days without hammering Telegram.
 MAX_ARTWORK_GENERATION_ITEMS = 200
 ARTWORK_GENERATION_OFFSET_SECONDS = 60
-# A stream that ffmpeg cannot decode never yields a frame, so the schedule stops
-# spending its bounded batch on it after this many confirmed extraction failures.
-ARTWORK_FRAME_FAILURE_LIMIT = 3
 
 
 def artwork_needs_generation(path: Path, *, bumper_hashes=None) -> bool:
@@ -119,7 +117,7 @@ def _parked_artwork_exclusion(conn) -> str:
         return ""
     if "video_duplicate_jobs" not in tables:
         return ""
-    pattern = '%"artwork_frame_extraction_failed"%'
+    pattern = f'%"{ARTWORK_FRAME_FAILURE_CODE}"%'
     return (
         " AND NOT EXISTS (SELECT 1 FROM ("
         "SELECT j.payload::jsonb ->> 'video_id' AS parked_id "

@@ -9,7 +9,12 @@ from typing import Any
 import logging
 
 from common import db
-from resolver.admin_catalog_serialization import _local_file_status, _resolve_local_artwork_path, _serialize_video
+from resolver.admin_catalog_serialization import (
+    _local_file_status,
+    _resolve_local_artwork_path,
+    _row_value,
+    _serialize_video,
+)
 from resolver.admin_catalog_pagination import (
     cursor_condition as _cursor_condition_impl,
     cursor_value_expression as _cursor_value_expression_impl,
@@ -244,7 +249,11 @@ def _query_catalog_page(conn, query: dict[str, Any], media_root) -> dict[str, An
     rows, has_more, has_previous = _page_window(
         rows, query, cursor_mode, cursor_data, cursor_direction, total,
     )
-    items = [_serialize_video(row, detail=False) for row in rows]
+    parked_ids = _parked_artwork_ids(conn)
+    items = [
+        _serialize_video(row, detail=False, artwork_parked=_row_value(row, "id") in parked_ids)
+        for row in rows
+    ]
     next_cursor = _encode_catalog_cursor(query["sort"], rows[-1]) if cursor_mode and has_more and rows else None
     previous_cursor = _encode_catalog_cursor(query["sort"], rows[0]) if cursor_mode and has_previous and rows else None
     return {
@@ -314,6 +323,32 @@ def _add_filter_conditions(conditions: list[str], params: list[Any], query: dict
     _add_tag_condition(conditions, params, query["tag"], columns, has_overrides)
     _add_availability_condition(conditions, query["availability"], columns, has_dead)
     _add_missing_conditions(conditions, params, query["missing"], columns, has_overrides, missing_local_artwork)
+    _add_duration_conditions(conditions, params, query, columns)
+
+
+def _parked_artwork_ids(conn) -> set[str]:
+    """Return videos whose artwork extraction already exhausted its retry budget."""
+    from common.artwork_parking import parked_artwork_ids
+
+    return parked_artwork_ids(conn)
+
+
+def _add_duration_conditions(conditions: list[str], params: list[Any], query: dict[str, Any],
+                             columns: set[str]) -> None:
+    """Bound the stored duration in seconds; a video with no duration never matches a bound."""
+    minimum = query.get("min_duration")
+    maximum = query.get("max_duration")
+    if minimum is None and maximum is None:
+        return
+    if "duration" not in columns:
+        conditions.append("FALSE")
+        return
+    if minimum is not None:
+        conditions.append("v.duration >= %s")
+        params.append(minimum)
+    if maximum is not None:
+        conditions.append("v.duration <= %s")
+        params.append(maximum)
 
 
 def _add_search_condition(conditions: list[str], params: list[Any], q, columns: set[str],
@@ -430,7 +465,8 @@ def _get_video(db_url: str | None, video_id: str, media_root: str | os.PathLike[
                                     (video_id,),
                                 ).fetchall()]
         local_files = _local_file_status(registered_files, media_root)
-        video = _serialize_video(row, detail=True, local_files=local_files)
+        video = _serialize_video(row, detail=True, local_files=local_files,
+                                 artwork_parked=video_id in _parked_artwork_ids(conn))
         fingerprints = {"oshash": None, "phash": None}
         if "video_fingerprints" in tables:
             for algorithm, fingerprint in conn.execute(

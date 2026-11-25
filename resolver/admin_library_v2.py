@@ -99,11 +99,25 @@ def _validate_missing_fields(missing_fields: list[str]) -> list[str]:
     return missing_fields
 
 
+def _parse_duration_bound(raw, field: str) -> int | None:
+    """Return a non-negative duration bound in seconds, or None when the filter is empty."""
+    text = str(raw if raw is not None else "").strip()
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid {field}.") from exc
+    if value < 0:
+        raise ValueError(f"Invalid {field}.")
+    return value
+
+
 def _parse_catalog_request(
     *, q, channel_id, studio, performer, tag, availability, missing, sort,
-    offset, limit, exact_total, cursor, cursor_direction,
+    offset, limit, exact_total, cursor, cursor_direction, min_duration="", max_duration="",
 ):
-    """Return validated (offset, limit, missing, channel_ids, cursor_data); raise ValueError when invalid."""
+    """Return validated request fields; raise ValueError when invalid."""
     page_offset, page_limit = _parse_catalog_paging(offset, limit)
     missing_fields = [v.strip() for v in missing.split(",") if v.strip()]
     _check_catalog_choices(exact_total, cursor, cursor_direction, availability, sort)
@@ -111,7 +125,12 @@ def _parse_catalog_request(
     _check_catalog_text_lengths(q, studio, performer, tag)
     channel_ids = _parse_channel_ids(channel_id)
     missing_fields = _validate_missing_fields(missing_fields)
-    return page_offset, page_limit, missing_fields, channel_ids, cursor_data
+    min_seconds = _parse_duration_bound(min_duration, "min_duration")
+    max_seconds = _parse_duration_bound(max_duration, "max_duration")
+    if min_seconds is not None and max_seconds is not None and min_seconds > max_seconds:
+        raise ValueError("min_duration exceeds max_duration.")
+    return (page_offset, page_limit, missing_fields, channel_ids, cursor_data,
+            min_seconds, max_seconds)
 
 
 async def _artwork_redirect(admin, video_id: str):
@@ -244,6 +263,8 @@ def _route_library_videos(router, admin):
         tag: str = "",
         availability: str = "all",
         missing: str = "",
+        min_duration: str = "",
+        max_duration: str = "",
         sort: str = "last_seen",
         offset: str = "0",
         limit: str = "50",
@@ -254,10 +275,12 @@ def _route_library_videos(router, admin):
         if admin._admin_blocked(request):
             return admin.JSONResponse({"ok": False, "error": "Admin is only available locally"}, status_code=403)
         try:
-            page_offset, page_limit, missing_fields, channel_ids, cursor_data = _parse_catalog_request(
+            (page_offset, page_limit, missing_fields, channel_ids, cursor_data,
+             min_seconds, max_seconds) = _parse_catalog_request(
                 q=q, channel_id=channel_id, studio=studio, performer=performer, tag=tag,
                 availability=availability, missing=missing, sort=sort, offset=offset, limit=limit,
                 exact_total=exact_total, cursor=cursor, cursor_direction=cursor_direction,
+                min_duration=min_duration, max_duration=max_duration,
             )
         except (TypeError, ValueError):
             return admin.JSONResponse({"ok": False, "error": "Invalid catalog filter."}, status_code=400)
@@ -266,6 +289,7 @@ def _route_library_videos(router, admin):
             "q": q.strip(), "channel_id": channel_id, "channel_ids": channel_ids, "studio": studio.strip(),
             "performer": performer.strip(), "tag": tag.strip(),
             "availability": availability, "missing": missing_fields,
+            "min_duration": min_seconds, "max_duration": max_seconds,
             "sort": sort, "offset": page_offset, "limit": min(page_limit, 100),
             "total_exact": exact_total == "true",
             "cursor_data": cursor_data, "cursor_direction": cursor_direction,
