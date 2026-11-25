@@ -66,6 +66,75 @@ def _has_sqlite_header(path: str) -> bool:
         return False
 
 
+def read_session_snapshot(session_path: str) -> Optional[dict]:
+    """Read the logged-in session row without opening the shared file for writing.
+
+    Every write to the Telethon session file can collide with a live client's own writes
+    ("database is locked" -> OperationalError), and the file is a single rollback-journal
+    SQLite database shared by the resolver and the sync worker. The authorization probe
+    only needs dc_id/server/port/auth_key, so it reads them read-only instead.
+    """
+    actual_path = get_sqlite_session_file_path(session_path)
+    try:
+        import sqlite3
+        from contextlib import closing
+        # Read-only, without immutable=1: the session file may be written concurrently.
+        uri = f"file:{os.path.abspath(actual_path)}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=0.5)) as conn:
+            row = conn.execute(
+                "SELECT dc_id, server_address, port, auth_key FROM sessions LIMIT 1"
+            ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    dc_id, server_address, port, auth_key = row
+    if not auth_key or len(auth_key) != 256:
+        return None
+    return {
+        "dc_id": dc_id,
+        "server_address": server_address,
+        "port": port,
+        "auth_key": auth_key,
+    }
+
+
+def _memory_session_for(snapshot: dict) -> Any:
+    """Build an in-memory Telethon session from a snapshot of the SQLite session row."""
+    from telethon.crypto import AuthKey
+    from telethon.sessions import MemorySession
+
+    session = MemorySession()
+    session.set_dc(snapshot["dc_id"], snapshot["server_address"], snapshot["port"])
+    session.auth_key = AuthKey(data=snapshot["auth_key"])
+    return session
+
+
+def _authorization_client(actual_path: str, api_id_int: int, api_hash_str: str) -> Any:
+    """Return a client for the probe that does not write to the shared session file."""
+    try:
+        from telethon import TelegramClient
+    except ImportError as exc:
+        raise RuntimeError(
+            "Telethon is not installed. Add 'telethon>=1.36' to "
+            "resolver/requirements.txt and install it first."
+        ) from exc
+
+    snapshot = read_session_snapshot(actual_path)
+    if snapshot is not None:
+        try:
+            return TelegramClient(
+                _memory_session_for(snapshot), api_id_int, api_hash_str,
+                **telegram_client_kwargs(),
+            )
+        except Exception:
+            logger.debug("Falling back to the session file for the authorization probe", exc_info=True)
+    return TelegramClient(
+        actual_path, api_id_int, api_hash_str,
+        **telegram_client_kwargs(),
+    )
+
+
 def has_session_auth_key(session_path: str) -> bool:
     """Fast local check: returns True if SQLite session file contains a 256-byte auth_key.
 
@@ -110,24 +179,13 @@ async def is_session_authorized(
     except ValueError:
         return False
 
-    try:
-        from telethon import TelegramClient
-    except ImportError as exc:
-        raise RuntimeError(
-            "Telethon is not installed. Add 'telethon>=1.36' to "
-            "resolver/requirements.txt and install it first."
-        ) from exc
-
     if not _has_sqlite_header(actual_path):
         # Telethon opens the file in its constructor. A corrupt file makes that constructor fail
         # after it has already opened a SQLite handle that nothing can close, so reject it here.
         # Callers see an exception, as they did before, and keep their cached-authorization rules.
         raise ValueError("Telegram session file is not a SQLite database.")
 
-    client = TelegramClient(
-        actual_path, api_id_int, api_hash_str,
-        **telegram_client_kwargs(),
-    )
+    client = _authorization_client(actual_path, api_id_int, api_hash_str)
     login_timeout = get_telegram_login_timeout()
     try:
         await asyncio.wait_for(

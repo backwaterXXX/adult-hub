@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import os
 import threading
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -22,9 +23,15 @@ logger = logging.getLogger(__name__)
 POSITIVE_CACHE_SECONDS = 300.0
 NEGATIVE_CACHE_SECONDS = 60.0
 CHECK_CONCURRENCY = 4
+# How long a definite answer may stand in for a probe that could not complete. A locked
+# session database is transient and says nothing about the account, so reusing a recent
+# answer keeps a working account usable instead of failing its streams.
+GRACE_SECONDS = 900.0
 
 # account_id -> (monotonic expiry, authorized). Guarded by _lock.
 _cache: Dict[str, Tuple[float, bool]] = {}
+# account_id -> (monotonic time, authorized) of the last definite probe answer.
+_last_known: Dict[str, Tuple[float, bool]] = {}
 # account_id -> generation. invalidate() bumps it so a check that started earlier cannot
 # write its (possibly stale) result back into the cache.
 _generations: Dict[str, int] = {}
@@ -69,12 +76,42 @@ async def _probe_account(account_id: str) -> Optional[bool]:
         return None
 
 
+def _grace_seconds() -> float:
+    """Return how long the last definite answer may outlive a failed probe."""
+    raw = os.getenv("TELEGRAM_AUTHORIZATION_GRACE_SECONDS", "").strip()
+    if not raw:
+        return GRACE_SECONDS
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        return GRACE_SECONDS
+    return parsed if parsed >= 0 else GRACE_SECONDS
+
+
+def _last_known_answer(account_id: str) -> bool:
+    """Reuse the last definite answer when a probe could not complete."""
+    with _lock:
+        known = _last_known.get(account_id)
+    if known is None:
+        return False
+    seen_at, authorized = known
+    age = _clock() - seen_at
+    if age > _grace_seconds():
+        return False
+    logger.info(
+        "Reusing the Telegram authorization answer for %s from %.0fs ago: a probe could not complete",
+        account_id, age,
+    )
+    return authorized
+
+
 async def _run_check(account_id: str, generation: int) -> bool:
     authorized = await _probe_account(account_id)
     if authorized is None:
-        return False
+        return _last_known_answer(account_id)
     ttl = POSITIVE_CACHE_SECONDS if authorized else NEGATIVE_CACHE_SECONDS
     with _lock:
+        _last_known[account_id] = (_clock(), authorized)
         if _generations.get(account_id, 0) == generation:
             _cache[account_id] = (_clock() + ttl, authorized)
     return authorized
@@ -111,6 +148,7 @@ def invalidate(account_id: str) -> None:
     key = str(account_id or "").strip()
     with _lock:
         _cache.pop(key, None)
+        _last_known.pop(key, None)
         _inflight.pop(key, None)
         _generations[key] = _generations.get(key, 0) + 1
 

@@ -90,6 +90,7 @@ class AuthorizationFixtureMixin:
         self.addCleanup(set_memory_only_mode, False)
 
         telegram_authorization._cache.clear()
+        telegram_authorization._last_known.clear()
         telegram_authorization._generations.clear()
         telegram_authorization._inflight.clear()
 
@@ -180,6 +181,40 @@ class AccountAuthorizationTests(AuthorizationFixtureMixin, unittest.TestCase):
         with patch.object(telegram_authorization, "is_session_authorized", working):
             self.assertTrue(asyncio.run(telegram_authorization.is_account_authorized("Konrad")))
         working.assert_awaited_once()
+
+    def test_probe_error_reuses_the_last_definite_answer(self):
+        self.add_default_and_konrad()
+        self.assertTrue(asyncio.run(telegram_authorization.is_account_authorized("Konrad")))
+
+        # A locked session database is transient: it must not fail a working account.
+        self.now += telegram_authorization.POSITIVE_CACHE_SECONDS + 1
+        failing = MagicMock(side_effect=RuntimeError("database is locked"))
+        with patch.object(telegram_authorization, "is_session_authorized", failing):
+            self.assertTrue(asyncio.run(telegram_authorization.is_account_authorized("Konrad")))
+
+    def test_probe_error_stops_reusing_an_answer_past_the_grace_window(self):
+        self.add_default_and_konrad()
+        self.assertTrue(asyncio.run(telegram_authorization.is_account_authorized("Konrad")))
+
+        self.now += telegram_authorization.GRACE_SECONDS + 1
+        failing = MagicMock(side_effect=RuntimeError("database is locked"))
+        with patch.object(telegram_authorization, "is_session_authorized", failing):
+            self.assertFalse(asyncio.run(telegram_authorization.is_account_authorized("Konrad")))
+
+    def test_invalidate_drops_the_last_definite_answer(self):
+        self.add_default_and_konrad()
+        self.assertTrue(asyncio.run(telegram_authorization.is_account_authorized("Konrad")))
+
+        telegram_authorization.invalidate("Konrad")
+        failing = MagicMock(side_effect=RuntimeError("database is locked"))
+        with patch.object(telegram_authorization, "is_session_authorized", failing):
+            self.assertFalse(asyncio.run(telegram_authorization.is_account_authorized("Konrad")))
+
+    def test_grace_window_honours_the_environment(self):
+        with patch.dict(os.environ, {"TELEGRAM_AUTHORIZATION_GRACE_SECONDS": "5"}):
+            self.assertEqual(telegram_authorization._grace_seconds(), 5.0)
+        with patch.dict(os.environ, {"TELEGRAM_AUTHORIZATION_GRACE_SECONDS": "not-a-number"}):
+            self.assertEqual(telegram_authorization._grace_seconds(), telegram_authorization.GRACE_SECONDS)
 
 
 class RouterAuthorizationTests(AuthorizationFixtureMixin, unittest.TestCase):
