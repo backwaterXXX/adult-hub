@@ -30,7 +30,7 @@ Adult Hub provides automated indexing, metadata generation, and streaming proxy 
 ```mermaid
 flowchart TD
     subgraph Clients["Clients & Workers"]
-        JF["Jellyfin / Player Client"]
+        PLAYER["Player Client"]
         SYNC["Sync Worker Process"]
         ADMIN_UI["Admin Web UI (Sources)"]
     end
@@ -57,7 +57,7 @@ flowchart TD
 
     ADMIN_UI -->|Auth & Management| ADMIN_API
     SYNC -->|HTTP GET /history/channel| CATALOG_API
-    JF -->|HTTP GET Range tg://ref| PROXY
+    PLAYER -->|HTTP GET Range tg://ref| PROXY
 
     ADMIN_API --> ACCT_MGR
     CATALOG_API --> ROUTER
@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS public.telegram_account_channels (
 ### Legacy Migration & Backward Compatibility
 - **Migration Numbering**: Migration `m0066_telegram_accounts.py` (legacy v66, current chain v18) creates tables idempotently.
 - **Zero-Downtime Legacy Discovery**: On startup, if `telegram_accounts` is empty but a legacy session file exists at `TELEGRAM_SESSION_PATH`, the system auto-registers the `default` account, preserving existing authorization without requiring re-login.
-- **Deletion Safety**: Deleting an account removes its entry from `telegram_accounts`, cascades deletion in `telegram_account_channels`, and purges its `.session` file from disk. **It never deletes channels, media files, .strm pointers, or Jellyfin catalog items.**
+- **Deletion Safety**: Deleting an account removes its entry from `telegram_accounts`, cascades deletion in `telegram_account_channels`, and purges its `.session` file from disk. **It never deletes channels, media files, .strm pointers, or catalog rows.**
 
 ---
 

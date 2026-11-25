@@ -357,7 +357,7 @@ def _apply_catalog_title(video: Dict[str, Any], title: str, provider: str, _row)
     # Tytul: potwierdzone dopasowanie sceny StashDB/ThePornDB jest kanonicznym
     # zrodlem tytulu (jak w _apply_matched_scene). Swiezy listing z Telegrama
     # nie moze go cofnac do podpisu kanalu — inaczej NFO (a w nim nazwa
-    # widoczna w Jellyfin) traci tytul katalogowy przy kazdym przebiegu.
+    # widoczna w kliencie) traci tytul katalogowy przy kazdym przebiegu.
     # Jawne nadpisanie operatora ma pierwszenstwo.
     provider_title = title
     catalog_title = ""

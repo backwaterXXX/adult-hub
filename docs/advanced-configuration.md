@@ -104,7 +104,6 @@ Configure these settings in `.env` or Compose only when tuning specific performa
 ### Topology A: Standalone All-In-One (Default Quickstart)
 Use `scripts/setup.sh` or `compose.standalone.yml` to run the complete stack on a single host.
 - PostgreSQL 17 runs as an isolated container with named volume `postgres_data`.
-- Jellyfin runs with bridge networking and persistent volumes `jellyfin_config` and `jellyfin_cache`.
 - Resolver and sync connect via Docker internal DNS.
 
 ```sh
@@ -130,17 +129,7 @@ To connect Adult Hub to an existing PostgreSQL 17 cluster (e.g., self-hosted clu
    python3 migrate_db.py
    ```
 
-### Topology C: External Jellyfin Server
-If Jellyfin already runs on another server or container:
-1. Generate an API Key in Jellyfin: **Dashboard > Advanced > API Keys > Add**.
-2. Configure `.env`:
-   ```env
-   JELLYFIN_URL=http://jellyfin.local:8096
-   JELLYFIN_API_KEY=your_generated_api_key
-   ```
-3. Ensure both Adult Hub and Jellyfin share access to the media directory (e.g., via NFS or local bind mount) mapped at `/media/adult`.
-
-### Topology D: Reverse Proxy (Caddy / Nginx)
+### Topology C: Reverse Proxy (Caddy / Nginx)
 When exposing Adult Hub to companion players (Android TV, Desktop, Phone) over the internet:
 1. Route `/play/*` and `/admin/*` to resolver port `8090`.
 2. Configure `.env`:

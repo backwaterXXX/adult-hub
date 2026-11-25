@@ -158,7 +158,6 @@ APPLICATION_TABLES: tuple[str, ...] = (
     "performer_profile_overrides",
     "telegram_performer_proposals",
     "telegram_performer_rebuild_backup",
-    "jellyfin_person_sync",
     "stream_cache",
     "diagnostic_settings",
     "diagnostic_reports",

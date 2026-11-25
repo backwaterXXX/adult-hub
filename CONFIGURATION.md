@@ -111,17 +111,7 @@ Configure these opt-in variables only when enabling server-side or worker-upload
 | `PHASH_SERVER_BYTES_PER_SECOND` | `2097152` | Download rate limit during active stream extraction (2 MB/s). |
 | `PHASH_SERVER_IDLE_BYTES_PER_SECOND` | `10000000` | Download rate limit during idle extraction (10 MB/s). |
 | `PHASH_ACCEPTED_DECODER_PROFILES` | `""` | Comma-separated list of allowed decoder profile identifiers. |
-| `PHASH_ALLOWED_USER_IDS` | `""` | Comma-separated list of user IDs allowed to submit fingerprints. |
-
-### 2.7 Jellyfin FFmpeg Fast-Probe Optimization
-
-Tuning knobs for the Jellyfin FFmpeg stream probing wrapper (`scripts/jellyfin-ffmpeg.sh`).
-
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `JELLYFIN_FFMPEG_FAST_PROBE` | `true` | Apply fast-probe flags (`-analyzeduration`, `-probesize`) to accelerate `.strm` stream start. |
-| `JELLYFIN_FFMPEG_ANALYZE_DURATION` | `2M` | Maximum duration analyzed for stream information. |
-| `JELLYFIN_FFMPEG_PROBE_SIZE` | `3M` | Maximum buffer size probed for stream metadata. |
+| `PHASH_ALLOWED_USER_IDS` | `""` | Comma-separated client user IDs allowed to submit fingerprints even when they are not admins. |
 
 ---
 
@@ -130,7 +120,6 @@ Tuning knobs for the Jellyfin FFmpeg stream probing wrapper (`scripts/jellyfin-f
 ### Topology A: Standalone All-In-One (Default Quickstart)
 Use `scripts/setup.sh` or `compose.standalone.yml` to run the complete stack on a single host.
 - PostgreSQL 17 runs as an isolated container with named volume `postgres_data`.
-- Jellyfin runs with bridge networking and persistent volumes `jellyfin_config` and `jellyfin_cache`.
 - Resolver and sync connect via Docker internal DNS.
 - Automated database backups run via durable queue jobs claimed directly by the sync worker (no separate backup container).
 
@@ -157,17 +146,7 @@ To connect Adult Hub to an existing PostgreSQL 17 cluster (e.g., self-hosted clu
    python3 migrate_db.py apply
    ```
 
-### Topology C: External Jellyfin Server
-If Jellyfin already runs on another server or container:
-1. Generate an API Key in Jellyfin: **Dashboard > Advanced > API Keys > Add**.
-2. Configure `.env`:
-   ```env
-   JELLYFIN_URL=http://jellyfin.local:8096
-   JELLYFIN_API_KEY=your_generated_api_key
-   ```
-3. Ensure both Adult Hub and Jellyfin share access to the media directory (e.g., via NFS or local bind mount) mapped at `/media/adult`.
-
-### Topology D: Secure Reverse Proxy (Caddy / Nginx)
+### Topology C: Secure Reverse Proxy (Caddy / Nginx)
 When exposing Adult Hub to companion players (Android TV, Desktop, Phone) over the internet:
 
 > [!WARNING]
@@ -207,9 +186,9 @@ When exposing Adult Hub to companion players (Android TV, Desktop, Phone) over t
            respond "Access Denied" 403
        }
 
-       # Forward remaining traffic to Jellyfin
+       # Answer everything else with a 404
        handle {
-           reverse_proxy 127.0.0.1:8096
+           respond "Not Found" 404
        }
    }
    ```
@@ -261,8 +240,6 @@ Older environment variables are automatically mapped to their canonical equivale
 | `THEPORNDB_API_KEY` | `THEPORNDB_API_TOKEN` | Compatibility alias, accepted as fallback |
 | `STANDALONE_DATABASE_URL`| `DATABASE_URL` | Legacy standalone name, accepted as fallback |
 | `STANDALONE_ADMIN_PUBLIC`| `ADMIN_PUBLIC` | Legacy standalone name, accepted as fallback |
-| `STANDALONE_JELLYFIN_URL` | `JELLYFIN_URL` | Legacy standalone name, accepted as fallback |
-| `STANDALONE_JELLYFIN_API_KEY` | `JELLYFIN_API_KEY` | Legacy standalone name, accepted as fallback |
 | `STANDALONE_STREAM_PUBLIC_URL_TELEGRAM` | `STREAM_PUBLIC_URL_TELEGRAM` | Legacy standalone name, accepted as fallback |
 | `STANDALONE_STREAM_RESOLVER_URL` | `RESOLVER_PUBLIC_URL` | Legacy standalone name, accepted as fallback. `RESOLVER_PUBLIC_URL` takes precedence when both are set |
 | `RESOLVER_TRUSTED_PROXY_IPS`| `FORWARDED_ALLOW_IPS`| Compatibility alias, accepted as fallback |

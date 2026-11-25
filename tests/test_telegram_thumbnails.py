@@ -1,4 +1,4 @@
-"""Preview failures must not hold Jellyfin's metadata queue indefinitely."""
+"""A preview failure must not hold the publication queue indefinitely."""
 import asyncio
 from contextlib import asynccontextmanager
 import os

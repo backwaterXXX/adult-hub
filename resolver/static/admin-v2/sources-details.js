@@ -237,17 +237,6 @@
         isCount(http.rate_limited) ? `${Number(http.rate_limited)} rate limits` : null,
       ].filter(Boolean);
       if (httpFacts.length) technicalCopy.append(create('p', 'source-sync-run-details', `HTTP: ${httpFacts.join(' · ')}`));
-      const jellyfinPoll = run.jellyfin_refresh_poll && typeof run.jellyfin_refresh_poll === 'object'
-        ? run.jellyfin_refresh_poll : {};
-      const pollFacts = [
-        isCount(jellyfinPoll.calls) ? `${Number(jellyfinPoll.calls)} polls` : null,
-        isCount(jellyfinPoll.timeouts) ? `${Number(jellyfinPoll.timeouts)} timeouts` : null,
-        isCount(jellyfinPoll.total_seconds) ? `${Number(jellyfinPoll.total_seconds).toFixed(1)} s total` : null,
-        isCount(jellyfinPoll.max_seconds) ? `${Number(jellyfinPoll.max_seconds).toFixed(1)} s max` : null,
-      ].filter(Boolean);
-      technicalCopy.append(create('p', 'source-sync-run-details', pollFacts.length
-        ? `Jellyfin refresh polling: ${pollFacts.join(' · ')}`
-        : 'Jellyfin refresh polling: not recorded for this run'));
       copy.append(technical);
       row.append(copy, create('span', `status-pill ${pill}`, outcome));
       host.append(row);

@@ -1,5 +1,5 @@
 # Adult Hub Standalone Deployment using Prebuilt Container Images.
-# Runs an isolated multi-container stack with PostgreSQL 17, Jellyfin,
+# Runs an isolated multi-container stack with PostgreSQL 17,
 # Adult Hub Resolver, Sync Worker, and automated daily backups.
 name: adult-hub-standalone
 
@@ -43,25 +43,6 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ${CONFIG_PATH:-./config.yaml}:/config/config.yaml:ro
-
-  jellyfin:
-    image: ${JELLYFIN_IMAGE:-jellyfin/jellyfin:12.4}
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "curl --noproxy 'localhost' -Lk -fsS http://localhost:8096/health >/dev/null || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    ports:
-      - "${JELLYFIN_BIND_IP:-127.0.0.1}:${JELLYFIN_PORT:-8096}:8096"
-    environment:
-      - JELLYFIN_PublishedServerUrl=${JELLYFIN_PUBLISHED_SERVER_URL:-http://${JELLYFIN_BIND_IP:-127.0.0.1}:${JELLYFIN_PORT:-8096}}
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - jellyfin_config:/config
-      - jellyfin_cache:/cache
-      - ${MEDIA_DIR:-${MEDIA_PATH:-./media}}:/media/adult:ro
 
   resolver:
     image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:0.4.15}
@@ -127,8 +108,6 @@ services:
       - TELEGRAM_READ_AHEAD_BYTES=${TELEGRAM_READ_AHEAD_BYTES:-33554432}
       - TELEGRAM_STREAM_CACHE_BYTES=${TELEGRAM_STREAM_CACHE_BYTES:-134217728}
       - TELEGRAM_STREAM_CACHE_TTL_SECONDS=${TELEGRAM_STREAM_CACHE_TTL_SECONDS:-120}
-      - JELLYFIN_URL=${JELLYFIN_URL:-${STANDALONE_JELLYFIN_URL:-http://jellyfin:8096}}
-      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-${STANDALONE_JELLYFIN_API_KEY:-}}
       - STASHDB_API_KEY=${STASHDB_API_KEY:-}
       - STASH_API_KEY=${STASH_API_KEY:-}
       - STASHDB_API_URL=${STASHDB_API_URL:-https://stashdb.org/graphql}
@@ -160,8 +139,6 @@ services:
         condition: service_completed_successfully
       resolver:
         condition: service_healthy
-      jellyfin:
-        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import os,sys; from common.worker_capabilities import read_worker_capabilities; sys.exit(0 if read_worker_capabilities(os.environ.get('ADMIN_WORKER_CAPABILITIES_PATH', '/data/cache/worker-capabilities.json'))['available'] else 1)\""]
       interval: 30s
@@ -210,8 +187,6 @@ services:
       - DUPLICATE_AUTO_MERGE_ENABLED=${DUPLICATE_AUTO_MERGE_ENABLED:-false}
       - DUPLICATE_AUTO_MERGE_LIMIT=${DUPLICATE_AUTO_MERGE_LIMIT:-200}
       - DUPLICATE_AUTO_MERGE_TELEGRAM_FILE_ID=${DUPLICATE_AUTO_MERGE_TELEGRAM_FILE_ID:-true}
-      - JELLYFIN_URL=${JELLYFIN_URL:-${STANDALONE_JELLYFIN_URL:-http://jellyfin:8096}}
-      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-${STANDALONE_JELLYFIN_API_KEY:-}}
       - THEPORNDB_API_TOKEN=${THEPORNDB_API_TOKEN:-}
       - THEPORNDB_API_KEY=${THEPORNDB_API_KEY:-}
       - STASHDB_API_KEY=${STASHDB_API_KEY:-}
@@ -250,5 +225,3 @@ services:
 
 volumes:
   postgres_data:
-  jellyfin_config:
-  jellyfin_cache:

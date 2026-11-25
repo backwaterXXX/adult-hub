@@ -52,8 +52,6 @@ SECRET_KEYS = frozenset({
     "ADMIN_WRITE_TOKEN",
     "ADMIN_DUPLICATE_TOKEN",
     "TELEGRAM_API_HASH",
-    "JELLYFIN_API_KEY",
-    "STANDALONE_JELLYFIN_API_KEY",
     "STASHDB_API_KEY",
     "STASH_API_KEY",
     "FANSDB_API_KEY",
@@ -143,7 +141,7 @@ def _check_legacy_aliases(env_map: Mapping[str, str], aliases: list[dict[str, st
 
 
 def _validate_urls(env_map: Mapping[str, str], warnings: list[str], summary: dict[str, str]) -> None:
-    url_keys = ("RESOLVER_PUBLIC_URL", "RESOLVER_API_URL", "JELLYFIN_URL", "STASHDB_API_URL", "FANSDB_API_URL")
+    url_keys = ("RESOLVER_PUBLIC_URL", "RESOLVER_API_URL", "STASHDB_API_URL", "FANSDB_API_URL")
     for key in url_keys:
         val = env_map.get(key)
         if not val:

@@ -315,7 +315,7 @@ class TestBackfillScenes(PgTestCase):
         self.assertEqual(row[0], "Catalog Scene Title")
         self.assertEqual(row[1], "stashdb:phash")
         self.assertEqual(row[2], "stash-uuid-1")
-        # Jellyfin imports the locked NFO, so the catalog title must be there.
+        # The locked NFO must carry the catalog title.
         updated_nfo = nfo_path.read_text(encoding="utf-8")
         self.assertIn("<title>Catalog Scene Title</title>", updated_nfo)
         self.assertNotIn("<title>Provider Caption #42</title>", updated_nfo)

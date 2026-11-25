@@ -26,7 +26,7 @@ class FindDupesTest(unittest.TestCase):
         mock_conn = MagicMock()
         mock_conn.execute.return_value.fetchall.return_value = [
             ("v1", "telegram", "Title 1", 120, json.dumps(["Alice", "Bob"])),
-            ("v2", "jellyfin", None, "240", json.dumps(["  aLiCe  ", "BOB", "Charlie"])),
+            ("v2", "local", None, "240", json.dumps(["  aLiCe  ", "BOB", "Charlie"])),
             ("v3", "telegram", "Bad JSON", 100, "not a json string"),
             ("v4", "telegram", "Single", 100, json.dumps(["Alice"])),
             ("v5", "external", "NonIntDur", "invalid_dur", json.dumps(["Alice", "Bob"])),
@@ -46,7 +46,7 @@ class FindDupesTest(unittest.TestCase):
         self.assertEqual(videos[0]["performers"], {"alice", "bob"})
 
         self.assertEqual(videos[1]["id"], "v2")
-        self.assertEqual(videos[1]["provider"], "jellyfin")
+        self.assertEqual(videos[1]["provider"], "local")
         self.assertEqual(videos[1]["title"], "")
         self.assertEqual(videos[1]["duration"], 240)
         self.assertEqual(videos[1]["performers"], {"alice", "bob", "charlie"})

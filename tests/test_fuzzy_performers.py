@@ -192,9 +192,6 @@ class TestFuzzyPerformersDatabase(PgTestCase):
             self.conn.execute(
                 "INSERT INTO performer_bios (name, bio, birth, aliases, updated_at) VALUES ('BostonJock', 'A bio', '1990', '[]', 123)"
             )
-            self.conn.execute(
-                "INSERT INTO jellyfin_person_sync (name, pbc_updated_at, format_version) VALUES ('bostonjock', 100, 1)"
-            )
 
         merges = [("BostonJock", "Boston Jock")]
         try:
@@ -227,9 +224,6 @@ class TestFuzzyPerformersDatabase(PgTestCase):
         # Check performer_aliases
         alias_row = self.conn.execute("SELECT canonical FROM performer_aliases WHERE alias = 'bostonjock'").fetchone()
         self.assertEqual(alias_row[0], "Boston Jock")
-
-        # Check jellyfin_person_sync
-        self.assertIsNone(self.conn.execute("SELECT name FROM jellyfin_person_sync WHERE name = 'bostonjock'").fetchone())
 
         # A replay after a crash following the DB commit must still repair an NFO.
         nfo_path = self.media_dir / "test-v1.nfo"

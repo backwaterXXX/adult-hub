@@ -53,7 +53,7 @@ class TestResolverHttpApiSources(BaseHttpApiTestCase):
         self.assertEqual(disabled.status_code, 404)
 
         with self.admin_config(), patch.dict(os.environ, {
-            "PHASH_UPLOAD_ENABLED": "true", "JELLYFIN_URL": "http://jellyfin.invalid",
+            "PHASH_UPLOAD_ENABLED": "true",
         }):
             admin_token_only = self.request(
                 "POST", path, base_url="http://localhost",

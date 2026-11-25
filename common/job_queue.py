@@ -28,8 +28,8 @@ from common.queue_primitives import (
 # Actions the generic jobs-only worker can execute while holding its lock.
 WORKER_ACTIONS = (
     "hide", "dismiss", "undo", "undismiss", "performer_merge", "performer_refresh",
-    "collections_refresh", "quarantine", "metadata_update", "availability_check",
-    "consistency_audit", "metadata_quality_audit", "catalog_full_audit", "audit_repair_nfo", "audit_import_refresh", "orphan_file_operation",
+    "quarantine", "metadata_update", "availability_check",
+    "consistency_audit", "metadata_quality_audit", "catalog_full_audit", "audit_repair_nfo", "orphan_file_operation",
     "backup_create", "backup_restore_test", "metadata_backfill", "telegram_fingerprint_scan", "artwork_download", "artwork_generate", "duplicate_reconcile",
     # One-off triggers for the dependent stages listed in the Schedules UI.
     "history_cleanup", "performer_catalog", "fansdb_performer_catalog", "scene_backfill", "telegram_title_cleanup",

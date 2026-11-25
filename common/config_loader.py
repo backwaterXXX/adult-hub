@@ -77,7 +77,6 @@ class SyncConfig:
     pbc_backfill_per_run: int = 50
     tpdb_backfill_per_run: int = 50
     scene_backfill_per_run: int = 500
-    jellyfin_people_per_run: int = 50
     # How long the runner waits for a sync child to reach its next channel
     # boundary after a shutdown signal, before it ends the child. Docker gives
     # the container this long plus the stop_grace_period margin in compose.
@@ -167,7 +166,6 @@ ALLOWED_SYNC_KEYS = {
     "pbc_backfill_per_run",
     "tpdb_backfill_per_run",
     "scene_backfill_per_run",
-    "jellyfin_people_per_run",
     "shutdown_grace_seconds",
 }
 

@@ -3,8 +3,7 @@
 import json
 from pathlib import Path
 import tempfile
-import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 from pg_helper import TEST_URL
 from test_support import load_sync_module
@@ -331,12 +330,10 @@ class TestResolverHttpApiMaintenance(BaseHttpApiTestCase):
         from common.job_queue import claim_job, enqueue_job, finish_job, read_job
         sync = load_sync_module()
 
-        failed_id = enqueue_job(TEST_URL, "collections_refresh", {})
-        claimed = claim_job(TEST_URL, "collections_refresh")
+        failed_id = enqueue_job(TEST_URL, "history_cleanup", {})
+        claimed = claim_job(TEST_URL, "history_cleanup")
         finish_job(TEST_URL, failed_id, "failed", {"error_code": "simulated_upstream_failure"},
                    lease_token=claimed["lease_token"])
-        worker_result = {"collections": [{"name": "Adult Hub · Retry", "items": 1}],
-                         "matched_videos": 1}
         with tempfile.TemporaryDirectory(prefix="adult_hub_v2_retry_flow_") as directory, self.admin_config():
             root = Path(directory)
             with patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
@@ -351,23 +348,18 @@ class TestResolverHttpApiMaintenance(BaseHttpApiTestCase):
                 if isinstance(queued_payload, str):
                     queued_payload = json.loads(queued_payload)
                 self.assertEqual((queued["action"], queued["state"], queued_payload),
-                                 ("collections_refresh", "queued", {}))
-                with patch.object(sync, "DATA_DIR", root / "data"), \
-                     patch.dict("os.environ", {"JELLYFIN_URL": "http://jellyfin.invalid",
-                                                 "JELLYFIN_API_KEY": "test-key"}), \
-                     patch("common.managed_collections.refresh_managed_collections",
-                           new=AsyncMock(return_value=worker_result)) as refresh:
+                                 ("history_cleanup", "queued", {}))
+                with patch.object(sync, "DATA_DIR", root / "data"):
                     with db_session(TEST_URL) as conn:
                         self.assertEqual(sync.process_video_duplicate_jobs(conn, root / "media"), 1)
-                    refresh.assert_awaited_once()
                 completed = read_job(TEST_URL, retry_id)
                 completed_result = completed["result"]
                 if isinstance(completed_result, str):
                     completed_result = json.loads(completed_result)
                 self.assertEqual(completed["state"], "done")
-                self.assertEqual(completed_result["matched_videos"], 1)
+                self.assertEqual(completed_result["local_state"], "history_cleanup_completed")
 
-                cancel_id = enqueue_job(TEST_URL, "collections_refresh", {})
+                cancel_id = enqueue_job(TEST_URL, "history_cleanup", {})
                 completed_cancel = self.request("POST", f"/admin/api/v2/jobs/{retry_id}/cancel",
                                                 base_url="http://localhost", headers=headers)
                 cancelled = self.request("POST", f"/admin/api/v2/jobs/{cancel_id}/cancel",
@@ -382,106 +374,3 @@ class TestResolverHttpApiMaintenance(BaseHttpApiTestCase):
         self.assertEqual(wake.call_args_list[0].args, ("jobs",))
 
 
-    def test_v2_collections_refresh_persists_real_queue_job(self):
-        sync = load_sync_module()
-
-        result = {"collections": [{"name": "Adult Hub · Test", "items": 2}], "matched_videos": 2}
-        with tempfile.TemporaryDirectory(prefix="adult_hub_collections_flow_") as directory, self.admin_config(), \
-             patch.dict("os.environ", {
-                 "JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "test-key"
-             }):
-            root = Path(directory)
-            media = root / "media"
-            media.mkdir()
-            with patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
-                 patch.object(admin_module, "_wake_worker") as wake:
-                response = self.request("POST", "/admin/api/v2/maintenance/collections/refresh",
-                                        base_url="http://localhost",
-                                        headers={"Origin": "http://localhost",
-                                                 "Authorization": "Bearer test-write-token"}, json={})
-
-            self.assertEqual(response.status_code, 202, response.text)
-            job_id = response.json()["job_id"]
-            queued = get_job(TEST_URL, job_id)
-            self.assertEqual((queued["action"], queued["state"], queued["payload"]),
-                             ("collections_refresh", "queued", {}))
-            self.assertEqual(self._job_count(), 1)
-            wake.assert_called_once_with("jobs")
-
-            with patch.object(sync, "DATA_DIR", root / "data"), \
-                 patch.dict("os.environ", {"JELLYFIN_URL": "http://jellyfin.invalid",
-                                             "JELLYFIN_API_KEY": "test-key"}), \
-                 patch("common.managed_collections.refresh_managed_collections",
-                       new=AsyncMock(return_value=result)) as refresh:
-                with db_session(TEST_URL) as conn:
-                    completed = sync.process_video_duplicate_jobs(conn, media)
-
-            self.assertEqual(completed, 1)
-            refresh.assert_awaited_once()
-            self.assertEqual(refresh.await_args.args[1:],
-                             ("http://jellyfin.invalid", "test-key", TEST_URL))
-            finished = get_job(TEST_URL, job_id)
-            self.assertEqual(finished["state"], "done")
-            finished_result = finished["result"]
-            if isinstance(finished_result, str):
-                finished_result = json.loads(finished_result)
-            self.assertEqual(finished_result["matched_videos"], 2)
-            self.assertEqual(finished_result["collections"], result["collections"])
-
-
-    def test_v2_jellyfin_refresh_is_authorized_and_does_not_expose_credentials(self):
-        from unittest.mock import AsyncMock
-        response_from_jellyfin = Mock(status_code=204)
-        post = AsyncMock(return_value=response_from_jellyfin)
-        with self.admin_config(), patch.dict("os.environ", {
-            "JELLYFIN_URL": "http://jellyfin.local/", "JELLYFIN_API_KEY": "secret-jellyfin-key"
-        }), patch("httpx.AsyncClient.post", new=post):
-            denied = self.request("POST", "/admin/api/v2/maintenance/jellyfin/refresh", base_url="http://localhost",
-                                  headers={"Origin": "http://localhost"}, json={})
-            allowed = self.request("POST", "/admin/api/v2/maintenance/jellyfin/refresh", base_url="http://localhost",
-                                   headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}, json={})
-        self.assertEqual(denied.status_code, 403)
-        self.assertEqual(allowed.status_code, 200, allowed.text)
-        self.assertTrue(allowed.json()["requested"])
-        self.assertNotIn("secret-jellyfin-key", allowed.text)
-        post.assert_awaited_once()
-        self.assertEqual(post.await_args.args[0], "http://jellyfin.local/Library/Refresh")
-
-
-    def test_v2_jellyfin_refresh_rejects_missing_configuration(self):
-        with self.admin_config(), patch.dict("os.environ", {"JELLYFIN_URL": "", "JELLYFIN_API_KEY": ""}):
-            response = self.request("POST", "/admin/api/v2/maintenance/jellyfin/refresh", base_url="http://localhost",
-                                    headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}, json={})
-        self.assertEqual(response.status_code, 503, response.text)
-        self.assertNotIn("JELLYFIN_API_KEY", response.text)
-
-
-    def test_v2_collections_refresh_is_durable_and_authorized(self):
-        with self.admin_config(), patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
-             patch("resolver.video_duplicates.enqueue_job", return_value="job-collections") as enqueue, \
-             patch.object(admin_module, "_wake_worker") as wake:
-            denied = self.request("POST", "/admin/api/v2/maintenance/collections/refresh", base_url="http://localhost",
-                                  headers={"Origin": "http://localhost"}, json={})
-            with patch.dict("os.environ", {"JELLYFIN_URL": "", "JELLYFIN_API_KEY": ""}):
-                unavailable = self.request(
-                    "POST", "/admin/api/v2/maintenance/collections/refresh", base_url="http://localhost",
-                    headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}, json={}
-                )
-            with patch.dict("os.environ", {
-                "JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "test-key"
-            }):
-                queued = self.request(
-                    "POST", "/admin/api/v2/maintenance/collections/refresh", base_url="http://localhost",
-                    headers={"Origin": "http://localhost", "Authorization": "Bearer test-write-token"}, json={}
-                )
-        self.assertEqual(denied.status_code, 403)
-        self.assertEqual(unavailable.status_code, 503, unavailable.text)
-        self.assertEqual(queued.status_code, 202, queued.text)
-        self.assertEqual(queued.json()["job_id"], "job-collections")
-        enqueue.assert_called_once_with(TEST_URL, "collections_refresh", {})
-        wake.assert_called_once_with("jobs")
-
-
-
-if __name__ == "__main__":
-    unittest.main()

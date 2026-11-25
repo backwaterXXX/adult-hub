@@ -52,9 +52,6 @@ CORE_CALLS = (
     "backfill_performers_from_titles",
     "cleanup_orphaned_records",
     "cleanup_retention",
-    "sync_jellyfin_telegram_metadata",
-    "trigger_jellyfin_refresh",
-    "sync_jellyfin_titles",
 )
 
 # Imported lazily inside the pass, so they are reached through sys.modules.
@@ -67,7 +64,6 @@ LAZY_FUNCTIONS = {
     "sync.stashdb": "backfill_stashdb",
     "sync.fansdb": "backfill_fansdb",
     "sync.telegram_title_cleanup": "cleanup_telegram_titles",
-    "sync.jellyfin_people": "sync_jellyfin_people",
 }
 
 
@@ -209,9 +205,6 @@ class CoreDouble:
         self.SCENE_BACKFILL_PER_RUN = 11
         self.PBC_BACKFILL_PER_RUN = 22
         self.TPDB_BACKFILL_PER_RUN = 33
-        self.JELLYFIN_PEOPLE_PER_RUN = 44
-        self.JELLYFIN_URL = "http://jellyfin:8096"
-        self.JELLYFIN_API_KEY = "jf-key"
         self.CONFIG = config
         # State the pass reads at each channel boundary, not a dependency it
         # calls for a result: a scenario flips it through shutdown_during().
@@ -433,7 +426,6 @@ class TestPassOpeningAndClosing(SyncPassHarness):
         self.assertTrue(report["success"])
         self.assertEqual(sorted(self.rows()), ["telegram:chan-one", "telegram:chan-two"])
         self.assertTrue(self.core.logger.has("Sync completed successfully.", "info"))
-        self.assertEqual(report["jellyfin_refresh_poll"], {})
 
     def test_an_expected_source_that_never_synced_marks_the_run_failed(self):
         self.config.sources["pctv"] = SourceConfig(provider="pctv")
@@ -535,7 +527,7 @@ class TestMaintenanceAheadOfTheScans(SyncPassHarness):
         self.assertTrue(report["success"])
         self.assertTrue(self.core.logger.has(
             "Could not process queued duplicate decisions: ledger unreadable", "warning"))
-        self.assertTrue(self.sink("sync_jellyfin_titles").called, "the closing stages still run")
+        self.assertTrue(self.sink("cleanup_retention").called, "the closing stages still run")
 
     def test_a_checkpoint_that_fails_every_time_still_finishes_the_pass(self):
         self.explode("safe_process_duplicate_jobs_checkpoint", OSError("ledger busy"))
@@ -547,7 +539,7 @@ class TestMaintenanceAheadOfTheScans(SyncPassHarness):
             self.core.logger.text("warning").count(
                 "Could not process queued duplicate decisions: ledger busy"), 7)
         for name in ("rewrite_all_stream_files", "backfill_performers_from_titles",
-                     "cleanup_orphaned_records", "cleanup_retention", "sync_jellyfin_titles"):
+                     "cleanup_orphaned_records", "cleanup_retention"):
             self.assertTrue(self.sink(name).called, name)
 
     def test_only_the_checkpoint_before_the_scans_has_no_in_memory_records(self):
@@ -578,7 +570,7 @@ class TestMaintenanceAheadOfTheScans(SyncPassHarness):
 
         self.assertTrue(self.core.logger.has(
             "Final catalog flush failed: safe detail for library volume full", "error"))
-        for name in ("cleanup_orphaned_records", "cleanup_retention", "sync_jellyfin_titles"):
+        for name in ("cleanup_orphaned_records", "cleanup_retention"):
             self.assertTrue(self.sink(name).called, f"{name} still runs")
 
     def test_a_failed_publication_retry_keeps_the_pass_going(self):
@@ -590,24 +582,6 @@ class TestMaintenanceAheadOfTheScans(SyncPassHarness):
             "Could not retry pending library publications: library volume busy",
             "warning"))
         self.assertTrue(self.sink("sync_telegram_channel_pipeline").called, "the scans still run")
-
-    def test_a_missing_jellyfin_skips_its_publishing_but_keeps_duplicate_upkeep(self):
-        """Jellyfin is an optional viewer, so an unset URL must not cost the pass anything."""
-
-        self.use_core(config=self.config).JELLYFIN_URL = ""
-
-        self.assertTrue(self.sync())
-
-        for name in ("sync_jellyfin_telegram_metadata", "trigger_jellyfin_refresh",
-                     "sync_jellyfin_titles"):
-            self.assertFalse(self.sink(name).called, name)
-        self.assertFalse(self.sink("sync_jellyfin_people").called, "person pages stay unpublished")
-        self.assertTrue(
-            self.sink("safe_process_duplicate_jobs_checkpoint").called,
-            "duplicate upkeep is DB-only and must still run")
-        self.assertTrue(self.sink("cleanup_retention").called, "the rest of the pass still runs")
-        self.assertNotIn("jellyfin-refresh", [stage[0] for stage in self.core.stages],
-                         "an empty Jellyfin stage must not be recorded")
 
 
 class TestTheCoreFacadeImport(unittest.TestCase):

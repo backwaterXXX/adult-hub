@@ -29,8 +29,6 @@ dupes_report.csv
 
 # Application databases and cache
 data/
-jf-cache/
-jf-config/
 media/
 /standalone/cache/
 *.db

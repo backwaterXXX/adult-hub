@@ -3,50 +3,6 @@
 # falls back to ':dev', which is fine for ad-hoc work; the reported application
 # version always comes from VERSION, never from this tag.
 services:
-  jellyfin:
-    image: jellyfin/jellyfin:12.4
-    container_name: jellyfin
-    restart: unless-stopped
-    # Optional viewer. The TV app and the resolver serve catalog and playback
-    # themselves, so nothing in the stack waits for Jellyfin. Start it with
-    # 'docker compose --profile jellyfin up -d jellyfin' when its web UI or
-    # DLNA is wanted, and set JELLYFIN_URL/JELLYFIN_API_KEY to re-enable the
-    # publishing passes.
-    profiles: ["jellyfin"]
-    # Runs as the host owner of the /config and /cache data (uid/gid 1000). GPU access comes from
-    # the video (44) and render (992) groups below, which match the /dev/dri device owners.
-    user: "1000:1000"
-    # Compose's service_healthy dependency below needs an explicit condition
-    # here; this also keeps readiness behavior visible alongside the service.
-    healthcheck:
-      test: ["CMD-SHELL", "curl --noproxy 'localhost' -Lk -fsS http://localhost:8096/health >/dev/null || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    # Host networking supports native DLNA / UPnP discovery on Debian.
-    # Trade-off: no network isolation for Jellyfin (accepted — Jellyfin serves
-    # LAN only and DLNA/UPnP requires host-level multicast). Revisit if
-    # Jellyfin ever needs to be internet-facing; bridge + --publish is safer.
-    network_mode: host
-    environment:
-      - JELLYFIN_PublishedServerUrl=http://${HOST_IP:-127.0.0.1}:8096
-      - JELLYFIN_FFMPEG_FAST_PROBE=${JELLYFIN_FFMPEG_FAST_PROBE:-true}
-      - JELLYFIN_FFMPEG_ANALYZE_DURATION=${JELLYFIN_FFMPEG_ANALYZE_DURATION:-2M}
-      - JELLYFIN_FFMPEG_PROBE_SIZE=${JELLYFIN_FFMPEG_PROBE_SIZE:-3M}
-    command: ["--ffmpeg", "/usr/local/bin/ffmpeg"]
-    volumes:
-      - ./jf-config:/config
-      - ./jf-cache:/cache
-      - ${MEDIA_DIR:-${MEDIA_PATH:-./media/adult}}:/media/adult:ro
-      - ./scripts/jellyfin-ffmpeg.sh:/usr/local/bin/ffmpeg:ro
-      - ./scripts/jellyfin-ffprobe.sh:/usr/local/bin/ffprobe:ro
-    devices:
-      - /dev/dri:/dev/dri
-    group_add:
-      - "44"
-      - "992"
-
   resolver:
     image: ${RESOLVER_IMAGE:-adult-hub-resolver:${APP_VERSION:-dev}}
     build:
@@ -80,8 +36,6 @@ services:
       - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
       - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
       - TELEGRAM_SESSION_PATH=${TELEGRAM_SESSION_PATH:-/data/telegram.session}
-      - JELLYFIN_URL=${JELLYFIN_URL:-}
-      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
       - STASHDB_API_KEY=${STASHDB_API_KEY:-${STASH_API_KEY:-}}
       - FANSDB_API_KEY=${FANSDB_API_KEY:-}
       - FANSDB_API_URL=${FANSDB_API_URL:-https://fansdb.cc/graphql}
@@ -164,8 +118,6 @@ services:
       - TELEGRAM_SESSION_PATH=${TELEGRAM_SESSION_PATH:-/data/telegram.session}
       - DUPLICATE_AUTO_MERGE_ENABLED=${DUPLICATE_AUTO_MERGE_ENABLED:-false}
       - DUPLICATE_AUTO_MERGE_LIMIT=${DUPLICATE_AUTO_MERGE_LIMIT:-1000}
-      - JELLYFIN_URL=${JELLYFIN_URL:-}
-      - JELLYFIN_API_KEY=${JELLYFIN_API_KEY:-}
       - STASHDB_API_KEY=${STASHDB_API_KEY:-${STASH_API_KEY:-}}
       - FANSDB_API_KEY=${FANSDB_API_KEY:-}
       - FANSDB_API_URL=${FANSDB_API_URL:-https://fansdb.cc/graphql}
@@ -179,8 +131,6 @@ services:
       - ./config.yaml:/config/config.yaml:ro
       - ${MEDIA_DIR:-${MEDIA_PATH:-./media/adult}}:/media/adult
       - ./data:/data
-      # cleanup_old_transcodes() uses /transcodes.
-      - ./jf-cache/transcodes:/transcodes
 
 networks:
   selfhost:

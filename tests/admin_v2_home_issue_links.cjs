@@ -284,7 +284,6 @@ const calls = [];
 let failCapabilities = false;
 let failStatus = false;
 let failQualitySummary = false;
-let failJellyfinStatus = false;
 let failJobs = false;
 let writableCapabilities = false;
 let issueFeedIncomplete = false;
@@ -319,11 +318,7 @@ async function fetch(url) {
   }
   else if (parsedUrl.pathname === '/admin/api/v2/quality/summary') {
     if (failQualitySummary) return { ok: false, status: 503, json: async () => ({ error: 'unavailable' }) };
-    payload = { ok: true, latest_audit: { jellyfin_import_state: 'checked', created_at: '2026-10-14T09:00:00+00:00' } };
-  }
-  else if (parsedUrl.pathname === '/admin/api/v2/status/jellyfin') {
-    if (failJellyfinStatus) return { ok: false, status: 503, json: async () => ({ error: 'unavailable' }) };
-    payload = { ok: true, status: 'reachable', checked_at: '2026-10-14T10:00:00+00:00' };
+    payload = { ok: true, latest_audit: { created_at: '2026-10-14T09:00:00+00:00' } };
   }
   else if (parsedUrl.pathname === '/admin/api/v2/status/sync') payload = { ok: true, sync: syncFixture };
   else if (parsedUrl.pathname === '/admin/api/v2/capabilities') payload = {
@@ -565,8 +560,6 @@ const context = {
   // The Overview must not pay for statistics that only System shows.
   assert.equal(calls.some(url => url.includes('/quality/summary')), false,
     'Overview must not load the quality summary for its tiles');
-  assert.equal(calls.some(url => url.includes('/status/jellyfin')), false,
-    'Overview must not load the Jellyfin probe for its tiles');
 
   // Header: one aggregate service control that never looks healthy when unverified,
   // and an independent active tasks link whose count is not obscured by service status.
@@ -962,7 +955,7 @@ const context = {
   assert.equal(elements.get('systemStatusView').hidden, false, 'System defaults to Status');
   assert.equal(elements.get('systemBackupView').hidden, true);
   assert.equal(elements.get('systemMaintenanceView').hidden, true);
-  assert.equal(calls.some(url => url.includes('/quality/summary') || url.includes('/status/jellyfin')
+  assert.equal(calls.some(url => url.includes('/quality/summary')
     || url.includes('/diagnostics/playback') || url.includes('/activity')),
     false, 'System status avoids the retired catalog and admin history reports');
   assert.match(textOf(elements.get('writeAccessNotice')), /Read-only: Writes are disabled/,

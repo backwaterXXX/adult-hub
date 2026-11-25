@@ -2,7 +2,6 @@
 
 import io
 import json
-import os
 import sys
 import tempfile
 import unittest
@@ -90,11 +89,6 @@ class MergeHarness(PgTestCase):
                 "INSERT INTO performer_bios (name, bio, birth, aliases, updated_at) VALUES (%s, %s, %s, %s, %s)",
                 (name, bio, birth, aliases, updated_at))
 
-    def add_person_sync(self, name):
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO jellyfin_person_sync (name, pbc_updated_at) VALUES (%s, 333)", (name,))
-
     def add_alias(self, alias, canonical="Someone Else"):
         with self.conn:
             self.conn.execute(
@@ -118,7 +112,6 @@ class MergeHarness(PgTestCase):
         self.add_video("telegram:1", json.dumps([RAW, "Plain Name"]))
         self.add_photo(RAW)
         self.add_bio(RAW, bio="raw bio", birth="1991-02-02")
-        self.add_person_sync(RAW)
 
     # --- CLI harness ------------------------------------------------------
 
@@ -136,22 +129,11 @@ class MergeHarness(PgTestCase):
             self.addCleanup(patcher.stop)
         return SimpleNamespace(**stubs)
 
-    def run_cli(self, *flags, jf_url="", jf_key="", env_file=None):
-        """Run ``main()`` with a deterministic environment and argv.
-
-        ``JELLYFIN_*`` are forced empty by default so a developer's real ``.env``
-        cannot make the run call a live server, and ``__file__`` is redirected
-        into a scratch directory so the ``.env`` fallback never reads the
-        repository copy.
-        """
-        scratch = Path(self.tmp.name)
-        if env_file is not None:
-            (scratch / ".env").write_text(env_file, encoding="utf-8")
+    def run_cli(self, *flags):
+        """Run ``main()`` with a deterministic argv and captured stdout."""
         args = ["--db-url", self.db_url, "--media", str(self.media_dir), *flags]
         buffer = io.StringIO()
         with patch.object(sys, "argv", ["merge_performer_dupes.py", *args]), \
-                patch.object(merger, "__file__", str(scratch / "merge_performer_dupes.py")), \
-                patch.dict(os.environ, {"JELLYFIN_URL": jf_url, "JELLYFIN_API_KEY": jf_key}), \
                 redirect_stdout(buffer):
             code = merger.main()
         return code, buffer.getvalue()
@@ -162,7 +144,6 @@ class TestPerformerMappings(MergeHarness):
         self.add_video("telegram:1", json.dumps([RAW, "Plain Name", ""]))
         self.add_photo("Joey Mills (JoeyMillsXXX)")
         self.add_bio("Boti Bee (Bee)")
-        self.add_person_sync("Zed (ZedNick)")
 
         mapping = merger.find_performer_mappings(self.conn)
 
@@ -170,7 +151,6 @@ class TestPerformerMappings(MergeHarness):
             RAW: (BASE, NICK),
             "Joey Mills (JoeyMillsXXX)": ("Joey Mills", "JoeyMillsXXX"),
             "Boti Bee (Bee)": ("Boti Bee", "Bee"),
-            "Zed (ZedNick)": ("Zed", "ZedNick"),
         })
 
     def test_unescapes_html_entities_and_trims_whitespace(self):
@@ -233,7 +213,7 @@ class TestPlanVideoUpdates(MergeHarness):
         self.assertEqual([vid for vid, _, _ in updates], ["telegram:12"])
 
 
-class TestBackupAndJellyfinRefresh(MergeHarness):
+class TestPreMergeBackup(MergeHarness):
     def test_make_backup_uses_the_performer_merge_prefix(self):
         calls = []
 
@@ -251,53 +231,12 @@ class TestBackupAndJellyfinRefresh(MergeHarness):
         self.assertEqual(calls[0][0], "postgresql://user@host/db")
         self.assertEqual(calls[1][0], merger.DB_URL)
 
-    def test_jellyfin_refresh_requires_both_settings(self):
-        import urllib.request
-        with patch.object(urllib.request, "urlopen") as urlopen:
-            merger.trigger_jellyfin_refresh("", "key")
-            merger.trigger_jellyfin_refresh("http://jf:8096", "")
-
-        urlopen.assert_not_called()
-
-    def test_jellyfin_refresh_posts_a_mediabrowser_token(self):
-        import urllib.request
-        captured = {}
-
-        class Response:
-            status = 204
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return False
-
-        def fake_urlopen(request, timeout=None):
-            captured["request"] = request
-            captured["timeout"] = timeout
-            return Response()
-
-        with patch.object(urllib.request, "urlopen", fake_urlopen):
-            merger.trigger_jellyfin_refresh("http://jf:8096/", "secret-key")
-
-        request = captured["request"]
-        self.assertEqual(request.full_url, "http://jf:8096/Library/Refresh")
-        self.assertEqual(request.get_method(), "POST")
-        self.assertEqual(request.get_header("Authorization"), 'MediaBrowser Token="secret-key"')
-        self.assertEqual(captured["timeout"], 10)
-
-    def test_jellyfin_refresh_never_raises_at_the_caller(self):
-        import urllib.request
-        with patch.object(urllib.request, "urlopen", side_effect=OSError("unreachable")):
-            merger.trigger_jellyfin_refresh("http://jf:8096", "key")
-
 
 class TestMergeDryRun(MergeHarness):
     def test_dry_run_reports_the_plan_without_touching_anything(self):
         self.seed_full_merge()
         sync = self.stub_sync()
-        with patch.object(merger, "make_backup") as backup, \
-                patch.object(merger, "trigger_jellyfin_refresh") as refresh:
+        with patch.object(merger, "make_backup") as backup:
             code, output = self.run_cli()
 
         self.assertEqual(code, 0)
@@ -305,9 +244,7 @@ class TestMergeDryRun(MergeHarness):
         self.assertEqual(self.video_performers("telegram:1"), [RAW, "Plain Name"])
         self.assertEqual(self.rows("SELECT name FROM performer_photos WHERE name=%s", (BASE,)), [])
         self.assertEqual(self.rows("SELECT alias FROM performer_aliases"), [])
-        self.assertEqual(len(self.rows("SELECT name FROM jellyfin_person_sync")), 1)
         backup.assert_not_called()
-        refresh.assert_not_called()
         sync.create_nfo_file.assert_not_called()
 
     def test_dry_run_tolerates_manually_overridden_profiles(self):
@@ -334,13 +271,11 @@ class TestMergeApply(MergeHarness):
     def test_apply_rewrites_videos_photos_bios_aliases_and_nfo(self):
         self.seed_full_merge()
         sync = self.stub_sync()
-        with patch.object(merger, "make_backup") as backup, \
-                patch.object(merger, "trigger_jellyfin_refresh") as refresh:
+        with patch.object(merger, "make_backup") as backup:
             code, _ = self.run_cli("--apply", "--skip-backup")
 
         self.assertEqual(code, 0)
         backup.assert_not_called()
-        refresh.assert_not_called()
         self.assertEqual(self.video_performers("telegram:1"), [BASE, "Plain Name"])
 
         photos = {row[0]: row[1] for row in self.rows("SELECT name, thumb FROM performer_photos")}
@@ -353,8 +288,6 @@ class TestMergeApply(MergeHarness):
         self.assertEqual(
             sorted((row[0], row[1]) for row in self.rows("SELECT alias, canonical FROM performer_aliases")),
             sorted([(RAW.lower(), BASE), (NICK.lower(), BASE)]))
-        self.assertEqual(self.rows("SELECT name FROM jellyfin_person_sync"), [])
-
         sync.create_nfo_file.assert_called_once()
         video_dict, genres, tags, nfo_path = sync.create_nfo_file.call_args[0]
         self.assertEqual(nfo_path, self.media_dir / "telegram_1.nfo")
@@ -501,35 +434,6 @@ class TestMergeApply(MergeHarness):
 
         self.assertEqual(code, 0)
         self.assertEqual(self.video_performers("telegram:1"), [BASE, "Plain Name"])
-
-    def test_apply_refreshes_jellyfin_from_the_environment(self):
-        self.seed_full_merge()
-        self.stub_sync()
-        with patch.object(merger, "trigger_jellyfin_refresh") as refresh:
-            code, _ = self.run_cli("--apply", "--skip-backup",
-                                   jf_url="http://10.0.0.5:8096", jf_key="api-key")
-
-        self.assertEqual(code, 0)
-        refresh.assert_called_once_with("http://10.0.0.5:8096", "api-key")
-
-    def test_apply_reads_jellyfin_credentials_from_the_env_file(self):
-        self.seed_full_merge()
-        self.stub_sync()
-        env_file = 'OTHER=1\nJELLYFIN_URL="http://10.0.0.9:8096/"\nJELLYFIN_API_KEY=\'file-key\'\n'
-        with patch.object(merger, "trigger_jellyfin_refresh") as refresh:
-            code, _ = self.run_cli("--apply", "--skip-backup", env_file=env_file)
-
-        self.assertEqual(code, 0)
-        refresh.assert_called_once_with("http://10.0.0.9:8096/", "file-key")
-
-    def test_apply_stays_quiet_when_no_jellyfin_target_is_configured(self):
-        self.seed_full_merge()
-        self.stub_sync()
-        with patch.object(merger, "trigger_jellyfin_refresh") as refresh:
-            code, _ = self.run_cli("--apply", "--skip-backup", env_file="OTHER=1\n")
-
-        self.assertEqual(code, 0)
-        refresh.assert_not_called()
 
 
 if __name__ == "__main__":

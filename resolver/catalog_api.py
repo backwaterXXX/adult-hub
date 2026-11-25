@@ -222,7 +222,7 @@ async def _download_preview(prov, provider: str, ref: str):
     if not callable(fetch_fn):
         raise HTTPException(status_code=404, detail=f"Thumbs not supported for '{provider}'")
     try:
-        # A preview must finish well before Jellyfin's 100-second image timeout.
+        # A preview must finish well before the client's image timeout.
         data = await asyncio.wait_for(fetch_fn(ref), timeout=THUMB_API_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Preview download timed out")

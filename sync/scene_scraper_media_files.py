@@ -129,7 +129,7 @@ def _is_trusted_scene_source(source: Any) -> bool:
 def _apply_title(root: Any, matched: ScrapedScene, overrides: dict) -> None:
     # Exact hash identity can safely supply a better title. A confirmed
     # StashDB/ThePornDB scene match is the canonical title source, so it
-    # also replaces the provider caption here: the NFO is what Jellyfin
+    # also replaces the provider caption here: the NFO is what a media server
     # imports for locked Telegram entries. Keep the operator's value
     # wherever an explicit metadata override exists.
     if matched.title and "title" not in overrides:
@@ -253,7 +253,7 @@ def _apply_tags(root: Any, matched: ScrapedScene, overrides: dict, trusted: bool
 
 
 def _apply_provider_uniqueid(root: Any, matched: ScrapedScene) -> None:
-    # Keep the provider identity in the NFO so Jellyfin artwork sync can
+    # Keep the provider identity in the NFO so downstream artwork sync can
     # recognize externally matched scenes for both supported providers.
     source_lower = str(matched.source or "").casefold()
     if matched.external_id and ("stashdb" in source_lower or "theporndb" in source_lower or "fansdb" in source_lower):

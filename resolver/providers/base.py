@@ -62,7 +62,7 @@ def clean_display_title(
     provider: str = "",
     slug: str = "",
 ) -> str:
-    """Return a cleaned display title suitable for Jellyfin / UI cards.
+    """Return a cleaned display title suitable for UI cards.
 
     Strips parenthesized handles, leading category hashtags, and removes performer
     prefix/suffix separated by dash/colon when performers are already known. Preserves

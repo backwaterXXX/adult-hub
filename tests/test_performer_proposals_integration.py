@@ -1,7 +1,6 @@
 """PostgreSQL integration checks for persistent performer proposal review."""
 
 import json
-import os
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -21,12 +20,6 @@ sync = load_sync_module()
 class TestPerformerProposalIntegration(PgTestCase):
     def setUp(self):
         super().setUp()
-        self.env_patch = patch.dict(os.environ, {
-            "JELLYFIN_URL": os.getenv("JELLYFIN_URL") or "http://jellyfin.test:8096",
-            "JELLYFIN_API_KEY": os.getenv("JELLYFIN_API_KEY") or "test-jellyfin-key",
-        })
-        self.env_patch.start()
-        self.addCleanup(self.env_patch.stop)
         self.conn.execute(
             "INSERT INTO performer_catalog(id,source,source_id,name) VALUES (%s,'manual','p1','Canonical Name')",
             ("p1",),
@@ -185,10 +178,8 @@ class TestPerformerProposalIntegration(PgTestCase):
             media.mkdir()
             with patch.object(sync, "DATA_DIR", root / "data"), \
                  patch("common.fuzzy_performers.make_backup",
-                       return_value=root / "pre-merge.dump.gz"), \
-                 patch("common.fuzzy_performers.trigger_jellyfin_refresh", return_value=True) as refresh:
+                       return_value=root / "pre-merge.dump.gz"):
                 self.assertEqual(sync.process_video_duplicate_jobs(self.conn, media), 1)
-            refresh.assert_called_once_with()
             self.assertTrue((media / f"{sync.stable_media_basename('telegram:merge-alias')}.nfo").is_file())
             self.assertTrue((media / f"{sync.stable_media_basename('telegram:merge-canonical')}.nfo").is_file())
 
@@ -250,19 +241,16 @@ class TestPerformerProposalIntegration(PgTestCase):
             media = root / "library"
             media.mkdir()
             with patch.object(sync, "DATA_DIR", root / "data"), \
-                 patch.object(sync, "create_nfo_file") as create_nfo, \
-                 patch.object(sync, "trigger_jellyfin_refresh", return_value=True) as refresh:
+                 patch.object(sync, "create_nfo_file") as create_nfo:
                 self.assertEqual(sync.process_video_duplicate_jobs(self.conn, media), 1)
             create_nfo.assert_called_once()
             self.assertEqual(create_nfo.call_args.args[0]["performers"], ["Canonical Name", "Other Name"])
-            refresh.assert_called_once_with()
         finished_job = read_job(self.db_url, result["refresh_job_id"])
         self.assertEqual(finished_job["state"], "done")
         finished_result = finished_job["result"]
         if isinstance(finished_result, str):
             finished_result = json.loads(finished_result)
         self.assertEqual(finished_result["videos_refreshed"], 1)
-        self.assertEqual(finished_result["jellyfin_refresh"], "requested")
 
         with self.assertRaises(performer_proposals.ProposalError) as repeated:
             performer_proposals.review_proposal(

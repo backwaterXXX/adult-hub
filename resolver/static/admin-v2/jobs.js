@@ -20,7 +20,7 @@
     phash_generation: 'Generate pHash', thumbnail_generation: 'Generate thumbnail',
     phash_thumbnail_legacy: 'pHash and thumbnail (legacy)',
     duplicate_reconcile: 'Duplicate reconciliation', hide: 'Hide duplicates', dismiss: 'Dismiss pair', undo: 'Undo hide', undismiss: 'Undo dismissal',
-    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', collections_refresh: 'Update collections', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Full catalog audit', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', audit_import_refresh: 'Request Jellyfin reimport', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', history_cleanup: 'Backup history cleanup', performer_catalog: 'StashDB performer catalog', fansdb_performer_catalog: 'FansDB performer catalog', scene_backfill: 'Scene identification', telegram_title_cleanup: 'Telegram title cleanup', source_remove: 'Remove Telegram channel', source_readd: 'Re-add/rename Telegram channel', filesize_backfill: 'Backfill file sizes', dead_stream_quarantine: 'Dead stream quarantine', visual_compare: 'Compare video frames', visual_signature: 'Build frame signatures', sync: 'Sync'
+    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Full catalog audit', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', history_cleanup: 'Backup history cleanup', performer_catalog: 'StashDB performer catalog', fansdb_performer_catalog: 'FansDB performer catalog', scene_backfill: 'Scene identification', telegram_title_cleanup: 'Telegram title cleanup', source_remove: 'Remove Telegram channel', source_readd: 'Re-add/rename Telegram channel', filesize_backfill: 'Backfill file sizes', dead_stream_quarantine: 'Dead stream quarantine', visual_compare: 'Compare video frames', visual_signature: 'Build frame signatures', sync: 'Sync'
   };
   const HISTORICAL_ACTION_LABELS = {
     lukayan_fingerprint: 'Scene fingerprint · legacy',
@@ -65,8 +65,7 @@
       starting: 'Starting task', validating: 'Checking current data',
       preparing_files: 'Preparing recovery data', moving_files: 'Moving library files',
       restoring_files: 'Restoring library files', saving_catalog: 'Saving catalog changes',
-      merging_performers: 'Merging performers', refreshing_collections: 'Refreshing collections',
-      refreshing_jellyfin: 'Sending Jellyfin refresh request', jellyfin_refresh: 'Sending Jellyfin refresh request',
+      merging_performers: 'Merging performers',
       writing_nfo: 'Writing performer metadata files',
       applying_metadata: 'Writing metadata and NFO files',
       downloading_artwork: 'Looking up and downloading scene artwork',
@@ -83,7 +82,6 @@
       syncing_performer_catalog: 'Importing the StashDB performer catalog',
       syncing_fansdb_performer_catalog: 'Importing the FansDB performer catalog',
       cleaning_telegram_titles: 'Cleaning Telegram titles and tags',
-      reconciling_jellyfin_metadata: 'Reconciling Jellyfin metadata with Telegram tags',
       generating_phash: 'Generating perceptual hashes (pHash)',
       checking_availability: 'Checking playback availability',
       backfilling_file_sizes: 'Backfilling video file sizes from Telegram metadata',
@@ -95,21 +93,6 @@
   }
   function localResultLabel(value) {
     const labels = { hidden: 'Saved locally', dismissed: 'Saved locally', restored: 'Restored locally', quarantined: 'Quarantined locally', metadata_updated: 'Metadata updated locally', artwork_downloaded: 'Artwork downloaded locally', artwork_generated: 'Artwork generated locally', artwork_not_found: 'No matching artwork', artwork_download_failed: 'Poster download failed', artwork_lookup_failed: 'Artwork lookup failed', availability_checked: 'Availability check recorded', audit_completed: 'Audit complete', phash_generation_completed: 'pHash batch generated', filesize_backfill_completed: 'File sizes backfilled', dead_streams_quarantined: 'Dead streams quarantined' };
-    return labels[safeId(value).toLowerCase()] || 'Not recorded';
-  }
-  function jellyfinResultLabel(value) {
-    const labels = {
-      pending: 'Waiting for refresh request', updated: 'Refresh request accepted',
-      failed: 'Refresh request failed', skipped: 'Refresh skipped',
-      unavailable: 'Refresh unavailable', not_required: 'Not required'
-    };
-    return labels[safeId(value).toLowerCase()] || 'Not recorded';
-  }
-  function jellyfinImportLabel(value) {
-    const labels = {
-      not_requested: 'Not checked; refresh request was not accepted',
-      not_confirmed: 'Refresh request accepted; import not confirmed'
-    };
     return labels[safeId(value).toLowerCase()] || 'Not recorded';
   }
   function displayTime(value) {
@@ -136,11 +119,6 @@
     const parts = [];
     if (result.message) parts.push(scrub(result.message));
     if (result.local_state) parts.push(scrub(result.local_state));
-    if (result.jellyfin_refresh === 'failed') parts.push('Local result saved; Jellyfin refresh failed');
-    else if (result.jellyfin_refresh) parts.push(`Jellyfin refresh ${scrub(result.jellyfin_refresh)}`);
-    if (result.jellyfin_import === 'not_confirmed') parts.push('Jellyfin import not confirmed');
-    else if (result.jellyfin_import === 'not_requested') parts.push('Jellyfin import not checked');
-    else if (result.jellyfin_import === 'confirmed') parts.push('Jellyfin import confirmed');
     if (result.recovery) parts.push(`Recovery ${scrub(result.recovery)}`);
     if (result.error) parts.push(`Failed: ${scrub(result.error)}`);
     if (parts.length) return parts.join(' · ');
@@ -412,17 +390,14 @@
     if (activityWarning) meta.append(create('p', 'detail-description job-stale-warning', activityWarning));
     wrap.append(meta);
 
-    if (job.local_state || job.jellyfin_refresh || job.jellyfin_library_refresh || job.jellyfin_import || safeId(job.state).toLowerCase() === 'processing') {
+    if (job.local_state || safeId(job.state).toLowerCase() === 'processing') {
       const progress = create('section', 'detail-section');
       const progressFields = create('dl', 'detail-fields job-detail-fields');
       progressFields.append(
-        detailField('Local result', localResultLabel(job.local_state)),
-        detailField('Jellyfin refresh', jellyfinResultLabel(job.jellyfin_refresh)),
-        detailField('Jellyfin library refresh', jellyfinResultLabel(job.jellyfin_library_refresh)),
-        detailField('Jellyfin import', jellyfinImportLabel(job.jellyfin_import))
+        detailField('Local result', localResultLabel(job.local_state))
       );
       progress.append(create('h3', '', 'Progress and outcome'), progressFields);
-      if (safeId(job.state).toLowerCase() === 'processing' && !job.local_state && !job.jellyfin_refresh) {
+      if (safeId(job.state).toLowerCase() === 'processing' && !job.local_state) {
         progress.append(create('p', 'detail-description', 'This task predates detailed stage tracking or has not reached a recorded checkpoint yet.'));
       }
       const counts = job.progress || {};
@@ -430,9 +405,6 @@
         const stage = safeId(counts.stage || job.stage).toLowerCase();
         const unit = METADATA_PROGRESS_STAGES.has(stage) ? 'provider steps completed' : 'files handled';
         progress.append(create('p', 'detail-progress-count', `${counts.completed.toLocaleString('en-US')} of ${counts.total.toLocaleString('en-US')} ${unit}`));
-      }
-      if (job.jellyfin_refresh) {
-        progress.append(create('p', 'detail-description', 'A refresh request being accepted does not confirm that Jellyfin has finished importing the change.'));
       }
       wrap.append(progress);
     }

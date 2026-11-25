@@ -1,7 +1,6 @@
 """Focused contracts for Admin v2 issue-center rules, stalled jobs, and progress projections."""
 
 import json
-import os
 import time
 from types import SimpleNamespace
 import unittest
@@ -12,7 +11,6 @@ from common import db
 
 import resolver.admin_v2_issues as admin_v2_issues
 import resolver.admin_v2_jobs as admin_v2_jobs
-import sync.duplicate_jobs as duplicate_jobs
 
 
 class TestIssueCenterRules(unittest.TestCase):
@@ -127,16 +125,14 @@ class TestJobProgressProjection(unittest.TestCase):
     def test_job_detail_reports_real_checkpoint_without_exposing_result_payload(self):
         safe = admin_v2_jobs._safe_job({
             "id": "job-1", "action": "hide", "state": "processing", "updated_at": 123,
+            "progress": {"stage": "moving_files", "updated_at": 123},
             "result": {
-            "local_state": "hidden", "jellyfin_refresh": "pending",
-            "jellyfin_import": "unexpected-secret-state",
+                "local_state": "hidden",
                 "source_url": "https://secret.invalid/key", "path": "/srv/private/movie.strm",
             },
         })
-        self.assertEqual(safe["stage"], "jellyfin_refresh")
+        self.assertEqual(safe["stage"], "moving_files")
         self.assertEqual(safe["local_state"], "hidden")
-        self.assertEqual(safe["jellyfin_refresh"], "pending")
-        self.assertIsNone(safe["jellyfin_import"])
         self.assertNotIn("source_url", safe)
         self.assertNotIn("path", safe)
         self.assertNotIn("result", safe)
@@ -145,7 +141,6 @@ class TestJobProgressProjection(unittest.TestCase):
         safe = admin_v2_jobs._safe_job({"id": "old", "state": "processing", "result": None})
         self.assertEqual(safe["stage"], "processing")
         self.assertIsNone(safe["local_state"])
-        self.assertIsNone(safe["jellyfin_refresh"])
 
     def test_job_projection_exposes_safe_local_file_repair_state(self):
         safe = admin_v2_jobs._safe_job({
@@ -156,24 +151,6 @@ class TestJobProgressProjection(unittest.TestCase):
         self.assertEqual(safe["local_state"], "files_repaired")
         self.assertNotIn("restored_streams", safe)
         self.assertNotIn("path", safe)
-
-    def test_job_projection_explains_unconfirmed_jellyfin_import(self):
-        safe = admin_v2_jobs._safe_job({
-            "id": "metadata-1", "action": "metadata_update", "state": "done",
-            "result": {"jellyfin_refresh": "updated", "jellyfin_import": "not_confirmed"},
-        })
-        self.assertEqual(safe["jellyfin_refresh"], "updated")
-        self.assertEqual(safe["jellyfin_import"], "not_confirmed")
-        self.assertIn("import is not confirmed", safe["result_summary"])
-
-    def test_job_projection_exposes_positive_jellyfin_import_confirmation(self):
-        safe = admin_v2_jobs._safe_job({
-            "id": "job", "action": "metadata_update", "state": "done",
-            "result": {"local_state": "metadata_updated", "jellyfin_import": "confirmed",
-                       "jellyfin_import_confirmed_at": 1234567890},
-        })
-        self.assertEqual(safe["jellyfin_import"], "confirmed")
-        self.assertEqual(safe["result_summary"], "Jellyfin imported the current local metadata file.")
 
     def test_job_projection_summarizes_external_metadata_scan_without_provider_details(self):
         safe = admin_v2_jobs._safe_job({
@@ -211,16 +188,6 @@ class TestJobProgressProjection(unittest.TestCase):
             "External metadata scan completed. Open System to review cumulative progress.",
         )
 
-    def test_audit_reimport_projection_does_not_claim_local_write_or_import_completion(self):
-        safe = admin_v2_jobs._safe_job({
-            "id": "audit-refresh", "action": "audit_import_refresh", "state": "done",
-            "result": {"refresh_requested": True, "jellyfin_import": "not_confirmed"},
-        })
-        self.assertEqual(safe["action"], "audit_import_refresh")
-        self.assertEqual(safe["result_summary"],
-                         "Jellyfin accepted the refresh request; check the library after its next refresh.")
-        self.assertNotIn("jellyfin_import_confirmed_at", safe)
-
     def test_cancelled_job_has_safe_terminal_summary(self):
         safe = admin_v2_jobs._safe_job({"id": "cancelled-1", "state": "cancelled", "result": {}})
         self.assertEqual(safe["stage"], "cancelled")
@@ -251,43 +218,6 @@ class TestJobProgressProjection(unittest.TestCase):
         self.assertEqual(safe["stage"], "moving_files")
         self.assertEqual(safe["progress"], {"stage": "moving_files", "updated_at": 100, "completed": 2, "total": 5})
         self.assertEqual(safe["events"], [{"stage": "moving_files", "updated_at": 100, "completed": 2, "total": 5}])
-
-    def test_jellyfin_checkpoint_is_persisted_before_remote_request(self):
-        class Connection:
-            def __init__(self):
-                self.statements = []
-                self.result = {"operation_id": "operation-2", "undo_snapshots": [{"video": {"id": "one"}}]}
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def execute(self, sql, params):
-                if sql.startswith("SELECT result"):
-                    return SimpleNamespace(fetchone=lambda: (json.dumps(self.result),))
-                self.statements.append((sql, params))
-                self.result = json.loads(params[0])
-                return SimpleNamespace(rowcount=1)
-
-        conn = Connection()
-        observed = []
-        services = SimpleNamespace(trigger_jellyfin_refresh=lambda: observed.append(list(conn.statements)) or True)
-        with patch.dict(os.environ, {"JELLYFIN_URL": "http://jellyfin:8096", "JELLYFIN_API_KEY": "test-key"}):
-            result = duplicate_jobs._refresh_jellyfin_with_progress(conn, "job-2", "hidden", services)
-        self.assertTrue(result)
-        self.assertEqual(len(observed), 1)
-        sql, params = observed[0][0]
-        self.assertIn("state='processing'", sql)
-        progress = json.loads(params[0])
-        self.assertEqual(progress["local_state"], "hidden")
-        self.assertEqual(progress["jellyfin_refresh"], "pending")
-        self.assertEqual(progress["undo_snapshots"], [{"video": {"id": "one"}}])
-        self.assertEqual(progress["progress"]["stage"], "refreshing_jellyfin")
-        self.assertEqual(progress["events"][-1]["stage"], "refreshing_jellyfin")
-
-
 
 class TestStalledJobIssuePostgresIntegration(PgTestCase):
     def test_real_processing_job_generates_a_redacted_stalled_issue(self):

@@ -6,10 +6,8 @@ from decimal import Decimal
 import math
 import re
 import time
-from urllib.parse import urlsplit
 import logging
 
-import httpx
 from fastapi import APIRouter, Request
 from resolver.admin_v2_errors import V2ErrorRoute
 
@@ -147,32 +145,6 @@ def _last_sync_run(sync_result, history):
     sync_result["last_run"] = last_run
 
 
-async def _jellyfin_probe():
-    """Make a bounded, unauthenticated reachability probe without returning server details."""
-    import os
-
-    base_url = os.getenv("JELLYFIN_URL", "").strip().rstrip("/")
-    if not base_url:
-        return {"status": "not_configured", "checked_at": None}
-    try:
-        parsed = urlsplit(base_url)
-        if (parsed.scheme not in {"http", "https"} or not parsed.netloc
-                or parsed.username or parsed.password or parsed.query or parsed.fragment):
-            return {"status": "unknown", "checked_at": None}
-    except Exception:
-        logger.debug("Ignored exception in _jellyfin_probe", exc_info=True)
-        return {"status": "unknown", "checked_at": None}
-    try:
-        # Jellyfin's public system-info route responds without an API key. Ignore
-        # the body entirely: it includes public instance details not needed here.
-        async with httpx.AsyncClient(timeout=3.0, follow_redirects=False) as client:
-            response = await client.get(f"{base_url}/System/Info/Public")
-        status = "reachable" if response.status_code == 200 else "unavailable"
-    except Exception:
-        status = "unavailable"
-    return {"status": status, "checked_at": datetime.now(timezone.utc).isoformat()}
-
-
 def _route_admin_v2_capabilities(router, admin):
     @router.get("/api/v2/capabilities")
     async def admin_v2_capabilities(request: Request):
@@ -191,28 +163,6 @@ def _route_admin_v2_sync_status(router, admin):
             asyncio.to_thread(_sync_stale_after_seconds, admin.CONFIG_PATH, admin.HUB_DB_URL),
         )
         return {"ok": True, "sync": _sanitized_sync_status(sync, stale_after)}
-
-
-def _route_admin_v2_jellyfin_status(router, admin):
-    @router.get("/api/v2/status/jellyfin")
-    async def admin_v2_jellyfin_status(request: Request):
-        if admin._admin_blocked(request):
-            return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
-        return {"ok": True, **(await _jellyfin_probe())}
-
-
-_ATTENTION_KEYS = (
-    "pending_tasks", "failed_tasks", "failed_tasks_available", "unavailable_videos",
-    "unavailable_available", "sync_backlog_available", "sync_backlog_queued",
-    "sync_backlog_processing", "sync_backlog_oldest_age_seconds",
-    "last_sync_failed_sources", "last_sync_rate_limited",
-)
-
-_DB_COUNT_KEYS = (
-    "videos_total", "artwork_total", "oshash_total", "phash_total", "files_total",
-    "telegram_total", "fresh_24h", "photos_total", "bios_total", "aliases_total",
-    "dead_streams_total", "unplayable_total",
-)
 
 
 def _fill_runtime(runtime, result):
@@ -247,6 +197,20 @@ async def _runtime_status(admin, request):
         except Exception:
             logger.debug("Ignored exception in admin_v2_status", exc_info=True)
     return runtime
+
+
+_ATTENTION_KEYS = (
+    "pending_tasks", "failed_tasks", "failed_tasks_available", "unavailable_videos",
+    "unavailable_available", "sync_backlog_available", "sync_backlog_queued",
+    "sync_backlog_processing", "sync_backlog_oldest_age_seconds",
+    "last_sync_failed_sources", "last_sync_rate_limited",
+)
+
+_DB_COUNT_KEYS = (
+    "videos_total", "artwork_total", "oshash_total", "phash_total", "files_total",
+    "telegram_total", "fresh_24h", "photos_total", "bios_total", "aliases_total",
+    "dead_streams_total", "unplayable_total",
+)
 
 
 def _attention_fields(admin):
@@ -359,6 +323,5 @@ def build_router(admin):
     router = APIRouter(route_class=V2ErrorRoute)
     _route_admin_v2_capabilities(router, admin)
     _route_admin_v2_sync_status(router, admin)
-    _route_admin_v2_jellyfin_status(router, admin)
     _route_admin_v2_status(router, admin)
     return router

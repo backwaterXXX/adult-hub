@@ -154,14 +154,6 @@ def _apply_approvals(conn, unambiguous_by_video) -> tuple[int, int, int]:
     return approved_count, videos_updated, nfos_updated
 
 
-def _refresh_jellyfin() -> None:
-    try:
-        if S is not None and hasattr(S, "trigger_jellyfin_refresh") and S.trigger_jellyfin_refresh():
-            print("Triggered Jellyfin library refresh.")
-    except Exception as exc:
-        print(f"Jellyfin refresh skipped/failed: {exc}")
-
-
 def run(db_url: str | None = None, apply: bool = False) -> None:
     conn = db.connect(db_url)
     cursor = conn.cursor()
@@ -188,8 +180,6 @@ def run(db_url: str | None = None, apply: bool = False) -> None:
     print(f"Successfully approved {approved_count} proposals!")
     print(f"Updated {videos_updated} videos with new performers.")
     print(f"Regenerated {nfos_updated} NFO files.")
-
-    _refresh_jellyfin()
 
 
 def main() -> None:

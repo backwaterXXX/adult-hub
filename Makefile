@@ -104,8 +104,7 @@ update:
 package-release:
 	@scripts/package_release.sh '$(APP_VERSION)'
 
-# Application services only: Jellyfin is defined in the same file and is not
-# part of a release, so it stays out of a deploy.
+# Application services only: the Telegram auth helper stays out of a deploy.
 deploy:
 	@printf 'Deploying Adult Hub %s\n' '$(APP_VERSION)'
 	docker compose build resolver sync

@@ -8,12 +8,11 @@ import sys
 import threading
 import time
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import sync.duplicate_jobs as duplicate_jobs
 from sync.duplicate_jobs import _heartbeat_processing_job
 from resolver.video_duplicates import enqueue_job
-from common.job_queue import retry_job
 from tests.test_video_duplicate_jobs import BaseVideoDuplicateJobsTestCase, sync
 
 
@@ -103,85 +102,6 @@ class TestVideoDuplicateJobsWorker(BaseVideoDuplicateJobsTestCase):
             heartbeat.join(timeout=2)
         self.assertGreater(row[0], 1)
         self.assertEqual(row[1], "{}")
-
-
-    def test_metadata_update_keeps_source_and_retries_jellyfin_after_local_nfo_write(self):
-        payload = {
-            "video_id": self.loser,
-            "expected_revision": 0,
-            "changes": {"title": "Manual title", "plot": "", "studio": "Manual studio",
-                        "performers": ["Manual actor"], "tags": ["Manual tag"],
-                        "date_released": "2026-02-03"},
-            "reset_fields": [],
-        }
-        job_id = enqueue_job(self.db_path, "metadata_update", payload)
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False) as refresh:
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
-        self.assertEqual(refresh.call_count, 1)
-        state, raw_result = self.conn.execute(
-            "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)
-        ).fetchone()
-        self.assertEqual(state, "failed")
-        failed_result = json.loads(raw_result)
-        self.assertEqual(failed_result["local_state"], "metadata_updated")
-        self.assertEqual(failed_result["jellyfin_refresh"], "failed")
-        self.assertEqual(failed_result["jellyfin_import"], "not_requested")
-        self.assertTrue(failed_result["nfo_written"])
-
-        source_title = self.conn.execute("SELECT title FROM videos WHERE id=%s", (self.loser,)).fetchone()[0]
-        self.assertEqual(source_title, self.loser)
-        override = self.conn.execute(
-            "SELECT fields,revision FROM video_metadata_overrides WHERE video_id=%s", (self.loser,)
-        ).fetchone()
-        self.assertEqual(json.loads(override[0]), {
-            "title": "Manual title", "plot": "", "studio": "Manual studio",
-            "performers": ["Manual actor"], "tags": ["Manual tag"],
-            "date_released": "2026-02-03",
-        })
-        self.assertEqual(override[1], 1)
-        audit = self.conn.execute(
-            "SELECT event_type,object_type,object_id,job_id,changes FROM admin_audit_events WHERE job_id=%s",
-            (job_id,),
-        ).fetchone()
-        self.assertEqual(audit[0:4], ("metadata_update", "video", self.loser, job_id))
-        audit_changes = audit[4] if isinstance(audit[4], dict) else json.loads(audit[4])
-        self.assertEqual(audit_changes["title"], {
-            "before": self.loser, "after": "Manual title",
-            "before_overridden": False, "after_overridden": True,
-        })
-        self.assertEqual(audit_changes["plot"]["before"], None)
-        self.assertEqual(audit_changes["plot"]["after"], "")
-        self.assertEqual(set(audit_changes), {
-            "title", "plot", "studio", "performers", "tags", "date_released",
-        })
-        nfo_path = self.media / f"{sync.stable_media_basename(self.loser)}.nfo"
-        nfo_text = nfo_path.read_text(encoding="utf-8")
-        self.assertIn("Manual title", nfo_text)
-        self.assertIn("Manual studio", nfo_text)
-        self.assertIn("Manual actor", nfo_text)
-        self.assertIn("Manual tag", nfo_text)
-        self.assertIn("2026-02-03", nfo_text)
-        self.assertNotIn(self.loser, nfo_text)
-
-        retry_id = retry_job(self.db_path, job_id)
-        self.assertIsNotNone(retry_id)
-        with patch.object(sync, "create_nfo_file", wraps=sync.create_nfo_file) as nfo_writer, \
-                patch.object(sync, "trigger_jellyfin_refresh", return_value=True) as refresh:
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
-        self.assertEqual(refresh.call_count, 1)
-        self.assertEqual(nfo_writer.call_count, 0, "Retry should resume at Jellyfin after a successful NFO write.")
-        result = json.loads(self.conn.execute(
-            "SELECT result FROM video_duplicate_jobs WHERE id=%s", (retry_id,)
-        ).fetchone()[0])
-        self.assertEqual(result["metadata_revision"], 1)
-        self.assertEqual(result["jellyfin_refresh"], "updated")
-        self.assertEqual(result["jellyfin_import"], "not_confirmed")
-        self.assertEqual(self.conn.execute(
-            "SELECT revision FROM video_metadata_overrides WHERE video_id=%s", (self.loser,)
-        ).fetchone()[0], 1)
-        self.assertEqual(self.conn.execute(
-            "SELECT count(*) FROM admin_audit_events WHERE job_id=%s", (job_id,)
-        ).fetchone()[0], 1, "Resuming after the local commit must not duplicate the change event.")
 
 
     def test_source_sync_updates_raw_title_but_keeps_manual_nfo_title(self):
@@ -361,41 +281,12 @@ class TestVideoDuplicateJobsWorker(BaseVideoDuplicateJobsTestCase):
         job_id = queued["jobs"][0]["job_id"]
         with self.conn:
             self.conn.execute("UPDATE videos SET plot='Changed source description' WHERE id=%s", (self.loser,))
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
         job = self.conn.execute("SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
         self.assertEqual(job[0], "failed")
         self.assertIn("source values changed after the preview", json.loads(job[1])["error"])
         self.assertIsNone(self.conn.execute(
             "SELECT 1 FROM video_metadata_overrides WHERE video_id=%s", (self.loser,)).fetchone())
-
-
-    def test_confirmed_jellyfin_nfo_hash_updates_completed_metadata_job(self):
-        job_id = enqueue_job(self.db_path, "metadata_update", {"video_id": self.loser})
-        nfo_path = self.media / (sync.stable_media_basename(self.loser) + ".nfo")
-        digest = sync.hashlib.sha256(nfo_path.read_bytes()).hexdigest()
-        with self.conn:
-            self.conn.execute("UPDATE video_duplicate_jobs SET state='done',result=%s WHERE id=%s",
-                              (json.dumps({"local_state": "metadata_updated", "nfo_written": True,
-                                           "jellyfin_import": "not_confirmed",
-                                           "nfo_content_hashes": {nfo_path.name: digest}}), job_id))
-        old_job_id = enqueue_job(self.db_path, "metadata_update", {"video_id": self.loser})
-        with self.conn:
-            self.conn.execute("UPDATE video_duplicate_jobs SET state='done',result=%s WHERE id=%s",
-                              (json.dumps({"local_state": "metadata_updated", "nfo_written": True,
-                                           "jellyfin_import": "not_confirmed",
-                                           "nfo_content_hashes": {nfo_path.name: "old-hash"}}), old_job_id))
-        filename = sync.stable_media_basename(self.loser) + ".strm"
-        sync._confirm_metadata_import_jobs({filename: digest}, self.db_path)
-        result = json.loads(self.conn.execute(
-            "SELECT result FROM video_duplicate_jobs WHERE id=%s", (job_id,)
-        ).fetchone()[0])
-        self.assertEqual(result["jellyfin_import"], "confirmed")
-        self.assertIsInstance(result["jellyfin_import_confirmed_at"], int)
-        old_result = json.loads(self.conn.execute(
-            "SELECT result FROM video_duplicate_jobs WHERE id=%s", (old_job_id,)
-        ).fetchone()[0])
-        self.assertEqual(old_result["jellyfin_import"], "not_confirmed")
 
 
     def test_performer_merge_job_recovery_and_single_worker_lock(self):
@@ -456,59 +347,6 @@ class TestVideoDuplicateJobsWorker(BaseVideoDuplicateJobsTestCase):
             "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
         self.assertEqual(state, "done")
         self.assertEqual(json.loads(result)["message"], "merged")
-
-
-    def test_collection_job_recovers_processing_obeys_lock_and_runs_once(self):
-        job_id = enqueue_job(self.db_path, "collections_refresh", {})
-        self.conn.execute("UPDATE video_duplicate_jobs SET state='processing' WHERE id=%s", (job_id,))
-        self.conn.commit()
-        result = {"collections": [{"name": "Adult Hub · Test", "items": 2}], "matched_videos": 2}
-        refresh = AsyncMock(return_value=result)
-        with patch.dict(os.environ, {"JELLYFIN_URL": "http://jellyfin/", "JELLYFIN_API_KEY": "environment-secret"}), \
-             patch("common.managed_collections.refresh_managed_collections", refresh):
-            with (self.root / ".video_duplicate_jobs.lock").open("a") as other_worker:
-                fcntl.flock(other_worker.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
-                refresh.assert_not_called()
-                fcntl.flock(other_worker.fileno(), fcntl.LOCK_UN)
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
-        refresh.assert_awaited_once()
-        args = refresh.await_args.args
-        self.assertEqual(args[1:], ("http://jellyfin", "environment-secret", self.db_path))
-        state, payload, result_raw = self.conn.execute("SELECT state,payload,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
-        self.assertEqual(state, "done")
-        self.assertEqual(json.loads(result_raw)["matched_videos"], 2)
-        self.assertEqual(json.loads(result_raw)["collections"], result["collections"])
-        self.assertEqual(json.loads(payload), {})
-        self.assertNotIn("environment-secret", result_raw)
-
-
-    def test_collection_worker_rechecks_config_and_marks_job_failed(self):
-        job_id = enqueue_job(self.db_path, "collections_refresh", {})
-        with patch.dict(os.environ, {"JELLYFIN_URL": "", "JELLYFIN_API_KEY": ""}), \
-             patch("common.managed_collections.refresh_managed_collections", new_callable=AsyncMock) as refresh:
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
-            refresh.assert_not_called()
-        state, result = self.conn.execute("SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
-        self.assertEqual(state, "failed")
-        self.assertIn("error", json.loads(result))
-
-
-    def test_collection_remote_failure_persists_then_new_request_can_retry(self):
-        job_id = enqueue_job(self.db_path, "collections_refresh", {})
-        with patch.dict(os.environ, {"JELLYFIN_URL": "http://jellyfin", "JELLYFIN_API_KEY": "secret"}), \
-             patch("common.managed_collections.refresh_managed_collections", new_callable=AsyncMock) as refresh:
-            refresh.side_effect = RuntimeError("temporary upstream failure")
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
-            self.assertEqual(self.conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0], "failed")
-            retry = enqueue_job(self.db_path, "collections_refresh", {})
-            self.assertNotEqual(retry, job_id)
-            refresh.side_effect = None
-            refresh.return_value = {"collections": [], "matched_videos": 0}
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
-            self.assertEqual(self.conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (retry,)).fetchone()[0], "done")
-        self.assertEqual(refresh.await_count, 2)
 
 
     def test_safe_checkpoint_skips_when_collected_not_empty(self):
@@ -588,8 +426,7 @@ class TestVideoDuplicateJobsWorker(BaseVideoDuplicateJobsTestCase):
                 (readd_id,),
             )
 
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
 
         states = dict(self.conn.execute(
             "SELECT id, state FROM video_duplicate_jobs WHERE id = ANY(%s)",
@@ -629,8 +466,7 @@ class TestVideoDuplicateJobsWorker(BaseVideoDuplicateJobsTestCase):
 
         mock_resp = MagicMock(status_code=404)
         with patch("httpx.Client.get", return_value=mock_resp), \
-             patch("sync.telegram_unavailable._quarantine_files", return_value=[{"file": "x.strm"}]), \
-             patch.object(duplicate_jobs, "_refresh_jellyfin_with_progress", return_value=False):
+             patch("sync.telegram_unavailable._quarantine_files", return_value=[{"file": "x.strm"}]):
             self.assertEqual(
                 sync.process_video_duplicate_jobs(self.conn, self.media, include_long_running=True), 1
             )

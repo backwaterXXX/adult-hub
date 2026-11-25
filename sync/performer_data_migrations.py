@@ -22,7 +22,6 @@ REDUNDANT_PERFORMERS_VERSION = 7
 _NAME_PURGE_QUERIES = (
     ("performer_bios", "SELECT name FROM performer_bios", "DELETE FROM performer_bios WHERE name = %s"),
     ("performer_photos", "SELECT name FROM performer_photos", "DELETE FROM performer_photos WHERE name = %s"),
-    ("jellyfin_person_sync", "SELECT name FROM jellyfin_person_sync", "DELETE FROM jellyfin_person_sync WHERE name = %s"),
 )
 
 

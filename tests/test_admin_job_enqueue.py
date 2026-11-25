@@ -100,15 +100,15 @@ class TestAdminJobEnqueue(PgTestCase):
         for state in ('done', 'failed'):
             with self.subTest(state=state):
                 reset_db(self.db_url)
-                first = enqueue_job(self.db_url, 'collections_refresh', {})
+                first = enqueue_job(self.db_url, 'history_cleanup', {})
                 with self.conn:
                     self.conn.execute('UPDATE video_duplicate_jobs SET state=%s WHERE id=%s', (state, first))
-                self.assertNotEqual(enqueue_job(self.db_url, 'collections_refresh', {}), first)
+                self.assertNotEqual(enqueue_job(self.db_url, 'history_cleanup', {}), first)
 
     def test_different_actions_or_merge_targets_remain_distinct(self):
         first = enqueue_job(self.db_url, 'performer_merge', {'merges': [{'alias': 'A', 'canonical': 'B'}]})
         second = enqueue_job(self.db_url, 'performer_merge', {'merges': [{'alias': 'A', 'canonical': 'C'}]})
-        collection = enqueue_job(self.db_url, 'collections_refresh', {})
+        collection = enqueue_job(self.db_url, 'history_cleanup', {})
         self.assertEqual(len({first, second, collection}), 3)
 
     def test_hide_loser_order_and_dismiss_pair_order_are_semantic(self):
@@ -123,7 +123,7 @@ class TestAdminJobEnqueue(PgTestCase):
         self.assertNotEqual(first, second)
 
     def test_concurrent_connections_enqueue_one_pending_job(self):
-        seed = enqueue_job(self.db_url, 'collections_refresh', {})
+        seed = enqueue_job(self.db_url, 'history_cleanup', {})
         with self.conn:
             self.conn.execute("UPDATE video_duplicate_jobs SET state='done' WHERE id=%s", (seed,))
         workers = 8
@@ -131,7 +131,7 @@ class TestAdminJobEnqueue(PgTestCase):
 
         def enqueue(_):
             start.wait(timeout=5)
-            return enqueue_job(self.db_url, 'collections_refresh', {})
+            return enqueue_job(self.db_url, 'history_cleanup', {})
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
             ids = list(pool.map(enqueue, range(workers)))
@@ -163,7 +163,7 @@ class TestAdminJobEnqueue(PgTestCase):
 
     def test_retry_does_not_requeue_a_successfully_completed_job(self):
         from common.job_queue import retry_job
-        original = enqueue_job(self.db_url, 'collections_refresh', {})
+        original = enqueue_job(self.db_url, 'history_cleanup', {})
         with self.conn:
             self.conn.execute(
                 "UPDATE video_duplicate_jobs SET state='done',result=%s WHERE id=%s",
@@ -180,7 +180,7 @@ class TestAdminJobEnqueue(PgTestCase):
 
     def test_cancelled_job_is_terminal_and_can_be_retried(self):
         from common.job_queue import cancel_queued_job, read_job, retry_job
-        original = enqueue_job(self.db_url, 'collections_refresh', {})
+        original = enqueue_job(self.db_url, 'history_cleanup', {})
         self.assertEqual(cancel_queued_job(self.db_url, original), {"outcome": "cancelled", "state": "cancelled"})
         job = read_job(self.db_url, original)
         self.assertEqual(job["state"], "cancelled")
@@ -196,7 +196,7 @@ class TestAdminJobEnqueue(PgTestCase):
         for state in ('processing', 'done', 'failed', 'cancelled'):
             with self.subTest(state=state):
                 reset_db(self.db_url)
-                job_id = enqueue_job(self.db_url, 'collections_refresh', {})
+                job_id = enqueue_job(self.db_url, 'history_cleanup', {})
                 with self.conn:
                     self.conn.execute('UPDATE video_duplicate_jobs SET state=%s WHERE id=%s', (state, job_id))
                 self.assertEqual(cancel_queued_job(self.db_url, job_id), {"outcome": "conflict", "state": state})
@@ -204,7 +204,7 @@ class TestAdminJobEnqueue(PgTestCase):
 
     def test_cancel_races_atomically_with_worker_claim(self):
         from common.job_queue import cancel_queued_job, claim_job, read_job
-        job_id = enqueue_job(self.db_url, 'collections_refresh', {})
+        job_id = enqueue_job(self.db_url, 'history_cleanup', {})
         start = threading.Barrier(2)
 
         def cancel():
@@ -213,7 +213,7 @@ class TestAdminJobEnqueue(PgTestCase):
 
         def claim():
             start.wait(timeout=5)
-            return claim_job(self.db_url, 'collections_refresh')
+            return claim_job(self.db_url, 'history_cleanup')
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             cancel_result, claimed = [future.result(timeout=10) for future in (pool.submit(cancel), pool.submit(claim))]

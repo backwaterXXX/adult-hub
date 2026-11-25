@@ -74,81 +74,6 @@ class TestAdminV2Maintenance(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed.status_code, 503)
         self.assertNotIn("private", str(response_body(failed)))
 
-    async def test_jellyfin_refresh_sends_controlled_request_and_reports_only_acceptance(self):
-        admin = make_admin()
-        route = self.routes(admin)["/api/v2/maintenance/jellyfin/refresh"]
-        calls = []
-
-        class Client:
-            def __init__(self, timeout):
-                self.timeout = timeout
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *_args):
-                return False
-
-            async def post(self, url, headers):
-                calls.append((url, headers, self.timeout))
-                return SimpleNamespace(status_code=204)
-
-        with patch.dict("os.environ", {"JELLYFIN_URL": "http://jellyfin.invalid/", "JELLYFIN_API_KEY": "secret"}), \
-             patch.object(admin_v2_maintenance.httpx, "AsyncClient", Client):
-            result = await route(make_request("/admin/api/v2/maintenance/jellyfin/refresh"))
-        self.assertEqual(result, {"ok": True, "requested": True})
-        self.assertEqual(calls[0][0], "http://jellyfin.invalid/Library/Refresh")
-        self.assertEqual(calls[0][1]["Authorization"], 'MediaBrowser Token="secret"')
-        self.assertEqual(calls[0][2], 10.0)
-
-    async def test_jellyfin_rejects_configuration_and_remote_errors_without_leaking_details(self):
-        admin = make_admin()
-        route = self.routes(admin)["/api/v2/maintenance/jellyfin/refresh"]
-        with patch.dict("os.environ", {"JELLYFIN_URL": "", "JELLYFIN_API_KEY": ""}):
-            unavailable = await route(make_request("/admin/api/v2/maintenance/jellyfin/refresh"))
-        self.assertEqual(unavailable.status_code, 503)
-
-        class Client:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *_args):
-                return False
-
-            async def post(self, *_args, **_kwargs):
-                return SimpleNamespace(status_code=503)
-
-        with patch.dict("os.environ", {"JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "secret"}), \
-             patch.object(admin_v2_maintenance.httpx, "AsyncClient", Client):
-            rejected = await route(make_request("/admin/api/v2/maintenance/jellyfin/refresh"))
-        self.assertEqual(rejected.status_code, 502)
-        self.assertNotIn("secret", str(response_body(rejected)))
-
-    async def test_collections_refresh_enqueues_durable_action_and_wakes_worker(self):
-        admin = make_admin()
-        route = self.routes(admin)["/api/v2/maintenance/collections/refresh"]
-        with patch.dict("os.environ", {"JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "secret"}), \
-             patch("resolver.video_duplicates.enqueue_job", return_value="job-collections") as enqueue:
-            result = await route(make_request("/admin/api/v2/maintenance/collections/refresh"))
-        self.assertEqual(result.status_code, 202)
-        self.assertEqual(response_body(result), {"ok": True, "queued": True,
-                                                 "job_id": "job-collections", "state": "queued"})
-        enqueue.assert_called_once_with(admin.HUB_DB_URL, "collections_refresh", {})
-        self.assertEqual(admin.wake_calls, [(('jobs',), {})])
-
-    async def test_collections_refresh_rejects_missing_jellyfin_configuration_before_enqueue(self):
-        admin = make_admin()
-        route = self.routes(admin)["/api/v2/maintenance/collections/refresh"]
-        with patch.dict("os.environ", {"JELLYFIN_URL": "", "JELLYFIN_API_KEY": ""}), \
-             patch("resolver.video_duplicates.enqueue_job") as enqueue:
-            result = await route(make_request("/admin/api/v2/maintenance/collections/refresh"))
-        self.assertEqual(result.status_code, 503)
-        self.assertEqual(response_body(result), {
-            "ok": False, "error": "Jellyfin collection refresh is not configured."
-        })
-        enqueue.assert_not_called()
-        self.assertEqual(admin.wake_calls, [])
-
     async def test_global_sync_queues_scheduled_mode_and_rejects_invalid_mode(self):
         admin = make_admin()
         route = self.routes(admin)["/api/v2/maintenance/sync"]
@@ -164,19 +89,15 @@ class TestAdminV2Maintenance(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rejected.status_code, 400)
         self.assertEqual(response_body(rejected)["error"], "Sync mode must be scheduled, new, or backfill.")
 
-    async def test_write_denial_happens_before_cache_jellyfin_or_queue_side_effects(self):
+    async def test_write_denial_happens_before_cache_or_queue_side_effects(self):
         admin = make_admin(denied=True)
         routes = self.routes(admin)
         cache_calls = []
         cache = await routes["/api/v2/maintenance/cache/clear"](
             make_request("/admin/api/v2/maintenance/cache/clear", cache_clear=lambda: cache_calls.append(1)))
-        collections = await routes["/api/v2/maintenance/collections/refresh"](
-            make_request("/admin/api/v2/maintenance/collections/refresh"))
-        jellyfin = await routes["/api/v2/maintenance/jellyfin/refresh"](
-            make_request("/admin/api/v2/maintenance/jellyfin/refresh"))
         sync = await routes["/api/v2/maintenance/sync"](
             make_request("/admin/api/v2/maintenance/sync", body={"sync_mode": "scheduled"}))
-        for result in (cache, collections, jellyfin, sync):
+        for result in (cache, sync):
             self.assertEqual(result.status_code, 403)
         self.assertEqual(cache_calls, [])
         self.assertEqual(admin.wake_calls, [])

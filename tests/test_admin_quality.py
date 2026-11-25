@@ -22,8 +22,7 @@ class TestAdminQuality(PgTestCase):
             payload["audit_batch_id"] = batch_id
         job_id = enqueue_job(self.db_url, action, payload)
         now = int(created if created is not None else time.time())
-        result = {"checked": checked, "library_inventory_status": inventory,
-                  "jellyfin_import_state": "unknown"}
+        result = {"checked": checked, "library_inventory_status": inventory}
         if record_total:
             result["total"] = total
         if mode:
@@ -126,7 +125,6 @@ class TestAdminQuality(PgTestCase):
         summary = read_quality_summary(self.db_url)
         self.assertEqual(summary["status"], "ready")
         self.assertEqual(summary["latest_audit"]["id"], complete)
-        self.assertEqual(summary["latest_audit"]["jellyfin_import_state"], "unknown")
         self.assertEqual(summary["counts"]["nfo_metadata_mismatch"], 1)
         self.assertEqual(summary["counts"]["missing_metadata"], 2)
         self.assertEqual(summary["missing_fields"]["performers"], 1)

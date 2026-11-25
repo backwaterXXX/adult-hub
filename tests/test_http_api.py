@@ -64,8 +64,6 @@ class BaseHttpApiTestCase(unittest.TestCase):
         ("POST", "/admin/api/v2/quality/proposals/{proposal_id}/refresh"),
         ("POST", "/admin/api/v2/maintenance/cache/clear"),
         ("POST", "/admin/api/v2/maintenance/sync"),
-        ("POST", "/admin/api/v2/maintenance/jellyfin/refresh"),
-        ("POST", "/admin/api/v2/maintenance/collections/refresh"),
         ("POST", "/admin/api/v2/performers/proposals/{proposal_id}"),
         ("POST", "/admin/api/v2/performers/proposals/reconcile"),
         ("POST", "/admin/api/v2/performers/proposal-groups/{reason}/{key}"),

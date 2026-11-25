@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Cleanup nationality/demonym prefixes across DB, NFOs, and Jellyfin metadata."""
+"""Cleanup nationality/demonym prefixes across the catalog and NFOs."""
 import json
 import os
-import shutil
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 from common import db
 from common.json_helpers import json_list_or_empty
-from common.performer_cleanup_support import build_video_nfo, create_db_backup, iter_jellyfin_person_dirs
+from common.performer_cleanup_support import build_video_nfo, create_db_backup
 from common.performers import (
     is_valid_performer_name,
     is_safe_alias,
@@ -42,7 +41,6 @@ else:
 
 BACKUP_DIR = BASE_DIR / "data" / "backups"
 MEDIA_DIR = BASE_DIR / "media" / "adult"
-JF_PEOPLE_DIR = BASE_DIR / "jf-config" / "metadata" / "People"
 
 
 def _create_backup() -> Path:
@@ -94,37 +92,6 @@ def _clean_name_table(conn, table: str) -> None:
                 existing_names.add(cleaned_name)
                 updated_count += 1
     print(f"{table}: {deleted_count} deleted, {updated_count} updated.")
-
-
-def _remove_person_dir(person_dir: Path) -> bool:
-    """Remove one Jellyfin People folder; return True when it was removed."""
-    try:
-        shutil.rmtree(person_dir)
-        return True
-    except Exception as e:
-        try:
-            import subprocess
-            rel = person_dir.relative_to(JF_PEOPLE_DIR)
-            res = subprocess.run(
-                ["docker", "exec", "jellyfin", "rm", "-rf", f"/config/metadata/People/{rel}"],
-                capture_output=True,
-            )
-            if res.returncode == 0:
-                return True
-            print(f"  Error removing {person_dir}: {e}")
-            return False
-        except Exception:
-            print(f"  Error removing {person_dir}: {e}")
-            return False
-
-
-def _clean_jellyfin_people() -> None:
-    people_deleted = 0
-    for person_dir in iter_jellyfin_person_dirs(JF_PEOPLE_DIR):
-        pname = person_dir.name
-        if strip_nationality_prefix(pname) != pname and _remove_person_dir(person_dir):
-            people_deleted += 1
-    print(f"Total Jellyfin People folders removed: {people_deleted}")
 
 
 def _regenerate_video_nfo(conn, row, new_perfs: list, nfo_path: Path) -> bool:
@@ -194,14 +161,11 @@ def run_cleanup():
     # 1. Clean performer_aliases
     _clean_aliases(conn)
 
-    # 2. Clean performer_photos, performer_bios, jellyfin_person_sync
-    for table in ("performer_photos", "performer_bios", "jellyfin_person_sync"):
+    # 2. Clean performer_photos and performer_bios
+    for table in ("performer_photos", "performer_bios"):
         _clean_name_table(conn, table)
 
-    # 3. Clean Jellyfin People directory
-    _clean_jellyfin_people()
-
-    # 4. Clean videos table and NFO files
+    # 3. Clean videos table and NFO files
     videos_updated, nfos_updated = _clean_videos(conn)
 
     print(f"Cleanup finished: {videos_updated} videos updated in DB, {nfos_updated} NFO files regenerated.")

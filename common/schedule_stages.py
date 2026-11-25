@@ -36,7 +36,6 @@ JOB_STAGES = {
     "scene_backfill": ("library-sync", "scene-identification"),
     "telegram_title_cleanup": ("library-sync", "telegram-title-cleanup"),
     "metadata_backfill": ("library-sync", "metadata-backfill"),
-    "collections_refresh": ("library-sync", "jellyfin-refresh"),
     "phash_generation": ("library-sync", "phash-generation"),
 }
 
@@ -101,11 +100,6 @@ STAGES: tuple[Stage, ...] = (
         "library-maintenance", "library-sync", "Library maintenance",
         "Retention, orphan cleanup and stream maintenance depend on source success and safety guards.",
         None, "Needs the per-source success signal that only a scan pass produces.",
-    ),
-    Stage(
-        "jellyfin-refresh", "library-sync", "Jellyfin reconciliation and refresh",
-        "Subject to configuration and available work.",
-        "collections_refresh", None,
     ),
 )
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cleanup trailing scene/season/episode suffixes (e.g. s1, s2, s3) across DB, NFOs, and Jellyfin."""
+"""Cleanup trailing scene/season/episode suffixes (e.g. s1, s2, s3) across the catalog and NFOs."""
 import json
 import os
 from pathlib import Path
@@ -11,9 +11,6 @@ from common.json_helpers import json_list_or_empty
 from common.performer_cleanup_support import (
     build_video_nfo,
     create_db_backup,
-    iter_jellyfin_person_dirs,
-    remove_person_dir_counted,
-    remove_person_dir_via_docker,
 )
 from common.performers import (
     SCENE_SUFFIX_RE,
@@ -47,7 +44,6 @@ else:
 
 BACKUP_DIR = BASE_DIR / "data" / "backups"
 MEDIA_DIR = BASE_DIR / "media" / "adult"
-JF_PEOPLE_DIR = BASE_DIR / "jf-config" / "metadata" / "People"
 
 
 def _create_backup() -> Path:
@@ -97,25 +93,6 @@ def _clean_suffixed_names(conn, table: str) -> None:
                 conn.execute(f"DELETE FROM {table} WHERE name = %s", (n,))
                 deleted_count += 1
     print(f"{table}: {deleted_count} deleted, {updated_count} updated.")
-
-
-def _remove_person_dir_via_docker(person_dir: Path, error: Exception) -> int:
-    """Return how many folders this fallback counts as removed (0 or 1)."""
-    return remove_person_dir_via_docker(person_dir, error, base_dir=BASE_DIR, people_dir=JF_PEOPLE_DIR)
-
-
-def _remove_person_dir(person_dir: Path) -> int:
-    """Remove one suffixed Jellyfin People folder; return how many removals to count."""
-    return remove_person_dir_counted(person_dir, base_dir=BASE_DIR, people_dir=JF_PEOPLE_DIR)
-
-
-def _clean_jellyfin_people() -> None:
-    people_deleted = 0
-    for person_dir in iter_jellyfin_person_dirs(JF_PEOPLE_DIR):
-        pname = person_dir.name
-        if SCENE_SUFFIX_RE.search(pname) or STANDALONE_SCENE_RE.match(pname):
-            people_deleted += _remove_person_dir(person_dir)
-    print(f"Total Jellyfin People folders removed: {people_deleted}")
 
 
 def _regenerate_video_nfo(conn, row, new_perfs: list, nfo_path: Path) -> bool:
@@ -185,14 +162,11 @@ def run_cleanup():
     # 1. Clean performer_aliases
     _clean_aliases(conn)
 
-    # 2. Clean performer_photos, performer_bios, jellyfin_person_sync
-    for table in ("performer_photos", "performer_bios", "jellyfin_person_sync"):
+    # 2. Clean performer_photos and performer_bios
+    for table in ("performer_photos", "performer_bios"):
         _clean_suffixed_names(conn, table)
 
-    # 3. Clean Jellyfin People directory
-    _clean_jellyfin_people()
-
-    # 4. Clean videos table and NFO files
+    # 3. Clean videos table and NFO files
     videos_updated, nfos_updated = _clean_videos(conn)
 
     print(f"Cleanup finished: {videos_updated} videos updated in DB, {nfos_updated} NFO files regenerated.")

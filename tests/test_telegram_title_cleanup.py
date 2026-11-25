@@ -145,14 +145,13 @@ class TestTelegramTitleCleanup(unittest.TestCase):
             self.assertEqual(resumed["processed"], 1)
 
     @patch("sync.telegram_title_cleanup.cleanup_telegram_titles", return_value={"status": "complete"})
-    def test_action_records_reconciling_jellyfin_metadata_stage(self, mock_cleanup):
+    def test_action_records_the_cleanup_stage(self, mock_cleanup):
         from common.job_stages import WORKING_STAGES
         from sync.duplicate_job_external_handlers import _action_telegram_title_cleanup
-        self.assertIn("reconciling_jellyfin_metadata", WORKING_STAGES)
+        self.assertIn("cleaning_telegram_titles", WORKING_STAGES)
         conn = FakeConnection([])
         services = MagicMock()
         services.logger = MagicMock()
-        services.sync_jellyfin_telegram_metadata = MagicMock(return_value={"reconciled": 0})
         with tempfile.TemporaryDirectory() as temp_dir:
             result, committed = _action_telegram_title_cleanup(
                 conn, "job-1", {}, Path(temp_dir), services,

@@ -1,4 +1,3 @@
-from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -8,10 +7,8 @@ import xml.etree.ElementTree as ET
 
 import sync.duplicate_jobs as duplicate_jobs
 from resolver.video_duplicates import enqueue_job
-from common.job_queue import retry_job
 from common.admin_operations import (
     execute_operation,
-    preview_audit_import_refresh,
     preview_audit_repair,
 )
 from tests.test_video_duplicate_jobs import BaseVideoDuplicateJobsTestCase, sync
@@ -148,8 +145,7 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
         self.assertEqual(plan["outcome"], "previewed")
         queued = execute_operation(self.db_url, plan["plan_id"])
         self.assertEqual(queued["outcome"], "queued")
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=True):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         terminal = self.conn.execute("SELECT state,result FROM video_duplicate_jobs WHERE id=%s",
                                      (queued["jobs"][0]["job_id"],)).fetchone()
         self.assertEqual(terminal[0], "done")
@@ -189,8 +185,7 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
             ).fetchone()[0]
         plan = preview_audit_repair(self.db_url, audit_id, [int(finding_id)])
         self.assertEqual(execute_operation(self.db_url, plan["plan_id"])["outcome"], "queued")
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=True):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         file_path = self.conn.execute("SELECT file_path FROM synced_files WHERE video_id=%s", (video_id,)).fetchone()[0]
         nfo_path = sync.resolve_media_path(file_path, self.media).with_suffix(".nfo")
         root = ET.parse(nfo_path).getroot()
@@ -238,8 +233,7 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
             return True
 
         with patch.object(sync, "thumbnail_urls", return_value=("https://public.invalid/p.jpg", "https://images.invalid/catalog-poster.jpg")), \
-             patch.object(sync, "download_image_if_missing", side_effect=create_only), \
-             patch.object(sync, "trigger_jellyfin_refresh", return_value=True):
+             patch.object(sync, "download_image_if_missing", side_effect=create_only):
             self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         self.assertEqual(downloader_calls, [("https://images.invalid/catalog-poster.jpg", artwork)])
         self.assertEqual(artwork.read_bytes(), b"restored-artwork")
@@ -270,8 +264,7 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
         plan = preview_audit_repair(self.db_url, audit_id, [int(finding_id)])
         self.assertEqual(plan["outcome"], "previewed")
         queued = execute_operation(self.db_url, plan["plan_id"])
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=True):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         terminal = self.conn.execute("SELECT state,result FROM video_duplicate_jobs WHERE id=%s",
                                      (queued["jobs"][0]["job_id"],)).fetchone()
         result = json.loads(terminal[1])
@@ -305,118 +298,12 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
         plan = preview_audit_repair(self.db_url, audit_id, [int(finding_id)])
         queued = execute_operation(self.db_url, plan["plan_id"])
         stream_path.write_text("unreviewed content", encoding="utf-8")
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=True):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
         terminal = self.conn.execute("SELECT state,result FROM video_duplicate_jobs WHERE id=%s",
                                      (queued["jobs"][0]["job_id"],)).fetchone()
         self.assertEqual(terminal[0], "failed")
         self.assertIn("different data", json.loads(terminal[1])["error"])
         self.assertEqual(stream_path.read_text(encoding="utf-8"), "unreviewed content")
-
-
-    def test_consistency_audit_restart_replaces_partial_findings_without_duplicates(self):
-        job_id = enqueue_job(self.db_url, "consistency_audit", {})
-        first = self.conn.execute(
-            "SELECT file_path,video_id FROM synced_files ORDER BY file_path LIMIT 1"
-        ).fetchone()
-        self.assertIsNotNone(first)
-        video_id = first[1]
-        stream = sync.resolve_media_path(first[0], self.media)
-        stream.unlink()
-
-        record_progress = duplicate_jobs._record_job_progress
-
-        def interrupt_after_first_row(conn, current_job, stage, **progress):
-            record_progress(conn, current_job, stage, **progress)
-            if stage == "auditing_library" and progress.get("completed") == 1:
-                raise KeyboardInterrupt("simulated worker restart")
-
-        with patch.object(duplicate_jobs, "_record_job_progress", side_effect=interrupt_after_first_row):
-            with self.assertRaises(KeyboardInterrupt):
-                sync.process_video_duplicate_jobs(self.conn, self.media)
-
-        state, = self.conn.execute(
-            "SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)
-        ).fetchone()
-        self.assertEqual(state, "processing")
-        partial = self.conn.execute(
-            "SELECT video_id,kind FROM admin_audit_items WHERE job_id=%s", (job_id,)
-        ).fetchall()
-        self.assertEqual(partial, [(video_id, "missing_metadata"), (video_id, "missing_stream")])
-
-        with patch.object(sync, "_audit_telegram_import_state",
-                          return_value={"status": "unknown", "findings": []}):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
-
-        state, raw_result = self.conn.execute(
-            "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)
-        ).fetchone()
-        findings = self.conn.execute(
-            "SELECT video_id,kind FROM admin_audit_items WHERE job_id=%s ORDER BY id", (job_id,)
-        ).fetchall()
-        self.assertEqual(state, "done")
-        self.assertEqual(json.loads(raw_result)["findings"], 3)
-        self.assertEqual(set(findings), {
-            (self.keeper, "missing_metadata"), (self.loser, "missing_metadata"),
-            (video_id, "missing_stream"),
-        })
-
-
-    def test_audit_nfo_repair_retry_resumes_after_jellyfin_refresh_failure(self):
-        video_id = "telegram:-1001:4:repairretry"
-        self._add_video(video_id)
-        audit_id = "audit-repair-retry"
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO video_duplicate_jobs (id,action,state,payload,result,created_at,updated_at) "
-                "VALUES (%s,'consistency_audit','done','{}','{}',1,1)", (audit_id,)
-            )
-            finding_id = self.conn.execute(
-                "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence) "
-                "VALUES (%s,%s,'missing_nfo','open','test') RETURNING id", (audit_id, video_id)
-            ).fetchone()[0]
-        plan = preview_audit_repair(self.db_url, audit_id, [int(finding_id)])
-        original_job_id = execute_operation(self.db_url, plan["plan_id"])["jobs"][0]["job_id"]
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            sync.process_video_duplicate_jobs(self.conn, self.media)
-        failed = self.conn.execute("SELECT state,result FROM video_duplicate_jobs WHERE id=%s",
-                                   (original_job_id,)).fetchone()
-        self.assertEqual(failed[0], "failed")
-        self.assertEqual(json.loads(failed[1])["local_state"], "nfo_repaired")
-        self.assertEqual(self.conn.execute("SELECT status FROM admin_audit_items WHERE id=%s", (finding_id,)).fetchone()[0], "open")
-        retry_id = retry_job(self.db_url, original_job_id)
-        self.assertIsNotNone(retry_id)
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=True):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
-        retried = self.conn.execute("SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (retry_id,)).fetchone()
-        self.assertEqual(retried[0], "done")
-        self.assertEqual(json.loads(retried[1])["local_state"], "nfo_repaired")
-        self.assertEqual(self.conn.execute("SELECT status FROM admin_audit_items WHERE id=%s", (finding_id,)).fetchone()[0], "resolved")
-
-
-    def test_audit_import_refresh_never_claims_import_confirmation_or_resolves_finding(self):
-        video_id = "telegram:-1001:5:reimport"
-        self._add_video(video_id)
-        audit_id = "audit-reimport-test"
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO video_duplicate_jobs (id,action,state,payload,result,created_at,updated_at) "
-                "VALUES (%s,'consistency_audit','done','{}','{}',1,1)", (audit_id,)
-            )
-            finding_id = self.conn.execute(
-                "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence) "
-                "VALUES (%s,%s,'nfo_import_state_missing','open','test') RETURNING id", (audit_id, video_id)
-            ).fetchone()[0]
-        plan = preview_audit_import_refresh(self.db_url, audit_id, [int(finding_id)])
-        self.assertEqual(plan["outcome"], "previewed")
-        queued = execute_operation(self.db_url, plan["plan_id"])
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=True):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
-        result = self.conn.execute("SELECT state,result FROM video_duplicate_jobs WHERE id=%s",
-                                   (queued["jobs"][0]["job_id"],)).fetchone()
-        self.assertEqual(result[0], "done")
-        self.assertEqual(json.loads(result[1])["jellyfin_import"], "not_confirmed")
-        self.assertEqual(self.conn.execute("SELECT status FROM admin_audit_items WHERE id=%s", (finding_id,)).fetchone()[0], "open")
 
 
     def test_consistency_audit_is_read_only_and_recovery_replaces_partial_findings(self):
@@ -471,7 +358,6 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
         self.assertEqual((result["checked"], result["total"]), (expected_total, expected_total))
         self.assertTrue(any(row[0] == catalog_only and row[1] == "missing_metadata" for row in findings))
         self.assertTrue(all(row[1] == "missing_metadata" for row in findings))
-        self.assertNotIn("jellyfin_import_state", result)
 
 
     def test_file_consistency_mode_does_not_emit_catalog_missing_metadata_findings(self):
@@ -626,83 +512,6 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
             "NFO metadata differs from current effective catalog metadata (fields: plot).",
         )
         self.assertNotIn("Manually changed private plot text", mismatch[0][1])
-
-
-    def test_consistency_audit_maps_jellyfin_import_hash_findings_to_catalog_items(self):
-        from common.job_queue import enqueue_job
-        job_id = enqueue_job(self.db_path, "consistency_audit", {})
-        filenames = dict(self.conn.execute("SELECT video_id,file_path FROM synced_files").fetchall())
-        keeper_filename = Path(filenames[self.keeper]).name
-        loser_filename = Path(filenames[self.loser]).name
-        audit = {
-            "status": "checked",
-            "findings": [(keeper_filename, "nfo_import_state_mismatch"),
-                          (loser_filename, "nfo_import_state_missing")],
-        }
-        services = replace(sync._duplicate_job_services(),
-                           audit_jellyfin_import_state=lambda _media_dir, _progress: audit)
-        with patch.object(sync, "_duplicate_job_services", return_value=services):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
-        rows = self.conn.execute(
-            "SELECT video_id,kind,evidence FROM admin_audit_items WHERE job_id=%s ORDER BY kind", (job_id,)
-        ).fetchall()
-        result_raw = self.conn.execute("SELECT result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0]
-        self.assertEqual([(row[0], row[1]) for row in rows if row[1].startswith("nfo_import_state_")], [
-            (self.keeper, "nfo_import_state_mismatch"),
-            (self.loser, "nfo_import_state_missing"),
-        ], msg=f"rows={rows!r}; result={result_raw}")
-        self.assertTrue(all("sha256" not in row[2].lower() and "/" not in row[2] for row in rows))
-        result = json.loads(result_raw)
-        self.assertEqual(result["jellyfin_import_state"], "checked")
-
-
-    def test_new_checked_audit_resolves_older_import_findings_only_for_unambiguous_files(self):
-        from common.job_queue import enqueue_job
-        previous_id = "audit-import-old"
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO video_duplicate_jobs (id,action,state,payload,result,created_at,updated_at) "
-                "VALUES (%s,'consistency_audit','done','{}','{}',1,1)", (previous_id,)
-            )
-            previous_finding = self.conn.execute(
-                "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence) "
-                "VALUES (%s,%s,'nfo_import_state_mismatch','open','old evidence') RETURNING id",
-                (previous_id, self.keeper),
-            ).fetchone()[0]
-        job_id = enqueue_job(self.db_path, "consistency_audit", {})
-        services = replace(sync._duplicate_job_services(),
-                           audit_jellyfin_import_state=lambda _media_dir, _progress: {"status": "checked", "findings": []})
-        with patch.object(sync, "_duplicate_job_services", return_value=services):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
-        self.assertEqual(self.conn.execute("SELECT status FROM admin_audit_items WHERE id=%s",
-                                           (previous_finding,)).fetchone()[0], "resolved")
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM admin_audit_items WHERE job_id=%s AND kind IN ('nfo_import_state_missing','nfo_import_state_mismatch')", (job_id,)).fetchone()[0], 0)
-
-
-    def test_unknown_jellyfin_audit_does_not_resolve_older_import_findings(self):
-        from common.job_queue import enqueue_job
-        previous_id = "audit-import-old-unknown-check"
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO video_duplicate_jobs (id,action,state,payload,result,created_at,updated_at) "
-                "VALUES (%s,'consistency_audit','done','{}','{}',1,1)", (previous_id,)
-            )
-            previous_finding = self.conn.execute(
-                "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence) "
-                "VALUES (%s,%s,'nfo_import_state_mismatch','open','old evidence') RETURNING id",
-                (previous_id, self.keeper),
-            ).fetchone()[0]
-        job_id = enqueue_job(self.db_path, "consistency_audit", {})
-        services = replace(sync._duplicate_job_services(), audit_jellyfin_import_state=lambda _media_dir, _progress: {
-            "status": "unknown", "findings": []
-        })
-        with patch.object(sync, "_duplicate_job_services", return_value=services):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
-
-        self.assertEqual(self.conn.execute("SELECT status FROM admin_audit_items WHERE id=%s",
-                                           (previous_finding,)).fetchone()[0], "open")
-        result = self.conn.execute("SELECT result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0]
-        self.assertEqual(json.loads(result)["jellyfin_import_state"], "unknown")
 
 
     def test_consistency_audit_reports_missing_local_artwork_when_source_thumbnail_exists(self):

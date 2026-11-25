@@ -377,7 +377,7 @@ def extract_video_frame(
         delete=False,
     ) as tmp_file:
         tmp_path = Path(tmp_file.name)
-    # NamedTemporaryFile creates 0600; the published artwork must be readable by Jellyfin.
+    # NamedTemporaryFile creates 0600; the published artwork must stay readable by the media server.
     os.chmod(tmp_path, 0o644)
     try:
         scale_filter = "scale='min(640,iw)':-2"

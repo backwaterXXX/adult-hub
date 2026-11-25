@@ -179,8 +179,7 @@ def _collect_revision_videos(conn, tables, alias_key: str, canonical_key: str, _
 def _add_revision_people_tables(conn, tables, alias_key: str, canonical_key: str, payload: Dict[str, Any]) -> None:
     """Add the name-filtered rows of the people metadata tables to the fingerprint payload."""
     for table, columns in (("performer_photos", "name,thumb,updated_at"),
-                           ("performer_bios", "name,bio,birth,aliases,updated_at"),
-                           ("jellyfin_person_sync", "name,pbc_updated_at,format_version")):
+                           ("performer_bios", "name,bio,birth,aliases,updated_at")):
         if table not in tables:
             continue
         records = conn.execute(f"SELECT {columns} FROM {table} ORDER BY lower(name),name").fetchall()
@@ -390,16 +389,6 @@ def _migrate_aliases(conn, tables, resolved_merges: Dict[str, str], _core) -> in
     return aliases_added
 
 
-def _delete_jellyfin_sync_entries(conn, tables, resolved_merges: Dict[str, str]) -> None:
-    """Step 5: drop stale Jellyfin person sync rows for the alias names."""
-    if "jellyfin_person_sync" in tables:
-        for alias in resolved_merges.keys():
-            conn.execute(
-                "DELETE FROM jellyfin_person_sync WHERE lower(name) = lower(%s)",
-                (alias,),
-            )
-
-
 def _collect_nfo_targets(conn, canonical_names: set, _core) -> Dict[Any, Any]:
     """Return video id -> performer list for every video that names a canonical performer."""
     # Rebuild all files containing a canonical name from this operation,
@@ -547,15 +536,11 @@ def execute_performer_merges(db_url, media_dir, merges, skip_backup=False, *, _c
             photos_migrated = _migrate_photos(conn, tables, resolved_merges, _core)
             bios_migrated = _migrate_bios(conn, tables, resolved_merges, _core)
             aliases_added = _migrate_aliases(conn, tables, resolved_merges, _core)
-            _delete_jellyfin_sync_entries(conn, tables, resolved_merges)
 
         # 6. Update NFO files
         nfos_updated, nfo_errors = _regenerate_nfos(conn, resolved_merges, media_dir, _core)
         if nfo_errors:
             raise RuntimeError("NFO regeneration incomplete: " + "; ".join(nfo_errors[:5]))
-
-        # 7. Refresh Jellyfin
-        jf_ok = _core["trigger_jellyfin_refresh"]()
 
         return {
             "ok": True,
@@ -565,7 +550,6 @@ def execute_performer_merges(db_url, media_dir, merges, skip_backup=False, *, _c
             "bios_migrated": bios_migrated,
             "aliases_added": aliases_added,
             "nfos_updated": nfos_updated,
-            "jellyfin_refreshed": jf_ok,
             "message": (
                 f"Merged {len(resolved_merges)} performers "
                 f"({len(video_updates)} videos updated, {nfos_updated} NFO files)."

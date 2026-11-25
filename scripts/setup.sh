@@ -23,7 +23,6 @@ STATUS_ONLY=0
 BIND_MODE=""
 SELECTED_BIND_IP=""
 RESOLVER_PORT_OVERRIDE=""
-JELLYFIN_PORT_OVERRIDE=""
 PUBLIC_URL_OVERRIDE=""
 SKIP_DOCKER_START=0
 SKIP_DOCKER_CHECK=0
@@ -42,7 +41,6 @@ Options:
   --bind-mode MODE         Network binding mode: 'loopback' (default) or 'lan'
   --bind-ip IP             Host IP address to bind (required if bind-mode is 'lan')
   --resolver-port PORT     Port for resolver API and admin (default: 8090)
-  --jellyfin-port PORT     Port for Jellyfin UI and playback (default: 8096)
   --public-url URL         Client-facing resolver/playback URL for LAN playback
   --skip-docker-start      Generate config, .env, and runtime dirs without launching containers
   --source-build           Build application images from local repository source instead of using prebuilt images
@@ -76,10 +74,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --resolver-port)
             RESOLVER_PORT_OVERRIDE="$2"
-            shift 2
-            ;;
-        --jellyfin-port)
-            JELLYFIN_PORT_OVERRIDE="$2"
             shift 2
             ;;
         --public-url)
@@ -191,39 +185,25 @@ print_summary() {
     echo "Version:            ${APP_VERSION}"
     echo "Bind Address:       ${RESOLVER_BIND_IP}"
     echo "Resolver Port:      ${RESOLVER_PORT}"
-    echo "Jellyfin Port:      ${JELLYFIN_PORT}"
     echo ""
     echo "Service Endpoints:"
     echo "  - Admin UI:       ${RESOLVER_PUBLIC_URL}/admin/"
-    echo "  - Jellyfin UI:    http://${JELLYFIN_BIND_IP}:${JELLYFIN_PORT}/"
     echo ""
     echo "Status:"
     echo "  - Core Services:  ${SERVICES_STATUS}"
     echo "  - Telegram Auth:  ${TG_AUTH_STATE}"
-    local jf_api_key="${JELLYFIN_API_KEY:-${STANDALONE_JELLYFIN_API_KEY:-}}"
-    if [ -z "${jf_api_key}" ] && [ -f .env ]; then
-        jf_api_key="$(grep -E '^[[:space:]]*JELLYFIN_API_KEY=' .env | head -n1 | cut -d= -f2- | tr -d '[:space:]"' || true)"
-    fi
-    if [ -z "${jf_api_key}" ] && [ -f .env ]; then
-        jf_api_key="$(grep -E '^[[:space:]]*STANDALONE_JELLYFIN_API_KEY=' .env | head -n1 | cut -d= -f2- | tr -d '[:space:]"' || true)"
-    fi
-    if [ -n "${jf_api_key}" ]; then
-        echo "  - Jellyfin API:   ACTIVE"
-    else
-        echo "  - Jellyfin API:   INACTIVE (API key optional; basic playback available)"
-    fi
     echo ""
     echo "Next Steps:"
     if [[ "${TG_AUTH_STATE}" == *"AUTHORIZED"* ]] && [[ "${TG_AUTH_STATE}" != *"NOT_AUTHORIZED"* ]] && [[ "${TG_AUTH_STATE}" != *"FAILED"* ]]; then
         echo "  1. Open Admin UI at ${RESOLVER_PUBLIC_URL}/admin/#sources to add your first channel."
-        echo "  2. Access Jellyfin UI at http://${JELLYFIN_BIND_IP}:${JELLYFIN_PORT}/ for media playback."
+        echo "  2. Playback and the catalog are served by this installation."
     else
         echo "  1. If Telegram credentials are not yet configured, set TELEGRAM_API_ID and"
         echo "     TELEGRAM_API_HASH in .env."
         echo "  2. Complete Telegram authentication by running 'make setup' interactively"
         echo "     (or place an authenticated session in ${STANDALONE_DATA_DIR}/telegram.session)."
         echo "  3. Open Admin UI at ${RESOLVER_PUBLIC_URL}/admin/#sources to add your first channel."
-        echo "  4. Access Jellyfin UI at http://${JELLYFIN_BIND_IP}:${JELLYFIN_PORT}/ for media playback."
+        echo "  4. Playback and the catalog are served by this installation."
     fi
     echo "================================================================================"
     echo ""
@@ -237,8 +217,6 @@ if [ "${STATUS_ONLY}" -eq 1 ]; then
     fi
     RESOLVER_BIND_IP="$(grep -E '^[[:space:]]*RESOLVER_BIND_IP=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "127.0.0.1")"
     RESOLVER_PORT="$(grep -E '^[[:space:]]*RESOLVER_PORT=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "8090")"
-    JELLYFIN_BIND_IP="$(grep -E '^[[:space:]]*JELLYFIN_BIND_IP=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "127.0.0.1")"
-    JELLYFIN_PORT="$(grep -E '^[[:space:]]*JELLYFIN_PORT=' .env | cut -d= -f2- | tr -d '[:space:]"' || echo "8096")"
     RESOLVER_PUBLIC_URL="$(grep -E '^[[:space:]]*RESOLVER_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '[:space:]"' || true)"
     if [ -z "${RESOLVER_PUBLIC_URL}" ]; then
         # Legacy name read second so installs written before RESOLVER_PUBLIC_URL keep their URL.
@@ -376,8 +354,6 @@ if [ -f .env ] && grep -Eq '^[[:space:]]*ADULT_HUB_STANDALONE=true' .env; then
     echo "[INFO] Existing standalone .env detected. Preserving credentials and settings."
     RESOLVER_BIND_IP="$(grep -E '^[[:space:]]*RESOLVER_BIND_IP=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
     RESOLVER_PORT="$(grep -E '^[[:space:]]*RESOLVER_PORT=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
-    JELLYFIN_BIND_IP="$(grep -E '^[[:space:]]*JELLYFIN_BIND_IP=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
-    JELLYFIN_PORT="$(grep -E '^[[:space:]]*JELLYFIN_PORT=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
     RESOLVER_PUBLIC_URL="$(grep -E '^[[:space:]]*RESOLVER_PUBLIC_URL=' .env | cut -d= -f2- | tr -d '\"'\'' ' || true)"
     if [ -z "${RESOLVER_PUBLIC_URL}" ]; then
         # Legacy name only: append the same value under RESOLVER_PUBLIC_URL (the name compose
@@ -456,10 +432,8 @@ if [ "${PRESERVING_EXISTING_ENV}" -eq 0 ]; then
         fi
 
         RESOLVER_BIND_IP="${BIND_IP}"
-        JELLYFIN_BIND_IP="${BIND_IP}"
     else
         RESOLVER_BIND_IP="127.0.0.1"
-        JELLYFIN_BIND_IP="127.0.0.1"
         echo "[INFO] Host-only (loopback) mode selected. Services will bind to 127.0.0.1."
         echo "       They will NOT be accessible from other devices on the LAN."
     fi
@@ -483,37 +457,6 @@ if [ "${PRESERVING_EXISTING_ENV}" -eq 0 ]; then
             read -rp "Enter resolver port [${alt_port}]: " user_port
             RESOLVER_PORT="${user_port:-${alt_port}}"
         fi
-    fi
-
-    # Port selection and conflict detection for Jellyfin (default 8096)
-    JELLYFIN_PORT="${JELLYFIN_PORT_OVERRIDE:-8096}"
-    if ! is_port_available "${JELLYFIN_BIND_IP}" "${JELLYFIN_PORT}"; then
-        alt_jf_port=$((JELLYFIN_PORT + 1))
-        for _ in $(seq 1 50); do
-            if is_port_available "${JELLYFIN_BIND_IP}" "${alt_jf_port}" && [ "${alt_jf_port}" -ne "${RESOLVER_PORT}" ]; then
-                break
-            fi
-            alt_jf_port=$((alt_jf_port + 1))
-        done
-        echo "[WARN] Port ${JELLYFIN_PORT} is in use on ${JELLYFIN_BIND_IP}."
-        echo "       Suggested alternate port: ${alt_jf_port}"
-        if [ "${NON_INTERACTIVE}" -eq 1 ] || [ ! -t 0 ]; then
-            JELLYFIN_PORT="${alt_jf_port}"
-            echo "[INFO] Automatically selected alternate Jellyfin port: ${JELLYFIN_PORT}"
-        else
-            read -rp "Enter Jellyfin port [${alt_jf_port}]: " user_jf_port
-            JELLYFIN_PORT="${user_jf_port:-${alt_jf_port}}"
-        fi
-    fi
-
-    # Refuse port collision when overrides or defaults request the same host port
-    if [ -n "${RESOLVER_PORT_OVERRIDE}" ] && [ -n "${JELLYFIN_PORT_OVERRIDE}" ] && [ "${RESOLVER_PORT_OVERRIDE}" -eq "${JELLYFIN_PORT_OVERRIDE}" ]; then
-        echo "[ERROR] Port collision: Resolver and Jellyfin overrides request the same host port (${RESOLVER_PORT_OVERRIDE}). Specify distinct ports for each service." >&2
-        exit 1
-    fi
-    if [ "${RESOLVER_PORT}" -eq "${JELLYFIN_PORT}" ]; then
-        echo "[ERROR] Port collision: Resolver and Jellyfin cannot both bind to host port ${RESOLVER_PORT}. Specify distinct ports for each service." >&2
-        exit 1
     fi
 
     # Client-facing playback URL
@@ -547,8 +490,6 @@ fi
 # Ensure sensible defaults if preserved values were partially empty
 RESOLVER_BIND_IP="${RESOLVER_BIND_IP:-127.0.0.1}"
 RESOLVER_PORT="${RESOLVER_PORT:-8090}"
-JELLYFIN_BIND_IP="${JELLYFIN_BIND_IP:-127.0.0.1}"
-JELLYFIN_PORT="${JELLYFIN_PORT:-8096}"
 RESOLVER_PUBLIC_URL="${RESOLVER_PUBLIC_URL:-http://${RESOLVER_BIND_IP}:${RESOLVER_PORT}}"
 
 # -----------------------------------------------------------------------------
@@ -601,13 +542,9 @@ STANDALONE_MEDIA_DIR=${STANDALONE_MEDIA_DIR}
 # Network bindings and ports
 RESOLVER_BIND_IP=${RESOLVER_BIND_IP}
 RESOLVER_PORT=${RESOLVER_PORT}
-JELLYFIN_BIND_IP=${JELLYFIN_BIND_IP}
-JELLYFIN_PORT=${JELLYFIN_PORT}
 
 # Public URLs and access control
 RESOLVER_PUBLIC_URL=${RESOLVER_PUBLIC_URL}
-JELLYFIN_URL=http://jellyfin:8096
-JELLYFIN_API_KEY=
 ADMIN_PUBLIC=false
 ADMIN_WRITE_TOKEN=${ADMIN_TOKEN}
 
@@ -646,7 +583,6 @@ sync:
   pbc_backfill_per_run: 50
   tpdb_backfill_per_run: 50
   scene_backfill_per_run: 500
-  jellyfin_people_per_run: 50
 
 sources:
   - provider: telegram
@@ -692,7 +628,7 @@ echo "[SUCCESS] Compose standalone configuration is valid."
 # 8. Service orchestration and Telegram authorization check
 # -----------------------------------------------------------------------------
 TG_AUTH_STATE="NOT_CONFIGURED"
-SERVICES_STATUS="Database and Jellyfin ready"
+SERVICES_STATUS="Database ready"
 
 if [ "${SKIP_DOCKER_START}" -eq 1 ]; then
     echo "[INFO] --skip-docker-start specified. Skipping container startup."
@@ -709,8 +645,8 @@ else
         fi
     fi
 
-    echo "==> Starting core database and Jellyfin services..."
-    "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d database jellyfin
+    echo "==> Starting the database service..."
+    "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d database
 
     echo "==> Waiting for database readiness..."
     db_ready=0

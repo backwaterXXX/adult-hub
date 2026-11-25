@@ -3,10 +3,9 @@
 Verifies:
 1. No GPU hardware acceleration (/dev/dri) or external Docker network requirements.
 2. Compose configuration validation against freshly generated isolated environment.
-3. PostgreSQL and Jellyfin persistence declarations (named volumes and host binds).
-4. Absent Jellyfin API key and Jellyfin unavailable handling.
-5. Production deployment detection and isolation.
-6. Preservation of media, backups, and data.
+3. PostgreSQL persistence declarations (named volumes).
+4. Production deployment detection and isolation.
+5. Preservation of media, backups, and data.
 """
 
 import os
@@ -49,9 +48,7 @@ class TestStandaloneDeploymentDeclarations(unittest.TestCase):
                 svc_conf,
                 f"Service '{svc_name}' in compose.standalone.yml declares devices; standalone must run on generic CPU hosts.",
             )
-        # Production compose declares /dev/dri for jellyfin; standalone must not
         self.assertNotIn("/dev/dri", self.standalone_raw)
-        self.assertIn("/dev/dri", self.prod_raw)
 
     def test_no_external_docker_network(self):
         """Standalone deployment must NOT require external Docker networks (e.g. selfhost)."""
@@ -69,12 +66,10 @@ class TestStandaloneDeploymentDeclarations(unittest.TestCase):
             "Production compose is expected to use external 'selfhost' network.",
         )
 
-    def test_postgresql_and_jellyfin_persistence_declarations(self):
-        """PostgreSQL and Jellyfin must use dedicated persistent named volumes."""
+    def test_postgresql_persistence_declarations(self):
+        """PostgreSQL must use a dedicated persistent named volume."""
         volumes = self.standalone_cfg.get("volumes", {})
         self.assertIn("postgres_data", volumes, "postgres_data named volume missing in standalone Compose volumes")
-        self.assertIn("jellyfin_config", volumes, "jellyfin_config named volume missing in standalone Compose volumes")
-        self.assertIn("jellyfin_cache", volumes, "jellyfin_cache named volume missing in standalone Compose volumes")
 
         # Database volume mount
         db_volumes = self.standalone_cfg["services"]["database"]["volumes"]
@@ -83,53 +78,15 @@ class TestStandaloneDeploymentDeclarations(unittest.TestCase):
             "PostgreSQL service does not mount postgres_data named volume at /var/lib/postgresql/data",
         )
 
-        # Jellyfin volume mounts
-        jf_volumes = self.standalone_cfg["services"]["jellyfin"]["volumes"]
-        self.assertTrue(
-            any("jellyfin_config:/config" in str(v) for v in jf_volumes),
-            "Jellyfin service does not mount jellyfin_config named volume at /config",
-        )
-        self.assertTrue(
-            any("jellyfin_cache:/cache" in str(v) for v in jf_volumes),
-            "Jellyfin service does not mount jellyfin_cache named volume at /cache",
-        )
-
-        # Standalone media volume mount (read-only for Jellyfin, read-write for sync/resolver)
-        self.assertTrue(
-            any(":/media/adult:ro" in str(v) for v in jf_volumes),
-            "Jellyfin service must mount media directory as read-only (:ro)",
-        )
+        # Standalone media volume mount (read-write for sync/resolver)
         sync_volumes = self.standalone_cfg["services"]["sync"]["volumes"]
         self.assertTrue(
             any(":/media/adult" in str(v) and ":ro" not in str(v) for v in sync_volumes),
             "Sync service must mount media directory with write permissions",
         )
 
-    def test_jellyfin_port_mapping_instead_of_host_networking(self):
-        """Standalone Jellyfin uses explicit port binding instead of network_mode: host."""
-        jf_svc = self.standalone_cfg["services"]["jellyfin"]
-        self.assertNotIn("network_mode", jf_svc)
-        ports = jf_svc.get("ports", [])
-        self.assertTrue(
-            any("8096" in str(p) for p in ports),
-            "Jellyfin service must map port 8096 for standalone client access",
-        )
-        # Production compose uses host networking
-        self.assertEqual(self.prod_cfg["services"]["jellyfin"].get("network_mode"), "host")
-
-    def test_jellyfin_unavailable_tolerance_in_sync_dependencies(self):
-        """Sync service in standalone depends on jellyfin with service_started (not service_healthy)."""
-        sync_svc = self.standalone_cfg["services"]["sync"]
-        depends_on = sync_svc.get("depends_on", {})
-        self.assertIn("jellyfin", depends_on)
-        self.assertEqual(
-            depends_on["jellyfin"]["condition"],
-            "service_started",
-            "Sync must use 'service_started' for Jellyfin in standalone so offline or slow Jellyfin does not block sync startup.",
-        )
-
-    def test_resolver_url_for_strm_is_reachable_from_jellyfin_bridge_container(self):
-        """Resolver URL written to .strm in standalone must use Compose DNS reachable from Jellyfin bridge."""
+    def test_resolver_url_for_strm_is_reachable_from_the_compose_network(self):
+        """Resolver URL written to .strm in standalone must use Compose DNS."""
         sync_env = self.standalone_cfg["services"]["sync"].get("environment", [])
         resolver_url_entry = next((e for e in sync_env if str(e).startswith("RESOLVER_PUBLIC_URL=")), None)
         self.assertIsNotNone(resolver_url_entry, "RESOLVER_PUBLIC_URL must be defined for sync service")
@@ -191,7 +148,6 @@ class TestStandaloneComposeConfigValidation(unittest.TestCase):
         services = parsed_config.get("services", {})
         self.assertIn("database", services)
         self.assertIn("migration", services)
-        self.assertIn("jellyfin", services)
         self.assertIn("resolver", services)
         self.assertIn("sync", services)
         self.assertNotIn("backup", services)
@@ -210,36 +166,6 @@ class TestStandaloneComposeConfigValidation(unittest.TestCase):
             if line.startswith("RESOLVER_PUBLIC_URL=")
         )
         self.assertEqual(sync_env.get("RESOLVER_PUBLIC_URL"), written_url)
-
-    def test_absent_jellyfin_api_key_compose_config_valid(self):
-        """When JELLYFIN_API_KEY is unset or empty, Compose config remains valid."""
-        setup_res = subprocess.run(
-            [str(SETUP_SCRIPT), "--non-interactive", "--skip-docker-start", "--root-dir", str(self.isolated_root)],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            env=self.setup_env,
-        )
-        self.assertEqual(setup_res.returncode, 0)
-
-        env_path = self.isolated_root / ".env"
-        env_text = env_path.read_text()
-        # Verify the canonical JELLYFIN_API_KEY is empty and the legacy name is not written
-        self.assertIn("JELLYFIN_API_KEY=\n", env_text)
-        self.assertNotIn("STANDALONE_JELLYFIN_API_KEY=", env_text)
-
-        config_res = subprocess.run(
-            [
-                "docker", "compose",
-                "--env-file", str(env_path),
-                "-f", str(self.isolated_root / "compose.standalone.yml"),
-                "config", "--quiet",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        self.assertEqual(config_res.returncode, 0, f"Config validation failed with absent API key:\n{config_res.stderr}")
 
 
 class TestStandalonePersistenceAndIsolation(unittest.TestCase):

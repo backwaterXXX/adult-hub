@@ -72,8 +72,6 @@ SYNC_TELEGRAM = _tg.enabled if _tg else False
 TELEGRAM_CHANNELS = [ch.id for ch in _tg.channels if ch.enabled] if _tg else []
 TELEGRAM_MAX_PAGES = _tg.defaults.get("max_pages", 1) if _tg else 1
 
-JELLYFIN_URL = os.getenv("JELLYFIN_URL", "")
-JELLYFIN_API_KEY = os.getenv("JELLYFIN_API_KEY", "")
 
 DEAD_STREAM_RESOLVER_TIMEOUT = 120.0
 # Denylist entries older than this (and no longer listed) expire.
@@ -85,4 +83,3 @@ DEAD_STREAM_DENYLIST_DAYS = 90
 PBC_BACKFILL_PER_RUN = CONFIG.sync.pbc_backfill_per_run
 TPDB_BACKFILL_PER_RUN = getattr(CONFIG.sync, "tpdb_backfill_per_run", 50)
 SCENE_BACKFILL_PER_RUN = getattr(CONFIG.sync, "scene_backfill_per_run", 500)
-JELLYFIN_PEOPLE_PER_RUN = CONFIG.sync.jellyfin_people_per_run

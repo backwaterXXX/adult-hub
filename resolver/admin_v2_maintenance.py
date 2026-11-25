@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import logging
 
-import httpx
 from fastapi import APIRouter, Request
 from resolver.admin_v2_errors import V2ErrorRoute
 
@@ -123,73 +121,6 @@ def _route_clear_resolver_cache(router, admin):
     return clear_resolver_cache
 
 
-def _route_refresh_jellyfin_library(router, admin):
-    @router.post("/api/v2/maintenance/jellyfin/refresh")
-    async def refresh_jellyfin_library(request: Request):
-        denied = admin._write_denied(request)
-        if denied is not None:
-            return denied
-        url = os.getenv("JELLYFIN_URL", "").strip().rstrip("/")
-        api_key = os.getenv("JELLYFIN_API_KEY", "").strip()
-        if not url or not api_key:
-            return admin.JSONResponse(
-                {"ok": False, "error": "Jellyfin refresh is not configured."}, status_code=503
-            )
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    f"{url}/Library/Refresh",
-                    headers={"Authorization": f'MediaBrowser Token="{api_key}"'},
-                )
-            if response.status_code not in (200, 204):
-                return admin.JSONResponse(
-                    {"ok": False, "error": "Jellyfin did not accept the library refresh request."},
-                    status_code=502,
-                )
-            return {"ok": True, "requested": True}
-        except Exception:
-            logger.warning("Request failed in refresh_jellyfin_library", exc_info=True)
-            return admin.JSONResponse(
-                {"ok": False, "error": "Could not request a Jellyfin library refresh."},
-                status_code=502,
-            )
-
-    return refresh_jellyfin_library
-
-
-def _route_refresh_collections(router, admin):
-    @router.post("/api/v2/maintenance/collections/refresh")
-    async def refresh_collections(request: Request):
-        denied = admin._write_denied(request)
-        if denied is not None:
-            return denied
-        url = os.getenv("JELLYFIN_URL", "").strip().rstrip("/")
-        api_key = os.getenv("JELLYFIN_API_KEY", "").strip()
-        if not url or not api_key:
-            return admin.JSONResponse(
-                {"ok": False, "error": "Jellyfin collection refresh is not configured."},
-                status_code=503,
-            )
-        try:
-            from resolver.video_duplicates import enqueue_job
-
-            job_id = await admin.asyncio.to_thread(
-                enqueue_job, admin.HUB_DB_URL, "collections_refresh", {}
-            )
-            admin._wake_worker("jobs")
-            return admin.JSONResponse(
-                {"ok": True, "queued": True, "job_id": job_id, "state": "queued"},
-                status_code=202,
-            )
-        except Exception:
-            logger.warning("Request failed in refresh_collections", exc_info=True)
-            return admin.JSONResponse(
-                {"ok": False, "error": "Could not queue a collections refresh."}, status_code=503
-            )
-
-    return refresh_collections
-
-
 def _route_filesize_backfill(router, admin):
     @router.post("/api/v2/maintenance/filesize-backfill")
     async def trigger_filesize_backfill(request: Request):
@@ -256,8 +187,6 @@ def build_router(admin):
     router = APIRouter(route_class=V2ErrorRoute)
     _route_trigger_sync(router, admin)
     _route_clear_resolver_cache(router, admin)
-    _route_refresh_jellyfin_library(router, admin)
-    _route_refresh_collections(router, admin)
     _route_filesize_backfill(router, admin)
     _route_dead_stream_quarantine(router, admin)
     return router

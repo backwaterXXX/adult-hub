@@ -1,6 +1,6 @@
 # Adult Hub Installation and Operations Guide
 
-This guide covers deployment options, operational workflows, storage architecture, backup procedures, Jellyfin integration, and troubleshooting for Adult Hub.
+This guide covers deployment options, operational workflows, storage architecture, backup procedures, catalog clients, and troubleshooting for Adult Hub.
 
 For a fast three-command setup on a new system, see the [Quick Start in README.md](README.md#quick-start).
 
@@ -36,10 +36,9 @@ For a fast three-command setup on a new system, see the [Quick Start in README.m
    - [Automated Scheduled Backups](#automated-scheduled-backups)
    - [Manual Database Snapshots](#manual-database-snapshots)
    - [Restoring from a Backup](#restoring-from-a-backup)
-8. [Jellyfin Integration](#8-jellyfin-integration)
-   - [Basic Setup (No API Key Required)](#basic-setup-no-api-key-required)
-   - [Recommended Jellyfin Library Configuration](#recommended-jellyfin-library-configuration)
-   - [Optional API Key Integration](#optional-api-key-integration)
+8. [Catalog Clients and Companion Players](#8-catalog-clients-and-companion-players)
+   - [Generated Sidecars](#generated-sidecars)
+   - [Client API Access](#client-api-access)
 9. [Reverse Proxy and Network Configuration](#9-reverse-proxy-and-network-configuration)
    - [Routing Requirements](#routing-requirements)
    - [Adult Hub Client API v1](#adult-hub-client-api-v1)
@@ -66,7 +65,6 @@ Adult Hub supports three deployment workflows:
 | **Database** | Bundled PostgreSQL 17 (`postgres:17-alpine`) | Bundled PostgreSQL 17 (`postgres:17-alpine`) | External PostgreSQL 17 cluster |
 | **Database Migrations**| Automatic via ephemeral `migration` container | Automatic via ephemeral `migration` container | Manual via `python3 migrate_db.py apply` |
 | **Docker Network** | Internal Compose network | Internal Compose network | External network (`selfhost`) |
-| **Jellyfin Service** | Bundled container (`jellyfin/jellyfin:12.4`) | Bundled container (`jellyfin/jellyfin:12.4`) | Host networking (`network_mode: host`) |
 | **Data Layout** | Isolated under `./data`, `./media`, `./cache` | Isolated under `./standalone/` | Dedicated host paths (`./data`, etc.) |
 
 ---
@@ -139,7 +137,7 @@ adult-hub/
    docker compose up -d
    ```
 
-   Docker Compose starts PostgreSQL, executes schema migrations via an ephemeral `migration` container gated by `service_completed_successfully`, and brings up Jellyfin, the Resolver API, and the Sync worker (which also runs scheduled backups and queue processing).
+   Docker Compose starts PostgreSQL, executes schema migrations via an ephemeral `migration` container gated by `service_completed_successfully`, and brings up the Resolver API and the Sync worker (which also runs scheduled backups and queue processing).
 
 ### Interactive Telegram Authentication Service
 
@@ -152,16 +150,15 @@ The `telegram-auth` service is declared under the `tools` Compose profile (`prof
 
 By default, services bind to `127.0.0.1` (loopback) for security. To enable streaming to smart TVs, Android TV players, and companion apps on your home network:
 
-1. In `.env`, set `RESOLVER_BIND_IP` and `JELLYFIN_BIND_IP` to your host's private LAN IP (e.g. `192.168.1.100`):
+1. In `.env`, set `RESOLVER_BIND_IP` to your host's private LAN IP (e.g. `192.168.1.100`):
    ```env
    RESOLVER_BIND_IP=192.168.1.100
-   JELLYFIN_BIND_IP=192.168.1.100
    ```
 2. Set `STREAM_PUBLIC_URL_TELEGRAM` to your resolver endpoint reachable by client devices. The legacy name `STANDALONE_STREAM_PUBLIC_URL_TELEGRAM` is still accepted as a fallback:
    ```env
    STREAM_PUBLIC_URL_TELEGRAM=http://192.168.1.100:8090
    ```
-   Inside the Docker bridge network, Jellyfin resolves stream links through Compose internal DNS (`http://resolver:8090`), while client-facing players use the configured LAN URL.
+   Inside the Docker bridge network, services resolve stream links through Compose internal DNS (`http://resolver:8090`), while client-facing players use the configured LAN URL.
 
 ### Updating Prebuilt Deployments
 
@@ -178,7 +175,7 @@ Compose automatically downloads newer image versions, runs schema migrations via
 
 ## 3. Standalone Repository Installer (`make setup`)
 
-Standalone deployment via repository checkout bundles all services (PostgreSQL 17, Jellyfin container using image tag `jellyfin/jellyfin:12.4`, Resolver, and Sync worker). It requires no pre-existing database or external Docker network.
+Standalone deployment via repository checkout bundles all services (PostgreSQL 17, Resolver, and Sync worker). It requires no pre-existing database or external Docker network.
 
 ### Overview and Directory Layout
 
@@ -196,10 +193,8 @@ adult-hub/
     └── media/                    # Mounted to /media/adult (.strm, .nfo, thumbnails)
 ```
 
-In addition, Docker manages three named volumes for database and Jellyfin state:
+In addition, Docker manages one named volume for the database state:
 - `adult-hub-standalone_postgres_data`: PostgreSQL cluster files (`/var/lib/postgresql/data`).
-- `adult-hub-standalone_jellyfin_config`: Jellyfin server settings and internal database (`/config`).
-- `adult-hub-standalone_jellyfin_cache`: Jellyfin transcode and image caches (`/cache`).
 
 ### Running `make setup`
 
@@ -217,21 +212,21 @@ The installer executes `scripts/setup.sh` and performs the following steps:
    - Refuses to run if an existing `postgres_data` volume is detected without credentials in `.env`, preventing accidental database password desynchronization.
 2. **Prerequisites Check**: Verifies Docker CLI, Compose v2 (`docker compose`), daemon accessibility, and write permissions in the repository.
 3. **Network Mode Selection**:
-   - **Loopback (`127.0.0.1`)** [Default]: Safe host-only binding. Resolver binds to `127.0.0.1:8090` and Jellyfin binds to `127.0.0.1:8096`. Services are not accessible from external network devices.
+   - **Loopback (`127.0.0.1`)** [Default]: Safe host-only binding. Resolver binds to `127.0.0.1:8090`. Services are not accessible from external network devices.
    - **Local Network (LAN)**: Detects host network interfaces and binds to a specific private LAN IP (e.g., `192.168.1.50`). Allows smart TVs, Android TV players, and phones on your home network to access streams. Wildcard `0.0.0.0` is prohibited for safety.
-4. **Port Conflict Detection**: Probes candidate ports (default `8090` for Resolver, `8096` for Jellyfin). If occupied, automatically suggests and allows choosing available alternative ports.
+4. **Port Conflict Detection**: Probes candidate ports (default `8090` for Resolver). If occupied, automatically suggests and allows choosing available alternative ports.
 5. **Directory Creation**: Initializes `./standalone/data/backups`, `./standalone/cache`, and `./standalone/media` with restricted permissions (`chmod 750`).
 6. **Credential Generation**: Atomically writes a new `.env` (mode `0600`) with cryptographically secure random values for `POSTGRES_PASSWORD` and `ADMIN_WRITE_TOKEN`.
 7. **Configuration Generation**: Writes an initial `standalone/config.yaml` with a valid default sync configuration and an empty `channels: []` list.
 8. **Core Service Startup and Migration**:
-   - Starts `database` and `jellyfin` containers.
+   - Starts the `database` container.
    - Awaits database health check.
    - Runs database schema migrations via a one-off `migration` container.
 9. **Interactive Telegram Authentication**:
    - Prompts for your Telegram `API ID` and `API Hash` (from [my.telegram.org](https://my.telegram.org)).
    - Checks if resolver or sync containers are running to prevent SQLite session locking.
    - Runs `python3 -m resolver.providers.telegram_auth auth` in an interactive container. Enter your phone number (international format, e.g. `+1234567890`), login code received in Telegram, and 2FA password (if enabled).
-10. **Application Stack Startup**: Starts `resolver` and `sync` services once authorization succeeds. If authentication is postponed, core database and Jellyfin services remain running while resolver and sync remain withheld until authorization is completed.
+10. **Application Stack Startup**: Starts `resolver` and `sync` services once authorization succeeds. If authentication is postponed, the database service remains running while resolver and sync remain withheld until authorization is completed.
 
 ### Setup Options, Prebuilt Consumption, and Source Build
 
@@ -258,7 +253,7 @@ scripts/setup.sh -y --bind-mode loopback
 scripts/setup.sh -y --bind-mode lan --bind-ip 192.168.1.100
 
 # Custom port assignments
-scripts/setup.sh --resolver-port 8091 --jellyfin-port 8097
+scripts/setup.sh --resolver-port 8091
 
 # Prepare config and directories without launching Docker containers
 scripts/setup.sh --skip-docker-start
@@ -275,7 +270,6 @@ Available flags:
 - `--bind-mode MODE`: Network binding mode: `loopback` (default) or `lan`.
 - `--bind-ip IP`: Private IP address to bind (required when `--bind-mode lan` is used non-interactively).
 - `--resolver-port PORT`: Port for resolver API and admin panel (default: `8090`).
-- `--jellyfin-port PORT`: Port for Jellyfin web UI (default: `8096`).
 - `--public-url URL`: Client-facing stream URL for LAN playback.
 - `--skip-docker-start`: Generate `.env`, configuration, and directories without starting containers.
 - `--skip-docker-check`: Skip Docker daemon connectivity check (useful for automated testing or non-standard environments).
@@ -297,13 +291,12 @@ The installer is idempotent and safe to re-run at any time:
 
 ## 4. Existing Infrastructure / Production Deployment (`make deploy`)
 
-The production deployment uses `docker-compose.yml` to integrate Adult Hub into an existing self-hosted server environment alongside an external PostgreSQL cluster, reverse proxy, and hardware-accelerated media stack.
+The production deployment uses `docker-compose.yml` to integrate Adult Hub into an existing self-hosted server environment alongside an external PostgreSQL cluster and reverse proxy.
 
 ### Overview and Differences from Standalone
 
 - **No Bundled Database**: Production does not start a PostgreSQL container. It connects to an existing PostgreSQL 17 server specified by `DATABASE_URL`.
 - **External Docker Network**: Relies on an external Docker network named `selfhost` so containers can communicate with your external database and reverse proxy.
-- **Jellyfin Host Networking & Hardware Acceleration**: In `docker-compose.yml`, Jellyfin runs with `network_mode: host`, mounts `/dev/dri` for Intel QuickSync / VA-API hardware transcoding, and runs custom ffmpeg fast-probing wrappers.
 - **Release Version Pinning**: `make deploy` reads `VERSION` and builds/tags release images matching the version string.
 
 ### Prerequisites and External Services
@@ -332,7 +325,6 @@ The production deployment uses `docker-compose.yml` to integrate Adult Hub into 
    - Set `DATABASE_URL` to your PostgreSQL 17 connection string.
    - Set `RESOLVER_PUBLIC_URL` to your external HTTPS URL (e.g., `https://media.example.org`).
    - Set `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`.
-   - Optionally configure `JELLYFIN_URL` and `JELLYFIN_API_KEY`.
    - Set `MEDIA_PATH` (defaults to `./media/adult`).
 
 3. Edit `config.yaml`:
@@ -370,7 +362,7 @@ What `make deploy` does:
 
 What `make deploy` does **not** do:
 - It does **not** run `git pull`.
-- It does **not** touch or restart the `jellyfin` container (Jellyfin is defined in `docker-compose.yml` for convenience, but media server restarts are kept decoupled from application code releases).
+- It does **not** restart any service outside the `resolver` and `sync` containers.
 
 ---
 
@@ -457,11 +449,9 @@ Understanding where data is stored is critical for backups, disk sizing, and per
 | Data Type | Standalone Path | Production Path | Notes |
 |---|---|---|---|
 | **Database Data** | Volume `adult-hub-standalone_postgres_data` | External PostgreSQL storage | Contains catalog, channel state, performers, tags, migration history. |
-| **Media & STRM** | Host `./standalone/media/` (in container `/media/adult`) | Host `${MEDIA_PATH}` (in container `/media/adult`) | `.strm` stream links, `.nfo` metadata sidecars, `.jpg` posters. Resolver/Sync have write access; Jellyfin has read-only access. |
+| **Media & STRM** | Host `./standalone/media/` (in container `/media/adult`) | Host `${MEDIA_PATH}` (in container `/media/adult`) | `.strm` stream links, `.nfo` metadata sidecars, `.jpg` posters. Resolver/Sync have write access. |
 | **Database Backups** | Host `./standalone/data/backups/` | Host `./data/backups/` | Compressed PostgreSQL snapshots (`.dump.gz` and `.sha256`). |
 | **Telegram Session** | Host `./standalone/data/telegram.session` | Host `./data/telegram.session` | MTProto SQLite session token. Keep strictly confidential; never commit to version control. |
-| **Jellyfin Config** | Volume `adult-hub-standalone_jellyfin_config` | Host `./jf-config/` | Jellyfin users, settings, and library database. |
-| **Jellyfin Cache** | Volume `adult-hub-standalone_jellyfin_cache` | Host `./jf-cache/` | Extracted images, playback caches, transcodes. Ephemeral. |
 | **Application Cache** | Host `./standalone/cache/` | Host `./data/cache/` | Worker heartbeat capabilities, temporary sync files. |
 
 ---
@@ -577,49 +567,26 @@ If a rollback is required:
 
 ---
 
-## 8. Jellyfin Integration
+## 8. Catalog Clients and Companion Players
 
-Adult Hub integrates with Jellyfin by generating media files directly onto the filesystem:
+Adult Hub publishes the catalog through its own APIs and writes sidecars next to the media files.
+
+### Generated Sidecars
+
+Sync writes three file types into the media directory:
 - **`.strm` files**: Small text files containing the stream URL pointing to the Adult Hub resolver endpoint.
-- **`.nfo` files**: Kodi/Jellyfin-compatible XML metadata files containing titles, plots, tags, performers, and premiere dates.
+- **`.nfo` files**: Kodi-compatible XML metadata files containing titles, plots, tags, performers, and premiere dates.
 - **`.jpg` files**: Thumbnails and cover artwork.
 
-### Basic Setup (No API Key Required)
+### Client API Access
 
-No Jellyfin API key is required to stream or browse your library.
+Playback and browsing happen through the Adult Hub APIs served by the resolver:
 
-1. Open Jellyfin in your browser:
-   - Standalone loopback: [http://127.0.0.1:8096/](http://127.0.0.1:8096/)
-   - Standalone LAN: `http://<YOUR_LAN_IP>:8096/`
-2. Complete the initial Jellyfin setup wizard (create an admin user).
-3. Add your media library:
-   - Navigate to **Dashboard** -> **Libraries** -> **Add Media Library**.
-   - **Content type**: Select **Movies**. *(Do not select Mixed Content or Music Videos).*
-   - **Display name**: E.g., `Adult Hub`.
-   - **Folders**: Click `+` and enter `/media/adult`.
+- **Admin UI** at `/admin/` for browsing, searching, and managing the library.
+- **Client API v1** at `/api/v1/*` for the Android and desktop companions, enabled with `ADULT_HUB_ENABLE_DESKTOP_API=true` and authenticated with a client Bearer token (see [Adult Hub Client API v1](#adult-hub-client-api-v1)).
+- **Stream endpoints** at `/admin/play/*` and artwork at `/admin/api/thumb*`, reachable from client devices.
 
-### Recommended Jellyfin Library Configuration
-
-To prevent Jellyfin from modifying or overwriting Adult Hub sidecars, adjust the library settings:
-
-1. **Metadata Savers**: **Uncheck / disable "NFO" metadata saver**.
-   - *Why*: Adult Hub generates and manages all `.nfo` files directly. Jellyfin mounts `/media/adult` as read-only (`:ro`), so Jellyfin's metadata saver cannot and should not write to it.
-2. **Metadata Readers**: **Ensure "NFO" metadata reader is checked / enabled**.
-   - *Why*: Jellyfin must read the `.nfo` sidecars generated by Adult Hub.
-3. **Embedded Metadata**: You may uncheck "Embedded metadata" to prefer NFO tags over container headers.
-
-### Optional API Key Integration
-
-An API key enables advanced bi-directional communication between Adult Hub's sync worker and Jellyfin:
-- **Instant Library Refreshes**: Automatically notifies Jellyfin when new videos or metadata sidecars are written, avoiding wait times for periodic library scans.
-- **Performer Metadata Sync**: Pushes performer biographies and photos directly into Jellyfin's people database.
-
-To enable:
-1. In Jellyfin, go to **Dashboard** -> **Administration** -> **API Keys**.
-2. Click `+` to generate a new key (name it `Adult Hub`).
-3. Add the key to `.env`:
-   - Standalone and production: `JELLYFIN_API_KEY=your_key_here`. The legacy name `STANDALONE_JELLYFIN_API_KEY` is still accepted as a fallback in standalone mode.
-4. Restart services or run `make update` / `make deploy`.
+Pair a companion player with `/api/v1/auth/*` (login, refresh, or TV pairing) to obtain an access token. See [CONFIGURATION.md](CONFIGURATION.md) for the related environment variables.
 
 ---
 
@@ -632,7 +599,6 @@ When accessing Adult Hub from remote devices or outside your home network, use a
 - **Stream Playback & Artwork**: Route `/admin/play/*` and `/admin/api/thumb*` to the **Resolver** service (`http://127.0.0.1:8090`). These endpoints are needed by remote companion players.
 - **Client API v1**: Route `/api/v1/*` to the **Resolver** service (`http://127.0.0.1:8090`), preserving the prefix. Requires setting `ADULT_HUB_ENABLE_DESKTOP_API=true`.
 - **Management Interface**: Restrict `/admin/*` access to trusted networks (LAN / VPN) or protect it with reverse proxy authentication. Do not publish `/admin/*` publicly without explicit access controls.
-- **Jellyfin App**: Route all other requests (including root `/` and Jellyfin web app paths) to the **Jellyfin** service (`http://127.0.0.1:8096`).
 - Ensure client-facing URLs in STRM files use HTTPS by setting `RESOLVER_PUBLIC_URL` in `.env` (e.g., `RESOLVER_PUBLIC_URL=https://hub.example.com`).
 
 ### Adult Hub Client API v1
@@ -698,7 +664,6 @@ hub.example.com {
         respond "Access Denied" 403
     }
 
-    # Forward all other traffic to Jellyfin
     handle {
         reverse_proxy 127.0.0.1:8096
     }
@@ -713,13 +678,13 @@ To ensure Uvicorn correctly identifies client IP addresses and protocols behind 
 
 ## 10. Troubleshooting and Common Issues
 
-### Port Conflict on 8090 or 8096
+### Port Conflict on 8090
 
-- **Symptom**: `scripts/setup.sh` warns that port 8090 or 8096 is already bound.
-- **Cause**: Another service (such as an existing Jellyfin or alternative web service) is using the port.
-- **Fix**: The standalone installer detects conflicts and suggests alternate ports (e.g. 8091 / 8097). Alternatively, specify overrides explicitly:
+- **Symptom**: `scripts/setup.sh` warns that port 8090 is already bound.
+- **Cause**: Another service is using the port.
+- **Fix**: The standalone installer detects conflicts and suggests an alternate port (e.g. 8091). Alternatively, specify the override explicitly:
   ```sh
-  scripts/setup.sh --resolver-port 8091 --jellyfin-port 8097
+  scripts/setup.sh --resolver-port 8091
   ```
 
 ### Docker Daemon Permission Denied
@@ -766,13 +731,13 @@ To ensure Uvicorn correctly identifies client IP addresses and protocols behind 
     make setup
     ```
 
-### Videos Not Visible in Jellyfin
+### Library Shows No Videos
 
-- **Symptom**: Channels are synced, but Jellyfin library is empty.
+- **Symptom**: Channels are synced, but the Library view is empty.
 - **Checklist**:
-  1. Confirm the library path in Jellyfin is exactly `/media/adult`.
-  2. Verify files exist on the host in `./standalone/media/` (`ls ./standalone/media/`).
-  3. In Jellyfin, go to **Dashboard** -> **Libraries** and click **Scan Library**.
+  1. Verify files exist on the host in `./standalone/media/` (`ls ./standalone/media/`).
+  2. Confirm the sync pass finished without failures in **System** -> **Status** and **Tasks**.
+  3. Check that the source channel reports a successful scan under **Sources** before the catalog is populated.
 
 ---
 

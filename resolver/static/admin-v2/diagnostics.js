@@ -4,7 +4,7 @@
   let requestSeq = 0;
   const labels = new Map([
     ['postgresql', 'PostgreSQL'], ['resolver', 'Resolver'], ['sync_worker', 'Sync worker'],
-    ['phash_worker', 'pHash worker'], ['jellyfin', 'Jellyfin'],
+    ['phash_worker', 'pHash worker'],
   ]);
   const actions = new Map([
     ['sync', 'Source synchronization'], ['backup_create', 'Database backup'],
@@ -12,8 +12,8 @@
     ['consistency_audit', 'File consistency audit'], ['catalog_full_audit', 'Full catalog audit'],
     ['duplicate_reconcile', 'Duplicate reconciliation'], ['performer_merge', 'Merge performers'],
     ['availability_check', 'Check availability'], ['metadata_update', 'Update metadata'],
-    ['metadata_backfill', 'External metadata scan'], ['collections_refresh', 'Update collections'],
-    ['audit_repair_nfo', 'Repair catalog files'], ['audit_import_refresh', 'Request Jellyfin refresh'],
+    ['metadata_backfill', 'External metadata scan'],
+    ['audit_repair_nfo', 'Repair catalog files'],
   ]);
   const failureMessages = new Map([
     ['operation_timeout', 'A required operation timed out.'], ['connection_failed', 'Could not connect to a required service.'],

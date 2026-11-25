@@ -70,16 +70,6 @@ def handle_audit_repair_nfo(conn, db_url, plan_id, row, config, scope, revisions
 
 
 
-def handle_audit_import_refresh(conn, db_url, plan_id, row, config, scope, revisions, now):
-    """Compatibility facade for Jellyfin audit import refresh execution."""
-    from common import admin_operation_audit_handlers as implementation
-    return implementation.handle_audit_import_refresh(
-        conn, db_url, plan_id, row, config, scope, revisions, now
-    )
-
-
-
-
 def handle_quarantine(conn, db_url, plan_id, row, config, scope, revisions, now):
     """Compatibility facade for quarantine operation execution."""
     from common import admin_operation_duplicate_handlers as implementation

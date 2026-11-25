@@ -94,7 +94,7 @@
       "method": "GET",
       "path": "/admin/play/{video_id:path}/stream",
       "source": "resolver/app.py",
-      "consumer": "Media players and Jellyfin STRM files",
+      "consumer": "Media players and STRM files",
       "purpose": "Resolver playback and source failover endpoint; retain independently of Admin UI migration.",
       "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
     },
@@ -102,7 +102,7 @@
       "method": "HEAD",
       "path": "/admin/play/{video_id:path}/stream",
       "source": "resolver/app.py",
-      "consumer": "Media players and Jellyfin STRM files",
+      "consumer": "Media players and STRM files",
       "purpose": "Resolver playback metadata/probe request; retain independently of Admin UI migration.",
       "classification_test": "tests/test_admin_v1_v2_route_inventory.py"
     }
@@ -191,21 +191,19 @@
         "view resolver/database/sync/backup/capability status",
         "review sync activity and retry a source",
         "trigger sync",
-        "refresh Jellyfin library",
-        "refresh collections",
         "clear resolver cache",
         "read link-check report and manual CLI instructions"
       ],
       "v2_replacement": "Home status/issues; Sources per-source sync; System maintenance and link-check views; durable work appears in Tasks",
-      "acceptance": "distinguish request accepted from job complete and external Jellyfin result; compare safe link-check summaries and empty/error states",
+      "acceptance": "distinguish request accepted from job complete; compare safe link-check summaries and empty/error states",
       "owner": "API, frontend, and sync worker",
       "dependencies": [
         "TASK-04",
         "TASK-05",
         "TASK-14"
       ],
-      "side_effects": "Status reads are read-only; sync, cache, Jellyfin, and collections controls enqueue or execute bounded maintenance actions.",
-      "acceptance_evidence": "Shared fixture status/API tests, write authorization matrix, worker result tests, and controlled Jellyfin integration.",
+      "side_effects": "Status reads are read-only; sync and cache controls enqueue or execute bounded maintenance actions.",
+      "acceptance_evidence": "Shared fixture status/API tests, write authorization matrix, and worker result tests.",
       "parity_tests": [
         "tests/test_admin_v2_status.py",
         "tests/admin_v2_home_issue_links.cjs",
@@ -486,7 +484,7 @@
         "TASK-10"
       ],
       "side_effects": "Read/export routes do not mutate; operation execute may move registered files or update availability.",
-      "acceptance_evidence": "V1/V2 shared unavailable/quarantine fixture, >1,000-row export, restore worker and safe-path tests, fixture-backed Chromium restore preview→keyboard execute→queued status, and real pg_restore_test against a synthetic PostgreSQL 17 archive. Live registered-file/Jellyfin effects and the restricted production restore target remain operational gates.",
+      "acceptance_evidence": "V1/V2 shared unavailable/quarantine fixture, >1,000-row export, restore worker and safe-path tests, fixture-backed Chromium restore preview→keyboard execute→queued status, and real pg_restore_test against a synthetic PostgreSQL 17 archive. Live registered-file effects and the restricted production restore target remain operational gates.",
       "parity_tests": [
         "tests/test_admin_v2_read.py",
         "tests/test_admin_v2_availability.py",
@@ -499,25 +497,21 @@
       "area": "Maintenance",
       "v1_routes": [
         "POST /api/cache/clear",
-        "POST /api/sync/trigger",
-        "POST /api/jellyfin/refresh",
-        "POST /api/jellyfin/collections/refresh"
+        "POST /api/sync/trigger"
       ],
       "v2_routes": [
         "POST /api/v2/maintenance/cache/clear",
-        "POST /api/v2/maintenance/sync",
-        "POST /api/v2/maintenance/jellyfin/refresh",
-        "POST /api/v2/maintenance/collections/refresh"
+        "POST /api/v2/maintenance/sync"
       ],
-      "status": "implemented; external integration acceptance pending",
+      "status": "implemented",
       "owner": "Maintenance API and sync worker",
       "dependencies": [
         "TASK-04",
         "TASK-05",
         "TASK-14"
       ],
-      "side_effects": "Actions clear cache, enqueue sync/Jellyfin work, or request external library/collection changes.",
-      "acceptance_evidence": "Write-policy/capability tests, durable job lifecycle tests, and controlled external-integration acceptance.",
+      "side_effects": "Actions clear the resolver cache or enqueue durable sync work.",
+      "acceptance_evidence": "Write-policy/capability tests and durable job lifecycle tests.",
       "parity_tests": [
         "tests/test_admin_v2_maintenance.py",
         "tests/admin_v2_maintenance_contract.cjs",
@@ -574,7 +568,6 @@
       ],
       "v2_routes": [
         "GET /api/v2/status",
-        "GET /api/v2/status/jellyfin",
         "GET /api/v2/sources/sync-history",
         "GET /api/v2/sources/list",
         "GET /api/v2/backups",

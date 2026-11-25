@@ -347,11 +347,7 @@ def _action_artwork_generate(conn, job_id, payload, media_dir, services):
         except Exception:
             pass
         raise RuntimeError(f"Failed to generate artwork: {error}")
-    refreshed = _core._refresh_jellyfin_with_progress(
-        conn, job_id, "artwork_generated", services,
-    )
     return {"local_state": "artwork_generated",
-            "jellyfin_refresh": _core.jellyfin_refresh_status(refreshed),
             "variant": str(variant or "original")}, True
 
 
@@ -364,35 +360,7 @@ def _action_artwork_download(conn, job_id, payload, media_dir, services):
     result = download_artwork_for_video(conn, media_dir, video_id)
     if result.get("downloaded") is True:
         result["local_state"] = "artwork_downloaded"
-        refreshed = _core._refresh_jellyfin_with_progress(
-            conn, job_id, "artwork_downloaded", services)
-        jf_url = _core.os.getenv("JELLYFIN_URL", "").strip()
-        jf_key = _core.os.getenv("JELLYFIN_API_KEY", "").strip()
-        if not jf_url or not jf_key:
-            result["jellyfin_refresh"] = "skipped"
-        else:
-            result["jellyfin_refresh"] = _core.jellyfin_refresh_status(refreshed)
     return result, True
-
-
-def _action_collections_refresh(conn, job_id, payload, media_dir, services):
-    _core._record_job_progress(conn, job_id, "refreshing_collections")
-    from common.managed_collections import refresh_managed_collections
-    import httpx
-
-    jf_url = _core.os.getenv("JELLYFIN_URL", "").strip().rstrip("/")
-    jf_key = _core.os.getenv("JELLYFIN_API_KEY", "").strip()
-    if not jf_url or not jf_key:
-        raise ValueError("Jellyfin configuration is required for collection refresh.")
-    db_url = getattr(conn, "_url", None) or _core.os.getenv("DATABASE_URL")
-
-    async def refresh_collections(_jf_url=jf_url, _jf_key=jf_key, _db_url=db_url):
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            return await refresh_managed_collections(client, _jf_url, _jf_key, _db_url)
-
-    result = _core.asyncio.run(refresh_collections())
-    result["message"] = f"Updated {len(result['collections'])} Adult Hub collections."
-    return result, False
 
 
 def _performer_merge_pairs(merges) -> list:
@@ -486,30 +454,10 @@ def _action_scene_backfill(conn, job_id, payload, media_dir, services):
     }, False
 
 
-def _jellyfin_reconciliation_summary(reconcile) -> dict:
-    reconciliation = reconcile(limit=200)
-    if not isinstance(reconciliation, dict):
-        raise RuntimeError("Jellyfin metadata reconciliation returned an invalid result.")
-    summary = {
-        key: value for key, value in reconciliation.items()
-        if not str(key).startswith("_")
-    }
-    if int(reconciliation.get("failed") or 0):
-        raise RuntimeError(
-            "Jellyfin metadata reconciliation failed for "
-            f"{int(reconciliation['failed'])} item(s)."
-        )
-    return summary
-
-
 def _action_telegram_title_cleanup(conn, job_id, payload, media_dir, services):
     from sync.telegram_title_cleanup import cleanup_telegram_titles
     _core._record_job_progress(conn, job_id, "cleaning_telegram_titles")
     result = cleanup_telegram_titles(conn, media_dir, logger=services.logger)
-    reconcile = getattr(services, "sync_jellyfin_telegram_metadata", None)
-    if callable(reconcile):
-        _core._record_job_progress(conn, job_id, "reconciling_jellyfin_metadata")
-        result["jellyfin_metadata_reconciliation"] = _jellyfin_reconciliation_summary(reconcile)
     result["local_state"] = "telegram_title_cleanup_completed"
     return result, False
 
@@ -687,16 +635,11 @@ def _action_dead_stream_quarantine(conn, job_id, payload, media_dir, services):
                     conn, job_id, "quarantining_dead_streams", completed=idx, total=total,
                 )
 
-    refreshed = False
-    if quarantined > 0:
-        refreshed = bool(_core._refresh_jellyfin_with_progress(conn, job_id, "dead_streams_quarantined", services))
-
     return {
         "videos_checked": checked,
         "quarantined": quarantined,
         "restored": restored,
         "errors": errors,
-        "jellyfin_refresh": "updated" if refreshed else "skipped",
         "local_state": "dead_streams_quarantined",
     }, False
 
@@ -711,7 +654,6 @@ _EXTERNAL_ACTION_HANDLERS = {
     "telegram_fingerprint_scan": _action_telegram_fingerprint_scan,
     "artwork_generate": _action_artwork_generate,
     "artwork_download": _action_artwork_download,
-    "collections_refresh": _action_collections_refresh,
     "performer_merge": _action_performer_merge,
     "history_cleanup": _action_history_cleanup,
     "performer_catalog": _action_performer_catalog,

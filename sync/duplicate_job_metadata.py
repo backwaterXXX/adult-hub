@@ -110,7 +110,7 @@ def _write_metadata_nfos(conn, job_id: str, video_id: str, source: dict, effecti
 
 
 def _metadata_update(conn, job_id: str, payload: dict, media_dir: _core.Path, services) -> dict:
-    """Apply revisioned title/plot overrides, regenerate safe NFOs, then refresh Jellyfin."""
+    """Apply revisioned title/plot overrides and regenerate the local NFOs."""
     from common.video_metadata import resolve_metadata
     video_id, expected_revision, changes, resets = _validate_metadata_request(payload)
     source, override_row = _lock_metadata_rows(conn, video_id)
@@ -130,13 +130,7 @@ def _metadata_update(conn, job_id: str, payload: dict, media_dir: _core.Path, se
     needs_nfo = not (job_result.get('metadata_revision') == revision and job_result.get('nfo_source_fingerprint') == source_fingerprint and (job_result.get('nfo_written') is True))
     if needs_nfo:
         _write_metadata_nfos(conn, job_id, video_id, source, effective, media_dir, services, revision, source_fingerprint)
-    refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'metadata_updated', services)
-    if not refreshed:
-        _core._store_job_result_field(conn, job_id, 'jellyfin_refresh', 'failed')
-        _core._store_job_result_field(conn, job_id, 'jellyfin_import', 'not_requested')
-        raise RuntimeError('Local metadata was saved, but Jellyfin refresh failed. Retry this task to resume the refresh.')
-    _core._store_job_result_field(conn, job_id, 'jellyfin_import', 'not_confirmed')
-    return {'video_id': video_id, 'metadata_revision': revision, 'local_state': 'metadata_updated', 'jellyfin_refresh': 'updated', 'jellyfin_import': 'not_confirmed'}
+    return {'video_id': video_id, 'metadata_revision': revision, 'local_state': 'metadata_updated'}
 
 def _validate_video_ids(payload: dict) -> list:
     video_ids = payload.get('video_ids')

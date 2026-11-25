@@ -135,22 +135,22 @@ class TestStageState(PgTestCase):
                                               enabled=False, revision=0, now=START)
 
     def test_request_run_queues_once_and_refuses_overlap(self):
-        result = schedule_stages.request_stage_run(self.db_url, "library-sync", "jellyfin-refresh",
+        result = schedule_stages.request_stage_run(self.db_url, "library-sync", "telegram-title-cleanup",
                                                    now=START)
         self.assertEqual({k: v for k, v in result.items() if k != "job_id"},
-                         {"outcome": "queued", "action": "collections_refresh"})
+                         {"outcome": "queued", "action": "telegram_title_cleanup"})
         self.assertTrue(result["job_id"])
-        self.assertEqual(self.row("jellyfin-refresh")["last_result"], "queued")
-        self.assertEqual(self.row("jellyfin-refresh")["last_run_at"], START.isoformat())
+        self.assertEqual(self.row("telegram-title-cleanup")["last_result"], "queued")
+        self.assertEqual(self.row("telegram-title-cleanup")["last_run_at"], START.isoformat())
         self.assertEqual(self.conn.execute(
             "SELECT action,state FROM video_duplicate_jobs WHERE id=%s", (result["job_id"],)
-        ).fetchone(), ("collections_refresh", "queued"))
+        ).fetchone(), ("telegram_title_cleanup", "queued"))
         self.assertEqual(schedule_stages.request_stage_run(
-            self.db_url, "library-sync", "jellyfin-refresh", now=END)["outcome"], "conflict")
-        schedule_stages.record_stage_finish(self.conn, "library-sync", "jellyfin-refresh",
+            self.db_url, "library-sync", "telegram-title-cleanup", now=END)["outcome"], "conflict")
+        schedule_stages.record_stage_finish(self.conn, "library-sync", "telegram-title-cleanup",
                                             success=True, now=END)
         self.assertEqual(schedule_stages.request_stage_run(
-            self.db_url, "library-sync", "jellyfin-refresh", now=END)["outcome"], "queued")
+            self.db_url, "library-sync", "telegram-title-cleanup", now=END)["outcome"], "queued")
 
     def test_request_run_needs_a_trigger_and_an_enabled_stage(self):
         with self.assertRaises(ValueError):

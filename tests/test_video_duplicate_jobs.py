@@ -28,11 +28,6 @@ class BaseVideoDuplicateJobsTestCase(PgTestCase):
         self.root = Path(self.temp.name)
         self.data_dir_patch = patch.object(sync, "DATA_DIR", self.root)
         self.data_dir_patch.start()
-        self.env_patch = patch.dict(os.environ, {
-            "JELLYFIN_URL": os.getenv("JELLYFIN_URL") or "http://jellyfin.test:8096",
-            "JELLYFIN_API_KEY": os.getenv("JELLYFIN_API_KEY") or "test-jellyfin-key",
-        })
-        self.env_patch.start()
         self.db_path = self.db_url
         self.media = self.root / "library"
         self.media.mkdir()
@@ -43,7 +38,6 @@ class BaseVideoDuplicateJobsTestCase(PgTestCase):
 
 
     def tearDown(self):
-        self.env_patch.stop()
         self.data_dir_patch.stop()
         self.temp.cleanup()
         super().tearDown()
@@ -70,21 +64,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         job_id = enqueue_job(self.db_path, "hide", {
             "keeper_id": self.keeper, "loser_ids": [self.loser],
         })
-        def inspect_checkpoint():
-            checkpoint = self.conn.execute(
-                "SELECT state, result FROM video_duplicate_jobs WHERE id=%s", (job_id,)
-            ).fetchone()
-            self.assertEqual(checkpoint[0], "processing")
-            progress = json.loads(checkpoint[1])
-            self.assertEqual(progress["local_state"], "hidden")
-            self.assertEqual(progress["jellyfin_refresh"], "pending")
-            self.assertTrue(progress["snapshots"], "Progress updates must preserve the recovery snapshots.")
-            self.assertEqual(progress["progress"]["stage"], "refreshing_jellyfin")
-            self.assertTrue(any(event["stage"] == "moving_files" for event in progress["events"]))
-            return False
-
-        with patch.object(sync, "trigger_jellyfin_refresh", side_effect=inspect_checkpoint):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         terminal = self.conn.execute(
             "SELECT state, result FROM video_duplicate_jobs WHERE id=%s", (job_id,)
         ).fetchone()
@@ -111,8 +91,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         self.assertIsNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
 
         undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         self.assertIsNotNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
         basename = sync.stable_media_basename(self.loser)
         self.assertTrue((self.media / f"{basename}.strm").exists())
@@ -144,8 +123,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
 
         self._confirm_duplicate(k_id, l_id)
         enqueue_job(self.db_path, "hide", {"keeper_id": k_id, "loser_ids": [l_id]})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
 
         row = self.conn.execute("SELECT performers, categories, tags, studio FROM videos WHERE id=%s", (k_id,)).fetchone()
         self.assertIsNotNone(row)
@@ -179,8 +157,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
             "keeper_id": self.keeper, "loser_ids": [self.loser], "automatic": True,
             "rules_version": 4, "evidence": "phash",
         })
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         keeper_title, keeper_plot = self.conn.execute(
             "SELECT title,plot FROM videos WHERE id=%s", (self.keeper,),
         ).fetchone()
@@ -190,8 +167,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         ).fetchone())
 
         undo_id = enqueue_job(self.db_url, "undo", {"operation_id": hide_id})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         restored = self.conn.execute(
             "SELECT fields,revision FROM video_metadata_overrides WHERE video_id=%s", (self.loser,),
         ).fetchone()
@@ -250,8 +226,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
 
     def test_quarantine_moves_single_item_and_undo_restores(self):
         job_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         self.assertIsNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
         decision = self.conn.execute(
             "SELECT keeper_id,state FROM video_duplicate_decisions WHERE loser_id=%s", (self.loser,)).fetchone()
@@ -262,8 +237,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         self.assertTrue(list(quarantine.rglob("*.jpg")))
 
         undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         self.assertIsNotNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
         basename = sync.stable_media_basename(self.loser)
         self.assertTrue((self.media / f"{basename}.strm").exists())
@@ -284,14 +258,12 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         self.assertIsNotNone(initial_source)
 
         job_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         self.assertIsNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
         self.assertIsNone(self.conn.execute("SELECT 1 FROM video_sources WHERE video_id=%s", (self.loser,)).fetchone())
 
         undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         self.assertEqual(
             self.conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (undo_id,)).fetchone()[0],
             "done",
@@ -317,15 +289,13 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
     def test_restore_operation_plan_runs_existing_undo_worker_end_to_end(self):
         from common.admin_operations import execute_operation, preview_restore
         quarantine_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         plan = preview_restore(self.db_path, quarantine_id)
         self.assertEqual(plan["outcome"], "previewed")
         queued = execute_operation(self.db_path, plan["plan_id"])
         restore_id = queued["jobs"][0]["job_id"]
         self.assertEqual(self.conn.execute("SELECT action FROM video_duplicate_jobs WHERE id=%s", (restore_id,)).fetchone()[0], "undo")
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         self.assertIsNotNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
         self.assertTrue((self.media / (sync.stable_media_basename(self.loser) + ".strm")).exists())
         self.assertEqual(self.conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (restore_id,)).fetchone()[0], "done")
@@ -335,8 +305,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         from common.admin_operations import execute_operation, preview_restore
 
         quarantine_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         plan = preview_restore(self.db_path, quarantine_id)
         restore_id = execute_operation(self.db_path, plan["plan_id"])["jobs"][0]["job_id"]
 
@@ -350,8 +319,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
                 raise OSError("simulated restore filesystem failure")
             return real_link(source, target, **kwargs)
 
-        with patch.object(sync.os, "link", side_effect=fail_second_restore_move), \
-             patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
+        with patch.object(sync.os, "link", side_effect=fail_second_restore_move):
             self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
 
         state, result = self.conn.execute(
@@ -369,8 +337,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
 
         retry_id = retry_job(self.db_path, restore_id)
         self.assertIsNotNone(retry_id)
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         retry_state, retry_result = self.conn.execute(
             "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (retry_id,),
         ).fetchone()
@@ -385,8 +352,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
     def test_restore_worker_rejects_snapshot_path_outside_library(self):
         from common.admin_operations import execute_operation, preview_restore
         quarantine_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         decision = self.conn.execute(
             "SELECT snapshot FROM video_duplicate_decisions WHERE operation_id=%s", (quarantine_id,)
         ).fetchone()
@@ -398,8 +364,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         plan = preview_restore(self.db_path, quarantine_id)
         queued = execute_operation(self.db_path, plan["plan_id"])
         restore_id = queued["jobs"][0]["job_id"]
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
         job = self.conn.execute("SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (restore_id,)).fetchone()
         self.assertEqual(job[0], "failed")
         self.assertIn("Unsafe restore path", json.loads(job[1])["error"])
@@ -409,15 +374,13 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
     def test_restore_worker_conflicts_if_video_was_readded_after_quarantine(self):
         from common.admin_operations import execute_operation, preview_restore
         quarantine_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         self._add_video(self.loser)
         plan = preview_restore(self.db_path, quarantine_id)
         queued = execute_operation(self.db_path, plan["plan_id"])
         restore_id = queued["jobs"][0]["job_id"]
 
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
 
         state, result = self.conn.execute(
             "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (restore_id,),
@@ -434,8 +397,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
     def test_restore_worker_never_overwrites_an_existing_target_file(self):
         from common.admin_operations import execute_operation, preview_restore
         quarantine_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         basename = sync.stable_media_basename(self.loser)
         target = self.media / f"{basename}.strm"
         target.write_text("operator-owned replacement", encoding="utf-8")
@@ -443,8 +405,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         queued = execute_operation(self.db_path, plan["plan_id"])
         restore_id = queued["jobs"][0]["job_id"]
 
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
 
         state, result = self.conn.execute(
             "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (restore_id,),
@@ -460,8 +421,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
     def test_restore_worker_conflicts_if_registered_path_belongs_to_another_video(self):
         from common.admin_operations import execute_operation, preview_restore
         quarantine_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         snapshot_row = self.conn.execute(
             "SELECT snapshot FROM video_duplicate_decisions WHERE operation_id=%s AND loser_id=%s",
             (quarantine_id, self.loser),
@@ -477,8 +437,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         queued = execute_operation(self.db_path, plan["plan_id"])
         restore_id = queued["jobs"][0]["job_id"]
 
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
 
         state, result = self.conn.execute(
             "SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (restore_id,),
@@ -500,8 +459,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         job_id = queued["jobs"][0]["job_id"]
         with self.conn:
             self.conn.execute("UPDATE videos SET title='Changed while queued' WHERE id=%s", (self.loser,))
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
         job = self.conn.execute("SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
         self.assertEqual(job[0], "failed")
         self.assertIn("changed after the preview", json.loads(job[1])["error"])
@@ -514,8 +472,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         plan = preview_hide(self.db_path, self.keeper, [self.loser])
         self.assertEqual(plan['items'][0]['evidence']['type'], 'operator_review')
         queued = execute_operation(self.db_path, plan['plan_id'])
-        with patch.object(sync, 'trigger_jellyfin_refresh', return_value=False):
-            sync.process_video_duplicate_jobs(self.conn, self.media)
+        sync.process_video_duplicate_jobs(self.conn, self.media)
         state = self.conn.execute('SELECT state FROM video_duplicate_jobs WHERE id=%s',
                                   (queued['jobs'][0]['job_id'],)).fetchone()[0]
         self.assertEqual(state, 'done')
@@ -532,8 +489,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         job_id = queued["jobs"][0]["job_id"]
         with self.conn:
             self.conn.execute("UPDATE videos SET title='Changed while queued' WHERE id=%s", (self.keeper,))
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
         job = self.conn.execute("SELECT state,result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
         self.assertEqual(job[0], "failed")
         self.assertIn("changed after the preview", json.loads(job[1])["error"])
@@ -544,21 +500,20 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
     def test_quarantine_restart_after_catalog_commit_preserves_undo(self):
         from resolver.admin_services import job_listing
         job_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
-        with patch.object(sync, "trigger_jellyfin_refresh", side_effect=KeyboardInterrupt):
-            with self.assertRaises(KeyboardInterrupt):
-                sync.process_video_duplicate_jobs(self.conn, self.media)
+        # The catalog change commits before the job record is finalised, so a
+        # crash here must be recoverable from the recorded decision.
+        with patch.object(duplicate_jobs_core, "_finish_job", side_effect=KeyboardInterrupt):
+            self.assertRaises(KeyboardInterrupt, sync.process_video_duplicate_jobs, self.conn, self.media)
         self.assertIsNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
         self.assertEqual(self.conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0], "processing")
 
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         job = next(item for item in job_listing(self.db_path)["jobs"] if item["id"] == job_id)
         self.assertEqual(job["state"], "done")
         self.assertTrue(job["undo_available"])
         self.assertEqual(job["result"]["local_state"], "quarantined")
         undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         self.assertIsNotNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
         self.assertTrue((self.media / (sync.stable_media_basename(self.loser) + ".strm")).exists())
         self.assertEqual(self.conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (undo_id,)).fetchone()[0], "done")
@@ -568,8 +523,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         job_id = enqueue_job(self.db_path, "dismiss", {
             "left_id": self.keeper, "right_id": self.loser,
         })
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         row = self.conn.execute(
             "SELECT left_id,right_id,active,operation_id FROM video_duplicate_dismissals"
         ).fetchone()
@@ -590,9 +544,8 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
                 raise OSError("simulated filesystem failure")
             return real_link(source, target, **kwargs)
 
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            with patch.object(sync.os, "link", side_effect=fail_second_replace):
-                self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+        with patch.object(sync.os, "link", side_effect=fail_second_replace):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
 
         basename = sync.stable_media_basename(self.loser)
         self.assertTrue((self.media / f"{basename}.strm").exists())
@@ -611,8 +564,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         job_id = enqueue_job(self.db_path, "hide", {
             "keeper_id": self.keeper, "loser_ids": [self.loser],
         })
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
         self.assertTrue(keeper_stream.exists())
         self.assertTrue((self.media / f"{sync.stable_media_basename(self.keeper)}.jpg").exists())
         self.assertIsNotNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
@@ -632,8 +584,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         quarantine.parent.mkdir(parents=True)
         quarantine.symlink_to(source)
 
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
 
         self.assertEqual(source.read_text(encoding="utf-8"), original_source)
         self.assertTrue(quarantine.is_symlink())
@@ -667,10 +618,9 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
                 sync.process_video_duplicate_jobs(self.conn, self.media)
         self.assertEqual(self.conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0], "processing")
 
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
-            undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         basename = sync.stable_media_basename(self.loser)
         self.assertTrue((self.media / f"{basename}.strm").exists())
         self.assertTrue((self.media / f"{basename}.nfo").exists())
@@ -699,8 +649,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
             "SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0], "processing")
 
         # The next worker run requeues the interrupted job and resumes from the journal.
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         self.assertIsNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
         self.assertEqual(self.conn.execute(
             "SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0], "done")
@@ -713,8 +662,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         job_id = enqueue_job(self.db_path, "hide", {
             "keeper_id": self.keeper, "loser_ids": [self.loser],
         })
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
 
         other_video = "telegram:-1001:9:other"
         self._add_video(other_video)
@@ -722,8 +670,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
             self.conn.execute("UPDATE video_sources SET video_id=%s WHERE source_id=%s", (other_video, self.loser))
 
         undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
         state, result = self.conn.execute(
             "SELECT state, result FROM video_duplicate_jobs WHERE id=%s", (undo_id,)
         ).fetchone()
@@ -736,8 +683,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         job_id = enqueue_job(self.db_path, "hide", {
             "keeper_id": self.keeper, "loser_ids": [self.loser],
         })
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
 
         other_video = "telegram:-1001:9:other"
         self._add_video(other_video)
@@ -751,8 +697,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
 
         undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
         with patch.object(duplicate_jobs_core, "_record_job_progress", side_effect=race_on_saving_catalog):
-            with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-                self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 0)
 
         state, result = self.conn.execute(
             "SELECT state, result FROM video_duplicate_jobs WHERE id=%s", (undo_id,)
@@ -766,8 +711,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         job_id = enqueue_job(self.db_path, "hide", {
             "keeper_id": self.keeper, "loser_ids": [self.loser],
         })
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
 
         keeper_sources = self.conn.execute(
             "SELECT video_id, source_id, priority FROM video_sources WHERE video_id=%s ORDER BY priority",
@@ -778,8 +722,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         self.assertEqual(keeper_sources[1], (self.keeper, self.loser, 2))
 
         undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
 
         self.assertEqual(self.conn.execute(
             "SELECT state FROM video_duplicate_jobs WHERE id=%s", (undo_id,)
@@ -806,8 +749,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         job_id = enqueue_job(self.db_path, "hide", {
             "keeper_id": self.keeper, "loser_ids": [self.loser],
         })
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
 
         row = self.conn.execute(
             "SELECT snapshot FROM video_duplicate_decisions WHERE operation_id=%s", (job_id,)
@@ -821,8 +763,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
             )
 
         undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
 
         state = self.conn.execute(
             "SELECT state FROM video_duplicate_jobs WHERE id=%s", (undo_id,)
@@ -846,9 +787,10 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
     def test_post_catalog_commit_resume_succeeds_for_quarantine_and_hide(self):
         # 1. Quarantine post-catalog-commit retry
         job_id = enqueue_job(self.db_path, "quarantine", {"video_id": self.loser})
-        with patch.object(sync, "trigger_jellyfin_refresh", side_effect=KeyboardInterrupt()):
-            with self.assertRaises(KeyboardInterrupt):
-                sync.process_video_duplicate_jobs(self.conn, self.media)
+        # The catalog change commits before the job record is finalised, so a
+        # crash here must be recoverable from the recorded decision.
+        with patch.object(duplicate_jobs_core, "_finish_job", side_effect=KeyboardInterrupt):
+            self.assertRaises(KeyboardInterrupt, sync.process_video_duplicate_jobs, self.conn, self.media)
 
         self.assertIsNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
         self.assertEqual(self.conn.execute(
@@ -856,8 +798,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         self.assertEqual(self.conn.execute(
             "SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0], "processing")
 
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         self.assertEqual(self.conn.execute(
             "SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0], "done")
 
@@ -869,9 +810,8 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         hide_id = enqueue_job(self.db_path, "hide", {
             "keeper_id": self.keeper, "loser_ids": [other_loser],
         })
-        with patch.object(sync, "trigger_jellyfin_refresh", side_effect=KeyboardInterrupt()):
-            with self.assertRaises(KeyboardInterrupt):
-                sync.process_video_duplicate_jobs(self.conn, self.media)
+        with patch.object(duplicate_jobs_core, "_finish_job", side_effect=KeyboardInterrupt):
+            self.assertRaises(KeyboardInterrupt, sync.process_video_duplicate_jobs, self.conn, self.media)
 
         self.assertIsNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (other_loser,)).fetchone())
         self.assertEqual(self.conn.execute(
@@ -879,8 +819,7 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         self.assertEqual(self.conn.execute(
             "SELECT state FROM video_duplicate_jobs WHERE id=%s", (hide_id,)).fetchone()[0], "processing")
 
-        with patch.object(sync, "trigger_jellyfin_refresh", return_value=False):
-            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+        self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         self.assertEqual(self.conn.execute(
             "SELECT state FROM video_duplicate_jobs WHERE id=%s", (hide_id,)).fetchone()[0], "done")
 

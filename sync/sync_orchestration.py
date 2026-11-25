@@ -197,7 +197,7 @@ def _run_startup_maintenance(conn) -> None:
     # File publication is the one step that can fail after the catalog batch
     # commits, so entries can be durable in the database and still missing from
     # the library - including when the process died mid-publication. Retry them
-    # before the crawlers run so this pass's Jellyfin refresh picks them up.
+    # before the crawlers run so this pass's publish step picks them up.
     try:
         _core.republish_pending_videos(conn, _core.MEDIA_DIR)
     except Exception as e:
@@ -495,68 +495,9 @@ def _library_maintenance_pass(sp: _SyncPass) -> None:
     _core.cleanup_retention(sp.conn, _core.MEDIA_DIR, _core.RETENTION_DAYS, sp.providers_succeeded)
 
 
-def _run_jellyfin_reconciliation(sp: _SyncPass, jellyfin_active: bool, problems: list) -> None:
-    try:
-        jellyfin_result = (_run_timed_stage(
-            "jellyfin_metadata_reconciliation", _core.sync_jellyfin_telegram_metadata,
-        ) if jellyfin_active else None)
-        if isinstance(jellyfin_result, dict):
-            _core._ACTIVE_SYNC_METRICS["jellyfin_refresh_poll"] = dict(
-                jellyfin_result.get("refresh_poll") or {}
-            )
-    except Exception as e:
-        _core.logger.warning("Telegram metadata reconciliation failed: %s", e)
-        problems.append(_core._safe_error_detail(e))
-
-
-def _publish_jellyfin_people(sp: _SyncPass, problems: list) -> None:
-    # Publish structured StashDB details to existing Jellyfin person pages.
-    try:
-        from sync.jellyfin_people import sync_jellyfin_people
-        sync_jellyfin_people(
-            sp.conn, _core.JELLYFIN_URL, _core.JELLYFIN_API_KEY,
-            limit=_core.JELLYFIN_PEOPLE_PER_RUN,
-        )
-    except Exception as e:
-        _core.logger.warning("Jellyfin person metadata pass failed: %s", e)
-        problems.append(_core._safe_error_detail(e))
-
-
-def _run_jellyfin_stage(sp: _SyncPass) -> None:
-    # Reconciliation, the library refresh trigger, person pages and display
-    # titles all belong to one recorded Jellyfin stage.
-    # Locked Telegram entries require an explicit unlock/refresh/relock cycle
-    # when their authoritative local NFO changes. Reconcile existing entries
-    # before queueing the global scan so targeted refreshes avoid its backlog.
-    # New entries import their locked NFO during the scan; the next run verifies
-    # their metadata and records the durable hash state.
-    # Duplicate upkeep lives in this stage but is DB-only, so it runs even when
-    # the optional Jellyfin viewer is not deployed.
-    if not _core.JELLYFIN_URL:
-        _core.logger.debug("Jellyfin stage skipped: JELLYFIN_URL is not set")
-        _run_duplicate_jobs_checkpoint(sp.conn, sp.collected)
-        return
-
-    jellyfin_active = sp.recorder.open("jellyfin-refresh")
-    jellyfin_problems: list = []
-    try:
-        _run_jellyfin_reconciliation(sp, jellyfin_active, jellyfin_problems)
-        _run_duplicate_jobs_checkpoint(sp.conn, sp.collected)
-
-        # 10. Trigger Jellyfin Refresh
-        if jellyfin_active:
-            _core.trigger_jellyfin_refresh()
-
-        if jellyfin_active and not _skip_stage("jellyfin_people"):
-            _publish_jellyfin_people(sp, jellyfin_problems)
-
-        # 11. Sync display titles through Jellyfin's supported item API.
-        if jellyfin_active and not _skip_stage("jellyfin_titles"):
-            _core.sync_jellyfin_titles()
-    except Exception as error:
-        sp.recorder.close("jellyfin-refresh", [*jellyfin_problems, _core._safe_error_detail(error)])
-        raise
-    sp.recorder.close("jellyfin-refresh", jellyfin_problems)
+def _run_duplicate_upkeep(sp: _SyncPass) -> None:
+    """Duplicate upkeep is DB-only, so every pass runs it without a media server."""
+    _run_duplicate_jobs_checkpoint(sp.conn, sp.collected)
 
 
 def _expected_sources(sp: _SyncPass) -> set:
@@ -640,7 +581,6 @@ def _write_pass_history(sp: _SyncPass, started_at: int, source_rows: list, faile
         "interrupted": _core.stop_requested(),
         "skip_telegram_channels": sp.skip_telegram_channels,
         "sources": source_rows, "stages": stage_summary,
-        "jellyfin_refresh_poll": _core._ACTIVE_SYNC_METRICS.get("jellyfin_refresh_poll", {}),
         "http": {**http_summary, "hosts": http_hosts, "rate_limit": rate_limit_summary},
     }
     fansdb_attempts = _core._ACTIVE_SYNC_METRICS.get("fansdb_scene_attempts")
@@ -694,7 +634,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         sp.recorder.run_group("metadata-backfill", lambda problems: _run_metadata_backfills(sp, problems))
         _run_telegram_title_cleanup(sp)
         sp.recorder.run("library-maintenance", None, lambda: _library_maintenance_pass(sp))
-        _run_jellyfin_stage(sp)
+        _run_duplicate_upkeep(sp)
         return _finish_sync_pass(sp, started_at)
     finally:
         bind_active_metrics(None)

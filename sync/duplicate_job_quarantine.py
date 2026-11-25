@@ -108,8 +108,7 @@ def _run_quarantine(conn, job_id, payload, media_dir, services, quarantine_root,
     _retire_quarantined_items(conn, job_id, snapshots, now)
     _core._store_job_result_field(conn, job_id, 'snapshots', snapshots)
     run.catalog_committed = True
-    refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'quarantined', services)
-    result = {'operation_id': job_id, 'quarantined': [video_id], 'local_state': 'quarantined', 'jellyfin_refresh': _core.jellyfin_refresh_status(refreshed)}
+    result = {'operation_id': job_id, 'quarantined': [video_id], 'local_state': 'quarantined'}
     _core._finish_job(conn, job_id, result)
     conn.commit()
     return result

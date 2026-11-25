@@ -11,7 +11,7 @@ from unittest.mock import patch
 from pg_helper import PgTestCase
 
 from common.admin_audit_events import list_change_events
-from common.admin_operations import execute_operation, list_operations, operation_status, preview_audit_import_refresh, preview_audit_repair, preview_exact_merge_plan, preview_hide, preview_metadata_batch_plan, preview_metadata_plan, preview_performer_merge_plan, preview_quarantine, preview_restore
+from common.admin_operations import execute_operation, list_operations, operation_status, preview_audit_repair, preview_exact_merge_plan, preview_hide, preview_metadata_batch_plan, preview_metadata_plan, preview_performer_merge_plan, preview_quarantine, preview_restore
 
 
 class TestAdminOperations(PgTestCase):
@@ -160,27 +160,6 @@ class TestAdminOperations(PgTestCase):
         self.assertEqual(stale["outcome"], "stale")
         self.assertEqual(self.conn.execute("SELECT count(*) FROM video_duplicate_jobs WHERE action='audit_repair_nfo'").fetchone()[0], 0)
         self.assertEqual(preview_audit_repair(self.db_url, audit_id, [finding_id, finding_id])["outcome"], "invalid")
-
-    def test_audit_import_refresh_plan_is_revision_checked_and_queues_durable_worker(self):
-        video_id = "telegram:10:audit-import"
-        self.add_video(video_id, "Import title")
-        audit_id, finding_id = self.add_audit_finding(video_id, "nfo_import_state_mismatch")
-        plan = preview_audit_import_refresh(self.db_url, audit_id, [finding_id])
-        self.assertEqual(plan["outcome"], "previewed")
-        self.assertNotIn("file_path", json.dumps(plan))
-        with self.conn:
-            self.conn.execute("UPDATE videos SET title='Changed after preview' WHERE id=%s", (video_id,))
-        stale = execute_operation(self.db_url, plan["plan_id"])
-        self.assertEqual(stale["outcome"], "stale")
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM video_duplicate_jobs WHERE action='audit_import_refresh'").fetchone()[0], 0)
-        plan = preview_audit_import_refresh(self.db_url, audit_id, [finding_id])
-        self.assertEqual(plan["outcome"], "previewed")
-        queued = execute_operation(self.db_url, plan["plan_id"])
-        self.assertEqual(queued["outcome"], "queued")
-        job = self.conn.execute("SELECT action,payload FROM video_duplicate_jobs WHERE id=%s",
-                                (queued["jobs"][0]["job_id"],)).fetchone()
-        self.assertEqual(job[0], "audit_import_refresh")
-        self.assertEqual(json.loads(job[1]), {"plan_id": plan["plan_id"]})
 
     def test_preview_is_persisted_and_has_explicit_safe_scope(self):
         self.add_video("telegram:10:one", "One")

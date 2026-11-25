@@ -80,20 +80,6 @@ def _safe_stages(run: dict) -> dict:
     return safe_stages
 
 
-def _safe_poll(run: dict) -> dict:
-    poll = run.get("jellyfin_refresh_poll") if isinstance(run.get("jellyfin_refresh_poll"), dict) else {}
-    safe_poll = {}
-    for key in ("calls", "timeouts"):
-        value = _count(poll.get(key))
-        if value is not None:
-            safe_poll[key] = value
-    for key in ("total_seconds", "max_seconds"):
-        value = _seconds(poll.get(key))
-        if value is not None:
-            safe_poll[key] = value
-    return safe_poll
-
-
 def _safe_run(run: dict) -> dict:
     safe_run = {}
     for key in ("started_at", "ended_at"):
@@ -124,7 +110,6 @@ def _safe_run(run: dict) -> dict:
     http = run.get("http") if isinstance(run.get("http"), dict) else {}
     safe_run["http"] = {key: value for key in ("failed_attempts", "retries", "rate_limited")
                         if (value := _count(http.get(key))) is not None}
-    safe_run["jellyfin_refresh_poll"] = _safe_poll(run)
     return safe_run
 
 

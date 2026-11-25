@@ -36,18 +36,4 @@
     return run(clearCache, () => window.AdminV2.postJson(`${api}/cache/clear`, {}), result =>
       `Resolver cache cleared (${result.cleared} entries).`);
   });
-
-  const refreshLibrary = document.querySelector('#refreshJellyfinLibrary');
-  refreshLibrary.addEventListener('click', () => {
-    if (!window.confirm('Request a Jellyfin library refresh? This sends a refresh request and does not confirm import completion.')) return;
-    return run(refreshLibrary, () => window.AdminV2.postJson(`${api}/jellyfin/refresh`, {}), () =>
-      'Jellyfin accepted the library refresh request. Import completion is not confirmed here.');
-  });
-
-  const refreshCollections = document.querySelector('#refreshJellyfinCollections');
-  refreshCollections.addEventListener('click', () => {
-    if (!window.confirm('Request an update of Jellyfin collections from the current catalog? This queues a background task and does not delete media files.')) return;
-    return run(refreshCollections, () => window.AdminV2.postJson(`${api}/collections/refresh`, {}), result =>
-      `Collections refresh queued as job ${result.job_id}.`, result => result.job_id);
-  });
 })();

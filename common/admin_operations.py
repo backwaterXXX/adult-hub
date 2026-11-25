@@ -422,18 +422,6 @@ def preview_audit_repair(db_url: str | None, audit_id: str, finding_ids: list[in
     return collect.preview_audit_repair(db_url, audit_id, finding_ids)
 
 
-def _audit_import_refresh_state(conn, audit_id: str, finding_ids: list[int]) -> dict | None:
-    """Compatibility facade for :func:`common.admin_operation_audits._audit_import_refresh_state`."""
-    from common import admin_operation_audits as collect
-    return collect._audit_import_refresh_state(conn, audit_id, finding_ids)
-
-
-def preview_audit_import_refresh(db_url: str | None, audit_id: str, finding_ids: list[int]) -> dict:
-    """Compatibility facade for :func:`common.admin_operation_audits.preview_audit_import_refresh`."""
-    from common import admin_operation_audits as collect
-    return collect.preview_audit_import_refresh(db_url, audit_id, finding_ids)
-
-
 def _safe_orphan_files(raw, media_root: Path) -> list[dict] | None:
     """Compatibility facade for :func:`common.admin_operation_audits._safe_orphan_files`."""
     from common import admin_operation_audits as collect

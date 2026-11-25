@@ -556,7 +556,7 @@ def _execute_delete_account(valid_id: str, conn=None) -> bool:
 def delete_account(account_id: str, conn=None) -> bool:
     """Delete account record and its associated SQLite session file.
 
-    Guarantees that no channels, videos, or Jellyfin catalog files are touched.
+    Guarantees that no channels, videos, or catalog files are touched.
     Propagates database errors and ensures session files are only removed after
     successful row deletion and after disconnected validation.
     """

@@ -1,4 +1,4 @@
-"""Migration 0004: Performer enrichment tables (PBC, TPDB, photos, Jellyfin sync)."""
+"""Migration 0004: Performer enrichment tables (PBC, TPDB, photos)."""
 
 from __future__ import annotations
 
@@ -34,18 +34,10 @@ def apply(conn: Any, **kwargs) -> None:
         )
     """)
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS jellyfin_person_sync (
-            name TEXT PRIMARY KEY,
-            pbc_updated_at BIGINT NOT NULL,
-            format_version INTEGER NOT NULL DEFAULT 0
-        )
-    """)
-
 
 migration = Migration(
     version=4,
     name="0004_performer_enrichment",
-    description="Performer aliases, bios, photos, and Jellyfin person sync markers",
+    description="Performer aliases, bios, photos",
     apply_fn=apply,
 )

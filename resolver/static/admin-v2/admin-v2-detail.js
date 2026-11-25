@@ -134,7 +134,6 @@
     const links = [];
     for (const [label, keys] of [
       ['Open Telegram post', ['telegram_url', 'source_url', 'post_url']],
-      ['Open in Jellyfin', ['jellyfin_url']],
       ['Open in StashDB', ['scene_match_url']],
     ]) {
       const url = safeExternalUrl(first(video, keys)); if (url) links.push([label, url]);
@@ -409,7 +408,7 @@
         create('strong', 'metadata-diff-after', values.after === '' || values.after === null || (Array.isArray(values.after) && !values.after.length) ? '(empty)' : String(displayValue(values.after))));
       list.append(valuesNode);
     }
-    content.append(list, create('p', 'detail-description', 'The worker saves the local override, writes updated NFO files atomically, then requests a Jellyfin refresh.'));
+    content.append(list, create('p', 'detail-description', 'The worker saves the local override and writes the updated NFO files atomically.'));
     const actions = $('#metadataDialogActions'); actions.replaceChildren();
     const back = create('button', 'button button-quiet', 'Back to editor'); back.type = 'button'; back.addEventListener('click', () => openMetadataEditor(true));
     const queue = create('button', 'button button-primary', 'Queue metadata update'); queue.type = 'button'; queue.addEventListener('click', queueMetadataUpdate);

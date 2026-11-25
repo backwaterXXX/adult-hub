@@ -28,7 +28,6 @@ TIMESTAMP_COLUMNS: tuple[tuple[str, str], ...] = (
     ("telegram_channel_state", "updated_at"),
     ("performer_bios", "updated_at"),
     ("performer_photos", "updated_at"),
-    ("jellyfin_person_sync", "pbc_updated_at"),
     ("stream_cache", "expire_at"),
     ("stream_cache", "last_accessed"),
     ("diagnostic_reports", "ended_at"),

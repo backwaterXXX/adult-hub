@@ -14,11 +14,6 @@ from typing import List, Dict, Any, Optional, Set, Tuple, Iterable
 from sync.category_mapping import map_category, map_categories
 from sync.sync_shutdown import install_signal_handlers, stop_requested
 from sync.db_schema import init_db as _init_db_impl
-from sync.jellyfin_db import sync_jellyfin_titles as _sync_jellyfin_titles
-from sync.jellyfin_db import sync_jellyfin_telegram_metadata as _sync_jellyfin_telegram_metadata
-from sync.jellyfin_db import audit_telegram_import_state as _audit_telegram_import_state
-from sync.jellyfin_db import trigger_library_refresh as _trigger_jellyfin_refresh_impl
-from sync.jellyfin_db import confirm_metadata_import_jobs as _confirm_metadata_import_jobs_impl
 from sync.http_client import (
     fetch_json_with_retry as _fetch_json_with_retry,
     get_http_client as _get_http_client,
@@ -179,15 +174,12 @@ from sync.sync_settings import (
     DB_URL,
     DATA_DIR,
     CONFIG,
-    JELLYFIN_URL,
-    JELLYFIN_API_KEY,
     HIDE_DEAD_STREAMS,
     DEAD_STREAM_RESOLVER_TIMEOUT,
     DEAD_STREAM_DENYLIST_DAYS,
     PBC_BACKFILL_PER_RUN,
     TPDB_BACKFILL_PER_RUN,
     SCENE_BACKFILL_PER_RUN,
-    JELLYFIN_PEOPLE_PER_RUN,
     RETENTION_DAYS,
     SYNC_TELEGRAM,
     TELEGRAM_CHANNELS,
@@ -743,40 +735,6 @@ def cleanup_retention(conn: db.Connection, media_dir: Path, retention_days: int,
         ),
     )
 
-def trigger_jellyfin_refresh(*, min_interval: float = 3.0):
-    return _trigger_jellyfin_refresh_impl(
-        JELLYFIN_URL, JELLYFIN_API_KEY, min_interval=min_interval,
-        http_client_factory=get_http_client, logger=logger, time_fn=time.time,
-    )
-
-def sync_jellyfin_titles(hub_db_url=None):
-    return _sync_jellyfin_titles(
-        hub_db_url=hub_db_url, default_hub_db_url=DB_URL,
-        clean_title=clean_display_title, url=JELLYFIN_URL,
-        api_key=JELLYFIN_API_KEY, logger=logger, media_dir=MEDIA_DIR,
-    )
-
-
-
-def sync_jellyfin_telegram_metadata(*, limit=200):
-    result = _sync_jellyfin_telegram_metadata(
-        JELLYFIN_URL, JELLYFIN_API_KEY, MEDIA_DIR,
-        state_path=DATA_DIR / "telegram-metadata-state.json", logger=logger,
-        limit=limit,
-    )
-    confirmed_files = result.pop("_confirmed_file_hashes", {}) if isinstance(result, dict) else {}
-    if confirmed_files:
-        _confirm_metadata_import_jobs(confirmed_files, DB_URL)
-    return result
-
-
-def _confirm_metadata_import_jobs(confirmed_files, db_url):
-    return _confirm_metadata_import_jobs_impl(
-        confirmed_files, db_url, logger=logger, time_fn=time.time,
-    )
-
-
-
 def _dead_stream_services() -> DeadStreamServices:
     return DeadStreamServices(
         stream_mode_for_provider=stream_mode_for_provider,
@@ -965,16 +923,9 @@ def _duplicate_job_services() -> DuplicateJobServices:
         format_dateadded=format_dateadded,
         load_performer_thumbs=load_performer_thumbs,
         resolve_media_path=resolve_media_path,
-        trigger_jellyfin_refresh=trigger_jellyfin_refresh,
-        sync_jellyfin_telegram_metadata=sync_jellyfin_telegram_metadata,
         probe_stream=probe_stream_via_resolver,
         logger=logger,
         probe_stream_detailed=probe_stream_via_resolver_outcome,
-        audit_jellyfin_import_state=lambda media_dir, progress=None: _audit_telegram_import_state(
-            JELLYFIN_URL, JELLYFIN_API_KEY, media_dir,
-            state_path=DATA_DIR / "telegram-metadata-state.json",
-            progress=progress,
-        ),
         thumbnail_urls=thumbnail_urls,
         download_image_if_missing=download_image_if_missing,
         external_metadata_backfill=_run_external_metadata_backfill,

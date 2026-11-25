@@ -445,6 +445,7 @@ class TestMigrationsEngine(PgTestCase):
             (71, "0071_telegram_sources_backfill"),
             (72, "0072_performer_lookup_indexes"),
             (73, "0073_performer_catalog_image"),
+            (74, "0074_drop_jellyfin_person_sync"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):

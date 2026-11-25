@@ -108,11 +108,9 @@ class TestResolverHttpApiOperations(BaseHttpApiTestCase):
             self.assertEqual(get_job(TEST_URL, job_id)["action"], "hide")
             self.assertEqual(get_job(TEST_URL, job_id)["payload"]["loser_ids"], [loser])
             with patch.object(sync, "DATA_DIR", root / "data"), \
-                 patch.object(sync, "trigger_jellyfin_refresh", return_value=True) as refresh, \
-                 patch.dict("os.environ", {"DATABASE_URL": TEST_URL, "JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "test-key"}):
+                 patch.dict("os.environ", {"DATABASE_URL": TEST_URL, "RESOLVER_API_URL": "http://resolver:8090"}):
                 with db_session(TEST_URL) as conn:
                     self.assertEqual(sync.process_video_duplicate_jobs(conn, media), 1)
-            refresh.assert_called_once_with()
             with db_session(TEST_URL) as conn:
                 self.assertIsNone(conn.execute("SELECT 1 FROM videos WHERE id=%s", (loser,)).fetchone())
             hidden = get_job(TEST_URL, job_id)
@@ -135,8 +133,7 @@ class TestResolverHttpApiOperations(BaseHttpApiTestCase):
                 restore_id = restore_execute.json()["jobs"][0]["job_id"]
                 self.assertEqual(restore_wake.call_count, 1)
             with patch.object(sync, "DATA_DIR", root / "data"), \
-                 patch.object(sync, "trigger_jellyfin_refresh", return_value=True), \
-                 patch.dict("os.environ", {"DATABASE_URL": TEST_URL, "JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "test-key"}):
+                 patch.dict("os.environ", {"DATABASE_URL": TEST_URL, "RESOLVER_API_URL": "http://resolver:8090"}):
                 with db_session(TEST_URL) as conn:
                     self.assertEqual(sync.process_video_duplicate_jobs(conn, media), 1)
             with db_session(TEST_URL) as conn:
@@ -232,11 +229,9 @@ class TestResolverHttpApiOperations(BaseHttpApiTestCase):
                 self.assertEqual(job["payload"]["loser_ids"], [loser])
                 self.assertEqual(wake.call_count, 1)
             with patch.object(sync, "DATA_DIR", root / "data"), \
-                 patch.object(sync, "trigger_jellyfin_refresh", return_value=True) as refresh, \
-                 patch.dict("os.environ", {"DATABASE_URL": TEST_URL, "JELLYFIN_URL": "http://jellyfin.invalid", "JELLYFIN_API_KEY": "test-key"}):
+                 patch.dict("os.environ", {"DATABASE_URL": TEST_URL, "RESOLVER_API_URL": "http://resolver:8090"}):
                 with db_session(TEST_URL) as conn:
                     self.assertEqual(sync.process_video_duplicate_jobs(conn, media), 1)
-            refresh.assert_called_once_with()
             with db_session(TEST_URL) as conn:
                 self.assertIsNotNone(conn.execute("SELECT 1 FROM videos WHERE id=%s", (keeper,)).fetchone())
                 self.assertIsNone(conn.execute("SELECT 1 FROM videos WHERE id=%s", (loser,)).fetchone())

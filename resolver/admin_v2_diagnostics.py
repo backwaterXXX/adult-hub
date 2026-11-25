@@ -6,7 +6,6 @@ import asyncio
 import os
 import time
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
 import logging
 from fastapi import APIRouter, Request
 from resolver.admin_v2_errors import V2ErrorRoute
@@ -90,32 +89,12 @@ def _worker_probe(service: str, label: str, path: str) -> dict:
 
 async def _run_service_probes(admin) -> dict:
     """Probe only fixed local/configured services with secret-free results."""
-    resolver, jellyfin = await asyncio.gather(
-        _http_probe("http://127.0.0.1:8090/admin/health/live",
-                    service="resolver", label="Resolver"),
-        _configured_jellyfin_probe(),
-    )
+    resolver = await _http_probe("http://127.0.0.1:8090/admin/health/live",
+                                 service="resolver", label="Resolver")
     database, workers = await asyncio.gather(
         _database_probe(admin), asyncio.to_thread(_worker_probe_set),
     )
-    return {"services": [database, resolver, workers[0], workers[1], jellyfin]}
-
-
-async def _configured_jellyfin_probe() -> dict:
-    base_url = os.getenv("JELLYFIN_URL", "").strip().rstrip("/")
-    if not base_url:
-        return _safe_probe_row("jellyfin", "Jellyfin", "not_configured")
-    try:
-        parsed = urlsplit(base_url)
-        if (parsed.scheme not in {"http", "https"} or not parsed.netloc
-                or parsed.username or parsed.password or parsed.query or parsed.fragment):
-            return _safe_probe_row("jellyfin", "Jellyfin", "unknown")
-    except Exception:
-        logger.debug("Ignored exception in _configured_jellyfin_probe", exc_info=True)
-        return _safe_probe_row("jellyfin", "Jellyfin", "unknown")
-    return await _http_probe(
-        f"{base_url}/System/Info/Public", service="jellyfin", label="Jellyfin",
-    )
+    return {"services": [database, resolver, workers[0], workers[1]]}
 
 
 def _worker_probe_set() -> list[dict]:
@@ -146,7 +125,6 @@ async def _cached_service_probes(admin) -> dict:
                 _safe_probe_row("resolver", "Resolver", "unknown"),
                 _safe_probe_row("sync_worker", "Sync worker", "unknown"),
                 _safe_probe_row("phash_worker", "pHash worker", "unknown"),
-                _safe_probe_row("jellyfin", "Jellyfin", "unknown"),
             ]}
         result["checked_at"] = datetime.now(timezone.utc).isoformat()
         _PROBE_CACHE.update(checked_monotonic=time.monotonic(), result=result)
@@ -171,7 +149,6 @@ def build_router(admin):
                         _safe_probe_row("resolver", "Resolver", "unknown"),
                         _safe_probe_row("sync_worker", "Sync worker", "unknown"),
                         _safe_probe_row("phash_worker", "pHash worker", "unknown"),
-                        _safe_probe_row("jellyfin", "Jellyfin", "unknown"),
-                    ]}
+                            ]}
 
     return router

@@ -264,62 +264,6 @@ class TestStandaloneInstaller(BaseStandaloneInstallerTestCase):
             sock.close()
 
 
-    def test_setup_both_ports_occupied_selects_distinct_alternatives(self):
-        """When both resolver and Jellyfin ports are occupied, setup finds distinct non-colliding ports."""
-        port1 = 8290
-        port2 = 8296
-        sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock1.bind(("127.0.0.1", port1))
-        sock1.listen(1)
-
-        sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock2.bind(("127.0.0.1", port2))
-        sock2.listen(1)
-
-        try:
-            mock_docker = make_mock_docker(self.isolated_root)
-            res = self.run_installer([
-                "--non-interactive",
-                "--bind-mode", "loopback",
-                "--resolver-port", str(port1),
-                "--jellyfin-port", str(port2),
-                "--docker-bin", mock_docker,
-                "--root-dir", str(self.isolated_root),
-            ])
-            self.assertEqual(res.returncode, 0)
-            env_content = (self.isolated_root / ".env").read_text()
-
-            # Parse selected ports
-            r_port = [line.split("=", 1)[1] for line in env_content.splitlines() if line.startswith("RESOLVER_PORT=")][0]
-            j_port = [line.split("=", 1)[1] for line in env_content.splitlines() if line.startswith("JELLYFIN_PORT=")][0]
-
-            self.assertNotEqual(r_port, str(port1))
-            self.assertNotEqual(j_port, str(port2))
-            self.assertNotEqual(r_port, j_port)
-        finally:
-            sock1.close()
-            sock2.close()
-
-
-    def test_same_port_override_collision_fails_with_actionable_error(self):
-        """When resolver and Jellyfin overrides request the same free host port, installer fails with clear actionable error."""
-        free_port = 9188
-        mock_docker = make_mock_docker(self.isolated_root)
-        res = self.run_installer([
-            "--non-interactive",
-            "--bind-mode", "loopback",
-            "--resolver-port", str(free_port),
-            "--jellyfin-port", str(free_port),
-            "--docker-bin", mock_docker,
-            "--root-dir", str(self.isolated_root),
-        ])
-        self.assertEqual(res.returncode, 1)
-        self.assertIn("Port collision", res.stderr)
-        self.assertIn("Specify distinct ports", res.stderr)
-
-
     def test_setup_with_already_authorized_session_starts_services(self):
         """Pre-existing authorized Telegram session skips login and starts resolver, sync, and backup."""
         # 1. First run to generate environment

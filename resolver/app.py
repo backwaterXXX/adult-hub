@@ -867,7 +867,7 @@ async def _open_upstream(request: Request, url: str, cache_key: Optional[str]):
 
 
 def _upstream_framing_headers(sresp) -> dict:
-    # Keep the upstream's framing and media type visible to Jellyfin/FFmpeg.
+    # Keep the upstream's framing and media type visible to media players/FFmpeg.
     # In particular, a known Content-Length makes a finite media resource
     # distinguishable from an open-ended stream for arbitrary containers.
     out_headers = {}

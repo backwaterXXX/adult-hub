@@ -1,4 +1,4 @@
-"""Explicit local repairs and Jellyfin import refresh handlers."""
+"""Explicit local stream, NFO and artwork repairs for audit findings."""
 from __future__ import annotations
 
 import json
@@ -211,46 +211,9 @@ def _audit_repair_nfo(conn, job_id: str, payload: dict, media_dir: Path, service
         _core._record_job_progress(conn, job_id, "repairing_nfo", completed=index, total=len(targets))
     local_state = "files_repaired" if has_stream_repair else "nfo_repaired"
     _core._store_job_result_field(conn, job_id, "local_state", local_state)
-    refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, local_state, services)
-    if not refreshed and _core._jellyfin_configured():
-        _core._store_job_result_field(conn, job_id, "jellyfin_refresh", "failed")
-        raise RuntimeError("Local files were repaired, but Jellyfin refresh failed. Retry this task to resume the refresh.")
     with conn:
         conn.execute("UPDATE admin_audit_items SET status='resolved' WHERE job_id=%s AND id=ANY(%s) AND status='open'",
                      (audit_id, finding_ids))
     return {"audit_id": audit_id, "repaired_items": len(targets), "restored_streams": restored_streams,
             "repaired_nfo_files": repaired_nfo_files, "repaired_artwork_files": repaired_artwork_files,
-            "local_state": local_state,
-            "jellyfin_refresh": _core.jellyfin_refresh_status(refreshed)}
-
-def _audit_import_refresh(conn, job_id: str, payload: dict, services) -> dict:
-    """Request Jellyfin refresh for selected import findings without claiming confirmation."""
-    from common.admin_operations import _audit_import_refresh_state
-    plan_id = payload.get("plan_id")
-    if not isinstance(plan_id, str) or not plan_id or len(plan_id) > 100:
-        raise ValueError("Invalid audit import refresh plan.")
-    plan = conn.execute(
-        "SELECT operation_type,scope,revisions FROM admin_operation_plans WHERE plan_id=%s AND state='queued'",
-        (plan_id,),
-    ).fetchone()
-    if not plan:
-        raise ValueError("Audit import refresh plan is unavailable.")
-    operation_type, raw_scope, raw_revisions = plan
-    scope = raw_scope if isinstance(raw_scope, dict) else json.loads(raw_scope or "{}")
-    revisions = raw_revisions if isinstance(raw_revisions, dict) else json.loads(raw_revisions or "{}")
-    if operation_type != "audit_import_refresh" or not isinstance(scope, dict):
-        raise ValueError("Invalid audit import refresh plan.")
-    audit_id, finding_ids = scope.get("audit_id"), scope.get("finding_ids")
-    if (not isinstance(audit_id, str) or not isinstance(finding_ids, list) or not finding_ids
-            or len(finding_ids) > 25 or any(type(value) is not int for value in finding_ids)):
-        raise ValueError("Invalid audit import refresh selection.")
-    current = _audit_import_refresh_state(conn, audit_id, finding_ids)
-    if current is None or current["revisions"] != revisions:
-        raise ValueError("Audit findings or library metadata changed after the refresh preview.")
-    _core._record_job_progress(conn, job_id, "refreshing_jellyfin", completed=0, total=len(current["items"]))
-    if not services.trigger_jellyfin_refresh():
-        _core._store_job_result_field(conn, job_id, "jellyfin_import", "not_confirmed")
-        raise RuntimeError("Jellyfin did not accept the refresh request. Retry this task later.")
-    _core._store_job_result_field(conn, job_id, "jellyfin_import", "not_confirmed")
-    return {"audit_id": audit_id, "refresh_requested": True, "jellyfin_import": "not_confirmed",
-            "message": "Refresh request accepted; run a new audit to verify the import."}
+            "local_state": local_state}

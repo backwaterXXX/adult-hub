@@ -136,16 +136,7 @@ def _fingerprint_summary(result: dict) -> str | None:
 def _artwork_generate_summary(result: dict) -> str | None:
     local_state = result.get("local_state")
     if local_state == "artwork_generated":
-        summary = "Artwork generated from a video frame."
-        if result.get("jellyfin_refresh") == "failed":
-            summary += " Local result saved; Jellyfin refresh failed."
-        elif result.get("jellyfin_refresh") == "skipped":
-            summary += " Jellyfin refresh was skipped."
-        elif result.get("jellyfin_refresh") == "unavailable":
-            summary += " Jellyfin item refresh was unavailable."
-        if result.get("jellyfin_library_refresh") == "failed":
-            summary += " The global Jellyfin library refresh failed."
-        return summary
+        return "Artwork generated from a video frame."
     if local_state == "artwork_already_valid":
         return "Artwork was already valid when the task started; no changes were made."
     return None
@@ -155,11 +146,8 @@ def _artwork_download_summary(result: dict) -> str | None:
     local_state = result.get("local_state")
     if local_state == "artwork_downloaded":
         provider = result.get("provider")
-        summary = (f"Artwork downloaded from {provider}."
-                   if provider in {"StashDB", "ThePornDB"} else "Artwork downloaded.")
-        if result.get("jellyfin_refresh") == "failed":
-            summary += " Local result saved; Jellyfin refresh failed."
-        return summary
+        return (f"Artwork downloaded from {provider}."
+                if provider in {"StashDB", "ThePornDB"} else "Artwork downloaded.")
     if local_state == "artwork_not_found":
         return "No matching artwork found on StashDB or ThePornDB."
     if local_state == "artwork_download_failed":
@@ -186,14 +174,6 @@ def _generic_result_summary(result: dict) -> str | None:
         return "Backup restored and validated in a disposable database; that database was removed."
     if result.get("backup_created") is True:
         return "Database backup created and verified."
-    if result.get("jellyfin_refresh") == "failed":
-        return "Local result saved; Jellyfin refresh failed."
-    if result.get("refresh_requested") is True:
-        return "Jellyfin accepted the refresh request; check the library after its next refresh."
-    if result.get("jellyfin_import") == "not_confirmed":
-        return "Local metadata saved; Jellyfin accepted the refresh request, but import is not confirmed."
-    if result.get("jellyfin_import") == "confirmed":
-        return "Jellyfin imported the current local metadata file."
     if result.get("recovery") == "in_progress":
         return "Recovery in progress."
     return None
@@ -264,8 +244,6 @@ def _attach_sync_failures(job: dict, history: dict | None) -> None:
 
 
 _LOCAL_STATES = frozenset({"hidden", "dismissed", "restored", "quarantined", "source_removed", "source_readded", "metadata_updated", "metadata_scan_completed", "telegram_fingerprint_scan_completed", "artwork_downloaded", "artwork_generated", "artwork_already_valid", "artwork_not_found", "artwork_download_failed", "artwork_lookup_failed", "availability_checked", "audit_queued", "audit_completed", "metadata_quality_audit_completed", "nfo_repaired", "files_repaired"})
-_JELLYFIN_REFRESH_STATES = frozenset({"pending", "updated", "failed", "skipped", "unavailable", "not_required"})
-_JELLYFIN_IMPORT_STATES = frozenset({"not_requested", "not_confirmed", "confirmed"})
 
 
 def _choice(value, allowed) -> str | None:
@@ -291,8 +269,6 @@ def _job_stage(state: str, progress: dict, result: dict) -> str:
         return recorded_stage
     if state == "queued":
         return "queued"
-    if state == "processing" and result.get("jellyfin_refresh") == "pending":
-        return "jellyfin_refresh"
     if state == "processing" and result.get("recovery") == "in_progress":
         return "recovery"
     if state == "processing":
@@ -370,9 +346,6 @@ def _safe_job(job: dict, *, now=None) -> dict:
                                 if event["stage"] not in {"starting", "completed", "cancelled"}), None)
         if state == "failed" else None,
         "local_state": _choice(local_state, _LOCAL_STATES),
-        "jellyfin_refresh": _choice(result.get("jellyfin_refresh"), _JELLYFIN_REFRESH_STATES),
-        "jellyfin_library_refresh": _choice(result.get("jellyfin_library_refresh"), _JELLYFIN_REFRESH_STATES),
-        "jellyfin_import": _choice(result.get("jellyfin_import"), _JELLYFIN_IMPORT_STATES),
         "error": (
             JOB_FAILURE_MESSAGES.get(job.get("failure_code"))
             or ("Job failed. Inspect local worker logs for details." if job.get("error") else None)

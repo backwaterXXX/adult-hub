@@ -2,8 +2,7 @@
 # Copy this file to config.yaml and edit it for your setup:
 #   cp config.example.yaml config.yaml
 #
-# Credentials (TELEGRAM_API_ID, TELEGRAM_API_HASH, JELLYFIN_API_KEY,
-# THEPORNDB_API_TOKEN)
+# Credentials (TELEGRAM_API_ID, TELEGRAM_API_HASH, THEPORNDB_API_TOKEN)
 # and infrastructure settings (HOST_IP, MEDIA_PATH, RESOLVER_PUBLIC_URL)
 # belong in .env.
 
@@ -24,7 +23,6 @@ sync:
   tpdb_backfill_per_run: 50
   # Scene and performer source queues: ~20 daily syncs per 10k videos / 1k actors.
   scene_backfill_per_run: 500
-  jellyfin_people_per_run: 50
 
 sources:
   - provider: telegram

@@ -252,7 +252,7 @@
       if (!preview.plan_id || !item) throw new Error('Could not prepare merge preview.');
       state.pendingPersonMerge = { plan_id: preview.plan_id, alias: item.alias, canonical: item.canonical };
       const warnings = Array.isArray(preview.warnings) ? ` ${preview.warnings.join(' ')}` : '';
-      feedback.textContent = `Preview: ${Number(item.alias_videos) || 0} videos use “${item.alias}”; ${Number(item.canonical_videos) || 0} use “${item.canonical}”. The worker will merge metadata and then refresh Jellyfin.${warnings}`;
+      feedback.textContent = `Preview: ${Number(item.alias_videos) || 0} videos use “${item.alias}”; ${Number(item.canonical_videos) || 0} use “${item.canonical}”. The worker will merge the metadata.${warnings}`;
       let confirmationLabel = $('#personMergeUndoWarning');
       if (!confirmationLabel) {
         confirmationLabel = create('label', 'state-banner person-merge-undo-warning');

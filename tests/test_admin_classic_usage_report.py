@@ -79,12 +79,12 @@ class TestAdminClassicUsageReport(unittest.TestCase):
     def test_unmapped_route_keeps_only_static_words_valid_at_that_path_position(self):
         report = summarize([
             '2026-10-07 12:00:00,000 [INFO] uvicorn.access: 10.0.0.4:22 - "POST /admin/api/videos/private-title/refresh HTTP/1.1" 200 OK',
-            '2026-10-07 12:01:00,000 [INFO] uvicorn.access: 10.0.0.4:22 - "POST /admin/api/jellyfin/refresh/private-id HTTP/1.1" 200 OK',
+            '2026-10-07 12:01:00,000 [INFO] uvicorn.access: 10.0.0.4:22 - "POST /admin/api/performers/private-id/refresh HTTP/1.1" 200 OK',
         ])
         surfaces = {row["surface"] for row in report["counts"]}
         self.assertEqual(surfaces, {
             "unmapped_classic_api /api/videos/{segment}/{segment}",
-            "unmapped_classic_api /api/jellyfin/refresh/{segment}",
+            "unmapped_classic_api /api/performers/{segment}/{segment}",
         })
         serialized = json.dumps(report)
         for private_value in ("private-title", "private-id", "10.0.0.4"):

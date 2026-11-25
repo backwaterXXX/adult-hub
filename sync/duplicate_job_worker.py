@@ -72,14 +72,12 @@ def _committed_result_without_rerun(conn, job_id, action, payload, services):
         video_id = str(payload.get('video_id') or '')
         committed = conn.execute("SELECT 1 FROM video_duplicate_decisions WHERE loser_id=%s AND keeper_id=%s AND operation_id=%s AND state='active'", (video_id, video_id, job_id)).fetchone()
         if committed and (not conn.execute('SELECT 1 FROM videos WHERE id=%s', (video_id,)).fetchone()):
-            refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'quarantined', services)
-            return {'operation_id': job_id, 'quarantined': [video_id], 'local_state': 'quarantined', 'jellyfin_refresh': _core.jellyfin_refresh_status(refreshed)}
+            return {'operation_id': job_id, 'quarantined': [video_id], 'local_state': 'quarantined'}
     if action == 'hide':
         requested = {str(x) for x in payload.get('loser_ids', [])}
         committed = {r[0] for r in conn.execute("SELECT loser_id FROM video_duplicate_decisions WHERE operation_id=%s AND state='active'", (job_id,)).fetchall()}
         if requested and requested == committed:
-            refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'hidden', services)
-            return {'operation_id': job_id, 'hidden': sorted(requested), 'keeper_id': payload.get('keeper_id'), 'local_state': 'hidden', 'jellyfin_refresh': _core.jellyfin_refresh_status(refreshed)}
+            return {'operation_id': job_id, 'hidden': sorted(requested), 'keeper_id': payload.get('keeper_id'), 'local_state': 'hidden'}
     if action == 'undo':
         operation = str(payload.get('operation_id') or '')
         active = conn.execute("SELECT count(*) FROM video_duplicate_decisions WHERE operation_id=%s AND state='active'", (operation,)).fetchone()[0]
@@ -91,8 +89,7 @@ def _committed_result_without_rerun(conn, job_id, action, payload, services):
             ).fetchall()
         } if restored_ids else set()
         if not active and restored_ids and existing_ids == set(restored_ids):
-            refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'restored', services)
-            return {'operation_id': operation, 'restored': restored_ids, 'local_state': 'restored', 'jellyfin_refresh': _core.jellyfin_refresh_status(refreshed)}
+            return {'operation_id': operation, 'restored': restored_ids, 'local_state': 'restored'}
     return None
 
 
@@ -114,8 +111,6 @@ def _execute_action(conn, job_id, action, payload, media_dir, services, quaranti
          lambda: _catalog_result(run, _core._metadata_quality_audit(conn, job_id, payload))),
         (action == 'audit_repair_nfo',
          lambda: _catalog_result(run, _core._audit_repair_nfo(conn, job_id, payload, media_dir, services))),
-        (action == 'audit_import_refresh',
-         lambda: _catalog_result(run, _core._audit_import_refresh(conn, job_id, payload, services))),
         (action == 'orphan_file_operation',
          lambda: _catalog_result(run, _core._orphan_file_operation(conn, job_id, payload, media_dir, quarantine_root, services, run.moved))),
         (action == 'backup_create'
@@ -125,7 +120,6 @@ def _execute_action(conn, job_id, action, payload, media_dir, services, quaranti
          or action == 'telegram_fingerprint_scan'
          or action == 'artwork_download'
          or action == 'artwork_generate'
-         or action == 'collections_refresh'
          or action == 'performer_merge'
          or action == 'history_cleanup'
          or action == 'performer_catalog'

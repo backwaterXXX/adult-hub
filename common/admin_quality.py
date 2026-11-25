@@ -89,7 +89,6 @@ def _paired_full_entry(row, result, batch_id, consistency_by_batch):
                 "file_total": file_result["total"],
                 "library_inventory_status": file_result["library_inventory_status"],
                 "library_inventory_entries": file_result.get("library_inventory_entries"),
-                "jellyfin_import_state": file_result.get("jellyfin_import_state"),
                 "audit_batch_id": batch_id}
     return (str(row[0]), row[2], combined, [str(row[0]), str(file_row[0])])
 
@@ -262,8 +261,6 @@ def read_quality_summary(db_url: str | None) -> dict:
                 if type(result.get("library_inventory_entries")) is int
                 and result["library_inventory_entries"] >= 0 else None
             ),
-            "jellyfin_import_state": result.get("jellyfin_import_state")
-            if result.get("jellyfin_import_state") in {"checked", "partial", "unknown"} else "unknown",
         }, "current_audit_id": str(current[0]) if current else None,
             "current_audit_state": str(current[1]) if current else None,
             "counts": counts, "missing_fields": missing_fields, "total": sum(counts.values()), "history": history,

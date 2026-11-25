@@ -188,9 +188,8 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
     @patch("common.image_utils.extract_video_frame", return_value=(True, None))
     @patch("sync.media_files.resolve_media_path", return_value=Path("/tmp/test.mp4"))
     @patch("common.video_variants.fetch_and_select_best_variant", return_value="alt_480_av1")
-    @patch("sync.duplicate_job_external_handlers._core._refresh_jellyfin_with_progress", return_value=True)
     def test_artwork_generate_auto_selects_variant(
-        self, mock_refresh, mock_fetch_variant, mock_resolve_path, mock_extract,
+        self, mock_fetch_variant, mock_resolve_path, mock_extract,
     ):
         from sync.duplicate_job_external_handlers import execute_external_operation
 
@@ -220,9 +219,8 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
     @patch("common.image_utils.extract_video_frame", return_value=(True, None))
     @patch("sync.media_files.resolve_media_path", return_value=Path("/tmp/test.mp4"))
     @patch("common.video_variants.fetch_and_select_best_variant")
-    @patch("sync.duplicate_job_external_handlers._core._refresh_jellyfin_with_progress", return_value=True)
     def test_artwork_generate_respects_explicit_original(
-        self, mock_refresh, mock_fetch_variant, mock_resolve_path, mock_extract,
+        self, mock_fetch_variant, mock_resolve_path, mock_extract,
     ):
         from sync.duplicate_job_external_handlers import execute_external_operation
 
@@ -244,9 +242,8 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
 
     @patch("common.image_utils.extract_video_frame", return_value=(True, None))
     @patch("sync.media_files.resolve_media_path", return_value=Path("/tmp/test.mp4"))
-    @patch("sync.duplicate_job_external_handlers._core._refresh_jellyfin_with_progress", return_value=True)
     def test_artwork_generate_forwards_custom_timeout(
-        self, mock_refresh, mock_resolve_path, mock_extract,
+        self, mock_resolve_path, mock_extract,
     ):
         from sync.duplicate_job_external_handlers import execute_external_operation
 
@@ -290,7 +287,6 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
         mock_conn = MagicMock()
         mock_conn.execute.return_value.fetchall.return_value = [("test.mp4",)]
         with patch.object(media_files, "resolve_media_path", return_value=Path("/tmp/test.mp4")), \
-                patch.object(handlers._core, "_refresh_jellyfin_with_progress", return_value=True), \
                 patch("common.video_variants.fetch_and_select_best_variant", return_value="alt_480_av1"), \
                 patch("common.image_utils.extract_video_frame", return_value=(True, None)) as mock_extract, \
                 patch.dict(os.environ, {"RESOLVER_API_URL": "http://resolver:8090/admin/"}):
@@ -310,8 +306,7 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
         mock_conn.execute.return_value.fetchall.return_value = [("test.mp4",)]
         with patch("sync.media_files.resolve_media_path", return_value=Path("/tmp/test.mp4")), \
                 patch("sync.artwork_schedule.artwork_needs_generation", return_value=False), \
-                patch("common.image_utils.extract_video_frame") as mock_extract, \
-                patch("sync.duplicate_job_external_handlers._core._refresh_jellyfin_with_progress") as mock_refresh:
+                patch("common.image_utils.extract_video_frame") as mock_extract:
             result, ok = execute_external_operation(
                 "artwork_generate", mock_conn, 104,
                 {"video_id": "telegram:10:20:30", "offset_seconds": 60,
@@ -322,7 +317,6 @@ class TestArtworkGenerateVariantHandling(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(result, {"local_state": "artwork_already_valid", "skipped": True})
         mock_extract.assert_not_called()
-        mock_refresh.assert_not_called()
 
 
 if __name__ == "__main__":

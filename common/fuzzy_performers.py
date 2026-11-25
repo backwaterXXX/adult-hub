@@ -206,39 +206,6 @@ def make_backup(db_url: Optional[str] = None, backup_dir: Optional[Path] = None)
                               prefix="adulthub-pre-fuzzy-merge")))
 
 
-def trigger_jellyfin_refresh(url: Optional[str] = None, api_key: Optional[str] = None) -> bool:
-    """Sends a Library/Refresh request to the Jellyfin API."""
-    url = (url or os.getenv("JELLYFIN_URL", "")).strip()
-    api_key = (api_key or os.getenv("JELLYFIN_API_KEY", "")).strip()
-
-    if not url or not api_key:
-        env_file = Path(__file__).parent / ".env"
-        if env_file.exists():
-            for line in env_file.read_text().splitlines():
-                if line.startswith("JELLYFIN_URL="):
-                    url = line.split("=", 1)[1].strip().strip('"').strip("'")
-                elif line.startswith("JELLYFIN_API_KEY="):
-                    api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
-
-    if not url or not api_key:
-        logger.warning("JELLYFIN_URL / JELLYFIN_API_KEY are not configured")
-        return False
-
-    try:
-        import urllib.request
-        req = urllib.request.Request(
-            f"{url.rstrip('/')}/Library/Refresh",
-            headers={"Authorization": f'MediaBrowser Token="{api_key}"'},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            logger.info("Jellyfin Library/Refresh trigger: HTTP %s", resp.status)
-            return resp.status in (200, 204)
-    except Exception as e:
-        logger.warning("Could not refresh Jellyfin: %s", e)
-        return False
-
-
 def _fuzzy_merge_implementation():
     from common import fuzzy_merge
     return fuzzy_merge

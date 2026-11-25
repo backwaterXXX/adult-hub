@@ -94,17 +94,6 @@ def _restore_rollback_rows(conn, rows, bio_rows) -> list:
     return nfo_tasks
 
 
-def _refresh_after_rollback(rows, bio_rows) -> bool:
-    refreshed = False
-    if rows or bio_rows:
-        try:
-            S.sync_jellyfin_telegram_metadata()
-            refreshed = bool(S.trigger_jellyfin_refresh())
-        except Exception:
-            pass
-    return refreshed
-
-
 def _rollback(conn, rollback: str) -> dict:
     try:
         run_id = str(uuid.UUID(rollback))
@@ -121,11 +110,9 @@ def _rollback(conn, rollback: str) -> dict:
     """, (run_id,)).fetchall()
     nfo_tasks = _restore_rollback_rows(conn, rows, bio_rows)
     nfos_updated, nfos_failed = _regenerate_nfos(conn, nfo_tasks)
-    refreshed = _refresh_after_rollback(rows, bio_rows)
     return {"rolled_back_run": run_id, "videos_restored": len(rows),
             "performer_profiles_restored": len(bio_rows),
-            "nfos_updated": nfos_updated, "nfos_failed": nfos_failed,
-            "jellyfin_refresh_triggered": refreshed}
+            "nfos_updated": nfos_updated, "nfos_failed": nfos_failed}
 
 
 def _load_catalog_state(conn):
@@ -227,14 +214,6 @@ def _process_row(conn, row, *, apply, queue_proposals, run_id, catalog, catalog_
             report["proposals_queued"] += 1
 
 
-def _refresh_jellyfin_after_apply(report: dict) -> None:
-    try:
-        S.sync_jellyfin_telegram_metadata()
-        report["jellyfin_refresh"] = "triggered" if S.trigger_jellyfin_refresh() else "not_confirmed"
-    except Exception as exc:
-        report["jellyfin_refresh"] = f"failed: {type(exc).__name__}"
-
-
 def _rebuild(conn, apply: bool, limit, queue_proposals: bool) -> dict:
     catalog, catalog_index, catalog_names = _load_catalog_state(conn)
     rows = _fetch_telegram_rows(conn, limit)
@@ -252,8 +231,6 @@ def _rebuild(conn, apply: bool, limit, queue_proposals: bool) -> dict:
                          catalog_names=catalog_names, report=report, nfo_tasks=nfo_tasks)
     if apply:
         report["nfos_updated"], report["nfos_failed"] = _regenerate_nfos(conn, nfo_tasks)
-    if apply and report["changed"]:
-        _refresh_jellyfin_after_apply(report)
     return report
 
 

@@ -430,27 +430,18 @@ class TestArtworkResultSummary(unittest.TestCase):
     def _job(self, result):
         return {"action": "artwork_download", "state": "done", "result": result}
 
-    def test_generated_artwork_survives_projection_and_reports_refresh(self):
-        for refresh in ("updated", "failed"):
-            job = admin_v2_jobs._safe_job({
-                "action": "artwork_generate", "state": "done",
-                "result": {"local_state": "artwork_generated", "jellyfin_refresh": refresh},
-            })
-            self.assertEqual(job["local_state"], "artwork_generated")
-            self.assertTrue(job["result_summary"].startswith("Artwork generated from a video frame."))
-            self.assertEqual("Jellyfin refresh failed" in job["result_summary"], refresh == "failed")
+    def test_generated_artwork_survives_projection(self):
+        job = admin_v2_jobs._safe_job({
+            "action": "artwork_generate", "state": "done",
+            "result": {"local_state": "artwork_generated"},
+        })
+        self.assertEqual(job["local_state"], "artwork_generated")
+        self.assertTrue(job["result_summary"].startswith("Artwork generated from a video frame."))
 
-    def test_downloaded_with_failed_refresh_mentions_refresh_failure(self):
-        summary = admin_v2_jobs._result_summary(self._job({
-            "downloaded": True, "provider": "StashDB",
-            "local_state": "artwork_downloaded", "jellyfin_refresh": "failed",
-        }))
-        self.assertEqual(summary, "Artwork downloaded from StashDB. Local result saved; Jellyfin refresh failed.")
-
-    def test_downloaded_with_successful_refresh_reports_success(self):
+    def test_downloaded_reports_the_provider(self):
         summary = admin_v2_jobs._result_summary(self._job({
             "downloaded": True, "provider": "ThePornDB",
-            "local_state": "artwork_downloaded", "jellyfin_refresh": "updated",
+            "local_state": "artwork_downloaded",
         }))
         self.assertEqual(summary, "Artwork downloaded from ThePornDB.")
 

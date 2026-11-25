@@ -383,7 +383,7 @@ class TestVideoPersistence(PgTestCase):
         nfo_path = self.media_dir / "telegram_-1001_45_996.nfo"
         self.assertTrue(nfo_path.is_file())
         xml = nfo_path.read_text(encoding="utf-8")
-        # Jellyfin imports this sidecar for the locked Telegram entry.
+        # The locked Telegram entry keeps this sidecar.
         self.assertIn("<title>Rinse and Rim</title>", xml)
         self.assertIn("<originaltitle>Lukayan SHOW #45</originaltitle>", xml)
         self.assertIn('<uniqueid type="stashdb" default="false">stash-uuid-1</uniqueid>', xml)

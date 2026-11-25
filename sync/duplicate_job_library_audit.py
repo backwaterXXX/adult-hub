@@ -49,7 +49,7 @@ def _record_missing_metadata(conn, job_id: str, video_id, missing_fields: list) 
 
 
 def _metadata_quality_audit(conn, job_id: str, payload: dict | None = None) -> dict:
-    """Audit effective catalog metadata without walking files or contacting Jellyfin."""
+    """Audit effective catalog metadata without walking files."""
     from common.video_metadata import resolve_metadata
 
     with conn:
@@ -105,22 +105,16 @@ class _AuditContext:
         self.missing_metadata_seen: set[str] = set()
 
 
-def _index_registered_rows(rows, media_dir: Path, media_root: Path, services) -> tuple:
+def _index_registered_rows(rows, media_dir: Path, media_root: Path, services) -> set:
     registered_streams = set()
-    registered_by_name = {}
-    registered_names_by_video = {}
     for row in rows:
-        stored_path, video_id = row[0], row[1]
-        name = Path(str(stored_path)).name
-        registered_by_name.setdefault(name, []).append(video_id)
-        if video_id is not None:
-            registered_names_by_video.setdefault(str(video_id), []).append(name)
+        stored_path = row[0]
         try:
             stream_path = services.resolve_media_path(stored_path, media_dir)
             registered_streams.add(stream_path.relative_to(media_root).as_posix())
         except (ValueError, OSError):
             pass
-    return registered_streams, registered_by_name, registered_names_by_video
+    return registered_streams
 
 
 def _nfo_mismatch_result(ctx: _AuditContext, nfo, source: dict, stored_overrides: dict, video_id):
@@ -253,91 +247,9 @@ def _store_orphan_findings(ctx: _AuditContext, orphan_families) -> None:
         ctx.findings += 1
 
 
-def _read_jellyfin_import_findings(ctx: _AuditContext) -> tuple:
-    services = ctx.services
-    try:
-        _core._record_job_progress(ctx.conn, ctx.job_id, "checking_jellyfin_import_state", completed=0)
-        audit = services.audit_jellyfin_import_state(
-            ctx.media_dir,
-            lambda completed, total: _core._record_job_progress(
-                ctx.conn, ctx.job_id, "checking_jellyfin_import_state", completed=completed, total=total
-            ),
-        )
-        audit_findings = audit.get("findings", []) if isinstance(audit, dict) else None
-        if (not isinstance(audit, dict) or audit.get("status") not in ("checked", "unknown")
-                or not isinstance(audit_findings, list)):
-            audit = {"status": "unknown", "findings": []}
-        jellyfin_state = audit["status"]
-        if jellyfin_state == "checked":
-            safe_findings = [(filename, kind) for filename, kind in audit_findings
-                             if isinstance(filename, str) and kind in
-                             ("nfo_import_state_missing", "nfo_import_state_mismatch")]
-        else:
-            safe_findings = []
-    except Exception as exc:
-        # Optional remote state checks must not turn a safe local audit into
-        # a failed job or expose exception text in the durable report.
-        services.logger.warning("Consistency audit could not compare Jellyfin import state (%s)",
-                                type(exc).__name__)
-        return "unknown", []
-    return jellyfin_state, safe_findings
-
-
-def _store_jellyfin_import_findings(ctx: _AuditContext, safe_findings: list, registered_by_name: dict,
-                                    jellyfin_state: str) -> str:
-    for filename, kind in safe_findings:
-        matches = registered_by_name.get(filename, [])
-        # Never attach Jellyfin evidence to an ambiguous local mapping.
-        if len(matches) != 1:
-            jellyfin_state = "partial"
-            continue
-        with ctx.conn:
-            ctx.conn.execute(
-                "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence,checked_at) "
-                "VALUES (%s,%s,%s,'open',%s,to_timestamp(%s))",
-                (ctx.job_id, matches[0], kind,
-                 "The NFO checksum does not match the recorded Jellyfin import state."
-                 if kind == "nfo_import_state_mismatch"
-                 else "The NFO has no recorded successful Jellyfin import checksum.", int(time.time())),
-            )
-        ctx.findings += 1
-    return jellyfin_state
-
-
-def _resolve_verified_import_findings(ctx: _AuditContext, safe_findings: list, registered_by_name: dict,
-                                      registered_names_by_video: dict) -> None:
-    # A later complete import-state check closes older findings only
-    # for videos whose every registered basename maps unambiguously.
-    reported_video_ids = {str(registered_by_name[filename][0]) for filename, _kind in safe_findings
-                          if len(registered_by_name.get(filename, [])) == 1}
-    verified_video_ids = {
-        video_id for video_id, names in registered_names_by_video.items()
-        if names and all(len(registered_by_name.get(name, [])) == 1 for name in names)
-    }
-    resolved_video_ids = sorted(verified_video_ids - reported_video_ids)
-    if resolved_video_ids:
-        with ctx.conn:
-            ctx.conn.execute(
-                "UPDATE admin_audit_items SET status='resolved' WHERE job_id<>%s "
-                "AND video_id=ANY(%s) AND kind IN ('nfo_import_state_missing','nfo_import_state_mismatch') "
-                "AND status='open'",
-                (ctx.job_id, resolved_video_ids),
-            )
-
-
-def _audit_jellyfin_imports(ctx: _AuditContext, registered_by_name: dict, registered_names_by_video: dict) -> str:
-    jellyfin_state = "unknown"
-    if ctx.services.audit_jellyfin_import_state is not None:
-        jellyfin_state, safe_findings = _read_jellyfin_import_findings(ctx)
-        jellyfin_state = _store_jellyfin_import_findings(ctx, safe_findings, registered_by_name, jellyfin_state)
-        if jellyfin_state in {"checked", "partial"}:
-            _resolve_verified_import_findings(ctx, safe_findings, registered_by_name, registered_names_by_video)
-    return jellyfin_state
-
-
 def _resolve_stale_quality_findings(ctx: _AuditContext) -> None:
     # A complete pass resolves old catalog-quality findings that were not
-    # reproduced. Jellyfin import state is independent and may be unknown.
+    # reproduced.
     with ctx.conn:
         ctx.conn.execute(
             "UPDATE admin_audit_items old SET status='resolved' WHERE old.job_id<>%s "
@@ -368,8 +280,7 @@ def _consistency_audit(conn, job_id: str, media_dir: Path, services, payload: di
         "LEFT JOIN video_metadata_overrides o ON o.video_id=v.id ORDER BY sf.file_path"
     ).fetchall()
     media_root = media_dir.resolve()
-    registered_streams, registered_by_name, registered_names_by_video = _index_registered_rows(
-        rows, media_dir, media_root, services)
+    registered_streams = _index_registered_rows(rows, media_dir, media_root, services)
     ctx = _AuditContext(conn, job_id, mode, media_dir, services, video_columns, resolve_metadata)
     for index, row in enumerate(rows, start=1):
         _audit_registered_row(ctx, index, row, len(rows))
@@ -379,12 +290,11 @@ def _consistency_audit(conn, job_id: str, media_dir: Path, services, payload: di
     _store_orphan_findings(ctx, orphan_families)
     if not inventory_complete:
         services.logger.warning("Consistency audit inventory is partial (entry/depth limit or filesystem access)")
-    jellyfin_state = _audit_jellyfin_imports(ctx, registered_by_name, registered_names_by_video)
     if inventory_complete:
         _resolve_stale_quality_findings(ctx)
     result = {"local_state": "audit_completed", "checked": ctx.checked, "total": len(rows),
               "audit_mode": mode,
-              "findings": ctx.findings, "jellyfin_import_state": jellyfin_state,
+              "findings": ctx.findings,
               "library_inventory_status": "complete" if inventory_complete else "partial",
               "library_inventory_entries": inventory_entries}
     if isinstance(payload.get("audit_batch_id"), str):
@@ -396,11 +306,6 @@ def _audit_repair_nfo(conn, job_id: str, payload: dict, media_dir: Path, service
     from sync.duplicate_job_audit_repairs import _audit_repair_nfo as implementation
     return implementation(conn, job_id, payload, media_dir, services)
 
-
-def _audit_import_refresh(conn, job_id: str, payload: dict, services) -> dict:
-    """Compatibility facade for Jellyfin audit import refresh requests."""
-    from sync.duplicate_job_audit_repairs import _audit_import_refresh as implementation
-    return implementation(conn, job_id, payload, services)
 
 
 def _orphan_file_operation(conn, job_id: str, payload: dict, media_dir: Path, quarantine_root: Path,

@@ -74,7 +74,7 @@ class TestNfoStudioDateadded(unittest.TestCase):
 
     def test_performers_as_collections(self):
         xml = self._write(_video(performers=["Rico Marlon", "Andres Milan"]))
-        # Format Kodi <set><name> — sam tekst w <set> Jellyfin ignoruje.
+        # Format Kodi <set><name> — sam tekst w <set> jest ignorowany.
         self.assertIn("<name>Rico Marlon</name>", xml)
         self.assertIn("<name>Andres Milan</name>", xml)
         self.assertIn("<set>", xml)

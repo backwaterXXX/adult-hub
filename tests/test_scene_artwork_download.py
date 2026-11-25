@@ -1,6 +1,5 @@
 """Tests for admin-triggered scene artwork download path selection."""
 
-import os
 import logging
 import unittest
 from pathlib import Path
@@ -239,16 +238,7 @@ class ArtworkProviderBranchTests(PgTestCase):
 
 
 class ArtworkJobQueueTests(PgTestCase):
-    def setUp(self):
-        super().setUp()
-        self.env_patch = patch.dict(os.environ, {
-            "JELLYFIN_URL": os.getenv("JELLYFIN_URL") or "http://jellyfin.test:8096",
-            "JELLYFIN_API_KEY": os.getenv("JELLYFIN_API_KEY") or "test-jellyfin-key",
-        })
-        self.env_patch.start()
-        self.addCleanup(self.env_patch.stop)
-
-    def test_generated_artwork_job_runs_and_records_jellyfin_result(self):
+    def test_generated_artwork_job_runs_and_records_the_local_result(self):
         import tempfile
         from common.job_queue import enqueue_job
         import sync.duplicate_jobs as duplicate_jobs
@@ -260,7 +250,7 @@ class ArtworkJobQueueTests(PgTestCase):
             job_id = enqueue_job(self.db_url, "artwork_generate",
                                  {"video_id": "telegram:123", "offset_seconds": 90})
             services = SimpleNamespace(
-                trigger_jellyfin_refresh=lambda: True, logger=logging.getLogger(__name__),
+                logger=logging.getLogger(__name__),
                 jobs_lock_root=lambda conn, media_dir: media_dir,
             )
             with patch("common.image_utils.extract_video_frame", return_value=(True, "")) as extract:
@@ -275,7 +265,6 @@ class ArtworkJobQueueTests(PgTestCase):
             self.assertEqual(state, "done")
             result = json.loads(raw)
             self.assertEqual(result["local_state"], "artwork_generated")
-            self.assertEqual(result["jellyfin_refresh"], "updated")
             self.assertIn("generating_artwork", [event["stage"] for event in result["events"]])
 
     def test_generated_artwork_failure_is_visible_as_failed_job(self):
@@ -324,8 +313,8 @@ class ArtworkJobQueueTests(PgTestCase):
             )
         return job_id
 
-    def _services(self, refresh_ok: bool = True) -> "SimpleNamespace":
-        return SimpleNamespace(trigger_jellyfin_refresh=lambda: refresh_ok)
+    def _services(self) -> "SimpleNamespace":
+        return SimpleNamespace()
 
     def test_dispatch_records_progress_and_downloaded_state(self):
         import json
@@ -338,14 +327,11 @@ class ArtworkJobQueueTests(PgTestCase):
                 Path("/nonexistent-media-dir"), self._services())
         self.assertTrue(committed)
         self.assertEqual(result["local_state"], "artwork_downloaded")
-        self.assertEqual(result["jellyfin_refresh"], "updated")
         row = self.conn.execute(
             "SELECT result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
         stored = json.loads(row[0])
-        self.assertEqual(stored["progress"]["stage"], "refreshing_jellyfin")
-        stages = [event["stage"] for event in stored["events"]]
-        self.assertEqual(stages, ["downloading_artwork", "refreshing_jellyfin"])
-        self.assertEqual(stored["jellyfin_refresh"], "pending")
+        self.assertEqual(stored["progress"]["stage"], "downloading_artwork")
+        self.assertEqual([event["stage"] for event in stored["events"]], ["downloading_artwork"])
 
     def test_dispatch_passes_through_not_found_state(self):
         import json
@@ -359,22 +345,11 @@ class ArtworkJobQueueTests(PgTestCase):
                 Path("/nonexistent-media-dir"), self._services())
         self.assertTrue(committed)
         self.assertEqual(result["local_state"], "artwork_not_found")
-        self.assertNotIn("jellyfin_refresh", result)
+        self.assertEqual(result["local_state"], "artwork_not_found")
         row = self.conn.execute(
             "SELECT result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
         stored = json.loads(row[0])
         self.assertEqual([e["stage"] for e in stored["events"]], ["downloading_artwork"])
-
-    def test_dispatch_marks_refresh_failure(self):
-        job_id = self._processing_job({"video_id": "telegram:123"})
-        import sync.duplicate_job_external_handlers as duplicate_job_external_handlers
-        with patch.object(scene_artwork_download, "download_artwork_for_video",
-                          return_value={"downloaded": True, "provider": "StashDB"}):
-            result, _ = duplicate_job_external_handlers.execute_external_operation(
-                "artwork_download", self.conn, job_id, {"video_id": "telegram:123"},
-                Path("/nonexistent-media-dir"), self._services(refresh_ok=False))
-        self.assertEqual(result["local_state"], "artwork_downloaded")
-        self.assertEqual(result["jellyfin_refresh"], "failed")
 
     def test_dispatch_rejects_invalid_video_id(self):
         import sync.duplicate_job_external_handlers as duplicate_job_external_handlers

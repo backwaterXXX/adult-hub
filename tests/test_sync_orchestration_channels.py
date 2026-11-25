@@ -167,7 +167,7 @@ class TestTelegramAvailabilityReconciliation(SyncPassHarness):
         self.assertEqual(self.sink("reconcile_telegram_channel").kwargs()["limit"], 20)
 
     def test_a_failing_reconciler_does_not_sink_the_channel(self):
-        self.explode("reconcile_telegram_channel", OSError("jellyfin refused"))
+        self.explode("reconcile_telegram_channel", OSError("session revoked"))
 
         self.assertTrue(self.sync())
 
@@ -175,7 +175,7 @@ class TestTelegramAvailabilityReconciliation(SyncPassHarness):
                          {"telegram:chan-one", "telegram:chan-two"})
         for channel in ("chan-one", "chan-two"):
             self.assertTrue(self.core.logger.has(
-                f"Telegram availability reconciliation failed for {channel}: jellyfin refused", "warning"))
+                f"Telegram availability reconciliation failed for {channel}: session revoked", "warning"))
 
 
 

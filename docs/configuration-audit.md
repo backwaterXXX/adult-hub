@@ -54,7 +54,7 @@ The following table inventories every configuration parameter across the Adult H
 | `STANDALONE_DATABASE_URL` | standalone compose | No | `postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}` | Yes | Restart | `.env` / Compose | Demote / Alias | Fallback to `DATABASE_URL` |
 | `BACKUP_RESTORE_DATABASE_URL` | resolver, sync | No | Code: `""` / `None`; Compose: `""` | Yes | Restart | `.env` / Env | Demote to Advanced | Preserved for test restore targets |
 | `TEST_DATABASE_URL` | test suite, tools | Conditional | Code: `""` (skips DB tests unless required) | Yes | Restart | `.env` / Env | Keep (Dev/Test) | Used strictly for tests, never production |
-| `HOST_IP` | compose (Jellyfin published URL) | No | Compose: `${HOST_IP:-127.0.0.1}` | No | Restart | `.env` / Compose | Keep Core | Retain for LAN access |
+| `HOST_IP` | compose (host binding) | No | Compose: `${HOST_IP:-127.0.0.1}` | No | Restart | `.env` / Compose | Keep Core | Retain for LAN access |
 | `RESOLVER_PUBLIC_URL` | resolver, sync | No | Code: `http://127.0.0.1:8090`; Compose: `${RESOLVER_PUBLIC_URL:-http://127.0.0.1:8090}` | No | Restart | `.env` / Env | Keep Core | Public URL for stream links in .strm |
 | `STREAM_PUBLIC_URL_TELEGRAM` | sync | No | Code: `""` (falls back to `RESOLVER_PUBLIC_URL`) | No | Restart | `.env` / Env | Demote to Advanced | Optional Telegram-specific stream origin |
 | `RESOLVER_API_URL` | sync | No | Code: `http://localhost:8090`; Compose: `http://resolver:8090` | No | Restart | Compose / Env | Centralize Default | Sane default `http://resolver:8090` in containers |
@@ -95,11 +95,6 @@ The following table inventories every configuration parameter across the Adult H
 | `TELEGRAM_CHANNELS` | resolver, sync | No | Code: `""` | No | Restart | Env | Deprecate Alias | Legacy fallback when config.yaml missing |
 | `TELEGRAM_MAX_HISTORY` | resolver | No | Code: `1` | No | Restart | Env | Deprecate Alias | Legacy fallback |
 | `TELEGRAM_MIN_DURATION_SECONDS` | resolver | No | Code: `420` | No | Restart | Env | Deprecate Alias | Legacy fallback |
-| `JELLYFIN_URL` | resolver, sync, tools | No | Code: `""`; Compose: `${JELLYFIN_URL:-}` | No | Restart | `.env` / Env | Keep Core | URL to Jellyfin instance |
-| `JELLYFIN_API_KEY` | resolver, sync, tools | No | Code: `""`; Compose: `${JELLYFIN_API_KEY:-}` | Yes | Restart | `.env` / Env | Keep Core | Jellyfin API token |
-| `JELLYFIN_FFMPEG_FAST_PROBE` | compose (jellyfin env) | No | Compose: `true` | No | Restart | Env / Compose | Centralize Default | Jellyfin container probe optimization |
-| `JELLYFIN_FFMPEG_ANALYZE_DURATION` | compose (jellyfin env) | No | Compose: `5M` | No | Restart | Env / Compose | Centralize Default | Jellyfin container analyze duration |
-| `JELLYFIN_FFMPEG_PROBE_SIZE` | compose (jellyfin env) | No | Compose: `10M` | No | Restart | Env / Compose | Centralize Default | Jellyfin container probe size |
 | `STASHDB_API_KEY` | sync, resolver | No | Code: `""`; Compose: `${STASHDB_API_KEY:-}` | Yes | Restart | `.env` / Env | Keep Core | StashDB GraphQL API key |
 | `STASH_API_KEY` | sync, resolver | No | Code: `""`; Compose: `${STASH_API_KEY:-}` | Yes | Restart | `.env` / Env | Deprecate Alias | Legacy alias for `STASHDB_API_KEY` |
 | `STASHDB_API_URL` | sync, resolver | No | Code: `https://stashdb.org/graphql` | No | Restart | Env | Demote to Advanced | Standard StashDB endpoint |
@@ -117,7 +112,7 @@ The following table inventories every configuration parameter across the Adult H
 | `VIDEO_VISUAL_WORKER_ENABLED` | resolver | No | Code: `false`; Compose: `false` | No | Restart | Env | Demote to Advanced | Background visual duplicate worker |
 | `PHASH_UPLOAD_ENABLED` | resolver | No | Code: `false`; Compose: `false` | No | Restart | Env | Demote to Advanced | Accept client-submitted pHashes |
 | `PHASH_ACCEPTED_DECODER_PROFILES` | resolver | No | Code: `""`; Compose: `""` | No | Restart | Env | Demote to Advanced | Decoder profiles |
-| `PHASH_ALLOWED_USER_IDS` | resolver | No | Code: `""`; Compose: `""` | No | Restart | Env | Demote to Advanced | Non-admin Jellyfin user whitelist |
+| `PHASH_ALLOWED_USER_IDS` | resolver | No | Code: `""`; Compose: `""` | No | Restart | Env | Demote to Advanced | Non-admin client user whitelist |
 | `PHASH_SERVER_BYTE_BUDGET` | resolver | No | Code: `268435456` (256MB) | No | Restart | Env | Demote to Advanced | Server-side pHash byte limit |
 | `PHASH_SERVER_TIMEOUT_SECONDS` | resolver | No | Code: `1200` (20m) | No | Restart | Env | Demote to Advanced | Server-side pHash timeout |
 | `PHASH_SERVER_BYTES_PER_SECOND` | resolver | No | Code: `2097152` (2MB/s) | No | Restart | Env | Demote to Advanced | Server-side pHash stream rate |
@@ -160,10 +155,6 @@ The following table inventories every configuration parameter across the Adult H
    - `backup_scheduler.py`, `resolver/admin.py`, Compose: Defaults to `/data/backups`.
    - *Resolution*: Centralize default to `/data/backups` (with fallback to `./data/backups` if `/data` is unwritable).
 
-4. **`JELLYFIN_PEOPLE_PER_RUN`**:
-   - `common/config_loader.py`: Defaults to `50`.
-   - `config.example.yaml`: Defaults to `25`.
-   - *Resolution*: Centralize on 25 in code defaults matching the recommended conservative pacing.
 
 5. **`ADMIN_V2_MONITOR_BACKUPS`**:
    - `resolver/admin_v2_issue_builder.py:284`: Code fallback is `"true"`.
@@ -195,11 +186,11 @@ The following table inventories every configuration parameter across the Adult H
 These settings dictate host network topology, filesystem mounts, container images, hardware access, or security boundaries. They **must not** be editable through the Admin UI:
 - `DATABASE_URL`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`
 - `MEDIA_PATH`, `MEDIA_DIR`, `DATA_DIR`, `CACHE_DIR`
-- `HOST_IP`, `RESOLVER_BIND_IP`, `RESOLVER_PORT`, `JELLYFIN_BIND_IP`, `JELLYFIN_PORT`
+- `HOST_IP`, `RESOLVER_BIND_IP`, `RESOLVER_PORT`
 - `RESOLVER_PUBLIC_URL`, `PUBLIC_DOMAIN`, `ADMIN_PUBLIC`
 - `ADMIN_WRITE_TOKEN`
 - `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION_PATH`
-- `RESOLVER_IMAGE`, `SYNC_IMAGE`, `POSTGRES_IMAGE`, `JELLYFIN_IMAGE`
+- `RESOLVER_IMAGE`, `SYNC_IMAGE`, `POSTGRES_IMAGE`
 - `stop_grace_period`, `mem_limit`, `networks`, `volumes`
 
 ### 4.2 UI Candidates (Manageable via Admin UI / Dynamic Overlay)
@@ -207,7 +198,6 @@ These settings govern operational policies, integration keys, sync schedules, an
 - **Telegram Channels**: Already dynamically managed via `admin-source-overrides.json` (`/admin/api/v2/sources`).
 - **Sync Schedules & Intervals**: System schedules are already stored in PostgreSQL (`system_schedules` table) for `library-sync`, `database-backup`, and `artwork-generation`.
 - **Deduplication Policies**: Candidate for Admin UI (`DUPLICATE_AUTO_MERGE_ENABLED`, `DUPLICATE_AUTO_MERGE_TELEGRAM_FILE_ID`).
-- **Jellyfin Connection & Sync**: Can be configured/tested in Admin UI (`JELLYFIN_URL`, `JELLYFIN_API_KEY`).
 - **External Metadata Keys**: `STASHDB_API_KEY`, `THEPORNDB_API_TOKEN`.
 
 ---
@@ -269,10 +259,10 @@ When a setting can be specified in multiple locations, the effective value follo
    - Do not require users to create or mount a dummy `config.yaml` on initial install.
 3. **Slim Down `.env.example`**:
    - Reduce `.env.example` from 92 entries down to ~15 essential settings:
-     `DATABASE_URL`, `RESOLVER_PUBLIC_URL`, `MEDIA_PATH`, `HOST_IP`, `PUBLIC_DOMAIN`, `ADMIN_WRITE_TOKEN`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `STASHDB_API_KEY`, `THEPORNDB_API_TOKEN`, `LOG_LEVEL`, `TZ`.
+     `DATABASE_URL`, `RESOLVER_PUBLIC_URL`, `MEDIA_PATH`, `HOST_IP`, `PUBLIC_DOMAIN`, `ADMIN_WRITE_TOKEN`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `STASHDB_API_KEY`, `THEPORNDB_API_TOKEN`, `LOG_LEVEL`, `TZ`.
    - Document all advanced overrides in `docs/advanced-configuration.md`.
 4. **Streamline `docker-compose.yml`**:
    - Remove redundant `${VAR:-default}` environment mappings where the code already defaults correctly.
-   - Cleanly isolate external service integration (PostgreSQL, Jellyfin, Caddy/Reverse Proxy) vs. standalone container definitions.
+   - Cleanly isolate external service integration (PostgreSQL, Caddy/Reverse Proxy) vs. standalone container definitions.
 5. **Harmonize Standalone & Production Environments**:
    - Support standard variable names (`DATABASE_URL`, `MEDIA_PATH`) in standalone mode while preserving fallback support for `STANDALONE_*` variables.

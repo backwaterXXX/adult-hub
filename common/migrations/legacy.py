@@ -110,6 +110,9 @@ from common.migrations.m0072_performer_lookup_indexes import (
 from common.migrations.m0073_performer_catalog_image import (
     migration as performer_catalog_image,
 )
+from common.migrations.m0074_drop_jellyfin_person_sync import (
+    migration as drop_jellyfin_person_sync,
+)
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -187,4 +190,5 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     telegram_sources_backfill,
     performer_lookup_indexes,
     performer_catalog_image,
+    drop_jellyfin_person_sync,
 )

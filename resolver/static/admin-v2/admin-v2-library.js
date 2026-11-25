@@ -226,7 +226,7 @@
     const heading = create('h2', '', isRestore ? 'Restore recorded items' : isHideBatch ? 'Auto-merge exact duplicates' : isHide ? 'Keep selected item and hide duplicate' : 'Quarantine selected videos'); heading.id = 'operationDialogTitle';
     content.append(create('p', 'eyebrow', 'REVIEW OPERATION'), heading);
     content.append(create('p', 'detail-description', isRestore
-      ? `${plan.items.length} item${plan.items.length === 1 ? '' : 's'} will be restored from the recorded decision. The worker checks conflicts before restoring saved files and requesting a Jellyfin refresh.`
+      ? `${plan.items.length} item${plan.items.length === 1 ? '' : 's'} will be restored from the recorded decision. The worker checks conflicts before restoring the saved files.`
       : isHideBatch
         ? `${plan.items.length} duplicate item${plan.items.length === 1 ? '' : 's'} across ${plan.scanned_groups || 'the scanned'} exact-file group${plan.scanned_groups === 1 ? '' : 's'} will be hidden. Each group runs as a separate task; no files are deleted.${plan.truncated ? ' The preview is capped at 25 items; run it again for another bounded batch.' : ''}`
         : isHide

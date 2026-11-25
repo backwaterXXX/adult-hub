@@ -10,9 +10,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 from common.json_helpers import json_list_or_empty
 from common.performer_cleanup_support import (
     build_video_nfo,
-    iter_jellyfin_person_dirs,
-    remove_person_dir_counted,
-    remove_person_dir_via_docker,
 )
 from common.performers import is_valid_performer_name, is_safe_alias, normalize_performers
 from common.performer_titles import parse_title_performers_with_known_map
@@ -22,7 +19,6 @@ from sync import sync as S
 DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None
 BACKUP_DIR = BASE_DIR / "data" / "backups"
 MEDIA_DIR = BASE_DIR / "media" / "adult"
-JF_PEOPLE_DIR = BASE_DIR / "jf-config" / "metadata" / "People"
 
 
 def _clean_aliases(conn) -> None:
@@ -60,31 +56,10 @@ def _delete_invalid_names(conn, table: str, label: str, false_names: set) -> Non
 
 
 def _clean_invalid_names(conn) -> None:
-    # 2. Clean performer_bios, photos, sync
+    # 2. Clean performer_bios and photos
     false_names = {'fucked', 'fuck', 'fucking', 'lucas', 'falcon', 'black', 'jordan', 'connor'}
     _delete_invalid_names(conn, "performer_bios", "performer bios", false_names)
     _delete_invalid_names(conn, "performer_photos", "performer photos", false_names)
-    _delete_invalid_names(conn, "jellyfin_person_sync", "jellyfin_person_sync entries", false_names)
-
-
-def _remove_person_dir_via_docker(person_dir: Path, error: Exception) -> int:
-    """Return how many folders this fallback counts as removed (0 or 1)."""
-    return remove_person_dir_via_docker(person_dir, error, base_dir=BASE_DIR, people_dir=JF_PEOPLE_DIR)
-
-
-def _remove_invalid_person_dir(person_dir: Path) -> int:
-    """Remove one invalid Jellyfin People folder; return how many removals to count."""
-    return remove_person_dir_counted(person_dir, base_dir=BASE_DIR, people_dir=JF_PEOPLE_DIR)
-
-
-def _clean_jellyfin_people() -> None:
-    # 3. Clean Jellyfin People directory
-    people_deleted = 0
-    for person_dir in iter_jellyfin_person_dirs(JF_PEOPLE_DIR):
-        pname = person_dir.name
-        if not is_valid_performer_name(pname):
-            people_deleted += _remove_invalid_person_dir(person_dir)
-    print(f"Total Jellyfin People folders removed: {people_deleted}")
 
 
 def _load_known_maps(conn):
@@ -220,11 +195,8 @@ def run_cleanup():
     _clean_aliases(conn)
     _normalize_alias_canonicals(conn)
 
-    # 2. Clean performer_bios, photos, sync
+    # 2. Clean performer_bios and photos
     _clean_invalid_names(conn)
-
-    # 3. Clean Jellyfin People directory
-    _clean_jellyfin_people()
 
     # 4. Clean and fix videos table & NFO files
     known_names, known_map, safe_aliases = _load_known_maps(conn)

@@ -7,7 +7,7 @@ Verifies:
 4. Distributable compose validation with fake credentials and isolated config (no starts).
 5. Migration gate (service_completed_successfully) and telegram-auth profiles (tools).
 6. Clear failure on missing required credentials or uninitialized session.
-7. Correct client-facing stream URL defaults and Jellyfin container DNS resolution.
+7. Correct client-facing stream URL defaults inside the Compose network.
 """
 
 import os
@@ -119,8 +119,6 @@ CACHE_DIR=./cache
 MEDIA_DIR=./media
 RESOLVER_BIND_IP=127.0.0.1
 RESOLVER_PORT=8090
-JELLYFIN_BIND_IP=127.0.0.1
-JELLYFIN_PORT=8096
 ADMIN_WRITE_TOKEN=fake_admin_token_abcdef
 TELEGRAM_API_ID=123456
 TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
@@ -147,7 +145,6 @@ TELEGRAM_SESSION_PATH=/data/telegram.session
         services = parsed_config.get("services", {})
         self.assertIn("database", services)
         self.assertIn("migration", services)
-        self.assertIn("jellyfin", services)
         self.assertIn("resolver", services)
         self.assertIn("sync", services)
         self.assertNotIn("backup", services)
@@ -217,7 +214,7 @@ TELEGRAM_SESSION_PATH=/data/telegram.session
         self.assertIn("POSTGRES_PASSWORD", res.stderr)
 
     def test_client_facing_stream_url_defaults_to_resolver_container(self):
-        """Resolver URL written to .strm defaults to http://resolver:8090 for Jellyfin container bridge resolution."""
+        """Resolver URL written to .strm defaults to http://resolver:8090 inside the Compose networker bridge resolution."""
         compose_file = RELEASE_SOURCE / "docker-compose.yml"
         raw = compose_file.read_text(encoding="utf-8")
         parsed = yaml.safe_load(raw)

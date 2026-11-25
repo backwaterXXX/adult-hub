@@ -5,7 +5,7 @@ import unittest
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
@@ -80,94 +80,6 @@ def admin(blocked=False):
 
 
 class TestAdminV2Status(unittest.IsolatedAsyncioTestCase):
-    async def test_jellyfin_probe_is_bounded_public_and_returns_no_instance_details(self):
-        class Client:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
-            async def __aenter__(self):
-                return self
-            async def __aexit__(self, *_args):
-                return False
-            async def get(self, url):
-                self.requested_url = url
-                return SimpleNamespace(status_code=200, text="private server details")
-
-        client = Client(timeout=3.0, follow_redirects=False)
-        client_type = Mock(return_value=client)
-        admin_module = admin()
-        endpoint = next(route.endpoint for route in admin_v2_status.build_router(admin_module).routes
-                        if route.path == "/api/v2/status/jellyfin")
-        with patch.dict("os.environ", {"JELLYFIN_URL": "https://jellyfin.example/base"}), \
-                patch.object(admin_v2_status.httpx, "AsyncClient", client_type):
-            response = await endpoint(request("/admin/api/v2/status/jellyfin"))
-
-        self.assertEqual(response["status"], "reachable")
-        self.assertRegex(response["checked_at"], r"\+00:00$")
-        self.assertEqual(set(response), {"ok", "status", "checked_at"})
-        self.assertEqual(client.requested_url, "https://jellyfin.example/base/System/Info/Public")
-        self.assertEqual(client_type.call_args.kwargs, {"timeout": 3.0, "follow_redirects": False})
-        self.assertNotIn("private server details", str(response))
-
-    async def test_jellyfin_probe_handles_missing_configuration_and_denies_remote_admin(self):
-        class Client:
-            def __init__(self, **_kwargs):
-                raise AssertionError("A missing or blocked Jellyfin probe must not make a request")
-
-        admin_module = admin()
-        endpoint = next(route.endpoint for route in admin_v2_status.build_router(admin_module).routes
-                        if route.path == "/api/v2/status/jellyfin")
-        with patch.dict("os.environ", {"JELLYFIN_URL": ""}), \
-                patch.object(admin_v2_status.httpx, "AsyncClient", Client):
-            missing = await endpoint(request("/admin/api/v2/status/jellyfin"))
-        self.assertEqual(missing, {"ok": True, "status": "not_configured", "checked_at": None})
-
-        admin_module._admin_blocked = lambda _request: True
-        blocked = await endpoint(request("/admin/api/v2/status/jellyfin"))
-        self.assertEqual(blocked.status_code, 403)
-
-    async def test_jellyfin_probe_does_not_follow_redirects_or_send_api_key(self):
-        class Client:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
-            async def __aenter__(self):
-                return self
-            async def __aexit__(self, *_args):
-                return False
-            async def get(self, url):
-                return SimpleNamespace(status_code=503, text="secret token should not escape")
-
-        admin_module = admin()
-        endpoint = next(route.endpoint for route in admin_v2_status.build_router(admin_module).routes
-                        if route.path == "/api/v2/status/jellyfin")
-        with patch.dict("os.environ", {"JELLYFIN_URL": "http://jellyfin.example"}), \
-                patch.dict("os.environ", {"JELLYFIN_API_KEY": "must-not-be-used"}), \
-                patch.object(admin_v2_status.httpx, "AsyncClient", Client):
-            response = await endpoint(request("/admin/api/v2/status/jellyfin"))
-        self.assertEqual(response["status"], "unavailable")
-        self.assertNotIn("must-not-be-used", str(response))
-        self.assertNotIn("secret token should not escape", str(response))
-
-    async def test_jellyfin_probe_timeout_is_reported_without_exception_details(self):
-        class Client:
-            def __init__(self, **_kwargs):
-                pass
-            async def __aenter__(self):
-                return self
-            async def __aexit__(self, *_args):
-                return False
-            async def get(self, _url):
-                raise admin_v2_status.httpx.TimeoutException("https://jellyfin.invalid/?api_key=secret")
-
-        admin_module = admin()
-        endpoint = next(route.endpoint for route in admin_v2_status.build_router(admin_module).routes
-                        if route.path == "/api/v2/status/jellyfin")
-        with patch.dict("os.environ", {"JELLYFIN_URL": "https://jellyfin.example"}), \
-                patch.object(admin_v2_status.httpx, "AsyncClient", Client):
-            response = await endpoint(request("/admin/api/v2/status/jellyfin"))
-        self.assertEqual(response["status"], "unavailable")
-        self.assertNotIn("jellyfin.invalid", str(response))
-        self.assertNotIn("api_key", str(response))
-
     async def test_database_size_accepts_postgres_decimal(self):
         admin_module = admin()
         stats = admin_module._db_stats()

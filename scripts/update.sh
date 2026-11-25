@@ -238,8 +238,8 @@ if "${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${CO
     is_authed=1
 fi
 
-# Ensure core services (database and jellyfin) are running
-"${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d database jellyfin
+# Ensure core services (database) are running
+"${DOCKER_BIN}" compose --env-file .env -p "${COMPOSE_PROJECT_NAME}" -f "${COMPOSE_FILE}" up -d database
 
 if [ "${is_authed}" -eq 1 ]; then
     echo "==> Telegram session authorized. Updating and starting resolver and sync..."
@@ -289,9 +289,9 @@ echo "==========================================================================
 echo "Version:            ${APP_VERSION}"
 echo "Admin UI:           ${RESOLVER_PUBLIC_URL}/admin/"
 if [ "${is_authed}" -eq 1 ]; then
-    echo "Services:           resolver, sync, database, jellyfin running"
+    echo "Services:           resolver, sync, database running"
 else
-    echo "Services:           database, jellyfin, resolver running (sync withheld)"
+    echo "Services:           database, resolver running (sync withheld)"
     echo "Next Steps:         Run 'make setup' to authenticate Telegram"
 fi
 echo "================================================================================"

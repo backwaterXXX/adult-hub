@@ -21,7 +21,7 @@ Edit `.env`:
 - Set `POSTGRES_PASSWORD` to a secure password.
 - Set `ADMIN_WRITE_TOKEN` to a secure secret token.
 - Set `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from [my.telegram.org](https://my.telegram.org).
-- (Optional) To access Adult Hub from other devices on your home network, set `RESOLVER_BIND_IP` and `JELLYFIN_BIND_IP` to your host's LAN IP (e.g. `192.168.1.100`), and set `STREAM_PUBLIC_URL_TELEGRAM=http://192.168.1.100:8090`.
+- (Optional) To access Adult Hub from other devices on your home network, set `RESOLVER_BIND_IP` to your host's LAN IP (e.g. `192.168.1.100`), and set `STREAM_PUBLIC_URL_TELEGRAM=http://192.168.1.100:8090`.
 
 ### 2. Pull Images and Authenticate Telegram
 
@@ -42,12 +42,11 @@ Follow the interactive prompts to enter your phone number, the verification code
 docker compose up -d
 ```
 
-Compose starts the database, executes schema migrations, and launches Jellyfin, the Resolver API, the Sync worker, and automated database backups.
+Compose starts the database, executes schema migrations, and launches the Resolver API, the Sync worker, and automated database backups.
 
 ## Access Endpoints
 
 - **Adult Hub Admin Panel:** [http://127.0.0.1:8090/admin/](http://127.0.0.1:8090/admin/) (or your configured LAN IP and port). Enter your `ADMIN_WRITE_TOKEN` in the panel.
-- **Jellyfin Media Server:** [http://127.0.0.1:8096/](http://127.0.0.1:8096/) (or your configured LAN IP and port). Complete Jellyfin's first-run setup wizard and add a library pointing to `/media/adult`.
 
 ### Client API v1 (Optional)
 

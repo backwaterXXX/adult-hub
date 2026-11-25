@@ -12,8 +12,7 @@ class Element {
 }
 
 (async () => {
-  const ids = ['maintenanceFeedback', 'triggerFullSync', 'clearResolverCache',
-    'refreshJellyfinLibrary', 'refreshJellyfinCollections'];
+  const ids = ['maintenanceFeedback', 'triggerFullSync', 'clearResolverCache'];
   const elements = Object.fromEntries(ids.map(id => [id, new Element()]));
   const calls = [];
   let confirmation = true;
@@ -37,7 +36,6 @@ class Element {
             await new Promise(resolve => { releaseNext = resolve; });
           }
           if (path.endsWith('/cache/clear')) return { ok: true, cleared: 4 };
-          if (path.endsWith('/collections/refresh')) return { ok: true, job_id: 'job-1' };
           if (path.endsWith('/sync')) return { ok: true, job_id: 'job-sync' };
           return { ok: true, requested: true };
         },
@@ -52,32 +50,23 @@ class Element {
   assert.equal(elements.maintenanceFeedback.children[2].textContent, 'Open task job-sync');
   await elements.clearResolverCache.listeners.click();
   assert.match(elements.maintenanceFeedback.textContent, /Resolver cache cleared \(4 entries\)/);
-  await elements.refreshJellyfinLibrary.listeners.click();
-  assert.match(elements.maintenanceFeedback.textContent, /Import completion is not confirmed/);
-  await elements.refreshJellyfinCollections.listeners.click();
   assert.deepEqual(calls.map(call => call.path), [
     '/admin/api/v2/maintenance/sync',
     '/admin/api/v2/maintenance/cache/clear',
-    '/admin/api/v2/maintenance/jellyfin/refresh',
-    '/admin/api/v2/maintenance/collections/refresh',
   ]);
   assert.equal(JSON.stringify(calls[0].payload), JSON.stringify({ source: null, sync_mode: 'scheduled' }));
-  assert.match(elements.maintenanceFeedback.textContent, /Collections refresh queued as job job-1/);
-  assert.equal(elements.maintenanceFeedback.children[2].href, '/admin/v2/?job_id=job-1#jobs');
 
   const beforeCancel = calls.length;
   confirmation = false;
   await elements.triggerFullSync.listeners.click();
   await elements.clearResolverCache.listeners.click();
-  await elements.refreshJellyfinLibrary.listeners.click();
-  await elements.refreshJellyfinCollections.listeners.click();
   assert.equal(calls.length, beforeCancel, 'cancelled confirmations must not send maintenance requests');
 
   confirmation = true;
-  failurePath = '/admin/api/v2/maintenance/jellyfin/refresh';
-  await elements.refreshJellyfinLibrary.listeners.click();
+  failurePath = '/admin/api/v2/maintenance/cache/clear';
+  await elements.clearResolverCache.listeners.click();
   assert.match(elements.maintenanceFeedback.textContent, /Maintenance action failed\. The remote service rejected the request\./);
-  assert.equal(elements.refreshJellyfinLibrary.disabled, false, 'a failed action must restore its button');
+  assert.equal(elements.clearResolverCache.disabled, false, 'a failed action must restore its button');
 
   failurePath = '';
   holdNext = true;

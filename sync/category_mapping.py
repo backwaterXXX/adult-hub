@@ -1,7 +1,7 @@
 """Category mapping and normalization for Adult-Hub.
 
 Reduces raw provider categories (106+) to a clean set of 23 unified genres
-and prevents provider names (studios) from polluting the Jellyfin genres list.
+and prevents provider names (studios) from polluting the genres list.
 """
 
 import re

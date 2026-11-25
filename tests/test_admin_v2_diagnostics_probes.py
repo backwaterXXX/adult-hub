@@ -81,49 +81,6 @@ class TestAdminV2DiagnosticsProbes(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("url", result)
         self.assertNotIn("body", result)
 
-    async def test_jellyfin_probe_uses_only_configured_public_endpoint_and_rejects_credentials(self):
-        class Response:
-            status_code = 200
-
-        class Stream:
-            async def __aenter__(self):
-                return Response()
-
-            async def __aexit__(self, *_args):
-                return False
-
-        class Client:
-            def __init__(self, **_kwargs):
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *_args):
-                return False
-
-            def stream(self, method, url):
-                observed.append((method, url))
-                return Stream()
-
-        observed = []
-        with patch.dict("os.environ", {"JELLYFIN_URL": "https://jellyfin.example/base"}), \
-                patch("httpx.AsyncClient", Client):
-            valid = await admin_v2_diagnostics._configured_jellyfin_probe()
-        self.assertEqual(valid["status"], "healthy")
-        self.assertEqual(observed, [("GET", "https://jellyfin.example/base/System/Info/Public")])
-
-        for value in (
-            "", "https://user:secret@jellyfin.example", "https://jellyfin.example/?token=secret",
-            "file:///etc/passwd", "not a url",
-        ):
-            with self.subTest(value=value), \
-                    patch.dict("os.environ", {"JELLYFIN_URL": value}), \
-                    patch("httpx.AsyncClient", side_effect=AssertionError("invalid target must not be probed")):
-                result = await admin_v2_diagnostics._configured_jellyfin_probe()
-                self.assertIn(result["status"], {"not_configured", "unknown"})
-        self.assertEqual(len(observed), 1)
-
     async def test_database_probe_has_connection_and_statement_timeouts_and_sanitizes_errors(self):
         async def run_immediately(func, *args, **kwargs):
             return func(*args, **kwargs)

@@ -23,7 +23,6 @@ from common.admin_operations import (
     _active_quarantine_job,
     _active_quarantine_jobs,
     _active_undo_job,
-    _audit_import_refresh_state,
     _audit_repair_state,
     _canonical,
     _orphan_finding_state,
@@ -39,7 +38,7 @@ __all__ = [
     "_active_hide_job", "_active_metadata_job", "_active_orphan_file_job",
     "_active_hide_jobs",
     "_active_metadata_jobs",
-    "_active_quarantine_job", "_active_quarantine_jobs", "_active_undo_job", "_audit_import_refresh_state",
+    "_active_quarantine_job", "_active_quarantine_jobs", "_active_undo_job",
     "_audit_repair_state", "_canonical", "_orphan_finding_state",
     "_insert_queued_jobs", "_record_operation_queue_audit", "_restore_snapshot_rows",
     "_video_snapshot", "_video_snapshots",
@@ -105,7 +104,6 @@ def execute_operation(db_url: str | None, plan_id: str, config_path: str | None 
             handlers.handle_metadata_update,
             handlers.handle_performer_merge,
             handlers.handle_audit_repair_nfo,
-            handlers.handle_audit_import_refresh,
             handlers.handle_quarantine,
         ):
             result = handler(*operation_context)

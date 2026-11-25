@@ -7,7 +7,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 
 from PIL import Image
@@ -170,16 +170,13 @@ class ClientPhashStatusTests(unittest.TestCase):
     def _request():
         return Request({
             "type": "http", "method": "GET", "path": "/admin/api/v2/video-phash/status",
-            "headers": [(b"x-emby-token", b"jellyfin-session")],
+            "headers": [(b"authorization", b"Bearer client-access-token")],
         })
 
     @staticmethod
-    def _jellyfin_response():
-        response = Mock(status_code=200)
-        response.json.return_value = {
-            "Id": "admin-user", "Policy": {"IsAdministrator": True},
-        }
-        return response
+    def _admin_session():
+        return {"session_id": "session-1", "user_id": "admin-user", "username": "operator",
+                "is_admin": True, "is_active": True}
 
     def test_status_rejects_unapproved_profile_before_catalog_lookup(self):
         class Admin:
@@ -192,9 +189,9 @@ class ClientPhashStatusTests(unittest.TestCase):
             with patch.dict(os.environ, {
                 "PHASH_UPLOAD_ENABLED": "true",
                 "PHASH_ACCEPTED_DECODER_PROFILES": "approved-profile-v1",
-                "JELLYFIN_URL": "http://jellyfin.invalid",
-            }), patch.object(phash_api.httpx.AsyncClient, "get", new=AsyncMock(return_value=self._jellyfin_response())), \
-                    patch.object(phash_api.db, "connect") as connect:
+            }), patch.object(phash_api, "_lookup_client_session",
+                             new=Mock(return_value=self._admin_session())), \
+                    patch.object(phash_api, "db") as connect:
                 response = await endpoint(self._request(), "telegram:-100123:42:99", "unapproved-profile")
             connect.assert_not_called()
             return response
@@ -232,8 +229,8 @@ class ClientPhashStatusTests(unittest.TestCase):
             with patch.dict(os.environ, {
                 "PHASH_UPLOAD_ENABLED": "true",
                 "PHASH_ACCEPTED_DECODER_PROFILES": "approved-profile-v1",
-                "JELLYFIN_URL": "http://jellyfin.invalid",
-            }), patch.object(phash_api.httpx.AsyncClient, "get", new=AsyncMock(return_value=self._jellyfin_response())), \
+            }), patch.object(phash_api, "_lookup_client_session",
+                             new=Mock(return_value=self._admin_session())), \
                     patch.object(phash_api.db, "connect", return_value=connection), \
                     patch.object(phash_api.asyncio, "to_thread", new=self._inline_to_thread):
                 return await endpoint(self._request(), "telegram:-100123:42:99", "approved-profile-v1")

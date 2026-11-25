@@ -13,6 +13,7 @@ import httpx
 from fastapi import APIRouter, Request, Response
 from resolver.admin_v2_errors import V2ErrorRoute
 from common import db
+from common.client_auth.service import verify_access_token
 from common.http_rate_limit import wait_for_host_slot
 
 
@@ -54,34 +55,37 @@ def _accepted_profiles() -> set[str]:
             if part.strip()}
 
 
-async def _authorized_user(token: str) -> dict | None:
-    jellyfin_url = os.getenv("JELLYFIN_URL", "").strip().rstrip("/")
-    if not token or not jellyfin_url:
+def _bearer_token(request: Request) -> str:
+    """Read the client access token from the Authorization header."""
+    scheme, _, token = str(request.headers.get("Authorization", "")).partition(" ")
+    return token.strip() if scheme.lower() == "bearer" else ""
+
+
+def _lookup_client_session(admin, token: str) -> dict | None:
+    conn = db.connect(admin.HUB_DB_URL)
+    try:
+        return verify_access_token(conn, token)
+    finally:
+        conn.close()
+
+
+async def _authorized_user(admin, token: str) -> dict | None:
+    """Resolve the client session behind a bearer token; admins or allow-listed users only."""
+    if not token:
         return None
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            authorization = (
-                'MediaBrowser Client="Adult Hub Resolver", '
-                'Device="Resolver", DeviceId="adult-hub-resolver", '
-                'Version="1", '
-                f'Token="{token}"'
-            )
-            response = await client.get(
-                jellyfin_url + "/Users/Me", headers={"Authorization": authorization},
-            )
-        if response.status_code != 200:
-            return None
-        user = response.json()
-        user_id = user.get("Id") if isinstance(user, dict) else None
-        if not isinstance(user_id, str) or not user_id:
-            return None
-        allowed = {part.strip().lower() for part in os.getenv("PHASH_ALLOWED_USER_IDS", "").split(",")
-                   if part.strip()}
-        is_admin = bool(((user.get("Policy") or {}).get("IsAdministrator")))
-        return user if is_admin or user_id.lower() in allowed else None
+        user = await asyncio.to_thread(_lookup_client_session, admin, token)
     except Exception:
         logger.debug("Ignored exception in _authorized_user", exc_info=True)
         return None
+    if not isinstance(user, dict):
+        return None
+    allowed = {part.strip().lower() for part in os.getenv("PHASH_ALLOWED_USER_IDS", "").split(",")
+               if part.strip()}
+    user_id = str(user.get("user_id") or "")
+    if user.get("is_admin") or (user_id and user_id.lower() in allowed):
+        return user
+    return None
 
 
 def _phash_status(admin, video_id: str, decoder_profile: str) -> tuple[bool, bool]:
@@ -112,8 +116,7 @@ def _route_get_status(router, admin):
     async def get_status(request: Request, video_id: str, decoder_profile: str = ""):
         if not _phash_upload_enabled():
             return {"enabled": False}
-        token = request.headers.get("X-Emby-Token", "")
-        if await _authorized_user(token) is None:
+        if await _authorized_user(admin, _bearer_token(request)) is None:
             return admin.JSONResponse({"error": "Unauthorized."}, status_code=401)
         profiles = _accepted_profiles()
         if not profiles:
@@ -135,7 +138,7 @@ def _route_submit_frames(router, admin):  # noqa: C901
     async def submit_frames(request: Request):  # noqa: C901
         if not _phash_upload_enabled():
             return admin.JSONResponse({"error": "Fingerprint uploads are disabled."}, status_code=404)
-        user = await _authorized_user(request.headers.get("X-Emby-Token", ""))
+        user = await _authorized_user(admin, _bearer_token(request))
         if user is None:
             return admin.JSONResponse({"error": "Unauthorized."}, status_code=401)
         body, rejection = await _read_frame_body(admin, request)
@@ -175,7 +178,7 @@ def _route_generate_phash(router, admin):
         """Durably enqueue Stash-compatible pHash and thumbnail generation."""
         if not _phash_upload_enabled():
             return admin.JSONResponse({"error": "Fingerprint generation is disabled."}, status_code=404)
-        user = await _authorized_user(request.headers.get("X-Emby-Token", ""))
+        user = await _authorized_user(admin, _bearer_token(request))
         if user is None:
             return admin.JSONResponse({"error": "Unauthorized."}, status_code=401)
         try:
@@ -197,7 +200,7 @@ def _route_generate_phash(router, admin):
                 phash_jobs.enqueue, admin.HUB_DB_URL,
                 video_id=video_id, duration_us=body["duration_us"],
                 algorithm_version=PHASH_ALGORITHM_VERSION, decoder_profile=_SERVER_PROFILE,
-                user_id=str(user["Id"]),
+                user_id=str(user["user_id"]),
             )
             return _generate_response(admin, result)
         except Exception:
@@ -210,7 +213,7 @@ def _route_get_phash_job(router, admin):
     async def get_phash_job(request: Request, job_id: str):
         if not _phash_upload_enabled():
             return admin.JSONResponse({"error": "Fingerprint generation is disabled."}, status_code=404)
-        user = await _authorized_user(request.headers.get("X-Emby-Token", ""))
+        user = await _authorized_user(admin, _bearer_token(request))
         if user is None:
             return admin.JSONResponse({"error": "Unauthorized."}, status_code=401)
         try:
@@ -227,7 +230,7 @@ def _route_get_phash_job(router, admin):
 def _route_get_phash_thumbnail(router, admin):
     @router.get("/api/v2/video-phash/thumbnail")
     async def get_phash_thumbnail(request: Request, video_id: str):
-        user = await _authorized_user(request.headers.get("X-Emby-Token", ""))
+        user = await _authorized_user(admin, _bearer_token(request))
         if user is None:
             return admin.JSONResponse({"error": "Unauthorized."}, status_code=401)
         if not _VIDEO_ID.fullmatch(video_id):
@@ -285,7 +288,7 @@ async def _save_frame_fingerprint(admin, body, frames, user):
         if not _HASH.fullmatch(fingerprint):
             raise ValueError("Unexpected pHash format")
         result = await asyncio.to_thread(
-            _store, admin, body["video_id"], fingerprint, body["decoder_profile"], str(user["Id"]),
+            _store, admin, body["video_id"], fingerprint, body["decoder_profile"], str(user["user_id"]),
             thumbnail_bytes,
         )
         if result == "conflict":

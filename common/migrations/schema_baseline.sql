@@ -383,12 +383,6 @@ CREATE TABLE public.external_metadata_attempts (
     CONSTRAINT external_metadata_attempts_outcome_check CHECK ((outcome = ANY (ARRAY['found'::text, 'no_match'::text, 'error'::text])))
 );
 
-CREATE TABLE public.jellyfin_person_sync (
-    name text NOT NULL,
-    pbc_updated_at timestamp with time zone NOT NULL,
-    format_version integer DEFAULT 0 NOT NULL
-);
-
 CREATE TABLE public.meta (
     key text NOT NULL,
     value text
@@ -925,9 +919,6 @@ ALTER TABLE ONLY public.diagnostic_settings
 
 ALTER TABLE ONLY public.external_metadata_attempts
     ADD CONSTRAINT external_metadata_attempts_pkey PRIMARY KEY (entity_type, entity_key, source);
-
-ALTER TABLE ONLY public.jellyfin_person_sync
-    ADD CONSTRAINT jellyfin_person_sync_pkey PRIMARY KEY (name);
 
 ALTER TABLE ONLY public.meta
     ADD CONSTRAINT meta_pkey PRIMARY KEY (key);

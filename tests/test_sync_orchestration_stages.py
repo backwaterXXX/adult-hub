@@ -1,4 +1,4 @@
-"""Tests for post-scan enrichment stages, Jellyfin refresh polling, history reporting, and shutdown handling."""
+"""Tests for post-scan enrichment stages, history reporting, and shutdown handling."""
 
 import unittest
 
@@ -12,9 +12,9 @@ class TestEnrichmentStages(SyncPassHarness):
 
         self.assertEqual([stage for stage, _, _ in self.core.stages], [
             "metadata_scenes", "performer_title_backfill", "metadata_pbc", "metadata_tpdb",
-            "metadata_stashdb", "metadata_fansdb", "telegram_title_cleanup", "jellyfin_metadata_reconciliation",
+            "metadata_stashdb", "metadata_fansdb", "telegram_title_cleanup",
         ])
-        self.assertEqual([failed for _, _, failed in self.core.stages], [False] * 8)
+        self.assertEqual([failed for _, _, failed in self.core.stages], [False] * 7)
         self.assertEqual(self.sink("backfill_scenes").args(), (CONN, MEDIA_DIR))
         self.assertEqual(self.sink("backfill_scenes").kwargs(), {"limit": self.core.SCENE_BACKFILL_PER_RUN})
         self.assertEqual(self.sink("backfill_performers_from_titles").args(), (CONN, MEDIA_DIR))
@@ -27,10 +27,6 @@ class TestEnrichmentStages(SyncPassHarness):
         self.assertEqual(self.sink("backfill_fansdb").kwargs(),
                          {"limit": self.core.TPDB_BACKFILL_PER_RUN})
         self.assertEqual(self.sink("cleanup_telegram_titles").args(), (CONN, MEDIA_DIR))
-        self.assertEqual(self.sink("sync_jellyfin_people").args(),
-                         (CONN, self.core.JELLYFIN_URL, self.core.JELLYFIN_API_KEY))
-        self.assertEqual(self.sink("sync_jellyfin_people").kwargs(),
-                         {"limit": self.core.JELLYFIN_PEOPLE_PER_RUN})
 
     def test_the_stage_totals_are_rounded_for_the_history(self):
         self.core.time.step = 0.1234
@@ -57,8 +53,7 @@ class TestEnrichmentStages(SyncPassHarness):
         self.assertTrue(self.sync())
 
         self.assertEqual([stage for stage, _, _ in self.core.stages],
-                         ["performer_title_backfill", "telegram_title_cleanup",
-                          "jellyfin_metadata_reconciliation"])
+                         ["performer_title_backfill", "telegram_title_cleanup"])
         self.assertEqual(self.core.logger.text("warning"), [])
 
     def test_a_failing_enrichment_pass_is_only_a_warning(self):
@@ -67,7 +62,6 @@ class TestEnrichmentStages(SyncPassHarness):
             "backfill_pbc": "PBC backfill pass failed: boom",
             "backfill_tpdb": "ThePornDB backfill pass failed: boom",
             "backfill_stashdb": "StashDB backfill pass failed: boom",
-            "sync_jellyfin_people": "Jellyfin person metadata pass failed: boom",
         }
         for name in expectations:
             self.sink(name).raises = RuntimeError("boom")
@@ -109,53 +103,6 @@ class TestEnrichmentStages(SyncPassHarness):
 
         self.assertTrue(self.core.logger.has("Orphaned-record cleanup failed: permission denied", "warning"))
         self.assertEqual(self.sink("cleanup_retention").call_count, 1)
-
-    def test_the_jellyfin_library_refresh_and_title_pass_run_once_each(self):
-        self.sync()
-
-        self.assertEqual(self.sink("trigger_jellyfin_refresh").call_count, 1)
-        self.assertEqual(self.sink("sync_jellyfin_titles").call_count, 1)
-        order = self.core.order
-        self.assertLess(order.index("sync_jellyfin_telegram_metadata"), order.index("trigger_jellyfin_refresh"))
-        self.assertLess(order.index("trigger_jellyfin_refresh"), order.index("sync_jellyfin_titles"))
-
-
-
-class TestJellyfinRefreshPoll(SyncPassHarness):
-    def test_the_refresh_poll_is_published_from_the_reconciliation_result(self):
-        self.sink("sync_jellyfin_telegram_metadata").result = {
-            "refresh_poll": {"queued": 4, "reason": "nfo-changed"}}
-
-        self.sync()
-
-        self.assertEqual(self.history()["jellyfin_refresh_poll"], {"queued": 4, "reason": "nfo-changed"})
-        self.assertEqual(self.core._ACTIVE_SYNC_METRICS["jellyfin_refresh_poll"],
-                         {"queued": 4, "reason": "nfo-changed"})
-
-    def test_a_reconciliation_result_without_a_poll_publishes_an_empty_one(self):
-        self.sink("sync_jellyfin_telegram_metadata").result = {"refresh_poll": None}
-
-        self.sync()
-
-        self.assertEqual(self.history()["jellyfin_refresh_poll"], {})
-
-    def test_a_non_dict_reconciliation_result_publishes_no_poll(self):
-        self.sink("sync_jellyfin_telegram_metadata").result = ["legacy", "summary"]
-
-        self.sync()
-
-        self.assertEqual(self.history()["jellyfin_refresh_poll"], {})
-        self.assertNotIn("jellyfin_refresh_poll", self.core._ACTIVE_SYNC_METRICS)
-
-    def test_a_failing_reconciliation_publishes_no_poll(self):
-        self.explode("sync_jellyfin_telegram_metadata", OSError("jellyfin refused"))
-
-        self.assertTrue(self.sync())
-
-        self.assertEqual(self.history()["jellyfin_refresh_poll"], {})
-        self.assertTrue(self.core.logger.has(
-            "Telegram metadata reconciliation failed: jellyfin refused", "warning"))
-
 
 
 class TestHistorySourceRows(SyncPassHarness):
@@ -307,14 +254,12 @@ class TestShutdownBetweenChannels(SyncPassHarness):
         self.sync()
 
         for stage in ("metadata_scenes", "performer_title_backfill", "metadata_pbc",
-                      "metadata_tpdb", "metadata_stashdb", "jellyfin_metadata_reconciliation",
-                      "jellyfin_people", "jellyfin_titles"):
+                      "metadata_tpdb", "metadata_stashdb"):
             with self.subTest(stage=stage):
                 self.assertTrue(self.core.logger.has(
                     f"skipping the {stage} stage until the next pass", "warning"))
         for sink in ("backfill_scenes", "backfill_performers_from_titles", "backfill_pbc",
-                     "backfill_tpdb", "backfill_stashdb", "sync_jellyfin_telegram_metadata",
-                     "sync_jellyfin_people", "sync_jellyfin_titles"):
+                     "backfill_tpdb", "backfill_stashdb"):
             with self.subTest(operation=sink):
                 self.assertFalse(self.sink(sink).called)
 
@@ -323,8 +268,6 @@ class TestShutdownBetweenChannels(SyncPassHarness):
 
         self.sync()
 
-        self.assertTrue(self.sink("trigger_jellyfin_refresh").called,
-                        "files written by this pass must become visible")
         self.assertTrue(self.sink("cleanup_orphaned_records").called)
         self.assertTrue(self.sink("cleanup_retention").called)
 

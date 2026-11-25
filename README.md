@@ -1,6 +1,6 @@
 # Adult Hub
 
-**Adult Hub** turns Telegram channels into a searchable video library for gay adult content. Browse titles, performers, and artwork in [Jellyfin](https://jellyfin.org/) or use the companion Android and desktop players.
+**Adult Hub** turns Telegram channels into a searchable video library for gay adult content. Browse titles, performers, and artwork in the web admin panel or use the companion Android and desktop players.
 
 Videos stay on Telegram and stream on demand. Adult Hub stores the catalog, stream links, metadata, and artwork locally. The web admin panel lets you add sources, monitor indexing, organize performers, review duplicates, and manage background tasks.
 
@@ -14,7 +14,7 @@ Videos stay on Telegram and stream on demand. Adult Hub stores the catalog, stre
 ## How It Works
 
 1. Adult Hub indexes your configured Telegram channels and generates stream links, metadata, and artwork.
-2. Jellyfin displays the library with titles and performer information.
+2. The catalog API and the companion players list the library with titles and performer information.
 3. Choose a video to stream it from Telegram through the resolver to your TV, phone, or browser.
 
 ```
@@ -27,14 +27,14 @@ PHASE 1: Library Indexing (Background)
                                                         │    + .nfo + thumbnails
                                                         ▼
                                                  ┌────────────────────────┐
-                                                 │ Jellyfin Media Library │
+                                                 │ PostgreSQL catalog      │
                                                  └────────────────────────┘
 
 PHASE 2: On-Demand Playback (Real-time)
 ──────────────────────────────────────────────────────────────────────────────────
   ┌────────────────────────┐   3. Presses Play   ┌─────────────────┐
-  │ Jellyfin Media Library │ ──────────────────► │ Playback Client │ (TV/phone/web)
-  └────────────────────────┘   (loads .strm URL) └────┬───────▲────┘
+  │  PostgreSQL catalog    │ ──────────────────► │ Playback Client │ (TV/phone/web)
+  └────────────────────────┘   (stream URL)      └────┬───────▲────┘
                                                       │       │
                                  4. HTTP GET request  │       │ 6. HTTP 206 Stream
                                     (with Range)      │       │    (Partial Content)
@@ -84,9 +84,9 @@ docker compose run --rm telegram-auth
 docker compose up -d
 ```
 
-`telegram-auth` prompts for your phone number, code, and optional 2FA password, and writes an authorized session token to `./data/telegram.session`. Startup automatically applies database migrations and brings up PostgreSQL, Jellyfin, Resolver, and Sync services (with automated backups managed directly through the sync worker).
+`telegram-auth` prompts for your phone number, code, and optional 2FA password, and writes an authorized session token to `./data/telegram.session`. Startup automatically applies database migrations and brings up PostgreSQL, Resolver, and Sync services (with automated backups managed directly through the sync worker).
 
-To access the stack from other devices on your local network (LAN), set `RESOLVER_BIND_IP` and `JELLYFIN_BIND_IP` to your host's LAN IP, and set `STREAM_PUBLIC_URL_TELEGRAM=http://<YOUR_LAN_IP>:8090` in `.env`.
+To access the stack from other devices on your local network (LAN), set `RESOLVER_BIND_IP` to your host's LAN IP, and set `STREAM_PUBLIC_URL_TELEGRAM=http://<YOUR_LAN_IP>:8090` in `.env`.
 
 ### Alternative: Automated Source Installer
 
@@ -104,8 +104,7 @@ The installer verifies prerequisites, prompts for binding modes, generates crede
 
 1. Open the **Admin URL** ([http://127.0.0.1:8090/admin/](http://127.0.0.1:8090/admin/) or your configured LAN address). Enter the `ADMIN_WRITE_TOKEN` from `.env` in the panel to enable management actions.
 2. In **Sources**, add your first Telegram channel, for example `@channel_name`.
-3. Open **Jellyfin** ([http://127.0.0.1:8096/](http://127.0.0.1:8096/) or your configured LAN address) and complete its setup wizard. Add a **Movies** library pointing to `/media/adult`, with a display name such as **Adult**.
-4. In the Jellyfin library settings, keep the **NFO reader** enabled and disable the **NFO metadata saver**. Adult Hub generates the sidecars; Jellyfin mounts the media directory read-only.
+3. Open **Library** once the first sync finishes to confirm the catalog, or pair one of the companion players with the client API.
 
 Playback devices must be able to reach the resolver address.
 
@@ -136,9 +135,8 @@ Management actions use the configured admin write token (`ADMIN_WRITE_TOKEN`) an
 
 - **Resolver (`resolver/`):** serves the Admin UI, management API, artwork, and on-demand Telegram streams.
 - **Sync (`sync/`):** indexes channels, maintains PostgreSQL records, generates STRM/NFO files and artwork, schedules verified PostgreSQL snapshots, and processes background work.
-- **Shared code (`common/`):** configuration validation, database access, versioned migrations, durable task queue, and collection management.
+- **Shared code (`common/`):** configuration validation, database access, versioned migrations, durable task queue, and client authentication.
 - **PostgreSQL:** stores the catalog and task queue.
-- **Jellyfin:** presents the generated media library; companion players provide additional playback clients.
 
 Telegram is the only media source provider. The standalone installer creates the initial source configuration; use the Admin panel to add channels. Provider IDs and media filenames remain stable across metadata updates.
 

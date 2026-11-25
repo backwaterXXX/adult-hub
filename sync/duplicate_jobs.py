@@ -215,7 +215,7 @@ def _audit_nfo_metadata_diff_details(actual, expected):
 
 
 def _record_job_progress(conn, job_id: str, stage: str, *, completed=None, total=None,
-                         local_state=None, jellyfin_refresh=None) -> None:
+                         local_state=None) -> None:
     """Persist a safe checkpoint without overwriting the worker recovery journal."""
     if stage not in _JOB_STAGES:
         raise ValueError("Unsupported job progress stage.")
@@ -239,8 +239,6 @@ def _record_job_progress(conn, job_id: str, stage: str, *, completed=None, total
     result["progress"] = progress
     if local_state is not None:
         result["local_state"] = local_state
-    if jellyfin_refresh is not None:
-        result["jellyfin_refresh"] = jellyfin_refresh
     with conn:
         conn.execute(
             "UPDATE video_duplicate_jobs SET result=%s, updated_at=%s WHERE id=%s AND state='processing'",
@@ -308,35 +306,6 @@ def _finish_job(conn, job_id: str, result: dict) -> None:
         )
 
 
-def _jellyfin_configured() -> bool:
-    """True when Jellyfin is wired in; False means the whole integration is off."""
-    import os
-    return bool(
-        os.getenv("JELLYFIN_URL", "").strip()
-        and os.getenv("JELLYFIN_API_KEY", "").strip()
-    )
-
-
-def jellyfin_refresh_status(refreshed: bool) -> str:
-    """Describe the Jellyfin half of a job honestly: an off integration is 'skipped'."""
-    if refreshed:
-        return "updated"
-    return "failed" if _jellyfin_configured() else "skipped"
-
-
-def _refresh_jellyfin_with_progress(conn, job_id: str, local_state: str, services) -> bool:
-    """Persist local success and the remote request stage before calling Jellyfin."""
-    if not _jellyfin_configured():
-        _record_job_progress(
-            conn, job_id, "refreshing_jellyfin", local_state=local_state, jellyfin_refresh="skipped"
-        )
-        return False
-    _record_job_progress(
-        conn, job_id, "refreshing_jellyfin", local_state=local_state, jellyfin_refresh="pending"
-    )
-    return bool(services.trigger_jellyfin_refresh())
-
-
 def _json_list_value(value) -> list:
     if isinstance(value, list):
         return value
@@ -401,21 +370,18 @@ class DuplicateJobServices:
     format_dateadded: Callable
     load_performer_thumbs: Callable
     resolve_media_path: Callable
-    trigger_jellyfin_refresh: Callable
     probe_stream: Callable
     logger: object
     probe_stream_detailed: Callable | None = None
-    audit_jellyfin_import_state: Callable | None = None
     thumbnail_urls: Callable | None = None
     download_image_if_missing: Callable | None = None
     external_metadata_backfill: Callable | None = None
     telegram_fingerprint_scan: Callable | None = None
-    sync_jellyfin_telegram_metadata: Callable | None = None
 
 
 def _performer_refresh(conn: db.Connection, job_id: str, payload: dict,
                        media_dir: Path, services: DuplicateJobServices) -> dict:
-    """Rebuild NFOs after approved performer assignments and request Jellyfin refresh."""
+    """Rebuild NFOs after approved performer assignments."""
     ids = payload.get("video_ids")
     if not isinstance(ids, list) or not ids or len(ids) > 100:
         raise ValueError("Performer refresh requires 1–100 video IDs.")
@@ -441,13 +407,7 @@ def _performer_refresh(conn: db.Connection, job_id: str, payload: dict,
         services.create_nfo_file(video, genres, tag_set, nfo_path, conn=conn)
         updated += 1
         _record_job_progress(conn, job_id, "writing_nfo", completed=index + 1, total=len(ids))
-    import os
-    if not os.getenv("JELLYFIN_URL", "").strip() or not os.getenv("JELLYFIN_API_KEY", "").strip():
-        return {"videos_refreshed": updated, "jellyfin_refresh": "skipped"}
-    refreshed = services.trigger_jellyfin_refresh()
-    if not refreshed:
-        raise RuntimeError("Jellyfin did not accept the library refresh request.")
-    return {"videos_refreshed": updated, "jellyfin_refresh": "requested"}
+    return {"videos_refreshed": updated}
 
 
 def __getattr__(name: str):

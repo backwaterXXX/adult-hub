@@ -31,11 +31,8 @@ class TestStandaloneInstallerSetup(BaseStandaloneInstallerTestCase):
         self.assertIn("POSTGRES_DB=adulthub", env_content)
         self.assertIn("POSTGRES_USER=adulthub", env_content)
         self.assertIn("RESOLVER_BIND_IP=127.0.0.1", env_content)
-        self.assertIn("JELLYFIN_BIND_IP=127.0.0.1", env_content)
         self.assertIn("DATABASE_URL=postgresql://adulthub:", env_content)
         self.assertNotIn("STANDALONE_DATABASE_URL=", env_content)
-        self.assertIn("JELLYFIN_URL=http://jellyfin:8096", env_content)
-        self.assertNotIn("STANDALONE_JELLYFIN_URL=", env_content)
         self.assertIn("ADMIN_PUBLIC=false", env_content)
         self.assertNotIn("STANDALONE_ADMIN_PUBLIC=", env_content)
 
@@ -91,7 +88,6 @@ class TestStandaloneInstallerSetup(BaseStandaloneInstallerTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         env_content = (self.isolated_root / ".env").read_text()
         self.assertIn(f"RESOLVER_BIND_IP={lan_ip}", env_content)
-        self.assertIn(f"JELLYFIN_BIND_IP={lan_ip}", env_content)
         self.assertIn(f"RESOLVER_PUBLIC_URL={playback_url}", env_content)
         # Ensure 0.0.0.0 is not used
         self.assertNotIn("0.0.0.0", env_content)
@@ -198,7 +194,6 @@ class TestStandaloneInstallerSetup(BaseStandaloneInstallerTestCase):
             "POSTGRES_DB=adulthub\n"
             "POSTGRES_USER=adulthub\n"
             "POSTGRES_PASSWORD=legacy-pw-456\n"
-            "STANDALONE_JELLYFIN_URL=http://legacy-jellyfin:8096\n"
             "STANDALONE_ADMIN_PUBLIC=true\n"
             "RESOLVER_BIND_IP=127.0.0.1\n"
             "RESOLVER_PORT=8090\n"
@@ -212,7 +207,6 @@ class TestStandaloneInstallerSetup(BaseStandaloneInstallerTestCase):
         ])
         self.assertEqual(res.returncode, 0, f"Setup failed on legacy .env:\n{res.stderr}")
         env_after = env_path.read_text()
-        self.assertIn("STANDALONE_JELLYFIN_URL=http://legacy-jellyfin:8096", env_after)
         self.assertIn("STANDALONE_ADMIN_PUBLIC=true", env_after)
         self.assertIn("POSTGRES_PASSWORD=legacy-pw-456", env_after)
 
@@ -335,38 +329,11 @@ class TestStandaloneInstallerSetup(BaseStandaloneInstallerTestCase):
         self.assertIn("Adult Hub Standalone Setup Summary", res_status.stdout)
         self.assertIn("Admin UI:", res_status.stdout)
         self.assertIn("/admin/#sources", res_status.stdout)
-        self.assertIn("Jellyfin UI:", res_status.stdout)
-        self.assertIn("Jellyfin API:   INACTIVE (API key optional; basic playback available)", res_status.stdout)
         self.assertIn("Next Steps:", res_status.stdout)
 
         # Confirm no service startup
         docker_calls = (self.isolated_root / "docker_calls.log").read_text()
         self.assertNotIn("up -d", docker_calls)
-
-
-    def test_setup_summary_reports_active_jellyfin_api_key(self):
-        """Summary accurately reports ACTIVE Jellyfin API status when API key is configured."""
-        mock_docker = make_mock_docker(self.isolated_root, auth_check_ok=True)
-        res_init = self.run_installer([
-            "--non-interactive",
-            "--bind-mode", "loopback",
-            "--docker-bin", mock_docker,
-            "--root-dir", str(self.isolated_root),
-        ])
-        self.assertEqual(res_init.returncode, 0)
-
-        env_path = self.isolated_root / ".env"
-        env_content = env_path.read_text()
-        env_content = env_content.replace("JELLYFIN_API_KEY=", "JELLYFIN_API_KEY=test-jellyfin-key-123\n")
-        env_path.write_text(env_content)
-
-        res_status = self.run_installer([
-            "--status",
-            "--docker-bin", mock_docker,
-            "--root-dir", str(self.isolated_root),
-        ])
-        self.assertEqual(res_status.returncode, 0)
-        self.assertIn("Jellyfin API:   ACTIVE", res_status.stdout)
 
 
 

@@ -78,8 +78,6 @@ services:
       TELEGRAM_PARALLEL_STREAM_ENABLED: "false"
       PHASH_UPLOAD_ENABLED: "false"
       VIDEO_VISUAL_WORKER_ENABLED: "false"
-      JELLYFIN_URL: ""
-      JELLYFIN_API_KEY: ""
       STASHDB_API_KEY: ""
       STASH_API_KEY: ""
     depends_on:

@@ -715,7 +715,7 @@ class TestFansDBSceneDistinguishErrors(unittest.TestCase):
              patch.object(phash_mod, "_find_fansdb_match", new=AsyncMock(return_value=True)):
 
             req = MagicMock()
-            req.headers = {"X-Emby-Token": "tok"}
+            req.headers = {"Authorization": "Bearer tok"}
             res = asyncio.run(phash_mod._find_fansdb_match("0000000000000000"))
             self.assertTrue(res)
 
