@@ -1182,6 +1182,19 @@ CREATE INDEX idx_videos_last_seen ON public.videos USING btree (last_seen);
 
 CREATE INDEX idx_videos_provider ON public.videos USING btree (provider);
 
+
+--
+-- Name: idx_videos_client_latest; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_videos_client_latest ON public.videos USING btree (first_seen DESC NULLS LAST, id);
+
+--
+-- Name: idx_videos_client_duration; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_videos_client_duration ON public.videos USING btree (duration DESC NULLS LAST, id);
+
 CREATE INDEX idx_vs_source_id ON public.video_sources USING btree (source_id);
 
 CREATE INDEX idx_vs_video_id ON public.video_sources USING btree (video_id, is_active, priority);

@@ -16,6 +16,7 @@ from common.migrations import (
     recreate_database,
 )
 from common.migrations.base import Migration
+from common.migrations.m0002_catalog_sort_indexes import migration as catalog_sort_indexes
 from common.migrations.m0001_baseline import SCHEMA_BASELINE_SQL, migration as baseline
 from common.migrations.runner import (
     _validate_active_migrations,
@@ -77,25 +78,27 @@ class TestActiveMigrationValidation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ordered by version"):
             _validate_active_migrations((self._migration(2), self._migration(1)))
 
-    def test_chain_is_the_single_squashed_baseline(self):
-        self.assertEqual([migration.version for migration in MIGRATIONS], [1])
+    def test_chain_is_the_baseline_plus_appended_migrations(self):
+        self.assertEqual([migration.version for migration in MIGRATIONS], [1, 2])
         self.assertEqual(MIGRATIONS[0].name, "0001_baseline")
         self.assertIs(MIGRATIONS[0], baseline)
+        self.assertEqual(MIGRATIONS[1].name, "0002_catalog_sort_indexes")
 
 
 class TestMigrationsEngine(PgTestCase):
-    def test_fresh_database_applies_one_baseline_and_is_then_up_to_date(self):
+    def test_fresh_database_applies_the_chain_and_is_then_up_to_date(self):
         applied = recreate_database(self.conn)
-        self.assertEqual([m.version for m in applied], [1])
+        self.assertEqual([m.version for m in applied], [1, 2])
         self.assertEqual(applied[0].name, "0001_baseline")
 
         status = get_migration_status(self.conn)
         self.assertTrue(status.is_up_to_date)
-        self.assertEqual(status.current_version, 1)
+        self.assertEqual(status.current_version, 2)
         self.assertEqual(status.pending, [])
 
         records = get_applied_migrations(self.conn)
-        self.assertEqual([(r.version, r.name) for r in records], [(1, "0001_baseline")])
+        self.assertEqual([(r.version, r.name) for r in records],
+                         [(1, "0001_baseline"), (2, "0002_catalog_sort_indexes")])
 
         existing_tables = db.table_names(self.conn)
         for table in APPLICATION_TABLES:
@@ -130,7 +133,7 @@ class TestMigrationsEngine(PgTestCase):
         _drop_everything(self.conn)
         self.addCleanup(recreate_database, self.conn)
         applied = apply_migrations(self.conn)
-        self.assertEqual([m.version for m in applied], [1])
+        self.assertEqual([m.version for m in applied], [1, 2])
 
     def test_concurrent_apply_migrations_is_serialized(self):
         # Containers starting together may both call apply_migrations on an
@@ -155,7 +158,7 @@ class TestMigrationsEngine(PgTestCase):
             thread.join(timeout=120)
 
         self.assertEqual(errors, [])
-        self.assertEqual(sorted(len(result) for result in results), [0, 1])
+        self.assertEqual(sorted(len(result) for result in results), [0, len(MIGRATIONS)])
         duplicate_rows = self.conn.execute(
             f"SELECT version, COUNT(*) FROM {SCHEMA_MIGRATIONS_TABLE} "
             "GROUP BY version HAVING COUNT(*) > 1"
@@ -171,9 +174,23 @@ class TestMigrationsEngine(PgTestCase):
             self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone())
 
         applied = recreate_database(self.conn)
-        self.assertEqual([m.version for m in applied], [1])
+        self.assertEqual([m.version for m in applied], [1, 2])
         self.assertIsNone(
             self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone())
+
+    def test_catalog_sort_indexes_exist_after_the_chain(self):
+        recreate_database(self.conn)
+        names = {row[0] for row in self.conn.execute(
+            "SELECT indexname FROM pg_indexes WHERE tablename='videos'").fetchall()}
+        self.assertIn("idx_videos_client_latest", names)
+        self.assertIn("idx_videos_client_duration", names)
+
+    def test_catalog_sort_index_migration_is_idempotent(self):
+        recreate_database(self.conn)
+        with self.conn:
+            catalog_sort_indexes.apply(self.conn)
+        with self.conn:
+            catalog_sort_indexes.apply(self.conn)
 
     def test_database_with_tables_and_no_history_is_refused(self):
         # A pre-0.6.0 database, or one that lost schema_migrations, must not be
@@ -216,7 +233,8 @@ class TestMigrationsEngine(PgTestCase):
         self.addCleanup(recreate_database, self.conn)
         ensure_schema_migrations_table(self.conn)
         with self.conn:
-            _record(self.conn, 1, "0001_baseline")
+            for migration in MIGRATIONS:
+                _record(self.conn, migration.version, migration.name)
 
         self.assertTrue(get_migration_status(self.conn).is_up_to_date)
         self.assertEqual(recreate_database(self.conn)[0].version, 1)
