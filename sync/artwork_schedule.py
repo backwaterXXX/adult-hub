@@ -147,6 +147,53 @@ def _artwork_generation_needed(stored_path: str, media_dir: Path, resolve_media_
     return artwork_needs_generation(stream_path.with_suffix(".jpg"), bumper_hashes=bumper_hashes)
 
 
+def resolve_stale_artwork_findings(conn, media_dir: Path, *, bumper_hashes=None) -> int:
+    """Resolve open ``missing_artwork`` findings for items that have artwork now.
+
+    A library audit records what is missing at the moment it runs, so an item that
+    receives its artwork afterwards keeps an open finding and the quality centre
+    keeps reporting work that is already done. The four-hourly artwork schedule
+    re-checks those rows with the same predicate the batch uses, so the reported
+    backlog follows the library instead of the audit history.
+    """
+    from sync.media_files import resolve_media_path
+
+    media_dir = Path(media_dir)
+    rows = conn.execute(
+        "SELECT DISTINCT a.video_id,sf.file_path FROM admin_audit_items a "
+        "JOIN synced_files sf ON sf.video_id=a.video_id "
+        "WHERE a.kind='missing_artwork' AND a.status='open'"
+    ).fetchall()
+    if not rows:
+        return 0
+    if bumper_hashes is None:
+        bumper_hashes = _default_bumper_hashes()
+
+    resolved: list[str] = []
+    for video_id, stored_path in rows:
+        if not video_id or not isinstance(stored_path, str) or not stored_path:
+            continue
+        try:
+            stream_path = resolve_media_path(stored_path, media_dir)
+        except (OSError, ValueError, TypeError):
+            continue
+        if stream_path.is_symlink() or not stream_path.is_file():
+            # A vanished stream belongs to the missing_stream finding; leave it.
+            continue
+        if artwork_needs_generation(stream_path.with_suffix(".jpg"), bumper_hashes=bumper_hashes):
+            continue
+        resolved.append(str(video_id))
+    if not resolved:
+        return 0
+    with conn:
+        conn.execute(
+            "UPDATE admin_audit_items SET status='resolved' "
+            "WHERE kind='missing_artwork' AND status='open' AND video_id=ANY(%s)",
+            (resolved,),
+        )
+    return len(resolved)
+
+
 def queue_artwork_generation_batch(db_url: str | None, media_dir: Path, *, limit: int = MAX_ARTWORK_GENERATION_ITEMS) -> dict:
     """Enqueue the next bounded batch of artwork generation jobs."""
     from common import db
@@ -154,8 +201,10 @@ def queue_artwork_generation_batch(db_url: str | None, media_dir: Path, *, limit
 
     conn = db.connect(db_url)
     try:
+        resolved = resolve_stale_artwork_findings(conn, media_dir)
         jobs = build_artwork_generation_jobs(conn, media_dir, limit=limit)
     finally:
         conn.close()
     job_ids = enqueue_jobs_batch(db_url, jobs)
-    return {"candidates": len(jobs), "job_ids": job_ids}
+    return {"candidates": len(jobs), "job_ids": job_ids,
+            "artwork_findings_resolved": resolved}

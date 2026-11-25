@@ -322,8 +322,9 @@ def _dispatch_artwork_batch() -> tuple[bool, int]:
         result = queue_artwork_generation_batch(DB_URL, Path(os.getenv("MEDIA_DIR", "/media/adult")))
         queued = len(result.get("job_ids") or [])
         LOGGER.info(
-            "[sync-daemon] Daily artwork generation queued %s job(s) from %s candidate(s).",
-            queued, result.get("candidates", 0),
+            "[sync-daemon] Daily artwork generation queued %s job(s) from %s candidate(s); "
+            "%s stale artwork finding(s) resolved.",
+            queued, result.get("candidates", 0), result.get("artwork_findings_resolved", 0),
         )
         return True, queued
     except Exception as e:

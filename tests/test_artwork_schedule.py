@@ -17,6 +17,7 @@ from sync.artwork_schedule import (
     MAX_ARTWORK_GENERATION_ITEMS,
     artwork_needs_generation,
     build_artwork_generation_jobs,
+    resolve_stale_artwork_findings,
 )
 
 
@@ -196,6 +197,104 @@ class ArtworkScheduleDatabaseTests(PgTestCase):
             jobs = build_artwork_generation_jobs(self.conn, media, limit=5, bumper_hashes=set())
 
         self.assertEqual([payload["video_id"] for _action, payload in jobs], ["telegram:transient"])
+
+
+class _AuditConnection:
+    """Minimal connection double: records statements and serves the finding rows."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.statements: list[tuple[str, object]] = []
+        self._last = ""
+
+    def execute(self, sql, params=None):
+        self.statements.append((sql, params))
+        self._last = sql
+        return self
+
+    def fetchall(self):
+        return self.rows if "FROM admin_audit_items" in self._last else []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def resolved_ids(self):
+        updates = [params for sql, params in self.statements
+                   if "UPDATE admin_audit_items" in sql]
+        return updates[0][0] if updates else []
+
+
+class ResolveStaleArtworkFindingsTest(unittest.TestCase):
+    """The audit snapshot has to follow the library, not the audit history."""
+
+    def _seed(self, media: Path, name: str, *, artwork: bool) -> None:
+        (media / f"{name}.strm").write_text("stream", encoding="utf-8")
+        if artwork:
+            Image.new("RGB", (80, 80), (120, 80, 35)).save(media / f"{name}.jpg")
+
+    def test_findings_with_artwork_are_resolved(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media = Path(temp_dir)
+            self._seed(media, "fixed", artwork=True)
+            conn = _AuditConnection([("telegram:fixed", "fixed.strm")])
+
+            resolved = resolve_stale_artwork_findings(conn, media, bumper_hashes=set())
+
+        self.assertEqual(resolved, 1)
+        self.assertEqual(conn.resolved_ids(), ["telegram:fixed"])
+
+    def test_findings_without_artwork_stay_open(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media = Path(temp_dir)
+            self._seed(media, "still-missing", artwork=False)
+            conn = _AuditConnection([("telegram:still-missing", "still-missing.strm")])
+
+            resolved = resolve_stale_artwork_findings(conn, media, bumper_hashes=set())
+
+        self.assertEqual(resolved, 0)
+        self.assertEqual(conn.resolved_ids(), [])
+
+    def test_black_artwork_is_not_treated_as_fixed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media = Path(temp_dir)
+            (media / "black.strm").write_text("stream", encoding="utf-8")
+            Image.new("RGB", (80, 80), (0, 0, 0)).save(media / "black.jpg")
+            conn = _AuditConnection([("telegram:black", "black.strm")])
+
+            resolved = resolve_stale_artwork_findings(conn, media, bumper_hashes=set())
+
+        self.assertEqual(resolved, 0)
+        self.assertEqual(conn.resolved_ids(), [])
+
+    def test_vanished_stream_keeps_its_finding(self):
+        """A missing stream is a missing_stream finding; artwork must not hide it."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media = Path(temp_dir)
+            conn = _AuditConnection([("telegram:gone", "gone.strm")])
+
+            resolved = resolve_stale_artwork_findings(conn, media, bumper_hashes=set())
+
+        self.assertEqual(resolved, 0)
+        self.assertEqual(conn.resolved_ids(), [])
+
+    def test_only_usable_rows_are_sent_to_the_update(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media = Path(temp_dir)
+            self._seed(media, "ok", artwork=True)
+            self._seed(media, "empty", artwork=False)
+            conn = _AuditConnection([
+                ("telegram:ok", "ok.strm"),
+                ("telegram:empty", "empty.strm"),
+                ("telegram:gone", "gone.strm"),
+            ])
+
+            resolved = resolve_stale_artwork_findings(conn, media, bumper_hashes=set())
+
+        self.assertEqual(resolved, 1)
+        self.assertEqual(conn.resolved_ids(), ["telegram:ok"])
 
 
 if __name__ == "__main__":
