@@ -97,12 +97,34 @@ def _collect_target(conn, item: dict, media_dir: Path, media_root: Path, service
                          repair_artwork=repair_artwork, thumbnail_url=thumbnail_url)
 
 
-def _restore_streams(target: _RepairTarget, services) -> int:
+def _restore_streams(target: _RepairTarget, services) -> tuple[int, int]:
+    """Recreate missing streams and report ``(restored, still_missing)``."""
     restored = 0
     for stream_path, _existed, _artwork_path in target.streams:
         if target.can_restore_stream and services.create_stream_file(stream_path, target.item["video_id"]):
             restored += 1
-    return restored
+    missing = sum(
+        1 for stream_path, _existed, _artwork_path in target.streams
+        if not stream_path.exists()
+    )
+    return restored, missing
+
+
+def _mark_streams_unavailable(conn, video_id: str) -> None:
+    """Stop advertising playback for a video whose stream could not be restored."""
+    from common import db
+
+    now = int(_core.time.time())
+    tables = db.table_names(conn)
+    with conn:
+        conn.execute("UPDATE videos SET playable=0 WHERE id=%s", (video_id,))
+        if "dead_streams" in tables:
+            conn.execute(
+                "INSERT INTO dead_streams (video_id, reason, detected_at) VALUES (%s, %s, %s) "
+                "ON CONFLICT (video_id) DO UPDATE SET reason=EXCLUDED.reason, "
+                "detected_at=EXCLUDED.detected_at",
+                (video_id, "audit repair could not restore the stream file", now),
+            )
 
 
 def _restore_artwork(target: _RepairTarget, services) -> int:
@@ -133,12 +155,17 @@ def _audit_repair_artwork(conn, job_id: str, payload: dict, media_dir: Path, ser
 
     restored_streams = 0
     repaired_artwork_files = 0
+    streams_marked_unavailable = 0
     for index, target in enumerate(targets, start=1):
         latest = _audit_repair_state(conn, audit_id, finding_ids)
         if latest is None or latest["revisions"] != revisions:
             raise ValueError("Audit findings or library metadata changed before the repair.")
         _core._record_job_progress(conn, job_id, "restoring_files", completed=index - 1, total=len(targets))
-        restored_streams += _restore_streams(target, services)
+        restored, missing = _restore_streams(target, services)
+        restored_streams += restored
+        if missing:
+            _mark_streams_unavailable(conn, target.item["video_id"])
+            streams_marked_unavailable += 1
         if target.repair_artwork:
             repaired_artwork_files += _restore_artwork(target, services)
         _core._record_job_progress(conn, job_id, "restoring_files", completed=index, total=len(targets))
@@ -148,4 +175,5 @@ def _audit_repair_artwork(conn, job_id: str, payload: dict, media_dir: Path, ser
         conn.execute("UPDATE admin_audit_items SET status='resolved' WHERE job_id=%s AND id=ANY(%s) AND status='open'",
                      (audit_id, finding_ids))
     return {"audit_id": audit_id, "repaired_items": len(targets), "restored_streams": restored_streams,
-            "repaired_artwork_files": repaired_artwork_files, "local_state": local_state}
+            "repaired_artwork_files": repaired_artwork_files,
+            "streams_marked_unavailable": streams_marked_unavailable, "local_state": local_state}

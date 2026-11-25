@@ -144,7 +144,7 @@ class TestDesktopApiOffline(unittest.TestCase):
         4. No duplicate route registrations across intended surfaces
         """
         from resolver.desktop_api import router as desktop_router, create_desktop_integration_app
-        from resolver.client_auth_routes import pairing_router, admin_pairing_router
+        from resolver.pairing_routes import pairing_router, admin_pairing_router
         from resolver import admin as admin_module
 
         # 1. Pairing-init and pairing-status are available when opted in

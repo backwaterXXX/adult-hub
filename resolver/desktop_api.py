@@ -727,7 +727,7 @@ async def post_revoke(request: Request) -> JSONResponse:
 # TV Device Pairing Endpoints
 # ---------------------------------------------------------------------------
 
-from resolver.client_auth_routes import pairing_router  # noqa: E402
+from resolver.pairing_routes import pairing_router  # noqa: E402
 
 router.include_router(pairing_router)
 

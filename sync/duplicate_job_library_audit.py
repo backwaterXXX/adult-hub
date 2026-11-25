@@ -255,7 +255,8 @@ def _consistency_audit(conn, job_id: str, media_dir: Path, services, payload: di
     # Inspect only the configured library, with a hard entry/depth limit and no
     # symlink traversal. Store aggregate evidence so paths and titles stay private.
     sidecars = performer_artwork_paths(conn)
-    orphan_families, inventory_entries, inventory_complete = _core._audit_library_inventory(
+    (orphan_families, inventory_entries, inventory_complete,
+     inventory_directories) = _core._audit_library_inventory(
         media_dir, registered_streams, sidecars,
     )
     _store_orphan_findings(ctx, orphan_families)
@@ -270,7 +271,8 @@ def _consistency_audit(conn, job_id: str, media_dir: Path, services, payload: di
               "findings": ctx.findings,
               "findings_pruned": pruned,
               "library_inventory_status": "complete" if inventory_complete else "partial",
-              "library_inventory_entries": inventory_entries}
+              "library_inventory_entries": inventory_entries,
+              "library_inventory_directories": inventory_directories}
     if isinstance(payload.get("audit_batch_id"), str):
         result["audit_batch_id"] = payload["audit_batch_id"]
     return result

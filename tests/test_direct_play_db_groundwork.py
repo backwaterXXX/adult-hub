@@ -41,7 +41,7 @@ class TestDirectPlayMigrationRegistration(unittest.TestCase):
         self.assertIn(legacy_migration, POST_BASELINE_MIGRATIONS)
         self.assertEqual(legacy_migration.version, 69)
         self.assertEqual(legacy_migration.name, "0069_direct_play_user_state")
-        self.assertEqual(POST_BASELINE_CEILING, 76)
+        self.assertEqual(POST_BASELINE_CEILING, 77)
         self.assertIn(legacy_migration, POST_BASELINE_MIGRATIONS)
         _validate_active_migrations(POST_BASELINE_MIGRATIONS)
 
@@ -186,6 +186,7 @@ class TestDirectPlayMigrationRegistration(unittest.TestCase):
         applied.append(_rec(74, "0074_drop_jellyfin_person_sync"))
         applied.append(_rec(75, "0075_drop_nfo_audit_kinds"))
         applied.append(_rec(76, "0076_prune_superseded_audit_findings"))
+        applied.append(_rec(77, "0077_remove_dangling_synced_files"))
         self.assertEqual(_migration_plan(applied), [])
 
     def test_lineage_b_current_forward_chain_isolation_and_no_collision(self):

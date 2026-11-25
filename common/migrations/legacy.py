@@ -119,6 +119,9 @@ from common.migrations.m0075_drop_nfo_audit_kinds import (
 from common.migrations.m0076_prune_superseded_audit_findings import (
     migration as prune_superseded_audit_findings,
 )
+from common.migrations.m0077_remove_dangling_synced_files import (
+    migration as remove_dangling_synced_files,
+)
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -199,4 +202,5 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     drop_jellyfin_person_sync,
     drop_nfo_audit_kinds,
     prune_superseded_audit_findings,
+    remove_dangling_synced_files,
 )

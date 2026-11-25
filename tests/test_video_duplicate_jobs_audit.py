@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -70,6 +71,44 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
                                    (queued["jobs"][0]["job_id"],)).fetchone()[0]
         self.assertEqual(json.loads(result)["repaired_artwork_files"], 1)
 
+
+    def test_stream_repair_marks_the_video_unavailable_when_it_cannot_restore(self):
+        """A stream that cannot be recreated must stop advertising playback."""
+        video_id = "telegram:-1001:34:unrestorable"
+        self._add_video(video_id)
+        audit_id = "audit-repair-unrestorable"
+        file_path = self.conn.execute(
+            "SELECT file_path FROM synced_files WHERE video_id=%s", (video_id,)
+        ).fetchone()[0]
+        stream_path = sync.resolve_media_path(file_path, self.media)
+        stream_path.unlink()
+        with self.conn:
+            self.conn.execute("UPDATE videos SET playable=1 WHERE id=%s", (video_id,))
+            self.conn.execute(
+                "INSERT INTO video_duplicate_jobs (id,action,state,payload,result,created_at,updated_at) "
+                "VALUES (%s,'consistency_audit','done','{}','{}',1,1)", (audit_id,)
+            )
+            finding_id = self.conn.execute(
+                "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence) "
+                "VALUES (%s,%s,'missing_stream','open','test') RETURNING id", (audit_id, video_id)
+            ).fetchone()[0]
+        plan = preview_audit_repair(self.db_url, audit_id, [int(finding_id)])
+        self.assertEqual(plan["outcome"], "previewed")
+        queued = execute_operation(self.db_url, plan["plan_id"])
+
+        with patch.object(sync, "create_stream_file", return_value=False):
+            self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
+
+        result = json.loads(self.conn.execute(
+            "SELECT result FROM video_duplicate_jobs WHERE id=%s", (queued["jobs"][0]["job_id"],)
+        ).fetchone()[0])
+        self.assertEqual(result["streams_marked_unavailable"], 1)
+        self.assertEqual(self.conn.execute(
+            "SELECT playable FROM videos WHERE id=%s", (video_id,)
+        ).fetchone()[0], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT count(*) FROM dead_streams WHERE video_id=%s", (video_id,)
+        ).fetchone()[0], 1)
 
     def test_audit_stream_repair_recreates_only_registered_stream_and_resolves_finding(self):
         video_id = "telegram:-1001:33:repairstream"
@@ -234,6 +273,7 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
         ).fetchone()[0])
         self.assertEqual(result["library_inventory_status"], "complete")
         self.assertGreater(result["library_inventory_entries"], 0)
+        self.assertGreaterEqual(result["library_inventory_directories"], 1)
 
 
     def test_consistency_audit_ignores_performer_artwork_registered_under_performers(self):
@@ -336,6 +376,27 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
             "a portrait registered in performer_photos must be refused",
         )
 
+    def test_partial_walk_still_reports_the_directory_tree_it_reached(self):
+        """A tight budget must not stop at the root and hide nested folders."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media = Path(temp_dir)
+            deep = media / "zz-performers"
+            deep.mkdir()
+            (deep / "portrait.jpg").write_bytes(b"artwork")
+            for index in range(6):
+                (media / f"root-{index}.jpg").write_bytes(b"x")
+
+            with patch.object(duplicate_jobs, "_AUDIT_INVENTORY_MAX_ENTRIES", 3):
+                orphans, scanned, complete, directories = duplicate_jobs._audit_library_inventory(
+                    media, set(),
+                )
+
+        self.assertFalse(complete)
+        self.assertEqual(scanned, 3)
+        self.assertGreaterEqual(directories, 2, "the walk must still reach nested directories")
+        paths = [item["path"] for family in orphans for item in family["files"]]
+        self.assertNotIn("zz-performers/portrait.jpg", paths)
+
     def test_consistency_audit_marks_bounded_filesystem_inventory_partial(self):
         from common.job_queue import enqueue_job
         job_id = enqueue_job(self.db_path, "consistency_audit", {})
@@ -352,7 +413,9 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
         for name in ("one.strm", "two.jpg", "three.jpg"):
             (self.media / name).write_bytes(b"fixture")
         with patch.object(duplicate_jobs, "_AUDIT_INVENTORY_MAX_ENTRIES", 10):
-            _orphans, scanned, complete = duplicate_jobs._audit_library_inventory(self.media, set())
+            _orphans, scanned, complete, _directories = duplicate_jobs._audit_library_inventory(
+                self.media, set(),
+            )
         self.assertTrue(complete)
         self.assertLessEqual(scanned, 10)
 

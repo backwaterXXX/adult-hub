@@ -69,7 +69,7 @@ except ModuleNotFoundError as e:
     else:
         raise
 
-from resolver.client_auth_routes import (
+from resolver.pairing_routes import (
     admin_pairing_router,
     set_test_db_url,
     _db_connection,
@@ -263,21 +263,21 @@ class TestClientAuthOffline(unittest.TestCase):
         """Runtime auth DB connection resolves via canonical config and never falls back to TEST_DATABASE_URL in production."""
         set_test_db_url(None)
         with patch.dict(os.environ, {"DATABASE_URL": "postgresql://usr:pwd@host:5432/proddb", "TEST_DATABASE_URL": "postgresql://usr:pwd@host:5432/testdb"}):
-            with patch("resolver.client_auth_routes.db.connect") as mock_connect:
+            with patch("resolver.pairing_routes.db.connect") as mock_connect:
                 _db_connection()
                 mock_connect.assert_called_with("postgresql://usr:pwd@host:5432/proddb")
 
         # In production mode without injected test URL and with unset DATABASE_URL, never falls back to TEST_DATABASE_URL
         with patch.dict(os.environ, {"DATABASE_URL": "", "STANDALONE_DATABASE_URL": "", "TEST_DATABASE_URL": "postgresql://usr:pwd@host:5432/testdb"}, clear=False):
             with patch.object(admin_module, "HUB_DB_URL", None):
-                with patch("resolver.client_auth_routes.db.connect") as mock_connect:
+                with patch("resolver.pairing_routes.db.connect") as mock_connect:
                     _db_connection()
                     mock_connect.assert_called_with()
 
         # Explicit test fixture injection is honored
         set_test_db_url("postgresql://usr:pwd@host:5432/injected_disposable")
         try:
-            with patch("resolver.client_auth_routes.db.connect") as mock_connect:
+            with patch("resolver.pairing_routes.db.connect") as mock_connect:
                 _db_connection()
                 mock_connect.assert_called_with("postgresql://usr:pwd@host:5432/injected_disposable")
         finally:

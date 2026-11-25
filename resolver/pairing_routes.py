@@ -1,4 +1,4 @@
-"""FastAPI routes for Adult Hub Direct Play Client API v1 Authentication & TV Pairing.
+"""FastAPI routes for Adult Hub Direct Play Client API v1 TV pairing.
 
 Enforces:
 - Strict Cache-Control: private, no-store on sensitive endpoints

@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -49,35 +50,73 @@ def _audit_library_inventory(media_dir: Path, registered_streams: set[str],
 
     ``registered_sidecars`` carries paths registered outside ``synced_files``
     (performer artwork); a family that holds one of them is not an orphan.
+
+    The walk is breadth-first and visits a directory's subdirectories before its
+    files, so a tripped entry budget still reports the tree structure instead of
+    silently skipping whole folders (the artwork folder used to be invisible).
     """
     root = Path(media_dir).resolve()
-    stack = [(root, 0)]
+    queue = deque([(root, 0)])
     families: dict[tuple[str, str], list[dict]] = {}
     scanned = 0
+    directories = 0
     complete = True
-    while stack:
-        directory, depth = stack.pop()
+    budget_exhausted = False
+    while queue:
+        directory, depth = queue.popleft()
+        directories += 1
         try:
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    if scanned >= _AUDIT_INVENTORY_MAX_ENTRIES:
-                        complete = False
-                        stack.clear()
-                        break
-                    scanned += 1
-                    kind = _entry_kind(entry)
-                    if kind == "incomplete":
-                        complete = False
-                    elif kind == "dir":
-                        if depth >= _AUDIT_INVENTORY_MAX_DEPTH:
-                            complete = False
-                        else:
-                            stack.append((Path(entry.path), depth + 1))
-                    elif kind == "file" and not _record_family_file(entry, root, families):
-                        complete = False
+            with os.scandir(directory) as raw_entries:
+                entries = list(raw_entries)
         except OSError:
             complete = False
-    return _orphan_families(families, registered_streams, registered_sidecars), scanned, complete
+            continue
+        if budget_exhausted:
+            _queue_subdirectories(entries, depth, queue)
+            continue
+        for entry in sorted(entries, key=_entry_sort_key):
+            if scanned >= _AUDIT_INVENTORY_MAX_ENTRIES:
+                complete = False
+                budget_exhausted = True
+                break
+            scanned += 1
+            if not _consume_entry(entry, depth, root, families, queue):
+                complete = False
+    return (_orphan_families(families, registered_streams, registered_sidecars),
+            scanned, complete, directories)
+
+
+def _queue_subdirectories(entries, depth: int, queue) -> None:
+    """Enqueue a directory's children without recording any file (structure only)."""
+    if depth >= _AUDIT_INVENTORY_MAX_DEPTH:
+        return
+    for entry in entries:
+        if _entry_kind(entry) == "dir":
+            queue.append((Path(entry.path), depth + 1))
+
+
+def _consume_entry(entry, depth: int, root: Path, families, queue) -> bool:
+    """Apply one directory entry. False means the pass cannot claim to be complete."""
+    kind = _entry_kind(entry)
+    if kind == "incomplete":
+        return False
+    if kind == "dir":
+        if depth >= _AUDIT_INVENTORY_MAX_DEPTH:
+            return False
+        queue.append((Path(entry.path), depth + 1))
+        return True
+    if kind == "file":
+        return _record_family_file(entry, root, families)
+    return True
+
+
+def _entry_sort_key(entry) -> tuple[int, str]:
+    """Order a directory listing with subdirectories first, then by name."""
+    try:
+        is_dir = entry.is_dir(follow_symlinks=False)
+    except OSError:
+        is_dir = False
+    return (0 if is_dir else 1, entry.name.casefold())
 
 
 def _entry_kind(entry) -> str:

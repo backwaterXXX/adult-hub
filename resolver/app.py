@@ -29,7 +29,7 @@ from resolver.providers._http import get_shared_client, aclose_shared_client
 from resolver import admin as admin_module
 from resolver.admin import router as admin_router
 from resolver.admin_v2_errors import configure_activity_database, v2_error_response
-from resolver.client_auth_routes import admin_pairing_router
+from resolver.pairing_routes import admin_pairing_router
 from common.app_version import __version__ as APP_VERSION
 from resolver.metrics import resolver_metrics
 from resolver.catalog_api import (
