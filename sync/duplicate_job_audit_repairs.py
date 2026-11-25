@@ -180,7 +180,7 @@ def _audit_repair_nfo(conn, job_id: str, payload: dict, media_dir: Path, service
     local_state = "files_repaired" if has_stream_repair else "nfo_repaired"
     _core._store_job_result_field(conn, job_id, "local_state", local_state)
     refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, local_state, services)
-    if not refreshed:
+    if not refreshed and _core._jellyfin_configured():
         _core._store_job_result_field(conn, job_id, "jellyfin_refresh", "failed")
         raise RuntimeError("Local files were repaired, but Jellyfin refresh failed. Retry this task to resume the refresh.")
     with conn:
@@ -189,7 +189,7 @@ def _audit_repair_nfo(conn, job_id: str, payload: dict, media_dir: Path, service
     return {"audit_id": audit_id, "repaired_items": len(targets), "restored_streams": restored_streams,
             "repaired_nfo_files": repaired_nfo_files, "repaired_artwork_files": repaired_artwork_files,
             "local_state": local_state,
-            "jellyfin_refresh": "updated"}
+            "jellyfin_refresh": _core.jellyfin_refresh_status(refreshed)}
 
 def _audit_import_refresh(conn, job_id: str, payload: dict, services) -> dict:
     """Request Jellyfin refresh for selected import findings without claiming confirmation."""

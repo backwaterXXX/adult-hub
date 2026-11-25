@@ -73,13 +73,13 @@ def _committed_result_without_rerun(conn, job_id, action, payload, services):
         committed = conn.execute("SELECT 1 FROM video_duplicate_decisions WHERE loser_id=%s AND keeper_id=%s AND operation_id=%s AND state='active'", (video_id, video_id, job_id)).fetchone()
         if committed and (not conn.execute('SELECT 1 FROM videos WHERE id=%s', (video_id,)).fetchone()):
             refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'quarantined', services)
-            return {'operation_id': job_id, 'quarantined': [video_id], 'local_state': 'quarantined', 'jellyfin_refresh': 'updated' if refreshed else 'failed'}
+            return {'operation_id': job_id, 'quarantined': [video_id], 'local_state': 'quarantined', 'jellyfin_refresh': _core.jellyfin_refresh_status(refreshed)}
     if action == 'hide':
         requested = {str(x) for x in payload.get('loser_ids', [])}
         committed = {r[0] for r in conn.execute("SELECT loser_id FROM video_duplicate_decisions WHERE operation_id=%s AND state='active'", (job_id,)).fetchall()}
         if requested and requested == committed:
             refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'hidden', services)
-            return {'operation_id': job_id, 'hidden': sorted(requested), 'keeper_id': payload.get('keeper_id'), 'local_state': 'hidden', 'jellyfin_refresh': 'updated' if refreshed else 'failed'}
+            return {'operation_id': job_id, 'hidden': sorted(requested), 'keeper_id': payload.get('keeper_id'), 'local_state': 'hidden', 'jellyfin_refresh': _core.jellyfin_refresh_status(refreshed)}
     if action == 'undo':
         operation = str(payload.get('operation_id') or '')
         active = conn.execute("SELECT count(*) FROM video_duplicate_decisions WHERE operation_id=%s AND state='active'", (operation,)).fetchone()[0]
@@ -92,7 +92,7 @@ def _committed_result_without_rerun(conn, job_id, action, payload, services):
         } if restored_ids else set()
         if not active and restored_ids and existing_ids == set(restored_ids):
             refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'restored', services)
-            return {'operation_id': operation, 'restored': restored_ids, 'local_state': 'restored', 'jellyfin_refresh': 'updated' if refreshed else 'failed'}
+            return {'operation_id': operation, 'restored': restored_ids, 'local_state': 'restored', 'jellyfin_refresh': _core.jellyfin_refresh_status(refreshed)}
     return None
 
 

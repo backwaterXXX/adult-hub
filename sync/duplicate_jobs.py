@@ -308,10 +308,25 @@ def _finish_job(conn, job_id: str, result: dict) -> None:
         )
 
 
+def _jellyfin_configured() -> bool:
+    """True when Jellyfin is wired in; False means the whole integration is off."""
+    import os
+    return bool(
+        os.getenv("JELLYFIN_URL", "").strip()
+        and os.getenv("JELLYFIN_API_KEY", "").strip()
+    )
+
+
+def jellyfin_refresh_status(refreshed: bool) -> str:
+    """Describe the Jellyfin half of a job honestly: an off integration is 'skipped'."""
+    if refreshed:
+        return "updated"
+    return "failed" if _jellyfin_configured() else "skipped"
+
+
 def _refresh_jellyfin_with_progress(conn, job_id: str, local_state: str, services) -> bool:
     """Persist local success and the remote request stage before calling Jellyfin."""
-    import os
-    if not os.getenv("JELLYFIN_URL", "").strip() or not os.getenv("JELLYFIN_API_KEY", "").strip():
+    if not _jellyfin_configured():
         _record_job_progress(
             conn, job_id, "refreshing_jellyfin", local_state=local_state, jellyfin_refresh="skipped"
         )

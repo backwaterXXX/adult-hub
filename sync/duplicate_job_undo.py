@@ -443,5 +443,5 @@ def _run_undo(conn, job_id, payload, media_dir, services, quarantine_root, now, 
         _restore_keeper_metadata(conn, snapshots, media_dir, services, now)
     run.catalog_committed = True
     refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'restored', services)
-    result = {'operation_id': operation, 'restored': [s['video']['id'] for s in snapshots], 'local_state': 'restored', 'jellyfin_refresh': 'updated' if refreshed else 'failed'}
+    result = {'operation_id': operation, 'restored': [s['video']['id'] for s in snapshots], 'local_state': 'restored', 'jellyfin_refresh': _core.jellyfin_refresh_status(refreshed)}
     return result

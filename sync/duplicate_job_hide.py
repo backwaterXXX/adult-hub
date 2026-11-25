@@ -208,7 +208,7 @@ def _run_hide(conn, job_id, payload, media_dir, services, quarantine_root, now, 
     _core._store_job_result_field(conn, job_id, 'snapshots', snapshots)
     run.catalog_committed = True
     refreshed = _core._refresh_jellyfin_with_progress(conn, job_id, 'hidden', services)
-    result = {'operation_id': job_id, 'hidden': losers, 'keeper_id': keeper, 'local_state': 'hidden', 'jellyfin_refresh': 'updated' if refreshed else 'failed'}
+    result = {'operation_id': job_id, 'hidden': losers, 'keeper_id': keeper, 'local_state': 'hidden', 'jellyfin_refresh': _core.jellyfin_refresh_status(refreshed)}
     _core._finish_job(conn, job_id, result)
     conn.commit()
     return result

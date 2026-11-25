@@ -351,7 +351,7 @@ def _action_artwork_generate(conn, job_id, payload, media_dir, services):
         conn, job_id, "artwork_generated", services,
     )
     return {"local_state": "artwork_generated",
-            "jellyfin_refresh": "updated" if refreshed else "failed",
+            "jellyfin_refresh": _core.jellyfin_refresh_status(refreshed),
             "variant": str(variant or "original")}, True
 
 
@@ -371,7 +371,7 @@ def _action_artwork_download(conn, job_id, payload, media_dir, services):
         if not jf_url or not jf_key:
             result["jellyfin_refresh"] = "skipped"
         else:
-            result["jellyfin_refresh"] = "updated" if refreshed else "failed"
+            result["jellyfin_refresh"] = _core.jellyfin_refresh_status(refreshed)
     return result, True
 
 
