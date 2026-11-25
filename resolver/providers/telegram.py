@@ -131,6 +131,7 @@ from resolver.providers.telegram_variants import (
     find_variant_document,
     should_ignore_alt_documents,
 )
+from resolver.providers.telegram_errors import TelegramMessageNotFound
 from resolver.providers.telegram_filesize import (
     file_size_impl,
     set_cached_file_size,
@@ -552,7 +553,7 @@ class TelegramProvider(BaseProvider):
         async with _acquire_client_lease(channel_ref) as (_account_id, client):
             message = await _get_cached_message(client, channel_ref, int(message_id), account_id=_account_id)
             if message is None:
-                raise ValueError(f"Telegram message not found for ref {ref!r}")
+                raise TelegramMessageNotFound(f"Telegram message not found for ref {ref!r}")
             media = getattr(message, "media", None) or getattr(message, "document", None)
             if media is None:
                 raise ValueError(f"Telegram message has no media for ref {ref!r}")
@@ -588,7 +589,7 @@ class TelegramProvider(BaseProvider):
         async with _acquire_client_lease(channel_ref) as (_account_id, client):
             message = await _get_cached_message(client, channel_ref, int(message_id), account_id=_account_id)
             if message is None:
-                raise ValueError(f"Telegram message not found for ref {provider_video_id!r}")
+                raise TelegramMessageNotFound(f"Telegram message not found for ref {provider_video_id!r}")
             media = getattr(message, "media", None) or getattr(message, "document", None)
             if media is None:
                 raise ValueError(f"Telegram message has no media for ref {provider_video_id!r}")
@@ -688,7 +689,7 @@ class TelegramProvider(BaseProvider):
         async with _acquire_client_lease(channel_ref, affinity_account=affinity_account) as (_account_id, client):
             message = await _get_cached_message(client, channel_ref, int(message_id), account_id=_account_id)
             if message is None:
-                raise ValueError(f"Telegram message not found for ref {ref!r}")
+                raise TelegramMessageNotFound(f"Telegram message not found for ref {ref!r}")
             media = getattr(message, "media", None) or getattr(message, "document", None)
             if media is None:
                 raise ValueError(f"Telegram message has no media for ref {ref!r}")

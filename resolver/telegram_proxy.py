@@ -10,6 +10,7 @@ from common.config import get_telegram_metadata_timeout
 from fastapi import HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from common import telegram_playback_activity
+from resolver.providers.telegram_errors import TelegramMessageNotFound
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -145,6 +146,15 @@ async def _stop_heartbeat(services: TelegramProxyServices, heartbeat_task) -> No
         pass
 
 
+async def _close_stream_iterator(iterator) -> None:
+    close_iterator = getattr(iterator, "aclose", None)
+    if callable(close_iterator):
+        try:
+            await close_iterator()
+        except Exception:
+            _LOGGER.debug("Ignored exception in _close_stream_iterator", exc_info=True)
+
+
 async def _finish_stream(services: TelegramProxyServices, iterator, playback_handle) -> None:
     if playback_handle:
         try:
@@ -153,16 +163,36 @@ async def _finish_stream(services: TelegramProxyServices, iterator, playback_han
             )
         except Exception:
             _LOGGER.debug("Ignored exception in _tg_gen", exc_info=True)
-    close_iterator = getattr(iterator, "aclose", None)
-    if callable(close_iterator):
-        try:
-            await close_iterator()
-        except Exception:
-            _LOGGER.debug("Ignored exception in _tg_gen", exc_info=True)
+    await _close_stream_iterator(iterator)
 
 
-async def _tg_gen(services: TelegramProxyServices, stream, ref: str, playback_handle):
+async def _open_first_chunk(services: TelegramProxyServices, stream, ref: str):
+    """Read the first chunk before any response headers are sent.
+
+    ``download_range`` is an async generator, so nothing touches Telegram until the first
+    ``__anext__()``. Peeking it here lets a stream that cannot produce a single byte answer
+    with a truthful status (404 for a message that no longer exists, 502 otherwise) instead
+    of starting a 200/206 response that the client then sees truncated.
+    """
     iterator = stream.__aiter__()
+    try:
+        return iterator, await iterator.__anext__()
+    except StopAsyncIteration:
+        # An empty download is still a complete, valid answer.
+        return iterator, b""
+    except TelegramMessageNotFound as error:
+        await _close_stream_iterator(iterator)
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except HTTPException:
+        await _close_stream_iterator(iterator)
+        raise
+    except Exception as error:
+        await _close_stream_iterator(iterator)
+        _LOGGER.warning("Telegram stream failed for %s: %s", ref, error)
+        raise HTTPException(status_code=502, detail=f"Telegram download failed: {error}") from error
+
+
+async def _tg_gen(services: TelegramProxyServices, iterator, ref: str, playback_handle, first_chunk: bytes = b""):
     heartbeat_task = None
 
     async def heartbeat():
@@ -175,6 +205,8 @@ async def _tg_gen(services: TelegramProxyServices, stream, ref: str, playback_ha
     try:
         if playback_handle:
             heartbeat_task = services.asyncio.create_task(heartbeat())
+        if first_chunk:
+            yield first_chunk
         while True:
             try:
                 chunk = await iterator.__anext__()
@@ -244,12 +276,15 @@ async def proxy_telegram_response(
     # download_range is an async generator, so opening it does not contact Telegram. Stalls are
     # bounded per chunk in the download stream instead, so no timeout is applied here.
     stream = await _open_download(services, prov, ref, offset, length)
+    # The first chunk decides whether the response can carry bytes at all: a message that no
+    # longer exists must answer 404 here, before the status line and headers are sent.
+    iterator, first_chunk = await _open_first_chunk(services, stream, ref)
 
     playback_handle = None
     if not is_head and not _is_worker_request(request):
         playback_handle = await _start_playback(services, ref, total)
 
-    body = _tg_gen(services, stream, ref, playback_handle)
+    body = _tg_gen(services, iterator, ref, playback_handle, first_chunk)
     if partial_headers is not None:
         return StreamingResponse(body, status_code=206, headers=partial_headers, media_type="application/octet-stream")
     tg_headers = {"Accept-Ranges": "bytes", "Content-Type": "application/octet-stream"}

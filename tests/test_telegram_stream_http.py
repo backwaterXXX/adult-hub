@@ -300,5 +300,104 @@ class TestTelegramHeadAndRange(unittest.IsolatedAsyncioTestCase):
 
 
 
+class TestStreamStartFailures(unittest.IsolatedAsyncioTestCase):
+    """A stream that cannot produce one byte must answer with a status, not a truncated body."""
+
+    async def test_missing_message_answers_404_before_any_bytes(self):
+        _require_resolver(self)
+        from fastapi import HTTPException
+        from unittest.mock import patch
+        from resolver.providers.telegram_errors import TelegramMessageNotFound
+
+        class GoneProvider(FakeRefProvider):
+            async def download_range(self, ref, offset, length):
+                self.download_calls.append((ref, offset, length))
+
+                async def chunks():
+                    raise TelegramMessageNotFound(f"Telegram message not found for ref {ref!r}")
+                    yield b""  # pragma: no cover - keeps chunks() an async generator
+
+                return chunks()
+
+        prov = GoneProvider(b"payload")
+        with patch.object(resolver_app, "get_provider", return_value=prov):
+            with self.assertRaises(HTTPException) as raised:
+                await resolver_app._proxy_telegram_response(
+                    _fake_request("GET", None), "tg://-1001234567890:5:99")
+
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertIn("not found", raised.exception.detail)
+
+    async def test_missing_message_answers_404_for_a_range_request_too(self):
+        _require_resolver(self)
+        from fastapi import HTTPException
+        from unittest.mock import patch
+        from resolver.providers.telegram_errors import TelegramMessageNotFound
+
+        class GoneProvider(FakeRefProvider):
+            async def download_range(self, ref, offset, length):
+                async def chunks():
+                    raise TelegramMessageNotFound("gone")
+                    yield b""  # pragma: no cover
+
+                return chunks()
+
+        prov = GoneProvider(b"payload")
+        with patch.object(resolver_app, "get_provider", return_value=prov):
+            with self.assertRaises(HTTPException) as raised:
+                await resolver_app._proxy_telegram_response(
+                    _fake_request("GET", "bytes=0-1023"), "tg://-1001234567890:5:99")
+
+        self.assertEqual(raised.exception.status_code, 404)
+
+    async def test_first_chunk_failure_answers_502(self):
+        _require_resolver(self)
+        from fastapi import HTTPException
+        from unittest.mock import patch
+
+        class BrokenProvider(FakeRefProvider):
+            async def download_range(self, ref, offset, length):
+                async def chunks():
+                    raise RuntimeError("Telegram download blew up")
+                    yield b""  # pragma: no cover
+
+                return chunks()
+
+        prov = BrokenProvider(b"payload")
+        with patch.object(resolver_app, "get_provider", return_value=prov):
+            with self.assertRaises(HTTPException) as raised:
+                await resolver_app._proxy_telegram_response(_fake_request("GET", None), "tg://ref")
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertIn("Telegram download failed", raised.exception.detail)
+
+    async def test_peeked_first_chunk_is_served_whole(self):
+        _require_resolver(self)
+        from unittest.mock import patch
+
+        payload = bytes(i % 253 for i in range(30_000))
+        prov = FakeRefProvider(payload)
+        with patch.object(resolver_app, "get_provider", return_value=prov):
+            resp = await resolver_app._proxy_telegram_response(_fake_request("GET", None), "tg://ref")
+
+        self.assertEqual(resp.status_code, 200)
+        body = await response_body(resp)
+        self.assertEqual(body, payload)
+
+    async def test_peeked_first_chunk_keeps_range_offsets_exact(self):
+        _require_resolver(self)
+        from unittest.mock import patch
+
+        payload = bytes(i % 251 for i in range(20_000))
+        prov = FakeRefProvider(payload)
+        with patch.object(resolver_app, "get_provider", return_value=prov):
+            resp = await resolver_app._proxy_telegram_response(
+                _fake_request("GET", "bytes=5000-5999"), "tg://ref")
+
+        self.assertEqual(resp.status_code, 206)
+        body = await response_body(resp)
+        self.assertEqual(body, payload[5000:6000])
+
+
 if __name__ == "__main__":
     unittest.main()
