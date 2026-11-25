@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 # weeks; 200 clears the same backlog in days without hammering Telegram.
 MAX_ARTWORK_GENERATION_ITEMS = 200
 ARTWORK_GENERATION_OFFSET_SECONDS = 60
+# A stream that ffmpeg cannot decode never yields a frame, so the schedule stops
+# spending its bounded batch on it after this many confirmed extraction failures.
+ARTWORK_FRAME_FAILURE_LIMIT = 3
 
 
 def artwork_needs_generation(path: Path, *, bumper_hashes=None) -> bool:
@@ -57,7 +60,8 @@ def build_artwork_generation_jobs(conn, media_dir: Path, *, limit: int = MAX_ART
     rows = conn.execute(
         "SELECT v.id,v.duration,sf.file_path FROM videos v "
         "JOIN synced_files sf ON sf.video_id=v.id "
-        f"WHERE COALESCE(v.playable, 1) != 0{_dead_stream_exclusion(conn)} "
+        f"WHERE COALESCE(v.playable, 1) != 0{_dead_stream_exclusion(conn)}"
+        f"{_parked_artwork_exclusion(conn)} "
         "ORDER BY v.first_seen DESC NULLS LAST,v.last_seen DESC NULLS LAST,sf.file_path"
     ).fetchall()
     from sync.media_files import resolve_media_path
@@ -97,6 +101,35 @@ def _dead_stream_exclusion(conn) -> str:
     if "dead_streams" not in tables:
         return ""
     return " AND NOT EXISTS (SELECT 1 FROM dead_streams ds WHERE ds.video_id = v.id)"
+
+
+def _parked_artwork_exclusion(conn) -> str:
+    """Return the filter that skips streams whose frame extraction keeps failing.
+
+    ffmpeg cannot decode those files, so re-queuing them every four hours only
+    burns slots of the bounded batch. They stay visible as missing artwork in the
+    audit, and the one-month job-history retention retries them eventually; an
+    operator can still queue one video by hand.
+    """
+    from common import db
+
+    try:
+        tables = db.table_names(conn)
+    except Exception:
+        return ""
+    if "video_duplicate_jobs" not in tables:
+        return ""
+    pattern = '%"artwork_frame_extraction_failed"%'
+    return (
+        " AND NOT EXISTS (SELECT 1 FROM ("
+        "SELECT j.payload::jsonb ->> 'video_id' AS parked_id "
+        "FROM video_duplicate_jobs j "
+        "WHERE j.action = 'artwork_generate' AND j.state = 'failed' "
+        f"AND j.result LIKE '{pattern}' "
+        "GROUP BY 1 HAVING COUNT(*) >= "
+        f"{ARTWORK_FRAME_FAILURE_LIMIT}"
+        ") parked WHERE parked.parked_id = v.id)"
+    )
 
 
 def _default_bumper_hashes():

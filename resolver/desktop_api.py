@@ -432,7 +432,7 @@ async def get_version_discovery() -> JSONResponse:
             "desktop_api": True,
             "tv_pairing": True,
             "direct_play": True,
-            "user_state": False,
+            "user_state": True,
             "transcoding": False,
         },
         "endpoints": {

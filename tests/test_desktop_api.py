@@ -66,7 +66,7 @@ class TestDesktopApiOffline(unittest.TestCase):
     """Offline unit tests executable in hermetic sandboxes without database access."""
 
     def test_desktop_version_discovery_advertises_honest_capabilities(self):
-        """GET /api/v1/version advertises desktop capabilities and strictly disables TV pairing."""
+        """GET /api/v1/version advertises the desktop capabilities the service serves."""
         client = TestClient(desktop_test_app)
         res = client.get("/api/v1/version")
         self.assertEqual(res.status_code, 200)
@@ -81,7 +81,7 @@ class TestDesktopApiOffline(unittest.TestCase):
         self.assertTrue(caps.get("desktop_api"))
         self.assertTrue(caps.get("tv_pairing"))
         self.assertTrue(caps.get("direct_play"))
-        self.assertFalse(caps.get("user_state"))
+        self.assertTrue(caps.get("user_state"))
         self.assertFalse(caps.get("transcoding"))
 
         endpoints = data.get("endpoints", {})
@@ -1228,7 +1228,7 @@ print("__PAYLOAD_START__" + json.dumps(result) + "__PAYLOAD_END__")
         self.assertTrue(caps.get("desktop_api"))
         self.assertTrue(caps.get("tv_pairing"))
         self.assertTrue(caps.get("direct_play"))
-        self.assertFalse(caps.get("user_state"))
+        self.assertTrue(caps.get("user_state"))
         self.assertFalse(caps.get("transcoding"))
 
         endpoints = ver.get("endpoints", {})

@@ -160,23 +160,6 @@ class TestClientAuthOffline(unittest.TestCase):
         self.assertEqual(normalize_pairing_code(" 842 195 "), "842195")
         self.assertEqual(normalize_pairing_code("abc-def"), "ABCDEF")
 
-    def test_version_discovery_endpoint(self):
-        """GET /api/v1/version returns honest capabilities and public max-age=300 caching."""
-        client = TestClient(auth_test_app)
-        res = client.get("/api/v1/version")
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.headers.get("Cache-Control"), "public, max-age=300")
-        data = res.json()
-        self.assertEqual(data.get("api_version"), "1.0.0")
-        self.assertIn("1.0.0", data.get("supported_versions", []))
-        self.assertEqual(data.get("status"), "ok")
-        # Honest capabilities: TV pairing is implemented, playback/user state APIs are not yet mounted
-        self.assertTrue(data["capabilities"]["tv_pairing"])
-        self.assertFalse(data["capabilities"]["direct_play"])
-        self.assertFalse(data["capabilities"]["user_state"])
-        self.assertFalse(data["capabilities"]["transcoding"])
-        self.assertEqual(data["endpoints"]["auth"], "/api/v1/auth")
-
     def test_auth_endpoints_reject_query_parameters(self):
         """Secrets or parameters sent in query parameters are strictly rejected with 400."""
         client = TestClient(auth_test_app)

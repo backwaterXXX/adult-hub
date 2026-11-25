@@ -27,7 +27,6 @@ from fastapi import APIRouter, Header, Request, status
 from fastapi.responses import JSONResponse
 
 from common import db
-from common.app_version import __version__ as APP_VERSION
 from common.client_auth.service import (
     MAX_DEVICE_ID_LEN,
     MAX_DEVICE_NAME_LEN,
@@ -227,37 +226,6 @@ def _admin_write_guard(request: Request) -> JSONResponse | None:
             )
 
     return None
-
-
-# --- Version Discovery ---
-
-@router.get("/api/v1/version")
-async def get_version_discovery() -> JSONResponse:
-    """Standardized Client API v1 version discovery endpoint.
-
-    Strictly advertises only implemented capabilities and endpoints.
-    Direct play playback and user state APIs remain unadvertised until Stage 3+.
-    """
-    discovery = {
-        "api_version": "1.0.0",
-        "supported_versions": ["1.0.0"],
-        "server_version": APP_VERSION,
-        "status": "ok",
-        "capabilities": {
-            "direct_play": False,
-            "user_state": False,
-            "tv_pairing": True,
-            "transcoding": False,
-        },
-        "endpoints": {
-            "auth": "/api/v1/auth",
-        },
-    }
-    return JSONResponse(
-        content=discovery,
-        status_code=200,
-        headers={"Cache-Control": "public, max-age=300"},
-    )
 
 
 # --- Password Authentication ---
