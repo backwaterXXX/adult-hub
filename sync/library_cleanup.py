@@ -201,7 +201,7 @@ def _delete_retention_files(conn: db.Connection, media_dir: Path, vid_id, servic
         except ValueError as exc:
             services.logger.warning("Skipping unsafe media record: %s", exc)
             continue
-        for ext in (".strm", ".nfo", ".jpg", ".thumb_fail"):
+        for ext in (".strm", ".jpg", ".thumb_fail"):
             file_to_delete = path.with_suffix(ext)
             if file_to_delete.exists():
                 try:
@@ -237,7 +237,7 @@ def purge_videos(conn: db.Connection, media_dir: Path, comp_ids: List[str], reas
                     path = services.resolve_media_path(file_path, media_dir)
                 except ValueError:
                     continue
-                for ext in (".strm", ".nfo", ".jpg", ".thumb_fail"):
+                for ext in (".strm", ".jpg", ".thumb_fail"):
                     try:
                         path.with_suffix(ext).unlink(missing_ok=True)
                     except Exception:

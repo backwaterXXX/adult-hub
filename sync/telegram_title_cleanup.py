@@ -5,10 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
-import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
-from xml.dom import minidom
 import logging
 
 from common import db
@@ -93,70 +91,26 @@ def _display_title(title: str, performers: list[str], slug: str) -> str:
         return title
 
 
-def _patch_nfo(path: Path, *, title: str | None, genres: list[str],
-               tags: list[str]) -> bool:
-    try:
-        root = ET.parse(path).getroot()
-    except (OSError, ET.ParseError):
-        return False
-
-    changed = False
-    if title is not None:
-        element = root.find("title")
-        if element is None:
-            element = ET.SubElement(root, "title")
-        if (element.text or "").strip() != title:
-            element.text = title
-            changed = True
-
-    for element_name, values in (("genre", genres), ("tag", tags)):
-        existing = {
-            str(element.text or "").strip().casefold()
-            for element in root.findall(element_name) if str(element.text or "").strip()
-        }
-        for value in values:
-            if value.casefold() in existing:
-                continue
-            ET.SubElement(root, element_name).text = value
-            existing.add(value.casefold())
-            changed = True
-
-    if not changed:
-        return False
-    pretty = minidom.parseString(ET.tostring(root, encoding="utf-8")).toprettyxml(
-        indent="  ", encoding="utf-8")
-    clean_lines = [line for line in pretty.decode("utf-8").splitlines() if line.strip()]
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text("\n".join(clean_lines) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
-    return True
-
-
 def _fetch_title_batch(conn, cursor: str, size: int) -> tuple[list, bool]:
     """Return (rows for this batch, whether more rows follow) using a keyset cursor."""
     rows = conn.execute("""
         SELECT v.id, v.title, v.slug, v.source_text, v.source_filename, v.performers,
-               v.categories, v.tags, v.scene_match_source, o.fields, sf.file_path
+               v.categories, v.tags, v.scene_match_source, o.fields
         FROM videos v
         LEFT JOIN video_metadata_overrides o ON o.video_id=v.id
-        LEFT JOIN LATERAL (
-            SELECT file_path FROM synced_files WHERE video_id=v.id
-            ORDER BY created_at DESC, file_path LIMIT 1
-        ) sf ON TRUE
         WHERE v.provider='telegram' AND v.id > %s
         ORDER BY v.id LIMIT %s
     """, (cursor, size + 1)).fetchall()
     return rows[:size], len(rows) > size
 
 
-def _clean_title_row(conn, row, map_category, media_dir, resolve_media_path) -> tuple:
-    """Clean one video's title, categories, tags and NFO; return (title changed, tags added,
-    categories added, NFO missing, NFO failed)."""
+def _clean_title_row(conn, row, map_category) -> tuple:
+    """Clean one video's title, categories and tags; return (title changed, tags added,
+    categories added)."""
     (video_id, raw_title, slug, source_text, source_filename, performers_raw,
-     categories_raw, tags_raw, scene_source, overrides_raw, file_path) = row
+     categories_raw, tags_raw, scene_source, overrides_raw) = row
     video_id = str(video_id)
     overrides = _json_object(overrides_raw)
-    performers = _text_list(performers_raw)
     source_text = str(source_text or "")
     hashtags = extract_title_hashtags(
         source_text + "\n" + str(raw_title or "") + "\n" + str(source_filename or "")
@@ -194,37 +148,7 @@ def _clean_title_row(conn, row, map_category, media_dir, resolve_media_path) -> 
                     "ON CONFLICT DO NOTHING", (video_id, category),
                 )
 
-    nfo_title = (_display_title(cleaned_title, performers, str(slug or ""))
-                 if title_changed else None)
-    nfo_genres = sorted(mapped)
-    nfo_tags = [] if "tags" in overrides else ["#" + name for name in hashtags]
-    missing, nfo_failed = _refresh_nfo(file_path, media_dir, nfo_title, nfo_genres, nfo_tags, resolve_media_path)
-    return title_changed, tag_count, category_count, missing, nfo_failed
-
-
-def _refresh_nfo(file_path, media_dir, nfo_title, nfo_genres, nfo_tags, resolve_media_path) -> tuple[int, int]:
-    """Patch the sidecar NFO when present; return (missing count, failed count)."""
-    missing = nfo_failed = 0
-    if file_path and (nfo_title is not None or nfo_genres or nfo_tags):
-        try:
-            stream_path = resolve_media_path(str(file_path), Path(media_dir))
-            nfo_path = stream_path.with_suffix(".nfo")
-            if nfo_path.is_file():
-                nfo_changed = _patch_nfo(
-                    nfo_path, title=nfo_title, genres=nfo_genres, tags=nfo_tags,
-                )
-                if not nfo_changed and (nfo_title is not None or nfo_genres or nfo_tags):
-                    # Existing NFO may already contain these values; malformed files are
-                    # counted below by checking their XML independently.
-                    try:
-                        ET.parse(nfo_path)
-                    except (OSError, ET.ParseError):
-                        nfo_failed += 1
-            else:
-                missing += 1
-        except (OSError, ValueError, ET.ParseError):
-            nfo_failed += 1
-    return missing, nfo_failed
+    return title_changed, tag_count, category_count
 
 
 def cleanup_telegram_titles(conn: db.Connection, media_dir: Path, *,
@@ -234,14 +158,13 @@ def cleanup_telegram_titles(conn: db.Connection, media_dir: Path, *,
     state = _read_state(status_path)
     try:
         from sync.category_mapping import map_category
-        from sync.media_files import resolve_media_path
 
         if int(state.get("version") or 0) != TASK_VERSION:
             state = {
                 "task_id": TASK_ID, "version": TASK_VERSION, "cursor": "",
                 "processed": 0, "total": None, "titles_changed": 0,
-                "tags_added": 0, "categories_added": 0, "nfos_missing": 0,
-                "nfos_failed": 0, "status": "pending", "last_result": None,
+                "tags_added": 0, "categories_added": 0,
+                "status": "pending", "last_result": None,
             }
         if state.get("status") == "complete":
             return state
@@ -260,29 +183,23 @@ def cleanup_telegram_titles(conn: db.Connection, media_dir: Path, *,
         cursor = str(state.get("cursor") or "")
         size = max(1, min(int(batch_size), TASK_BATCH_SIZE))
         batch, has_more = _fetch_title_batch(conn, cursor, size)
-        local_titles = local_tags = local_categories = local_missing = local_nfo_failed = 0
+        local_titles = local_tags = local_categories = 0
         processed = 0
         completed_cursor = cursor
         base_processed = int(state.get("processed") or 0)
         base_titles = int(state.get("titles_changed") or 0)
         base_tags = int(state.get("tags_added") or 0)
         base_categories = int(state.get("categories_added") or 0)
-        base_missing = int(state.get("nfos_missing") or 0)
-        base_nfo_failed = int(state.get("nfos_failed") or 0)
         interrupted = False
 
         for row in batch:
             if stop_requested():
                 interrupted = True
                 break
-            title_changed, tag_count, category_count, missing, nfo_failed = _clean_title_row(
-                conn, row, map_category, media_dir, resolve_media_path,
-            )
+            title_changed, tag_count, category_count = _clean_title_row(conn, row, map_category)
             local_titles += int(title_changed)
             local_tags += tag_count
             local_categories += category_count
-            local_missing += missing
-            local_nfo_failed += nfo_failed
             processed += 1
             completed_cursor = str(row[0])
             state.update({
@@ -291,8 +208,6 @@ def cleanup_telegram_titles(conn: db.Connection, media_dir: Path, *,
                 "titles_changed": base_titles + local_titles,
                 "tags_added": base_tags + local_tags,
                 "categories_added": base_categories + local_categories,
-                "nfos_missing": base_missing + local_missing,
-                "nfos_failed": base_nfo_failed + local_nfo_failed,
                 "updated_at": _now(),
             })
             _write_state(status_path, state)

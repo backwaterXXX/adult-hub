@@ -12,9 +12,6 @@ from common.admin_job_health import (
 
 QUALITY_ISSUE_LABELS = {
     "missing_metadata": "Catalog metadata is incomplete",
-    "missing_nfo": "NFO files are missing",
-    "invalid_nfo": "NFO files are invalid",
-    "nfo_metadata_mismatch": "NFO metadata differs",
     "missing_artwork": "Artwork files are missing",
 }
 

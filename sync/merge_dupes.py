@@ -144,24 +144,8 @@ def _keeper_tag_set(tags, dropped) -> set:
     return tag_set
 
 
-def _keeper_genres(cats) -> set:
+def _write_keeper_tags(conn, S, idx, keeper, tag_set) -> None:
     try:
-        return set(json.loads(cats)) if cats else set()
-    except Exception:
-        return set()
-
-
-def _keeper_performers(perfs) -> list:
-    try:
-        return json.loads(perfs) if perfs else []
-    except Exception:
-        return []
-
-
-def _write_keeper_tags(conn, S, idx, keeper, video, genres, tag_set, media_dir) -> None:
-    try:
-        nfo_path = media_dir / f"{S.stable_media_basename(keeper)}.nfo"
-        S.create_nfo_file(video, genres, tag_set, nfo_path)
         conn.execute("UPDATE videos SET tags = %s WHERE id = %s",
                      (json.dumps(sorted(tag_set)), keeper))
         if (idx + 1) % 50 == 0:
@@ -172,30 +156,17 @@ def _write_keeper_tags(conn, S, idx, keeper, video, genres, tag_set, media_dir) 
 
 def _merge_one_cluster(conn, S, idx, keeper, dropped, media_dir) -> int:
     """Tag the keeper, purge the dropped items, and return how many were removed."""
-    # 1. Tagi dubletu na keeperze (DB + NFO).
+    # 1. Tagi dubletu na keeperze.
     try:
-        row = conn.execute(
-            "SELECT provider, title, slug, duration, thumbnail, performers,"
-            " categories, tags, studio, first_seen FROM videos WHERE id = %s",
-            (keeper,)).fetchone()
+        row = conn.execute("SELECT tags FROM videos WHERE id = %s", (keeper,)).fetchone()
     except Exception as e:
         print(f"SKIP {keeper}: {e}")
         return 0
     if not row:
         print(f"SKIP {keeper}: disappeared from DB in the meantime")
         return 0
-    (prov, title, slug, dur, thumb, perfs, cats, tags, studio,
-     first_seen) = row
-    tag_set = _keeper_tag_set(tags, dropped)
-    genres = _keeper_genres(cats)
-    perf_list = _keeper_performers(perfs)
-    video = {"id": keeper, "provider": prov, "provider_video_id": keeper.split(":", 1)[-1],
-             "title": title or keeper, "slug": slug or "", "duration": dur or 0,
-             "thumbnail": thumb or "", "performers": perf_list,
-             "performer_thumbs": S.load_performer_thumbs(conn, perf_list),
-             "studio": studio or "",
-             "dateadded": S.format_dateadded(first_seen or __import__("time").time())}
-    _write_keeper_tags(conn, S, idx, keeper, video, genres, tag_set, media_dir)
+    tag_set = _keeper_tag_set(row[0], dropped)
+    _write_keeper_tags(conn, S, idx, keeper, tag_set)
     # 2. Purge dropped + denylist (no reappear in sync).
     # Explicit user-invoked dedup: force bypasses the run-success signal
     # (there is no sync run here) but still preserves disabled sources.

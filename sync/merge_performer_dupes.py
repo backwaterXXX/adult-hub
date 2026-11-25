@@ -10,7 +10,6 @@ The script updates:
   2. performer_photos (migrates photos to canonical name and removes old entry)
   3. performer_bios (migrates bio/birth to canonical name and removes old entry)
   4. performer_aliases (saves aliases: "name (nick)" -> "name", "nick" -> "name")
-  5. .nfo files on disk (rewrites <actor>, <set>, <tag> tags)
 
 Usage:
   python3 -m sync.merge_performer_dupes            # dry-run
@@ -32,7 +31,6 @@ from typing import Dict, List, Tuple
 # Access to sync module
 
 DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None
-MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "./media/adult"))
 
 logger = configure_logging("merge_performer_dupes")
 
@@ -242,76 +240,11 @@ def _apply_alias_rows(conn: db.Connection, tables, mapping: Dict[str, Tuple[str,
         logger.info("Saved aliases in performer_aliases table (added: %d).", added_aliases)
 
 
-def _rewrite_video_nfo(conn: db.Connection, S, vid_id: str, new_perfs, media_dir: Path) -> bool:
-    """Rewrite one video's NFO; return True when the file was written."""
-    row = conn.execute(
-        "SELECT provider, title, slug, duration, thumbnail, performers,"
-        " categories, tags, studio, first_seen FROM videos WHERE id = %s",
-        (vid_id,),
-    ).fetchone()
-    if not row:
-        return False
-    (
-        prov,
-        title,
-        slug,
-        dur,
-        thumb,
-        perfs_raw,
-        cats_raw,
-        tags_raw,
-        studio,
-        first_seen,
-    ) = row
-
-    # The schema keeps both columns NOT NULL jsonb arrays of strings
-    # (videos_tags_array_ck, videos_categories_array_ck), so no guard needed.
-    tag_set = set(json.loads(tags_raw))
-    genres = set(json.loads(cats_raw))
-
-    video_dict = {
-        "id": vid_id,
-        "provider": prov,
-        "provider_video_id": vid_id.split(":", 1)[-1],
-        "title": title or vid_id,
-        "slug": slug or "",
-        "duration": dur or 0,
-        "thumbnail": thumb or "",
-        "performers": new_perfs,
-        "performer_thumbs": S.load_performer_thumbs(conn, new_perfs),
-        "studio": studio or "",
-        "dateadded": S.format_dateadded(
-            first_seen or time.time()
-        ),
-    }
-    nfo_path = media_dir / f"{S.stable_media_basename(vid_id)}.nfo"
-    try:
-        S.create_nfo_file(video_dict, genres, tag_set, nfo_path)
-        return True
-    except Exception as e:
-        logger.warning("Could not update NFO %s: %s", nfo_path, e)
-        return False
-
-
-def _rewrite_nfo_files(conn: db.Connection, video_updates, media_dir: Path) -> None:
-    logger.info("Updating .nfo files for modified videos...")
-    try:
-        from sync import sync as S
-        nfo_updated = 0
-        for vid_id, _, new_perfs in video_updates:
-            if _rewrite_video_nfo(conn, S, vid_id, new_perfs, media_dir):
-                nfo_updated += 1
-        logger.info("Updated %d .nfo files.", nfo_updated)
-    except Exception as e:
-        logger.error("Error updating NFO files: %s", e)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Merge duplicate performers (remove bracketed nicknames)"
     )
     parser.add_argument("--db-url", default=DB_URL, help="PostgreSQL URL (or DATABASE_URL env)")
-    parser.add_argument("--media", default=str(MEDIA_DIR), help="Path to media directory")
     parser.add_argument(
         "--apply", action="store_true", help="Apply changes (default: dry-run)"
     )
@@ -319,8 +252,6 @@ def main() -> int:
         "--skip-backup", action="store_true", help="Skip creating database backup"
     )
     args = parser.parse_args()
-
-    media_dir = Path(args.media).resolve()
 
     conn = db.connect(args.db_url or DB_URL)
     try:
@@ -383,8 +314,6 @@ def main() -> int:
         _apply_bio_updates(conn, bios_to_migrate, bios_to_delete)
         # 4. Save aliases in performer_aliases
         _apply_alias_rows(conn, tables, mapping)
-        # 5. Update .nfo files on disk
-        _rewrite_nfo_files(conn, video_updates, media_dir)
 
         logger.info("SUCCESS: All performers with bracketed nicknames were successfully merged.")
         return 0

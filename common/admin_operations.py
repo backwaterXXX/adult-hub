@@ -17,7 +17,7 @@ MAX_AUDIT_REPAIR_BATCH = 25
 MAX_ORPHAN_QUARANTINE_BATCH = 25
 MAX_EXACT_MERGE_SNAPSHOT_VIDEOS = 128
 PLAN_TTL_SECONDS = 600
-REPAIRABLE_AUDIT_FINDINGS = {"missing_stream", "missing_nfo", "invalid_nfo", "nfo_metadata_mismatch", "missing_artwork"}
+REPAIRABLE_AUDIT_FINDINGS = {"missing_stream", "missing_artwork"}
 
 
 def _canonical(value) -> str:

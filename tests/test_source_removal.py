@@ -425,8 +425,6 @@ class TestSourceRemoval(unittest.TestCase):
         full_strm = self.media_dir / rel_path
         full_strm.parent.mkdir(parents=True, exist_ok=True)
         full_strm.write_text("http://stream", encoding="utf-8")
-        full_nfo = full_strm.with_suffix(".nfo")
-        full_nfo.write_text("<movie/>", encoding="utf-8")
         full_jpg = full_strm.with_suffix(".jpg")
         full_jpg.write_bytes(b"\xff\xd8\xff")
         full_thumb_fail = full_strm.with_suffix(".thumb_fail")
@@ -452,7 +450,7 @@ class TestSourceRemoval(unittest.TestCase):
         self.assertEqual(res["local_state"], "source_removed")
         self.assertEqual(res["channel_id"], "-100123")
         self.assertEqual(res["videos_deleted"], 1)
-        self.assertEqual(res["files_deleted"], 4)
+        self.assertEqual(res["files_deleted"], 3)
         self.assertEqual(res["synced_files_deleted"], 1)
         self.assertEqual(res["shared_videos_preserved"], 0)
         self.assertEqual(res["history_runs_removed"], 1)
@@ -460,7 +458,6 @@ class TestSourceRemoval(unittest.TestCase):
 
         # Assert disk files unlinked
         self.assertFalse(full_strm.exists())
-        self.assertFalse(full_nfo.exists())
         self.assertFalse(full_jpg.exists())
         self.assertFalse(full_thumb_fail.exists())
 
@@ -845,8 +842,6 @@ class TestSourceRemoval(unittest.TestCase):
         strm_file = self.media_dir / rel_path
         strm_file.parent.mkdir(parents=True, exist_ok=True)
         strm_file.write_text("http://stream-shared", encoding="utf-8")
-        nfo_file = strm_file.with_suffix(".nfo")
-        nfo_file.write_text("<movie/>", encoding="utf-8")
         jpg_file = strm_file.with_suffix(".jpg")
         jpg_file.write_bytes(b"\xff\xd8\xff")
 
@@ -878,7 +873,6 @@ class TestSourceRemoval(unittest.TestCase):
         # Canonical video and files remain intact
         self.assertIn(v_id, conn.data["videos"])
         self.assertTrue(strm_file.exists())
-        self.assertTrue(nfo_file.exists())
         self.assertTrue(jpg_file.exists())
         self.assertEqual(conn.data["synced_files"], [(v_id, rel_path)])
 
@@ -945,8 +939,6 @@ class TestSourceRemoval(unittest.TestCase):
         strm_file = self.media_dir / rel_path
         strm_file.parent.mkdir(parents=True, exist_ok=True)
         strm_file.write_text("http://stream-final", encoding="utf-8")
-        nfo_file = strm_file.with_suffix(".nfo")
-        nfo_file.write_text("<movie/>", encoding="utf-8")
         jpg_file = strm_file.with_suffix(".jpg")
         jpg_file.write_bytes(b"\xff\xd8\xff")
         fail_file = strm_file.with_suffix(".thumb_fail")
@@ -970,14 +962,13 @@ class TestSourceRemoval(unittest.TestCase):
         )
 
         self.assertEqual(res["videos_deleted"], 1)
-        self.assertEqual(res["files_deleted"], 4)
+        self.assertEqual(res["files_deleted"], 3)
         self.assertEqual(res["synced_files_deleted"], 1)
         self.assertEqual(res["shared_videos_preserved"], 0)
 
         # Video and managed files deleted
         self.assertNotIn(v_id, conn.data["videos"])
         self.assertFalse(strm_file.exists())
-        self.assertFalse(nfo_file.exists())
         self.assertFalse(jpg_file.exists())
         self.assertFalse(fail_file.exists())
         self.assertEqual(conn.data["synced_files"], [])

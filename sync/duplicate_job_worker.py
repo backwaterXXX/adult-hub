@@ -13,6 +13,11 @@ from sync.duplicate_job_hide import _run_hide  # noqa: E402
 from sync.duplicate_job_dispatch import _catalog_result, _run_catalog_full_audit, _run_external_action, _run_dismiss, _run_undismiss  # noqa: E402
 
 
+# Audit repairs are claimed by family prefix: the plan producer names the action,
+# and every name behind the prefix is routed to the same repair handler.
+_AUDIT_REPAIR_ACTION_PREFIX = 'audit_repair'
+
+
 class _JobRun:
     """Mutable state of one claimed job, read by the failure path to decide on compensation."""
 
@@ -25,7 +30,7 @@ def _claim_next_job(conn, worker_actions, deferred, services):
     """Atomically move the oldest queued job to 'processing'. Returns None when no job can be claimed."""
     try:
         conn.execute('BEGIN')
-        job = conn.execute("SELECT id, action, payload FROM video_duplicate_jobs WHERE state='queued' AND action = ANY(%s) AND NOT id = ANY(%s) ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED", (list(worker_actions), deferred)).fetchone()
+        job = conn.execute("SELECT id, action, payload FROM video_duplicate_jobs WHERE state='queued' AND (action = ANY(%s) OR starts_with(action, %s)) AND NOT id = ANY(%s) ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED", (list(worker_actions), _AUDIT_REPAIR_ACTION_PREFIX, deferred)).fetchone()
         if not job:
             conn.commit()
             return None
@@ -101,16 +106,14 @@ def _execute_action(conn, job_id, action, payload, media_dir, services, quaranti
          lambda: _run_catalog_full_audit(conn)),
         (action == 'metadata_update',
          lambda: _catalog_result(run, _core._metadata_update(conn, job_id, payload, media_dir, services))),
-        (action == 'performer_refresh',
-         lambda: _catalog_result(run, _core._performer_refresh(conn, job_id, payload, media_dir, services))),
         (action == 'availability_check',
          lambda: _catalog_result(run, _core._availability_check(conn, job_id, payload, services))),
         (action == 'consistency_audit',
          lambda: _catalog_result(run, _core._consistency_audit(conn, job_id, media_dir, services, payload))),
         (action == 'metadata_quality_audit',
          lambda: _catalog_result(run, _core._metadata_quality_audit(conn, job_id, payload))),
-        (action == 'audit_repair_nfo',
-         lambda: _catalog_result(run, _core._audit_repair_nfo(conn, job_id, payload, media_dir, services))),
+        (action.startswith(_AUDIT_REPAIR_ACTION_PREFIX),
+         lambda: _catalog_result(run, _core._audit_repair_artwork(conn, job_id, payload, media_dir, services))),
         (action == 'orphan_file_operation',
          lambda: _catalog_result(run, _core._orphan_file_operation(conn, job_id, payload, media_dir, quarantine_root, services, run.moved))),
         (action == 'backup_create'
@@ -147,31 +150,6 @@ def _execute_action(conn, job_id, action, payload, media_dir, services, quaranti
         if matched:
             return run_action()
     raise ValueError('Unsupported job type.')
-
-
-def _queue_audit_auto_repairs(conn, job_id, services) -> None:
-    """Queue safe NFO repairs after a complete library audit. Failures are logged, not raised."""
-    try:
-        # Only missing NFO sidecars are repaired unattended. Artwork
-        # preview URLs can be syntactically present but unavailable
-        # (Telegram returns 404 for some), which used to fail the
-        # whole 25-item batch and requeue the same findings nightly.
-        # Keep artwork findings visible for explicit repair instead.
-        from common.admin_operation_audits import preview_audit_repair
-        from common.admin_operations import execute_operation
-        finding_ids = [int(row[0]) for row in conn.execute(
-            "SELECT i.id FROM admin_audit_items i JOIN videos v ON v.id=i.video_id "
-            "WHERE i.job_id=%s AND i.status='open' AND i.kind='missing_nfo' "
-            "ORDER BY i.id LIMIT 25", (job_id,),
-        ).fetchall()]
-        if finding_ids:
-            preview = preview_audit_repair(getattr(conn, '_url', None), str(job_id), finding_ids)
-            if preview.get('outcome') == 'previewed':
-                queued = execute_operation(getattr(conn, '_url', None), preview['plan_id'])
-                if queued.get('outcome') == 'queued':
-                    services.logger.info('Queued automatic repair for %s missing local files after audit %s', len(finding_ids), job_id)
-    except Exception:
-        services.logger.exception('Could not queue safe automatic repairs after audit %s', job_id)
 
 
 def _compensate_moves(moved, services) -> None:
@@ -225,7 +203,7 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
     # Jobs left 'processing' belong to a crashed run of this same worker: every
     # caller holds .adult-hub-sync.lock exclusively, so no live worker can own
     # them and they are requeued immediately.
-    recovered = conn.execute("UPDATE video_duplicate_jobs SET state='queued', updated_at=%s WHERE state='processing' AND action = ANY(%s)", (now, list(worker_actions))).rowcount
+    recovered = conn.execute("UPDATE video_duplicate_jobs SET state='queued', updated_at=%s WHERE state='processing' AND (action = ANY(%s) OR starts_with(action, %s))", (now, list(worker_actions), _AUDIT_REPAIR_ACTION_PREFIX)).rowcount
     if recovered:
         services.logger.info('Requeued %s duplicate job(s) left processing by a dead worker', recovered)
     conn.commit()
@@ -259,8 +237,6 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
             result = _execute_action(conn, job_id, action, payload, media_dir, services, quarantine_root, now, run)
             _core._finish_job(conn, job_id, result)
             _handle_system_schedule_finish(conn, job_id, action, payload, success=True)
-            if action == 'consistency_audit' and result.get('library_inventory_status') == 'complete' and payload.get('auto_repair'):
-                _queue_audit_auto_repairs(conn, job_id, services)
             completed += 1
         except _external_handlers.ChannelRemovalStillActive as retry_exc:
             with conn:

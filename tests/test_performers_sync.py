@@ -1,10 +1,9 @@
-"""Performer persistence, NFO XML generation, and sync pipeline integration."""
+"""Performer persistence and sync pipeline integration."""
 
 import json
 from pathlib import Path
 import tempfile
 import unittest
-import xml.etree.ElementTree as ET
 
 from common.performers import normalize_performers
 from pg_helper import PgTestCase, TEST_URL, reset_db
@@ -28,42 +27,6 @@ class TestPerformerSyncPassthrough(PgTestCase):
         self.conn = sync_module.init_db(TEST_URL)
         self.addCleanup(self.conn.close)
 
-    def test_nfo_contains_actor_entries(self):
-        video = {
-            "provider": "exampleweb",
-            "provider_video_id": "51003/slug",
-            "title": "T & Co",
-            "slug": "slug",
-            "url": "https://exampleweb.example.com/video/51003/slug",
-            "thumbnail": "",
-            "duration": 600,
-            "performers": ["FallandarkOFC", "Gio Akros", "Gio Akros", "  "],
-        }
-        sync_module.sync_unique_video(video, {"Solo & Masturbation"}, {"Secondweb"}, self.media, self.conn)
-        nfo = next(self.media.glob("*.nfo")).read_text(encoding="utf-8")
-        root = ET.fromstring(nfo)
-        actors = [(a.findtext("name"), a.findtext("role")) for a in root.findall("actor")]
-        self.assertEqual(
-            actors,
-            [("FallandarkOFC", "Performer"), ("Gio Akros", "Performer")],
-        )
-
-    def test_nfo_escapes_special_chars(self):
-        video = {
-            "provider": "exampleweb",
-            "provider_video_id": "abc",
-            "title": "T",
-            "slug": "s",
-            "url": "",
-            "thumbnail": "",
-            "duration": 600,
-            "performers": ["Tom & Jerry"],
-        }
-        sync_module.sync_unique_video(video, set(), set(), self.media, self.conn)
-        nfo = next(self.media.glob("*.nfo")).read_text(encoding="utf-8")
-        self.assertIn("<name>Tom &amp; Jerry</name>", nfo)
-        self.assertEqual(ET.fromstring(nfo).find("actor/name").text, "Tom & Jerry")
-
     def test_performers_persisted_and_updated_in_db(self):
         video = {
             "provider": "exampleweb",
@@ -85,8 +48,6 @@ class TestPerformerSyncPassthrough(PgTestCase):
         row = self.conn.execute(
             "SELECT performers FROM videos WHERE id = %s", ("exampleweb:1/s",)).fetchone()
         self.assertEqual(json.loads(row[0]), ["First Guy", "Second Guy"])
-        nfo = next(self.media.glob("*.nfo")).read_text(encoding="utf-8")
-        self.assertIn("<name>Second Guy</name>", nfo)
 
     def test_collect_merges_performers_across_sightings(self):
         from unittest.mock import patch
@@ -122,68 +83,12 @@ class TestPerformerSyncPassthrough(PgTestCase):
             "performers": [],
         }
         sync_module.sync_unique_video(video, {"Anal"}, {"Exampleweb"}, self.media, self.conn)
-        nfo_before = next(self.media.glob("*.nfo")).read_text(encoding="utf-8")
-        self.assertNotIn("<actor>", nfo_before)
 
         updated = sync_module.backfill_performers_from_titles(self.conn, self.media)
         self.assertEqual(updated, 1)
 
         row = self.conn.execute("SELECT performers FROM videos WHERE id = 'exampleweb:69769'").fetchone()
         self.assertEqual(json.loads(row[0]), ["Alex Ink", "Alexandro Cabrera", "Pietro"])
-
-        nfo_after = next(self.media.glob("*.nfo")).read_text(encoding="utf-8")
-        self.assertIn("<actor>", nfo_after)
-        self.assertIn("<name>Alex Ink</name>", nfo_after)
-        self.assertIn("<name>Alexandro Cabrera</name>", nfo_after)
-        self.assertIn("<name>Pietro</name>", nfo_after)
-        self.assertIn("<set>", nfo_after)
-        # Check display title vs original title in NFO
-        self.assertIn("<title>A Hot Surprise When He Gets Home</title>", nfo_after)
-        self.assertIn("<originaltitle>Alex Ink, Alexandro Cabrera &amp; Pietro – A Hot Surprise When He Gets Home</originaltitle>", nfo_after)
-
-    def test_migrate_display_titles(self):
-        video = {
-            "provider": "exampleweb",
-            "provider_video_id": "12345",
-            "title": "Cofran XXX & Sagi Trd – Show Your Girlfriend What She Is Missing: Take a Picture When I Suck Your Cock",
-            "slug": "cofran-xxx",
-            "url": "https://example.com/video/12345",
-            "thumbnail": "",
-            "duration": 1200,
-            "performers": ["Cofran XXX", "Sagi Trd"],
-        }
-        sync_module.sync_unique_video(video, {"Anal"}, {"Exampleweb"}, self.media, self.conn)
-        nfo_file = next(self.media.glob("*.nfo"))
-        # Force uncleaned title into NFO to simulate legacy file
-        old_content = nfo_file.read_text(encoding="utf-8")
-        raw_nfo = old_content.replace(
-            "<title>Show Your Girlfriend",
-            "<title>Cofran XXX &amp; Sagi Trd – Show Your Girlfriend",
-        )
-        nfo_file.write_text(raw_nfo, encoding="utf-8")
-
-        # Clear meta flag so migration executes
-        self.conn.execute("DELETE FROM meta WHERE key = 'display_title_version'")
-        self.conn.commit()
-
-        # Run migration function
-        updated = sync_module.migrate_display_titles(self.conn, self.media)
-        self.assertEqual(updated, 1)
-
-        migrated_content = nfo_file.read_text(encoding="utf-8")
-        self.assertIn(
-            "<title>Show Your Girlfriend What She Is Missing: Take a Picture When I Suck Your Cock</title>",
-            migrated_content,
-        )
-        self.assertIn(
-            "<originaltitle>Cofran XXX &amp; Sagi Trd – Show Your Girlfriend What She Is Missing: Take a Picture When I Suck Your Cock</originaltitle>",
-            migrated_content,
-        )
-
-        # Second run should skip (idempotent, version stored in meta)
-        self.assertEqual(sync_module.migrate_display_titles(self.conn, self.media), 0)
-
-
 
     def test_multi_part_title_prefers_full_names(self):
         from common.performer_titles import parse_title_performers_with_known_map

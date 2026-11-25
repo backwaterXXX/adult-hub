@@ -1,4 +1,4 @@
-"""Pure helpers used across the sync pipeline: filenames, titles, retry math and NFO lookups.
+"""Pure helpers used across the sync pipeline: filenames, titles and retry math.
 
 None of these read the mutable sync settings, so they can live outside sync.py.
 sync.py re-exports every name, so existing ``sync.<name>`` references keep working.
@@ -7,18 +7,12 @@ sync.py re-exports every name, so existing ``sync.<name>`` references keep worki
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
-from common import db
 from common.duration import parse_duration_seconds
 from common.performer_titles import parse_title_performers_with_known_map as _parse_title_performers_with_known_map
 from sync.http_client import (
     is_retryable_error as _is_retryable_error_impl,
     parse_retry_after as _parse_retry_after,
     retry_after_from_error as _retry_after_from_error_impl,
-)
-from sync.nfo import (
-    format_dateadded as _format_dateadded_impl,
-    load_performer_links as _load_performer_links_impl,
-    load_performer_thumbs as _load_performer_thumbs_impl,
 )
 from sync.video_persistence import _merge_video_fields as _merge_video_fields_impl
 
@@ -61,12 +55,3 @@ def _retry_after_from_error(e: Exception, default: float) -> float:
 
 def _is_retryable_error(e: Exception) -> bool:
     return _is_retryable_error_impl(e)
-
-def format_dateadded(ts) -> str:
-    return _format_dateadded_impl(ts)
-
-def load_performer_thumbs(conn: db.Connection, names) -> Dict[str, str]:
-    return _load_performer_thumbs_impl(conn, names)
-
-def load_performer_links(conn: db.Connection, names) -> Dict[str, Dict[str, str]]:
-    return _load_performer_links_impl(conn, names)

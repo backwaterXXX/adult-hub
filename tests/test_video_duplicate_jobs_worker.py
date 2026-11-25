@@ -33,7 +33,22 @@ class TestWorkerActionDispatchContract(unittest.TestCase):
             and isinstance(node.comparators[0], ast.Constant)
             and isinstance(node.comparators[0].value, str)
         }
-        self.assertEqual(dispatched, set(WORKER_ACTIONS))
+        # Audit repairs are routed by family prefix because the plan producer
+        # names the action; every advertised name must still be covered.
+        prefixes = {
+            getattr(worker, node.args[0].id)
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "startswith"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "action"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Name)
+        }
+        advertised = {action for action in WORKER_ACTIONS
+                      if not any(action.startswith(prefix) for prefix in prefixes)}
+        self.assertEqual(dispatched, advertised)
 
 
 
@@ -104,8 +119,8 @@ class TestVideoDuplicateJobsWorker(BaseVideoDuplicateJobsTestCase):
         self.assertEqual(row[1], "{}")
 
 
-    def test_source_sync_updates_raw_title_but_keeps_manual_nfo_title(self):
-        from common.video_metadata import update_metadata_state
+    def test_source_sync_updates_raw_title_but_keeps_manual_override_title(self):
+        from common.video_metadata import load_metadata_state, update_metadata_state
 
         with self.conn:
             result = update_metadata_state(
@@ -125,9 +140,10 @@ class TestVideoDuplicateJobsWorker(BaseVideoDuplicateJobsTestCase):
             self.conn.execute("SELECT title FROM videos WHERE id=%s", (self.loser,)).fetchone()[0],
             "Updated source title",
         )
-        nfo_path = self.media / f"{sync.stable_media_basename(self.loser)}.nfo"
-        self.assertIn("Manual title", nfo_path.read_text(encoding="utf-8"))
-        self.assertNotIn("Updated source title", nfo_path.read_text(encoding="utf-8"))
+        # The override still wins for the effective catalog metadata.
+        state = load_metadata_state(self.conn, self.loser)
+        self.assertEqual((state["source"]["title"], state["metadata"]["title"]),
+                         ("Updated source title", "Manual title"))
 
 
     def test_availability_check_records_evidence_and_only_changes_confirmed_results(self):
@@ -305,7 +321,7 @@ class TestVideoDuplicateJobsWorker(BaseVideoDuplicateJobsTestCase):
             fcntl.flock(other_worker.fileno(), fcntl.LOCK_UN)
 
         with patch("sync.fuzzy_performers.execute_performer_merges", return_value={
-                "ok": True, "videos_updated": 1, "nfos_updated": 1, "message": "merged"}) as execute:
+                "ok": True, "videos_updated": 1, "message": "merged"}) as execute:
             self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         execute.assert_called_once_with(self.db_path, self.media, [("Alias Name", "Canonical Name")])
         state, result = self.conn.execute(
@@ -339,7 +355,7 @@ class TestVideoDuplicateJobsWorker(BaseVideoDuplicateJobsTestCase):
                 (json.dumps({"progress": {"stage": "merging_performers"}}), job_id),
             )
         with patch("sync.fuzzy_performers.execute_performer_merges", return_value={
-                "ok": True, "videos_updated": 1, "nfos_updated": 1, "message": "merged"}) as execute:
+                "ok": True, "videos_updated": 1, "message": "merged"}) as execute:
             self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         execute.assert_called_once_with(
             self.db_path, self.media, [("Alias Name", "Canonical Name")])
@@ -372,7 +388,7 @@ class TestVideoDuplicateJobsWorker(BaseVideoDuplicateJobsTestCase):
         trigger_path.write_text(json.dumps({"action": "jobs"}))
 
         with patch.dict(os.environ, {"SYNC_TRIGGER_FILE": str(trigger_path)}):
-            with patch("sync.fuzzy_performers.execute_performer_merges", return_value={"ok": True, "videos_updated": 1, "nfos_updated": 1, "message": "merged"}):
+            with patch("sync.fuzzy_performers.execute_performer_merges", return_value={"ok": True, "videos_updated": 1, "message": "merged"}):
                 completed = sync.safe_process_duplicate_jobs_checkpoint(self.conn, self.media, collected={})
                 self.assertEqual(completed, 1)
 
@@ -406,7 +422,7 @@ class TestVideoDuplicateJobsWorker(BaseVideoDuplicateJobsTestCase):
         with patch.object(sync, "DATA_DIR", self.root), \
              patch.object(sync, "DB_URL", self.db_path), \
              patch.object(sync, "MEDIA_DIR", self.media), \
-             patch("sync.fuzzy_performers.execute_performer_merges", return_value={"ok": True, "videos_updated": 1, "nfos_updated": 1, "message": "merged"}):
+             patch("sync.fuzzy_performers.execute_performer_merges", return_value={"ok": True, "videos_updated": 1, "message": "merged"}):
             res = sync.run_jobs_only()
             self.assertEqual(res, 1)
 

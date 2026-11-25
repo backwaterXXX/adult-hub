@@ -158,7 +158,7 @@ def flush_collected(
     written, committed_items = _persist_prepared_batch(prepared_items, conn, services, errors)
 
     # Publish sidecars only after the catalog batch is durable, so a rolled-back
-    # batch cannot leave unmanaged .strm/.nfo files in the library. A failed
+    # batch cannot leave unmanaged .strm files in the library. A failed
     # publication leaves the entry registered as nothing at all: its catalog row
     # survives, the library never sees a half-written item, and
     # republish_pending_videos() retries it from the database on the next pass.
@@ -213,15 +213,12 @@ def prepared_from_catalog(comp_id: str, media_dir: Path, conn: db.Connection,
     video = {**source, **state["metadata"],
              "id": comp_id, "_video_id": comp_id, "provider": provider,
              "provider_video_id": raw_id,
-             "performers": performers, "thumbnail": public_thumb_url,
-             "performer_thumbs": services.load_performer_thumbs(conn, performers),
-             "dateadded": services.format_dateadded(source.get("first_seen"))}
+             "performers": performers, "thumbnail": public_thumb_url}
     return {
         "comp_id": comp_id, "provider": provider,
         "title": video.get("title") or comp_id, "video": video,
         "genres": genres, "tags": tags,
         "strm_file": media_dir / f"{base_name}.strm",
-        "nfo_file": media_dir / f"{base_name}.nfo",
         "jpg_file": media_dir / f"{base_name}.jpg",
         "thumb_url": download_thumb_url, "studio": source.get("studio"),
     }

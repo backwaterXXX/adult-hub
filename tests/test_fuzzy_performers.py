@@ -225,17 +225,10 @@ class TestFuzzyPerformersDatabase(PgTestCase):
         alias_row = self.conn.execute("SELECT canonical FROM performer_aliases WHERE alias = 'bostonjock'").fetchone()
         self.assertEqual(alias_row[0], "Boston Jock")
 
-        # A replay after a crash following the DB commit must still repair an NFO.
-        nfo_path = self.media_dir / "test-v1.nfo"
-        if not nfo_path.exists():
-            nfo_path = next(self.media_dir.glob("*.nfo"), None)
-        self.assertIsNotNone(nfo_path)
-        nfo_path.unlink()
+        # A replay after the first merge finds nothing left to rename.
         replay = execute_performer_merges(TEST_URL, self.media_dir, merges, skip_backup=True)
         self.assertTrue(replay["ok"])
         self.assertEqual(replay["videos_updated"], 0)
-        self.assertGreaterEqual(replay["nfos_updated"], 1)
-        self.assertTrue(nfo_path.exists())
 
     def test_failed_merge_rolls_back_every_database_change(self):
         with self.conn:

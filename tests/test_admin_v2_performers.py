@@ -126,7 +126,7 @@ class TestAdminV2FuzzyPerformers(unittest.IsolatedAsyncioTestCase):
     async def test_v2_proposal_review_authorizes_before_id_and_uses_shared_service(self):
         admin = make_admin()
         routes = {route.path: route.endpoint for route in admin_v2_performers.build_router(admin).routes}
-        result = {"ok": True, "status": "approved", "refresh_pending": True}
+        result = {"ok": True, "status": "approved"}
         with patch("common.performer_proposals.review_proposal", return_value=result) as review_fn:
             response = await routes["/api/v2/performers/proposals/{proposal_id}"](
                 make_request("POST", "/admin/api/v2/performers/proposals/42", {"action": "approve", "performer_id": "p1"}),

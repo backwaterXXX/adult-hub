@@ -244,6 +244,100 @@ class ClientPhashStatusTests(unittest.TestCase):
         self.assertTrue(connection.closed)
 
 
+class ClientPhashAuthorizationTests(ClientPhashStatusTests):
+    """Fingerprint intake trusts client sessions only, never a media-server token."""
+
+    @staticmethod
+    def _client_session(user_id, *, is_admin=False):
+        return {"session_id": "session-2", "user_id": user_id, "username": "viewer",
+                "is_admin": is_admin, "is_active": True}
+
+    def _status(self, session, env, request=None, connection=None):
+        class Admin:
+            HUB_DB_URL = None
+            JSONResponse = JSONResponse
+
+        endpoint = self._endpoint(Admin)
+        catalog = (patch.object(phash_api.db, "connect", side_effect=AssertionError(
+            "an unauthorized request must not reach the catalog")) if connection is None
+            else patch.object(phash_api.db, "connect", return_value=connection))
+
+        async def run():
+            with patch.dict(os.environ, env), \
+                    patch.object(phash_api, "_lookup_client_session", new=Mock(return_value=session)), \
+                    catalog, \
+                    patch.object(phash_api.asyncio, "to_thread", new=self._inline_to_thread):
+                return await endpoint(request or self._request(), "telegram:-100123:42:99",
+                                      "approved-profile-v1")
+
+        return asyncio.run(run())
+
+    ENV = {"PHASH_UPLOAD_ENABLED": "true",
+           "PHASH_ACCEPTED_DECODER_PROFILES": "approved-profile-v1"}
+
+    class _Catalog:
+        """Answers the two lookups the status endpoint makes for an existing video."""
+
+        def __init__(self):
+            self.query = ""
+
+        def execute(self, query, _params):
+            self.query = query
+            return self
+
+        def fetchone(self):
+            return (1,) if "FROM videos" in self.query else None
+
+        def close(self):
+            return None
+
+    def test_allow_listed_client_user_id_is_authorized(self):
+        response = self._status(
+            self._client_session("usr_" + "a" * 32),
+            {**self.ENV, "PHASH_ALLOWED_USER_IDS": " usr_" + "A" * 32 + " , other"},
+            connection=self._Catalog(),
+        )
+
+        self.assertEqual(response, {"enabled": True, "already_computed": False,
+                                    "accepted_profile": "approved-profile-v1"})
+
+    def test_client_user_id_outside_the_allow_list_is_rejected(self):
+        response = self._status(
+            self._client_session("usr_" + "b" * 32),
+            {**self.ENV, "PHASH_ALLOWED_USER_IDS": "usr_" + "a" * 32},
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_media_server_style_user_id_never_authorizes_anyone(self):
+        phash_api._warned_user_ids.clear()
+        with self.assertLogs(phash_api.logger, level="WARNING") as logged:
+            response = self._status(
+                self._client_session("0123456789abcdef0123456789abcdef"),
+                {**self.ENV, "PHASH_ALLOWED_USER_IDS": "0123456789abcdef0123456789abcdef"},
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertTrue(any("not a client user ID" in line for line in logged.output))
+
+    def test_missing_bearer_token_is_rejected_without_a_session_lookup(self):
+        request = Request({
+            "type": "http", "method": "GET", "path": "/admin/api/v2/video-phash/status",
+            "headers": [(b"authorization", b"Token legacy-media-server-token")],
+        })
+        lookup = Mock(return_value=self._client_session("usr_" + "a" * 32))
+        with patch.object(phash_api, "_lookup_client_session", new=lookup), \
+                patch.dict(os.environ, {**self.ENV, "PHASH_ALLOWED_USER_IDS": "usr_" + "a" * 32}):
+            result = asyncio.run(self._endpoint(type("Admin", (), {
+                "HUB_DB_URL": None, "JSONResponse": JSONResponse,
+            }))(
+                request, "telegram:-100123:42:99", "approved-profile-v1"
+            ))
+
+        self.assertEqual(result.status_code, 401)
+        lookup.assert_not_called()
+
+
 class _ConcurrencyGate:
     def __init__(self):
         self.first_has_video_lock = threading.Event()

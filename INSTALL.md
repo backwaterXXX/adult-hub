@@ -190,7 +190,7 @@ adult-hub/
     ├── data/                     # Mounted to /data (Telegram session, SQLite locks, linkcheck logs)
     │   └── backups/              # Automated database snapshots
     ├── cache/                    # Mounted to /cache (worker capabilities, temp caches)
-    └── media/                    # Mounted to /media/adult (.strm, .nfo, thumbnails)
+    └── media/                    # Mounted to /media/adult (.strm, thumbnails)
 ```
 
 In addition, Docker manages one named volume for the database state:
@@ -449,7 +449,7 @@ Understanding where data is stored is critical for backups, disk sizing, and per
 | Data Type | Standalone Path | Production Path | Notes |
 |---|---|---|---|
 | **Database Data** | Volume `adult-hub-standalone_postgres_data` | External PostgreSQL storage | Contains catalog, channel state, performers, tags, migration history. |
-| **Media & STRM** | Host `./standalone/media/` (in container `/media/adult`) | Host `${MEDIA_PATH}` (in container `/media/adult`) | `.strm` stream links, `.nfo` metadata sidecars, `.jpg` posters. Resolver/Sync have write access. |
+| **Media & STRM** | Host `./standalone/media/` (in container `/media/adult`) | Host `${MEDIA_PATH}` (in container `/media/adult`) | `.strm` stream links and `.jpg` posters. Resolver/Sync have write access. |
 | **Database Backups** | Host `./standalone/data/backups/` | Host `./data/backups/` | Compressed PostgreSQL snapshots (`.dump.gz` and `.sha256`). |
 | **Telegram Session** | Host `./standalone/data/telegram.session` | Host `./data/telegram.session` | MTProto SQLite session token. Keep strictly confidential; never commit to version control. |
 | **Application Cache** | Host `./standalone/cache/` | Host `./data/cache/` | Worker heartbeat capabilities, temporary sync files. |
@@ -573,10 +573,11 @@ Adult Hub publishes the catalog through its own APIs and writes sidecars next to
 
 ### Generated Sidecars
 
-Sync writes three file types into the media directory:
+Sync writes two file types into the media directory:
 - **`.strm` files**: Small text files containing the stream URL pointing to the Adult Hub resolver endpoint.
-- **`.nfo` files**: Kodi-compatible XML metadata files containing titles, plots, tags, performers, and premiere dates.
 - **`.jpg` files**: Thumbnails and cover artwork.
+
+Catalog metadata (titles, plots, tags, performers, premiere dates) lives only in PostgreSQL and is served by the APIs; no Kodi-compatible metadata sidecars are written.
 
 ### Client API Access
 

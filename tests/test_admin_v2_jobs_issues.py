@@ -144,7 +144,7 @@ class TestJobProgressProjection(unittest.TestCase):
 
     def test_job_projection_exposes_safe_local_file_repair_state(self):
         safe = admin_v2_jobs._safe_job({
-            "id": "audit-repair", "action": "audit_repair_nfo", "state": "done",
+            "id": "audit-repair", "action": "audit_repair_files", "state": "done",
             "result": {"local_state": "files_repaired", "restored_streams": 1,
                        "path": "/private/library/video.strm"},
         })

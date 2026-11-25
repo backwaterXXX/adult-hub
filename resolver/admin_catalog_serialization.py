@@ -88,7 +88,7 @@ def _unavailable_reason(raw_reason, dead_stream, playable):
 def _add_detail_fields(video, get, local_files):
     video["local_files"] = {
         role: local_files.get(role, "unknown") if isinstance(local_files, dict) else "unknown"
-        for role in ("stream", "nfo", "artwork")
+        for role in ("stream", "artwork")
     }
     if local_files and local_files.get("artwork") == "present" and not video.get("artwork_url") and get("id"):
         video["artwork_url"] = f"/admin/api/v2/library/videos/{quote(str(get('id') or ''), safe='')}/artwork"
@@ -230,12 +230,12 @@ def _local_candidate_state(candidate: str, role: str) -> str:
 
 def _local_file_status(file_names: list[Any], media_root: str | os.PathLike[str]) -> dict[str, str]:
     """Check registered media roles without following or exposing filesystem paths."""
-    unknown = {"stream": "unknown", "nfo": "unknown", "artwork": "unknown"}
+    unknown = {"stream": "unknown", "artwork": "unknown"}
     root = _ready_media_root(media_root)
     if root is None:
         return unknown
 
-    role_states = {"stream": [], "nfo": [], "artwork": []}
+    role_states = {"stream": [], "artwork": []}
     if not isinstance(file_names, list) or not file_names:
         return unknown
     for raw_name in file_names:
@@ -244,7 +244,7 @@ def _local_file_status(file_names: list[Any], media_root: str | os.PathLike[str]
             for states in role_states.values():
                 states.append("unknown")
             continue
-        for role, suffix in (("stream", ".strm"), ("nfo", ".nfo"), ("artwork", ".jpg")):
+        for role, suffix in (("stream", ".strm"), ("artwork", ".jpg")):
             candidate = os.path.join(root, stem + suffix)
             role_states[role].append(_local_candidate_state(candidate, role))
     return {role: _combine_file_states(states) for role, states in role_states.items()}

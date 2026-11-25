@@ -87,7 +87,7 @@ class TestPerformerProposalService(unittest.TestCase):
         self.assertEqual(wake, [])
         self.assertIn("status='rejected'", conn.calls[-1][0])
 
-    def test_approve_updates_alias_and_catalog_then_queues_refresh(self):
+    def test_approve_updates_alias_and_catalog(self):
         # "Alias" is a generic single word, so it is approved for the video and
         # catalogue but deliberately not recorded in performer_aliases.
         conn = FakeConnection([
@@ -107,10 +107,9 @@ class TestPerformerProposalService(unittest.TestCase):
             )
         self.assertEqual(result, {
             "ok": True, "status": "approved", "performer": "Canonical Name",
-            "refresh_job_id": "job-9", "refresh_pending": True,
         })
-        enqueue.assert_called_once_with("db", "performer_refresh", {"video_ids": ["video-1"]})
-        self.assertEqual(wake, ["jobs"])
+        enqueue.assert_not_called()
+        self.assertEqual(wake, [])
         updates = [params for sql, params in conn.calls if sql.startswith("UPDATE videos SET performers")]
         self.assertEqual(updates, [("[\"Canonical Name\", \"Other\"]", "video-1")])
         self.assertFalse(any(sql.startswith("INSERT INTO performer_aliases") for sql, _ in conn.calls))

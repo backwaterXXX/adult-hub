@@ -148,7 +148,6 @@
     try {
       const result = await post(`${API}/proposal-groups/${encodeURIComponent(item.reason)}/${encodeURIComponent(item.key)}`, body);
       if (sequence !== state.loadSeq || !reviewVisible()) return;
-      if (result.refresh_job_ids?.length) helpers().showQueued({ job_ids: result.refresh_job_ids }, 'Performer metadata refresh');
       const shouldRestoreFocus = focusedBeforeRequest
         && (card.contains(document.activeElement) || document.activeElement === document.body);
       state.pendingTotal = Math.max(0, Number(state.pendingTotal || 0) - Number(result.reviewed || 0));
@@ -224,21 +223,16 @@
     if (button.disabled) return;
     button.disabled = true;
     const sequence = state.loadSeq;
-    const refreshJobs = new Set();
     let afterId = 0;
     let processed = 0;
     let resolved = 0;
-    let refreshError = false;
     message('Checking pending proposals against current performer identities…');
     try {
       while (true) {
         const result = await post(`${API}/proposals/reconcile`, { after_id: afterId });
         if (sequence !== state.loadSeq || !reviewVisible()) return;
-        for (const id of result.refresh_job_ids || []) refreshJobs.add(id);
-        if (refreshJobs.size) helpers().showQueued({ job_ids: [...refreshJobs] }, 'Performer metadata refresh');
         processed += Number(result.processed || 0);
         resolved += Number(result.resolved || 0);
-        refreshError = refreshError || result.refresh_error === true;
         afterId = Number(result.after_id || afterId);
         if (!result.has_more || !result.processed) break;
         message(`Checked ${processed.toLocaleString('en-US')} proposals; resolved ${resolved.toLocaleString('en-US')} clear matches…`);
@@ -246,7 +240,7 @@
       const expectedSequence = state.loadSeq + 1;
       await load();
       if (state.loadSeq !== expectedSequence || !reviewVisible()) return;
-      message(`Checked ${processed.toLocaleString('en-US')} proposals and resolved ${resolved.toLocaleString('en-US')} clear matches.${refreshError ? ' Some metadata refresh jobs could not be queued.' : ''} Ambiguous names remain grouped for review.`, refreshError ? 'warning' : 'status');
+      message(`Checked ${processed.toLocaleString('en-US')} proposals and resolved ${resolved.toLocaleString('en-US')} clear matches. Ambiguous names remain grouped for review.`);
     } catch (error) {
       if (!reviewVisible()) return;
       message(`Reconciliation stopped after ${processed.toLocaleString('en-US')} proposals. ${errorText(error)}`, 'error');

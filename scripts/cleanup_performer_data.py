@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cleanup bogus performers, unsafe aliases, and fix performer attributions in DB and NFO files."""
+"""Cleanup bogus performers, unsafe aliases, and fix performer attributions in the DB."""
 import json
 import os
 from common import db
@@ -8,17 +8,12 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 from common.json_helpers import json_list_or_empty
-from common.performer_cleanup_support import (
-    build_video_nfo,
-)
 from common.performers import is_valid_performer_name, is_safe_alias, normalize_performers
 from common.performer_titles import parse_title_performers_with_known_map
 from resolver.providers.telegram import match_known_performers
-from sync import sync as S
 
 DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None
 BACKUP_DIR = BASE_DIR / "data" / "backups"
-MEDIA_DIR = BASE_DIR / "media" / "adult"
 
 
 def _clean_aliases(conn) -> None:
@@ -75,7 +70,7 @@ def _fetch_candidate_rows(conn) -> list:
     # Target videos: all rows where performers is populated OR Telegram videos where title contains performer markers
     print("Selecting candidate videos for performer correction...")
     return conn.execute(
-        "SELECT id, provider, title, slug, duration, thumbnail, performers, categories, tags, studio, first_seen "
+        "SELECT id, provider, title, performers "
         "FROM videos WHERE performers <> '[]'::jsonb "
         "OR (provider = 'telegram' AND (title LIKE '%&%' OR title LIKE '%,%' OR title LIKE '%fuck%' OR title LIKE '%[%]%' OR title LIKE '%(%' OR title LIKE '% - %'))"
     ).fetchall()
@@ -120,31 +115,9 @@ def _compute_new_performers(prov, raw_title, old_perfs, known_map, known_names, 
     return new_perfs
 
 
-def _regenerate_video_nfo(conn, row, new_perfs: list, nfo_path: Path) -> bool:
-    video_dict, genres, tag_set = build_video_nfo(conn, row, new_perfs, sync_api=S)
-    try:
-        S.create_nfo_file(video_dict, genres, tag_set, nfo_path)
-        return True
-    except Exception as e:
-        print(f"  Error updating NFO {nfo_path}: {e}")
-        return False
-
-
-def _correct_video(conn, row, known_map, known_names, safe_aliases) -> tuple[bool, bool]:
-    """Correct one video's performers; return (video_updated, nfo_updated)."""
-    (
-        vid_id,
-        prov,
-        title,
-        slug,
-        dur,
-        thumb,
-        perfs_raw,
-        cats_raw,
-        tags_raw,
-        studio,
-        first_seen,
-    ) = row
+def _correct_video(conn, row, known_map, known_names, safe_aliases) -> bool:
+    """Correct one video's performers; return whether the row was updated."""
+    vid_id, prov, title, perfs_raw = row
 
     old_perfs = json_list_or_empty(perfs_raw)
     raw_title = title or ""
@@ -153,34 +126,25 @@ def _correct_video(conn, row, known_map, known_names, safe_aliases) -> tuple[boo
     )
 
     if new_perfs == old_perfs:
-        return False, False
+        return False
 
     conn.execute(
         "UPDATE videos SET performers = %s WHERE id = %s",
         (json.dumps(new_perfs, ensure_ascii=False), vid_id),
     )
-
-    # Update NFO file if it exists
-    nfo_path = MEDIA_DIR / f"{S.stable_media_basename(vid_id)}.nfo"
-    nfo_updated = False
-    if nfo_path.exists():
-        nfo_updated = _regenerate_video_nfo(conn, row, new_perfs, nfo_path)
-    return True, nfo_updated
+    return True
 
 
-def _correct_videos(conn, rows, known_map, known_names, safe_aliases) -> tuple[int, int]:
+def _correct_videos(conn, rows, known_map, known_names, safe_aliases) -> int:
     videos_updated = 0
-    nfos_updated = 0
 
     print(f"Checking {len(rows)} video candidates...")
     with conn:
         for row in rows:
-            video_updated, nfo_updated = _correct_video(
+            videos_updated += int(_correct_video(
                 conn, row, known_map, known_names, safe_aliases
-            )
-            videos_updated += int(video_updated)
-            nfos_updated += int(nfo_updated)
-    return videos_updated, nfos_updated
+            ))
+    return videos_updated
 
 
 def run_cleanup():
@@ -198,12 +162,12 @@ def run_cleanup():
     # 2. Clean performer_bios and photos
     _clean_invalid_names(conn)
 
-    # 4. Clean and fix videos table & NFO files
+    # 4. Clean and fix videos table
     known_names, known_map, safe_aliases = _load_known_maps(conn)
     rows = _fetch_candidate_rows(conn)
-    videos_updated, nfos_updated = _correct_videos(conn, rows, known_map, known_names, safe_aliases)
+    videos_updated = _correct_videos(conn, rows, known_map, known_names, safe_aliases)
 
-    print(f"Cleanup finished: {videos_updated} videos updated in DB, {nfos_updated} NFO files regenerated.")
+    print(f"Cleanup finished: {videos_updated} videos updated in DB.")
     conn.close()
 
 

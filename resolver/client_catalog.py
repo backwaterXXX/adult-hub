@@ -7,7 +7,7 @@ Provides typed DTOs and read-only PostgreSQL queries for:
 - GET /api/v1/catalog/channels/{channel_id} (channel detail and video counts)
 
 Strictly enforces response allowlisting:
-- No filesystem, sidecar (.strm, .nfo), or local disk paths
+- No filesystem, sidecar (.strm, .jpg), or local disk paths
 - No private upstream Telegram URLs or credentials
 - No internal admin-only audit or diagnostics data
 - Preserves canonical video identity, existing duplicate merge/alias resolution,

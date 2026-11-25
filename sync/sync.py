@@ -26,13 +26,6 @@ from sync.sync_metrics import (
     observe_http_error as _observe_http_error_impl,
     observe_sync_stage as _observe_sync_stage_impl,
 )
-from sync.nfo import (
-    create_nfo_file as _create_nfo_file_impl,
-    format_dateadded as _format_dateadded_impl,
-    load_performer_links as _load_performer_links_impl,
-    load_performer_thumbs as _load_performer_thumbs_impl,
-    video_for_nfo as _video_for_nfo_impl,
-)
 from sync.performer_enrichment import (
     PerformerEnrichmentServices,
     backfill_performers_from_titles as _backfill_performers_from_titles_impl,
@@ -63,12 +56,10 @@ from sync.library_cleanup import (
 from sync.data_migrations import (
     DataMigrationServices,
     CATEGORY_MAPPING_VERSION,
-    DISPLAY_TITLE_VERSION,
     REDUNDANT_PERFORMERS_VERSION,
     _STABLE_STRM_RE,
     migrate_synced_files as _migrate_synced_files_impl,
     migrate_categories as _migrate_categories_impl,
-    migrate_display_titles as _migrate_display_titles_impl,
     migrate_redundant_performers as _migrate_redundant_performers_impl,
 )
 from sync.dead_streams import (
@@ -162,9 +153,6 @@ from sync.sync_helpers import (
     parse_retry_after,
     _retry_after_from_error,
     _is_retryable_error,
-    format_dateadded,
-    load_performer_thumbs,
-    load_performer_links,
 )
 from sync.sync_settings import (
     RESOLVER_PUBLIC_URL,
@@ -393,9 +381,6 @@ def _data_migration_services() -> DataMigrationServices:
         write_stream_file=write_stream_file,
         map_categories=map_categories,
         prune_redundant_performers=prune_redundant_performers,
-        load_performer_thumbs=load_performer_thumbs,
-        format_dateadded=format_dateadded,
-        create_nfo_file=create_nfo_file,
     )
 
 
@@ -407,13 +392,6 @@ def migrate_categories(conn: db.Connection, media_dir: Path):
     return _migrate_categories_impl(
         conn, media_dir, services=_data_migration_services(),
         category_mapping_version=CATEGORY_MAPPING_VERSION,
-    )
-
-
-def migrate_display_titles(conn: db.Connection, media_dir: Path) -> int:
-    return _migrate_display_titles_impl(
-        conn, media_dir, services=_data_migration_services(),
-        display_title_version=DISPLAY_TITLE_VERSION,
     )
 
 
@@ -572,34 +550,6 @@ def download_image_if_missing(url: str, dest_path: Path) -> bool:
 
 
 
-def _video_for_nfo(video: Dict[str, Any], conn: Optional[db.Connection] = None) -> Dict[str, Any]:
-    """Overlay persistent title/plot corrections without changing source rows."""
-    return _video_for_nfo_impl(video, conn=conn, db_url=DB_URL)
-
-
-def create_nfo_file(video: Dict[str, Any], genres: Set[str], tags: Set[str], dest_path: Path,
-                    *, conn: Optional[db.Connection] = None):
-    video = _video_for_nfo(video, conn=conn)
-    if (video.get("metadata_fields", {}).get("tags", {}).get("overridden")
-            and isinstance(video.get("tags"), list)):
-        tags = set(video["tags"])
-    if conn is not None and not video.get("performer_links"):
-        perfs = video.get("performers") or []
-        if perfs:
-            video = dict(video)
-            video["performer_links"] = load_performer_links(conn, perfs)
-    return _create_nfo_file_impl(
-        video, genres, tags, dest_path,
-        get_provider_info_fn=get_provider_info,
-        clean_display_title_fn=clean_display_title,
-        normalize_performers_fn=(
-            lambda names: normalize_performers(names, preserve_literal=True)
-            if video.get("performer_resolution") else normalize_performers(names)
-        ),
-        map_categories_fn=map_categories,
-    )
-
-
 def _persist_prepared_video(conn: db.Connection, prepared: Dict[str, Any]):
     """Persist one media-prepared video inside the caller's DB transaction."""
     _persist_prepared_video_impl(conn, prepared, time_fn=time.time)
@@ -623,36 +573,11 @@ def _video_persistence_services(conn: Optional[db.Connection] = None) -> VideoPe
     alias_map = _load_sync_alias_map(conn)
     norm_fn = (lambda names: normalize_performers(names, alias_map=alias_map)) if alias_map else normalize_performers
 
-    def _create_nfo_with_aliases(video: Dict[str, Any], genres: Set[str], tags: Set[str], dest_path: Path):
-        video = _video_for_nfo(video, conn)
-        if (video.get("metadata_fields", {}).get("tags", {}).get("overridden")
-                and isinstance(video.get("tags"), list)):
-            tags = set(video["tags"])
-        if conn is not None and not video.get("performer_links"):
-            perfs = video.get("performers") or []
-            if perfs:
-                video = dict(video)
-                video["performer_links"] = load_performer_links(conn, perfs)
-        return _create_nfo_file_impl(
-            video, genres, tags, dest_path,
-            get_provider_info_fn=get_provider_info,
-            clean_display_title_fn=clean_display_title,
-            normalize_performers_fn=(
-                lambda names: normalize_performers(names, preserve_literal=True)
-                if video.get("performer_resolution") else norm_fn(names)
-            ),
-            map_categories_fn=map_categories,
-        )
-
     return VideoPersistenceServices(
         stable_media_basename=stable_media_basename,
         map_categories=map_categories,
         normalize_performers=norm_fn,
         thumbnail_urls=thumbnail_urls,
-        load_performer_thumbs=load_performer_thumbs,
-        load_performer_links=load_performer_links,
-        format_dateadded=format_dateadded,
-        create_nfo_file=_create_nfo_with_aliases,
         download_image=download_image,
         write_stream_file=write_stream_file,
         sync_unique_video=sync_unique_video,
@@ -918,10 +843,7 @@ def _duplicate_job_services() -> DuplicateJobServices:
         write_catalog_backup=_write_catalog_backup,
         duplicate_file_matches=_duplicate_file_matches,
         duplicate_move_file=_duplicate_move_file,
-        create_nfo_file=create_nfo_file,
         create_stream_file=create_stream_file,
-        format_dateadded=format_dateadded,
-        load_performer_thumbs=load_performer_thumbs,
         resolve_media_path=resolve_media_path,
         probe_stream=probe_stream_via_resolver,
         logger=logger,
@@ -947,10 +869,7 @@ def _process_video_duplicate_jobs_locked(
 def _performer_enrichment_services():
     return PerformerEnrichmentServices(
         parse_title_performers=parse_title_performers,
-        load_performer_thumbs=load_performer_thumbs,
-        format_dateadded=format_dateadded,
         stable_media_basename=stable_media_basename,
-        create_nfo_file=create_nfo_file,
         logger=logger,
     )
 

@@ -178,7 +178,6 @@
       ['pHash', video.phash || 'Not calculated (available for a subset of videos)'],
       ['Video size', fileSize(video.file_size_bytes)],
       ['Stream file', localFileLabel(video.local_files?.stream)],
-      ['NFO file', localFileLabel(video.local_files?.nfo)],
       ['Artwork file', artworkValue]
     ].forEach(([label, value]) => fileFields.append(detailFieldValue(label, value)));
     files.append(fileFields);
@@ -408,7 +407,7 @@
         create('strong', 'metadata-diff-after', values.after === '' || values.after === null || (Array.isArray(values.after) && !values.after.length) ? '(empty)' : String(displayValue(values.after))));
       list.append(valuesNode);
     }
-    content.append(list, create('p', 'detail-description', 'The worker saves the local override and writes the updated NFO files atomically.'));
+    content.append(list, create('p', 'detail-description', 'The worker saves the local override and refreshes the derived artwork files atomically.'));
     const actions = $('#metadataDialogActions'); actions.replaceChildren();
     const back = create('button', 'button button-quiet', 'Back to editor'); back.type = 'button'; back.addEventListener('click', () => openMetadataEditor(true));
     const queue = create('button', 'button button-primary', 'Queue metadata update'); queue.type = 'button'; queue.addEventListener('click', queueMetadataUpdate);

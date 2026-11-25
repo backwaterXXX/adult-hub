@@ -3,7 +3,6 @@ import os
 import tempfile
 import time
 import unittest
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
@@ -122,7 +121,7 @@ class SyncIntegrityTests(PgTestCase):
             self.assertEqual(web.read_text(),
                              "https://adult.example.test/admin/play/exampleweb:123/stream\n")
 
-    def test_telegram_thumbnail_is_local_sidecar_without_remote_nfo_dependency(self):
+    def test_telegram_thumbnail_is_local_sidecar(self):
         thumb_path = "/admin/api/thumb?provider=telegram&ref=example%3A42%3Au1"
         video = self.video("telegram", "example:42:u1", "Example")
         video["thumbnail"] = thumb_path
@@ -138,9 +137,6 @@ class SyncIntegrityTests(PgTestCase):
         self.assertEqual(stored_url, "https://adult.example.test" + thumb_path)
         jpg = next(self.media.glob("*.jpg"))
         self.assertEqual(jpg.stat().st_size, 644)
-        nfo_root = ET.parse(next(self.media.glob("*.nfo"))).getroot()
-        self.assertIsNone(nfo_root.find("thumb"))
-        self.assertEqual(nfo_root.findtext("lockdata"), "true")
         self.assertEqual(jpg.stem, next(self.media.glob("*.strm")).stem)
 
         with patch.object(sync_module, "RESOLVER_PUBLIC_URL", "https://adult.example.test"), \
@@ -158,7 +154,6 @@ class SyncIntegrityTests(PgTestCase):
 
         def download(url, dest):
             self.assertEqual(list(self.media.glob("*.strm")), [])
-            self.assertEqual(len(list(self.media.glob("*.nfo"))), 1)
             dest.write_bytes(b"local preview")
 
         with patch.object(sync_module, "download_image", side_effect=download):
@@ -297,26 +292,16 @@ class SyncIntegrityTests(PgTestCase):
         self.assertIn("Group", map_categories(["Amateur & OnlyFans"], title="Orgy"))
         self.assertIn("Group", map_categories(["Bareback & Breeding"], title="[Lucas Raunch] - Orgy"))
 
-    def test_migrate_categories_updates_db_and_nfo(self):
+    def test_migrate_categories_updates_db(self):
         import json
         video = self.video("secondweb", "vid1", "Test Video")
         sync_module.sync_unique_video(video, {"Secondweb", "Anal", "Creampie"}, {"Secondweb"}, self.media, self.conn)
 
-        # Manually tamper DB and NFO to simulate old unmapped state with provider genre
+        # Manually tamper DB to simulate old unmapped state with provider genre
         self.conn.execute("UPDATE videos SET categories = %s WHERE id = %s", (json.dumps(["Secondweb", "Anal", "Creampie"]), "secondweb:vid1"))
         self.conn.execute("INSERT INTO video_categories (video_id, category) VALUES (%s, %s) ON CONFLICT DO NOTHING", ("secondweb:vid1", "Secondweb"))
         self.conn.execute("INSERT INTO video_categories (video_id, category) VALUES (%s, %s) ON CONFLICT DO NOTHING", ("secondweb:vid1", "Creampie"))
         self.conn.commit()
-
-        nfo_path = next(self.media.glob("*.nfo"))
-        nfo_path.write_text("""<?xml version="1.0" encoding="utf-8"?>
-<movie>
-  <title>Test Video</title>
-  <genre>Secondweb</genre>
-  <genre>Creampie</genre>
-  <tag>Secondweb</tag>
-</movie>
-""", encoding="utf-8")
 
         sync_module.migrate_categories(self.conn, self.media)
 
@@ -328,13 +313,6 @@ class SyncIntegrityTests(PgTestCase):
         cur = self.conn.execute("SELECT category FROM video_categories WHERE video_id = %s", ("secondweb:vid1",))
         db_cats = {r[0] for r in cur.fetchall()}
         self.assertEqual(db_cats, {"Anal", "Bareback & Breeding"})
-
-        # Verify NFO file has mapped genres and no provider genre
-        new_nfo = nfo_path.read_text(encoding="utf-8")
-        self.assertNotIn("<genre>Secondweb</genre>", new_nfo)
-        self.assertNotIn("<genre>Creampie</genre>", new_nfo)
-        self.assertIn("<genre>Bareback &amp; Breeding</genre>", new_nfo)
-        self.assertIn("<tag>Secondweb</tag>", new_nfo)
 
     def test_flush_collected_saves_and_clears(self):
         batch = {

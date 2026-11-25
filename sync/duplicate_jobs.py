@@ -3,7 +3,6 @@ import asyncio  # noqa: F401 -- duplicate_job_worker reads this through the comp
 import hashlib  # noqa: F401 -- duplicate_job_metadata reads this through the compatibility facade
 import json
 import os
-import re
 import threading
 import time
 from dataclasses import dataclass
@@ -94,7 +93,7 @@ def _record_family_file(entry, root: Path, families: dict) -> bool:
     """Add a sidecar-capable file to its same-basename family. False if its metadata could not be read."""
     relative = Path(entry.path).relative_to(root).as_posix()
     suffix = Path(relative).suffix.lower()
-    if suffix not in {".strm", ".nfo", ".jpg"}:
+    if suffix not in {".strm", ".jpg"}:
         return True
     path = Path(relative)
     key = (path.parent.as_posix(), path.stem)
@@ -118,100 +117,13 @@ def _orphan_families(families: dict, registered_streams: set[str]) -> list:
         if path.suffix.lower() == ".strm":
             registered_families.add((path.parent.as_posix(), path.stem))
     for (parent, stem), files in sorted(families.items()):
-        # Match the exact managed stream path; an orphan NFO/JPG is actionable
+        # Match the exact managed stream path; an orphan JPG is actionable
         # only when no registered STRM exists for its same-basename family.
         if (parent, stem) in registered_families:
             continue
         files.sort(key=lambda item: (item["path"].casefold(), item["path"]))
         orphans.append({"files": files, "total_bytes": sum(item["size"] for item in files)})
     return orphans
-
-
-def _audit_nfo_metadata_signature(root):
-    """Return catalog-derived fields, ignoring XML formatting and set ordering."""
-    simple_fields = ("title", "originaltitle", "studio", "premiered", "year", "plot",
-                     "runtime", "genre", "tag")
-    unordered_fields = {"studio", "genre", "tag"}
-    simple = {}
-    for name in simple_fields:
-        values = tuple((node.text or "").replace("\r\n", "\n").strip()
-                       for node in root.findall(name))
-        if name in unordered_fields:
-            values = tuple(sorted({value for value in values if value}))
-        simple[name] = values
-    sets = tuple(sorted({(node.findtext("name", "") or "").strip()
-                         for node in root.findall("set")
-                         if (node.findtext("name", "") or "").strip()}))
-    actors = tuple(((node.findtext("name", "") or "").strip(),
-                    (node.findtext("role", "") or "").strip()) for node in root.findall("actor"))
-    return {"simple": dict(simple), "collections": sets, "cast": actors}
-
-
-def _audit_nfo_metadata_differences(actual, expected):
-    """Name differing NFO fields without retaining or exposing their values."""
-    labels = {
-        "title": "title",
-        "originaltitle": "original title",
-        "studio": "studio",
-        "premiered": "premiered date",
-        "year": "year",
-        "plot": "plot",
-        "runtime": "runtime",
-        "genre": "genres",
-        "tag": "tags",
-    }
-    actual_signature = _audit_nfo_metadata_signature(actual)
-    expected_signature = _audit_nfo_metadata_signature(expected)
-    differences = [labels[name] for name in labels
-                   if actual_signature["simple"][name] != expected_signature["simple"][name]]
-    if actual_signature["collections"] != expected_signature["collections"]:
-        differences.append("collections")
-    if actual_signature["cast"] != expected_signature["cast"]:
-        differences.append("cast")
-    return differences
-
-
-def _audit_nfo_metadata_diff_details(actual, expected):
-    """Keep bounded, path-free before/after values for allowlisted NFO fields."""
-    labels = {
-        "title": "Title", "originaltitle": "Original title", "studio": "Studio",
-        "premiered": "Release date", "year": "Year", "plot": "Description",
-        "runtime": "Runtime", "genre": "Genres", "tag": "Tags",
-    }
-    before, after = _audit_nfo_metadata_signature(actual), _audit_nfo_metadata_signature(expected)
-
-    def display(values, other_values):
-        value = " · ".join(str(part) for part in values if str(part).strip())
-        value = re.sub(r"https?://\S+", "[link]", value, flags=re.IGNORECASE)
-        value = "".join(char for char in value if char >= " " or char in "\t\n")
-        if len(value) <= 300:
-            return value
-        other = " · ".join(str(part) for part in other_values if str(part).strip())
-        other = re.sub(r"https?://\S+", "[link]", other, flags=re.IGNORECASE)
-        other = "".join(char for char in other if char >= " " or char in "\t\n")
-        common = 0
-        for current_char, expected_char in zip(value, other):
-            if current_char != expected_char:
-                break
-            common += 1
-        start = max(0, common - 90)
-        end = min(len(value), common + 150)
-        return f"[{start} characters before] … {value[start:end]} … [{len(value) - end} characters after]"
-
-    diffs = []
-    for field, label in labels.items():
-        if before["simple"][field] != after["simple"][field]:
-            diffs.append({"field": label, "current": display(before["simple"][field], after["simple"][field]),
-                          "expected": display(after["simple"][field], before["simple"][field])})
-    if before["collections"] != after["collections"]:
-        diffs.append({"field": "Collections", "current": display(before["collections"], after["collections"]),
-                      "expected": display(after["collections"], before["collections"])})
-    if before["cast"] != after["cast"]:
-        current_cast = tuple(" — ".join(pair) for pair in before["cast"])
-        expected_cast = tuple(" — ".join(pair) for pair in after["cast"])
-        diffs.append({"field": "Cast", "current": display(current_cast, expected_cast),
-                      "expected": display(expected_cast, current_cast)})
-    return {"diffs": diffs}
 
 
 def _record_job_progress(conn, job_id: str, stage: str, *, completed=None, total=None,
@@ -306,18 +218,6 @@ def _finish_job(conn, job_id: str, result: dict) -> None:
         )
 
 
-def _json_list_value(value) -> list:
-    if isinstance(value, list):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, list) else []
-        except (TypeError, ValueError):
-            return []
-    return []
-
-
 def _metadata_update(conn, job_id: str, payload: dict, media_dir: Path, services) -> dict:
     from sync.duplicate_job_metadata import _metadata_update as implementation
     return implementation(conn, job_id, payload, media_dir, services)
@@ -339,15 +239,9 @@ def _consistency_audit(conn, job_id: str, media_dir: Path, services, payload: di
 
 
 
-def _audit_repair_nfo(conn, job_id: str, payload: dict, media_dir: Path, services) -> dict:
-    from sync.duplicate_job_library_audit import _audit_repair_nfo as implementation
+def _audit_repair_artwork(conn, job_id: str, payload: dict, media_dir: Path, services) -> dict:
+    from sync.duplicate_job_library_audit import _audit_repair_artwork as implementation
     return implementation(conn, job_id, payload, media_dir, services)
-
-
-
-def _audit_import_refresh(conn, job_id: str, payload: dict, services) -> dict:
-    from sync.duplicate_job_library_audit import _audit_import_refresh as implementation
-    return implementation(conn, job_id, payload, services)
 
 
 
@@ -365,10 +259,7 @@ class DuplicateJobServices:
     write_catalog_backup: Callable
     duplicate_file_matches: Callable
     duplicate_move_file: Callable
-    create_nfo_file: Callable
     create_stream_file: Callable
-    format_dateadded: Callable
-    load_performer_thumbs: Callable
     resolve_media_path: Callable
     probe_stream: Callable
     logger: object
@@ -377,37 +268,6 @@ class DuplicateJobServices:
     download_image_if_missing: Callable | None = None
     external_metadata_backfill: Callable | None = None
     telegram_fingerprint_scan: Callable | None = None
-
-
-def _performer_refresh(conn: db.Connection, job_id: str, payload: dict,
-                       media_dir: Path, services: DuplicateJobServices) -> dict:
-    """Rebuild NFOs after approved performer assignments."""
-    ids = payload.get("video_ids")
-    if not isinstance(ids, list) or not ids or len(ids) > 100:
-        raise ValueError("Performer refresh requires 1–100 video IDs.")
-    from sync import sync as S
-    updated = 0
-    for index, video_id in enumerate(dict.fromkeys(str(value) for value in ids)):
-        row = conn.execute("""
-            SELECT provider,title,slug,duration,thumbnail,performers,categories,tags,studio,first_seen,plot
-            FROM videos WHERE id=%s
-        """, (video_id,)).fetchone()
-        if not row:
-            continue
-        provider,title,slug,duration,thumbnail,raw_performers,categories,tags,studio,first_seen,plot = row
-        performers = _json_list_value(raw_performers)
-        genres, tag_set = set(_json_list_value(categories)), set(_json_list_value(tags))
-        video = {"id": video_id, "provider": provider,
-                 "provider_video_id": video_id.split(":", 1)[-1], "title": title or video_id,
-                 "slug": slug or "", "duration": duration or 0, "thumbnail": thumbnail or "",
-                 "performers": performers, "performer_thumbs": services.load_performer_thumbs(conn, performers),
-                 "studio": studio or "", "plot": plot or "",
-                 "dateadded": services.format_dateadded(first_seen or time.time())}
-        nfo_path = media_dir / f"{S.stable_media_basename(video_id)}.nfo"
-        services.create_nfo_file(video, genres, tag_set, nfo_path, conn=conn)
-        updated += 1
-        _record_job_progress(conn, job_id, "writing_nfo", completed=index + 1, total=len(ids))
-    return {"videos_refreshed": updated}
 
 
 def __getattr__(name: str):

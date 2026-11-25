@@ -458,13 +458,13 @@ class TestMaintenanceAheadOfTheScans(SyncPassHarness):
         scanned = order.index("sync_telegram_channel_pipeline")
         self.assertEqual(order[:scanned], [
             "init_db", "sync_catalog_if_due", "sync_fansdb_catalog_if_due", "_video_id_snapshot", "migrate_synced_files",
-            "migrate_categories", "migrate_display_titles", "migrate_redundant_performers",
+            "migrate_categories", "migrate_redundant_performers",
             "cleanup_legacy_folders", "cleanup_old_transcodes", "republish_pending_videos",
             "safe_process_duplicate_jobs_checkpoint",
         ])
         self.assertEqual(self.sink("init_db").args(), ())
         self.assertEqual(self.sink("_video_id_snapshot").args(), (CONN,))
-        for name in ("migrate_synced_files", "migrate_categories", "migrate_display_titles",
+        for name in ("migrate_synced_files", "migrate_categories",
                      "migrate_redundant_performers", "republish_pending_videos"):
             self.assertEqual(self.sink(name).args(), (CONN, MEDIA_DIR), name)
         self.assertEqual(self.sink("cleanup_legacy_folders").args(), (MEDIA_DIR,))

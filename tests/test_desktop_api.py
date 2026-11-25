@@ -731,7 +731,6 @@ class TestDesktopApiOffline(unittest.TestCase):
             self.assertNotIn("tg://", raw_text)
             self.assertNotIn("t.me", raw_text)
             self.assertNotIn(".strm", raw_text)
-            self.assertNotIn(".nfo", raw_text)
             self.assertNotIn("is_admin", raw_text)
 
     def test_playback_stream_dummy_bytes_range_and_head(self):

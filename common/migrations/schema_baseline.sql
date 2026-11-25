@@ -138,7 +138,7 @@ CREATE TABLE public.admin_audit_items (
     evidence text DEFAULT ''::text NOT NULL,
     checked_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     details jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT admin_audit_items_kind_check CHECK ((kind = ANY (ARRAY['missing_stream'::text, 'missing_nfo'::text, 'invalid_nfo'::text, 'nfo_metadata_mismatch'::text, 'catalog_reference_without_video'::text, 'unknown_mapping'::text, 'orphan_file'::text, 'nfo_import_state_missing'::text, 'nfo_import_state_mismatch'::text, 'missing_artwork'::text, 'missing_metadata'::text]))),
+    CONSTRAINT admin_audit_items_kind_check CHECK ((kind = ANY (ARRAY['missing_stream'::text, 'catalog_reference_without_video'::text, 'unknown_mapping'::text, 'orphan_file'::text, 'missing_artwork'::text, 'missing_metadata'::text]))),
     CONSTRAINT admin_audit_items_status_check CHECK ((status = ANY (ARRAY['open'::text, 'resolved'::text])))
 );
 
@@ -188,7 +188,7 @@ CREATE TABLE public.admin_quality_acknowledgements (
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT admin_quality_acknowledgements_finding_fingerprint_check CHECK ((finding_fingerprint ~ '^[0-9a-f]{32}$'::text)),
-    CONSTRAINT admin_quality_acknowledgements_kind_check CHECK ((kind = ANY (ARRAY['missing_metadata'::text, 'missing_nfo'::text, 'invalid_nfo'::text, 'nfo_metadata_mismatch'::text, 'missing_artwork'::text]))),
+    CONSTRAINT admin_quality_acknowledgements_kind_check CHECK ((kind = ANY (ARRAY['missing_metadata'::text, 'missing_artwork'::text]))),
     CONSTRAINT admin_quality_acknowledgements_note_check CHECK (((length(note) >= 1) AND (length(note) <= 500))),
     CONSTRAINT admin_quality_acknowledgements_state_check CHECK ((state = ANY (ARRAY['active'::text, 'reopened'::text])))
 );

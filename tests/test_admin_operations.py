@@ -31,7 +31,7 @@ class TestAdminOperations(PgTestCase):
                 (video_id, operation_id, int(time.time()), json.dumps(snapshot)),
             )
 
-    def add_audit_finding(self, video_id, kind="missing_nfo"):
+    def add_audit_finding(self, video_id, kind="missing_stream"):
         audit_id = uuid.uuid4().hex
         with self.conn:
             self.conn.execute(
@@ -49,9 +49,9 @@ class TestAdminOperations(PgTestCase):
             ).fetchone()[0]
         return audit_id, int(finding)
 
-    def test_audit_nfo_repair_preview_is_scoped_and_execute_queues_worker(self):
-        video_id = "telegram:10:audit-nfo"
-        self.add_video(video_id, "NFO title")
+    def test_audit_file_repair_preview_is_scoped_and_execute_queues_worker(self):
+        video_id = "telegram:10:audit-files"
+        self.add_video(video_id, "Repair title")
         audit_id, finding_id = self.add_audit_finding(video_id)
         plan = preview_audit_repair(self.db_url, audit_id, [finding_id])
         self.assertEqual(plan["outcome"], "previewed")
@@ -64,11 +64,11 @@ class TestAdminOperations(PgTestCase):
         event = audit["items"][0]
         self.assertEqual(event["event_type"], "admin_operation_queued")
         self.assertEqual(event["changes"]["state"], {"before": "previewed", "after": "queued"})
-        self.assertEqual(event["changes"]["operation_type"]["after"], "audit_repair_nfo")
+        self.assertEqual(event["changes"]["operation_type"]["after"], "audit_repair_files")
         self.assertNotIn(video_id, repr(event))
         job = self.conn.execute("SELECT action,payload FROM video_duplicate_jobs WHERE id=%s",
                                 (queued["jobs"][0]["job_id"],)).fetchone()
-        self.assertEqual(job[0], "audit_repair_nfo")
+        self.assertEqual(job[0], "audit_repair_files")
         self.assertEqual(json.loads(job[1]), {"plan_id": plan["plan_id"]})
 
     def test_metadata_batch_preview_and_execute_queues_per_video_atomically(self):
@@ -149,7 +149,7 @@ class TestAdminOperations(PgTestCase):
             "SELECT count(*) FROM video_duplicate_jobs WHERE action='metadata_update'"
         ).fetchone()[0], 2)
 
-    def test_audit_nfo_repair_rejects_stale_catalog_or_ineligible_findings(self):
+    def test_audit_file_repair_rejects_stale_catalog_or_ineligible_findings(self):
         video_id = "telegram:10:audit-stale"
         self.add_video(video_id, "Before")
         audit_id, finding_id = self.add_audit_finding(video_id)
@@ -158,7 +158,7 @@ class TestAdminOperations(PgTestCase):
             self.conn.execute("UPDATE videos SET title='After' WHERE id=%s", (video_id,))
         stale = execute_operation(self.db_url, plan["plan_id"])
         self.assertEqual(stale["outcome"], "stale")
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM video_duplicate_jobs WHERE action='audit_repair_nfo'").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM video_duplicate_jobs WHERE action='audit_repair_files'").fetchone()[0], 0)
         self.assertEqual(preview_audit_repair(self.db_url, audit_id, [finding_id, finding_id])["outcome"], "invalid")
 
     def test_preview_is_persisted_and_has_explicit_safe_scope(self):

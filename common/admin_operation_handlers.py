@@ -60,10 +60,10 @@ def handle_performer_merge(conn, db_url, plan_id, row, config, scope, revisions,
 
 
 
-def handle_audit_repair_nfo(conn, db_url, plan_id, row, config, scope, revisions, now):
-    """Compatibility facade for audit NFO repair execution."""
+def handle_audit_repair_files(conn, db_url, plan_id, row, config, scope, revisions, now):
+    """Compatibility facade for audit file repair execution."""
     from common import admin_operation_audit_handlers as implementation
-    return implementation.handle_audit_repair_nfo(
+    return implementation.handle_audit_repair_files(
         conn, db_url, plan_id, row, config, scope, revisions, now
     )
 

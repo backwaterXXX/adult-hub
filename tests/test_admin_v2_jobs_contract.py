@@ -214,12 +214,12 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
         page = {"available": True, "jobs": [], "total": 0, "active_total": 0}
         with patch("resolver.admin_services.job_listing", return_value=page) as listing:
             response = await endpoint(
-                request("/admin/api/v2/jobs?action=performer_refresh"),
-                state="all", action="performer_refresh", offset=0, limit=50,
+                request("/admin/api/v2/jobs?action=metadata_backfill"),
+                state="all", action="metadata_backfill", offset=0, limit=50,
             )
         self.assertEqual(response["jobs"], [])
         listing.assert_called_once_with(
-            "postgresql://test.invalid/catalog", 50, "", "performer_refresh", 0,
+            "postgresql://test.invalid/catalog", 50, "", "metadata_backfill", 0,
             include_failure_code=True,
         )
 

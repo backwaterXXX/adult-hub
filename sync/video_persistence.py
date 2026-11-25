@@ -82,16 +82,12 @@ class VideoPersistenceServices:
     map_categories: Callable[..., Set[str]]
     normalize_performers: Callable[[List[str]], List[str]]
     thumbnail_urls: Callable[[Optional[str]], Tuple[str, str]]
-    load_performer_thumbs: Callable[[db.Connection, List[str]], Dict[str, str]]
-    format_dateadded: Callable[[Any], str]
-    create_nfo_file: Callable[[Dict[str, Any], Set[str], Set[str], Path], None]
     download_image: Callable[[str, Path], None]
     write_stream_file: Callable[[Path, str], bool]
     sync_unique_video: Callable[..., Any]
     persist_prepared_video: Callable[[db.Connection, Dict[str, Any]], None]
     logger: logging.Logger
     time_fn: Callable[[], float] = time.time
-    load_performer_links: Optional[Callable[[db.Connection, List[str]], Dict[str, Dict[str, str]]]] = None
 
     def __post_init__(self) -> None:
         warn_if_channel_hints_missing(self.logger)
@@ -344,8 +340,8 @@ def _backfill_from_row(video: Dict[str, Any], _row, studio_val: str) -> str:
 
 
 def _apply_scene_match_provenance(video: Dict[str, Any], _row) -> None:
-    # Przenies proweniencje dopasowania do NFO, aby przebieg zapisu nie
-    # usuwal identyfikatora katalogowego z pliku.
+    # Zachowaj proweniencje dopasowania sceny, aby przebieg zapisu nie
+    # usuwal identyfikatora katalogowego.
     if _row and len(_row) > 9 and _row[9]:
         video["scene_match_source"] = _row[8]
         video["scene_match_external_id"] = _row[9]
@@ -356,8 +352,8 @@ def _apply_scene_match_provenance(video: Dict[str, Any], _row) -> None:
 def _apply_catalog_title(video: Dict[str, Any], title: str, provider: str, _row) -> str:
     # Tytul: potwierdzone dopasowanie sceny StashDB/ThePornDB jest kanonicznym
     # zrodlem tytulu (jak w _apply_matched_scene). Swiezy listing z Telegrama
-    # nie moze go cofnac do podpisu kanalu — inaczej NFO (a w nim nazwa
-    # widoczna w kliencie) traci tytul katalogowy przy kazdym przebiegu.
+    # nie moze go cofnac do podpisu kanalu — inaczej klient traci tytul
+    # katalogowy przy kazdym przebiegu.
     # Jawne nadpisanie operatora ma pierwszenstwo.
     provider_title = title
     catalog_title = ""
@@ -530,38 +526,25 @@ def sync_unique_video(
     base_name = services.stable_media_basename(comp_id)
 
     strm_file = target_dir / f"{base_name}.strm"
-    nfo_file = target_dir / f"{base_name}.nfo"
     jpg_file = target_dir / f"{base_name}.jpg"
 
     mapped_genres = services.map_categories(genres, title=title)
 
-    # Studio (per-source override) i data dodania: first_seen z DB dla starych,
-    # teraz dla nowych. Backfilluje tez kolumne studio.
-    now = int(services.time_fn())
+    # Studio (per-source override); starsze wiersze bez studia są backfillowane.
     _row = _load_existing_video_row(conn, comp_id)
-    first_seen = _row[0] if _row and _row[0] else now
     studio_val = (video.get("studio") or "").strip()
     studio_val = _backfill_from_row(video, _row, studio_val)
     title = _apply_catalog_title(video, title, provider, _row)
 
     # Obsada: swiezy listing wygrywa, ale pusty NIE kasuje tego, co juz mamy
-    # w DB (backfill/matcher) — inaczej NFO traciloby obsade do kolejnego backfillu.
+    # w DB (backfill/matcher) — inaczej obsada ginalaby do kolejnego backfillu.
     _fresh_perfs, effective_resolution = _resolve_fresh_performers(video, _row, services)
 
-    # Normalize performers once so NFO and DB stay consistent (deduped order).
+    # Normalize performers once so the published metadata stays consistent (deduped order).
     _perfs = _fresh_perfs
     public_thumb_url, download_thumb_url = services.thumbnail_urls(video.get("thumbnail"))
-    perf_links = {}
-    if getattr(services, "load_performer_links", None):
-        try:
-            perf_links = services.load_performer_links(conn, _perfs)
-        except Exception:
-            logger.debug("Ignored exception in sync_unique_video", exc_info=True)
     video = {**video, "_video_id": comp_id, "performers": _perfs, "thumbnail": public_thumb_url,
-             "performer_thumbs": services.load_performer_thumbs(conn, _perfs),
-             "performer_links": perf_links,
-             "studio": studio_val, "dateadded": services.format_dateadded(first_seen),
-             "performer_resolution": effective_resolution}
+             "studio": studio_val, "performer_resolution": effective_resolution}
 
     # Detect production studios and add as tags and production_studios
     tags, db_studio = _apply_studio_fields(video, title, tags, provider, studio_val, services)
@@ -571,7 +554,7 @@ def sync_unique_video(
         "comp_id": comp_id, "provider": provider, "title": title,
         "video": video, "genres": mapped_genres, "tags": tags,
         "strm_file": strm_file, "studio": db_studio,
-        "nfo_file": nfo_file, "jpg_file": jpg_file, "thumb_url": download_thumb_url,
+        "jpg_file": jpg_file, "thumb_url": download_thumb_url,
     }
 
     if _prepare_only:
@@ -579,16 +562,14 @@ def sync_unique_video(
 
     # Record into DB with relative file path and composite video_id.
     _persist_prepared_with_commit(services, prepared, conn, commit)
-    # The catalog row is durable; publish sidecars (NFO first so the library
-    # scanner sees metadata before a new stream file becomes visible).
+    # The catalog row is durable; publish the stream pointer and artwork.
     write_media_files(services, prepared, conn, commit=commit)
     return None
 
 
 def write_media_files(services: VideoPersistenceServices, prepared: Dict[str, Any],
                       conn: db.Connection, *, commit: bool = True) -> None:
-    """Publish NFO, thumbnail and STRM, then register the stream that exists."""
-    services.create_nfo_file(prepared["video"], prepared["genres"], prepared["tags"], prepared["nfo_file"])
+    """Publish the thumbnail and STRM, then register the stream that exists."""
     thumb_url = prepared.get("thumb_url")
     if thumb_url and not prepared["jpg_file"].exists():
         services.download_image(thumb_url, prepared["jpg_file"])

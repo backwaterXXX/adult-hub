@@ -2,7 +2,6 @@
 
 import hashlib
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
@@ -389,123 +388,12 @@ def _migrate_aliases(conn, tables, resolved_merges: Dict[str, str], _core) -> in
     return aliases_added
 
 
-def _collect_nfo_targets(conn, canonical_names: set, _core) -> Dict[Any, Any]:
-    """Return video id -> performer list for every video that names a canonical performer."""
-    # Rebuild all files containing a canonical name from this operation,
-    # including rows already committed by an earlier attempt. This makes
-    # replay after a process stop between DB commit and NFO writes repairable.
-    nfo_targets = {}
-    for vid_id, raw_perfs in conn.execute(
-            "SELECT id, performers FROM videos WHERE performers <> '[]'::jsonb"):
-        try:
-            performers = _core["_json_list"](raw_perfs)
-        except (TypeError, ValueError):
-            continue
-        if (isinstance(performers, list)
-                and canonical_names.intersection(p for p in performers if isinstance(p, str))):
-            nfo_targets[vid_id] = performers
-    return nfo_targets
-
-
-def _regenerate_nfos(conn, resolved_merges: Dict[str, str], media_dir: Path, _core) -> Tuple[int, List[str]]:
-    """Step 6: rewrite NFO files for affected videos; return (updated count, error messages)."""
-    # Batched rewrite driven by metadata state; it returns error text. Not the same as the
-    # rebuild_telegram_performers helper of this name, which takes (video_id, performers) pairs.
-    from sync import sync as S
-    nfos_updated = 0
-    canonical_names = set(resolved_merges.values())
-    nfo_targets = _collect_nfo_targets(conn, canonical_names, _core)
-
-    nfo_errors: List[str] = []
-    if nfo_targets:
-        target_items = list(nfo_targets.items())
-        for offset in range(0, len(target_items), 128):
-            batch = target_items[offset:offset + 128]
-            nfos_updated += _regenerate_nfo_batch(conn, S, batch, media_dir, nfo_errors, _core)
-    return nfos_updated, nfo_errors
-
-
-def _regenerate_nfo_batch(conn, S, batch, media_dir: Path, nfo_errors: List[str], _core) -> int:
-    """Rewrite the NFO files for one batch of videos; return how many were written."""
-    from common.video_metadata import load_metadata_states
-
-    batch_ids = [vid_id for vid_id, _ in batch]
-    metadata_states = load_metadata_states(conn, batch_ids)
-    batch_performer_names = {
-        performer
-        for _, names in batch
-        for performer in names
-        if isinstance(performer, str) and performer.strip()
-    }
-    performer_thumbs = S.load_performer_thumbs(conn, batch_performer_names)
-
-    nfos_updated = 0
-    for vid_id, new_perfs in batch:
-        state = metadata_states.get(str(vid_id))
-        if state is None:
-            nfo_errors.append(f"{vid_id}: video disappeared before NFO regeneration")
-            continue
-        video_dict, genres, tag_set = _build_nfo_video_dict(vid_id, new_perfs, state, performer_thumbs, S, _core)
-        nfo_path = media_dir / f"{S.stable_media_basename(vid_id)}.nfo"
-        try:
-            S.create_nfo_file(video_dict, genres, tag_set, nfo_path, conn=conn)
-            nfos_updated += 1
-        except Exception as e:
-            nfo_errors.append(f"{nfo_path}: {type(e).__name__}: {e}")
-    return nfos_updated
-
-
-def _build_nfo_video_dict(vid_id, new_perfs, state, performer_thumbs, S, _core):
-    """Assemble the video dictionary, genre set and tag set used to write one NFO file."""
-    source = state["source"]
-    metadata = state["metadata"]
-    effective_perfs = metadata.get("performers")
-    if not isinstance(effective_perfs, list):
-        effective_perfs = new_perfs
-
-    try:
-        tag_set = set(_core["_json_list"](source.get("tags")))
-    except Exception:
-        tag_set = set()
-    try:
-        genres = set(_core["_json_list"](source.get("categories")))
-    except Exception:
-        genres = set()
-
-    wanted_performers = {
-        performer.strip().casefold()
-        for performer in effective_perfs
-        if isinstance(performer, str) and performer.strip()
-    }
-    video_dict = {
-        "id": vid_id,
-        "provider": source.get("provider"),
-        "provider_video_id": str(vid_id).split(":", 1)[-1],
-        "title": metadata.get("title"),
-        "plot": metadata.get("plot"),
-        "date_released": metadata.get("date_released"),
-        "tags": metadata.get("tags"),
-        "metadata_fields": metadata.get("metadata_fields"),
-        "slug": source.get("slug") or "",
-        "duration": source.get("duration") or 0,
-        "thumbnail": source.get("thumbnail") or "",
-        "performers": effective_perfs,
-        "performer_thumbs": {
-            name: thumb for name, thumb in performer_thumbs.items()
-            if name.strip().casefold() in wanted_performers
-        },
-        "studio": metadata.get("studio") or "",
-        "dateadded": S.format_dateadded(
-            source.get("first_seen") or _core["time"].time()
-        ),
-    }
-    return video_dict, genres, tag_set
-
-
 def execute_performer_merges(db_url, media_dir, merges, skip_backup=False, *, _core):
-    """Merge alias and canonical pairs in the database and NFO files."""
-    media_dir = Path(media_dir)
+    """Merge alias and canonical pairs in the database.
 
+    ``media_dir`` is kept in the signature for the callers that pass a library
+    path; merging only rewrites catalog rows.
+    """
     # Clean and deduplicate input pairs
     clean_merges = _clean_merge_pairs(merges, _core)
 
@@ -528,19 +416,13 @@ def execute_performer_merges(db_url, media_dir, merges, skip_backup=False, *, _c
 
         _assert_no_profile_overrides(conn, tables, resolved_merges)
 
-        # Steps 1-5 share one transaction: a crash must not leave a half-merged
+        # Steps 1-4 share one transaction: a crash must not leave a half-merged
         # identity with videos renamed but bios or aliases still on the old name.
-        # NFO files are rewritten only after this commits.
         with conn:
             video_updates = _update_video_performers(conn, tables, resolved_merges, _core)
             photos_migrated = _migrate_photos(conn, tables, resolved_merges, _core)
             bios_migrated = _migrate_bios(conn, tables, resolved_merges, _core)
             aliases_added = _migrate_aliases(conn, tables, resolved_merges, _core)
-
-        # 6. Update NFO files
-        nfos_updated, nfo_errors = _regenerate_nfos(conn, resolved_merges, media_dir, _core)
-        if nfo_errors:
-            raise RuntimeError("NFO regeneration incomplete: " + "; ".join(nfo_errors[:5]))
 
         return {
             "ok": True,
@@ -549,10 +431,9 @@ def execute_performer_merges(db_url, media_dir, merges, skip_backup=False, *, _c
             "photos_migrated": photos_migrated,
             "bios_migrated": bios_migrated,
             "aliases_added": aliases_added,
-            "nfos_updated": nfos_updated,
             "message": (
                 f"Merged {len(resolved_merges)} performers "
-                f"({len(video_updates)} videos updated, {nfos_updated} NFO files)."
+                f"({len(video_updates)} videos updated)."
             ),
         }
 

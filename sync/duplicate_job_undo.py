@@ -366,33 +366,7 @@ def _restore_keeper_overrides(conn, keeper_id: str, before: dict, after: dict) -
             conn.execute('DELETE FROM video_metadata_overrides WHERE video_id=%s', (keeper_id,))
 
 
-def _restore_keeper_nfo(conn, keeper_id: str, columns, keeper_file, media_dir, services, now) -> None:
-    stream = services.resolve_media_path(keeper_file[0], media_dir)
-    if stream.is_symlink() or not stream.resolve().is_relative_to(media_dir.resolve()):
-        raise ValueError('Unsafe keeper path detected while restoring metadata.')
-    restored_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper_id,)).fetchone()
-    restored_video = dict(zip(columns, restored_row)) if restored_row else {}
-    restored_categories = _restore_list(restored_video.get('categories'))
-    restored_tags = _restore_list(restored_video.get('tags'))
-    restored_performers = _restore_list(restored_video.get('performers'))
-    services.create_nfo_file(
-        {'id': keeper_id, 'provider': restored_video.get('provider', 'telegram'),
-         'provider_video_id': keeper_id.split(':', 1)[-1],
-         'title': restored_video.get('title') or '',
-         'slug': restored_video.get('slug') or '',
-         'duration': restored_video.get('duration') or 0,
-         'thumbnail': restored_video.get('thumbnail') or '',
-         'performers': restored_performers,
-         'performer_thumbs': services.load_performer_thumbs(conn, restored_performers),
-         'studio': restored_video.get('studio') or '',
-         'plot': restored_video.get('plot') or '',
-         'date_released': restored_video.get('date_released') or '',
-         'dateadded': services.format_dateadded(restored_video.get('first_seen') or now)},
-        set(restored_categories), set(restored_tags), stream.with_suffix('.nfo'), conn=conn,
-    )
-
-
-def _restore_keeper_metadata(conn, snapshots: list, media_dir, services, now) -> None:
+def _restore_keeper_metadata(conn, snapshots: list) -> None:
     keeper_states = [snapshot for snapshot in snapshots if snapshot.get('keeper_before') and snapshot.get('keeper_after')]
     if keeper_states:
         before = keeper_states[0]['keeper_before']
@@ -405,12 +379,6 @@ def _restore_keeper_metadata(conn, snapshots: list, media_dir, services, now) ->
             old_video, new_video = before.get('video', {}), after.get('video', {})
             _restore_keeper_video_fields(conn, keeper_id, current, old_video, new_video)
             _restore_keeper_overrides(conn, keeper_id, before, after)
-            keeper_file = conn.execute(
-                'SELECT file_path FROM synced_files WHERE video_id=%s ORDER BY file_path LIMIT 1',
-                (keeper_id,),
-            ).fetchone()
-            if keeper_file:
-                _restore_keeper_nfo(conn, keeper_id, columns, keeper_file, media_dir, services, now)
 
 
 def _run_undo(conn, job_id, payload, media_dir, services, quarantine_root, now, run) -> dict:
@@ -440,7 +408,7 @@ def _run_undo(conn, job_id, payload, media_dir, services, quarantine_root, now, 
     with conn:
         for snapshot in snapshots:
             _restore_snapshot_rows(conn, snapshot)
-        _restore_keeper_metadata(conn, snapshots, media_dir, services, now)
+        _restore_keeper_metadata(conn, snapshots)
     run.catalog_committed = True
     result = {'operation_id': operation, 'restored': [s['video']['id'] for s in snapshots], 'local_state': 'restored'}
     return result

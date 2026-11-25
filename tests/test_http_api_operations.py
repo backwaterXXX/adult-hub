@@ -118,7 +118,6 @@ class TestResolverHttpApiOperations(BaseHttpApiTestCase):
             self.assertEqual(hidden["result"]["local_state"], "hidden")
             quarantine = root / "data" / "duplicate-quarantine" / job_id
             self.assertTrue(list(quarantine.rglob("*.strm")))
-            self.assertTrue(list(quarantine.rglob("*.nfo")))
             self.assertTrue(list(quarantine.rglob("*.jpg")))
 
             with patch.object(admin_module, "HUB_DB_URL", TEST_URL), \
@@ -140,7 +139,6 @@ class TestResolverHttpApiOperations(BaseHttpApiTestCase):
                 self.assertIsNotNone(conn.execute("SELECT 1 FROM videos WHERE id=%s", (loser,)).fetchone())
             loser_base = sync.stable_media_basename(loser)
             self.assertTrue((media / f"{loser_base}.strm").exists())
-            self.assertTrue((media / f"{loser_base}.nfo").exists())
             self.assertTrue((media / f"{loser_base}.jpg").exists())
             restored = get_job(TEST_URL, restore_id)
             self.assertEqual(restored["state"], "done")
@@ -245,7 +243,6 @@ class TestResolverHttpApiOperations(BaseHttpApiTestCase):
             self.assertEqual(completed["result"]["local_state"], "hidden")
             quarantine = root / "data" / "duplicate-quarantine" / job_id
             self.assertTrue(list(quarantine.rglob("*.strm")))
-            self.assertTrue(list(quarantine.rglob("*.nfo")))
             self.assertTrue(list(quarantine.rglob("*.jpg")))
 
 

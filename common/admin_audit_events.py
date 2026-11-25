@@ -187,7 +187,7 @@ def record_operation_queued(conn, *, plan_id: str, operation_type: str,
                             requested_count: int, jobs, reused: bool) -> bool:
     """Audit a successfully consumed explicit operation plan, without object IDs/payload."""
     allowed = {"hide", "hide_batch", "quarantine", "restore", "metadata_update", "metadata_update_batch",
-               "performer_merge", "audit_repair_nfo",
+               "performer_merge", "audit_repair_files",
                "orphan_file_quarantine", "orphan_file_restore"}
     if (not isinstance(plan_id, str) or not 1 <= len(plan_id) <= 100
             or operation_type not in allowed or type(requested_count) is not int

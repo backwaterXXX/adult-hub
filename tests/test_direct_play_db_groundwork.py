@@ -41,7 +41,7 @@ class TestDirectPlayMigrationRegistration(unittest.TestCase):
         self.assertIn(legacy_migration, POST_BASELINE_MIGRATIONS)
         self.assertEqual(legacy_migration.version, 69)
         self.assertEqual(legacy_migration.name, "0069_direct_play_user_state")
-        self.assertEqual(POST_BASELINE_CEILING, 74)
+        self.assertEqual(POST_BASELINE_CEILING, 75)
         self.assertIn(legacy_migration, POST_BASELINE_MIGRATIONS)
         _validate_active_migrations(POST_BASELINE_MIGRATIONS)
 
@@ -177,13 +177,14 @@ class TestDirectPlayMigrationRegistration(unittest.TestCase):
         self.assertEqual(pending[0].version, 69)
         self.assertEqual(pending[0].name, "0069_direct_play_user_state")
 
-        # After applying 69 through 74, replay is idempotent
+        # After applying 69 through 75, replay is idempotent
         applied.append(_rec(69, "0069_direct_play_user_state"))
         applied.append(_rec(70, "0070_client_auth"))
         applied.append(_rec(71, "0071_telegram_sources_backfill"))
         applied.append(_rec(72, "0072_performer_lookup_indexes"))
         applied.append(_rec(73, "0073_performer_catalog_image"))
         applied.append(_rec(74, "0074_drop_jellyfin_person_sync"))
+        applied.append(_rec(75, "0075_drop_nfo_audit_kinds"))
         self.assertEqual(_migration_plan(applied), [])
 
     def test_lineage_b_current_forward_chain_isolation_and_no_collision(self):

@@ -119,7 +119,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
           const groupKey = decodeURIComponent(groupMatch[2]);
           const index = proposals.findIndex(item => item.key === groupKey);
           if (index >= 0) proposals.splice(index, 1);
-          return { ok: true, reviewed: 1, refresh_job_ids: payload.action === 'approve' ? ['performer-refresh-job'] : [] };
+          return { ok: true, reviewed: 1 };
         }
         const reviewMatch = path.match(/\/proposals\/(\d+)$/);
         if (reviewMatch) {
@@ -127,7 +127,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
           if (failReview) { document.activeElement = document.body; throw new Error('Review service unavailable.'); }
           const index = proposals.findIndex(item => item.id === Number(reviewMatch[1]));
           if (index >= 0) proposals.splice(index, 1);
-          return { ok: true, refresh_pending: true };
+          return { ok: true, status: 'approved' };
         }
         if (path.endsWith('/proposals/reconcile')) {
           return { processed: 0, resolved: 0, after_id: 0, has_more: false };
@@ -181,7 +181,8 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   const approve = card.querySelectorAll('button').find(button => button.textContent.startsWith('Apply to next'));
   approve.focus();
   await approve.listeners.click();
-  assert.ok(find(elements.taskReceipt, item => item.tagName === 'a' && item.href.includes('job_id=performer-refresh-job')), 'recognition approval exposes its background refresh task');
+  assert.equal(find(elements.taskReceipt, item => item.tagName === 'a'), null,
+    'approving a name group only writes the catalog, so no background job receipt is shown');
   assert.match(calls.find(call => call.path.includes('/proposal-groups/uncatalogued_credit/group-51')).path, /\/proposal-groups\/uncatalogued_credit\/group-51$/);
   assert.equal(calls.find(call => call.path.includes('/proposal-groups/uncatalogued_credit/group-51')).payload.canonical, 'Local performer');
   card = elements.performerProposalRows.children.at(-1);

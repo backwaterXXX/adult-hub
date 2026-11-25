@@ -20,7 +20,7 @@
     phash_generation: 'Generate pHash', thumbnail_generation: 'Generate thumbnail',
     phash_thumbnail_legacy: 'pHash and thumbnail (legacy)',
     duplicate_reconcile: 'Duplicate reconciliation', hide: 'Hide duplicates', dismiss: 'Dismiss pair', undo: 'Undo hide', undismiss: 'Undo dismissal',
-    performer_merge: 'Merge performers', performer_refresh: 'Refresh performer metadata', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Full catalog audit', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_nfo: 'Repair audit files', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', history_cleanup: 'Backup history cleanup', performer_catalog: 'StashDB performer catalog', fansdb_performer_catalog: 'FansDB performer catalog', scene_backfill: 'Scene identification', telegram_title_cleanup: 'Telegram title cleanup', source_remove: 'Remove Telegram channel', source_readd: 'Re-add/rename Telegram channel', filesize_backfill: 'Backfill file sizes', dead_stream_quarantine: 'Dead stream quarantine', visual_compare: 'Compare video frames', visual_signature: 'Build frame signatures', sync: 'Sync'
+    performer_merge: 'Merge performers', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Full catalog audit', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_files: 'Repair audit files', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', history_cleanup: 'Backup history cleanup', performer_catalog: 'StashDB performer catalog', fansdb_performer_catalog: 'FansDB performer catalog', scene_backfill: 'Scene identification', telegram_title_cleanup: 'Telegram title cleanup', source_remove: 'Remove Telegram channel', source_readd: 'Re-add/rename Telegram channel', filesize_backfill: 'Backfill file sizes', dead_stream_quarantine: 'Dead stream quarantine', visual_compare: 'Compare video frames', visual_signature: 'Build frame signatures', sync: 'Sync'
   };
   const HISTORICAL_ACTION_LABELS = {
     lukayan_fingerprint: 'Scene fingerprint · legacy',
@@ -66,8 +66,7 @@
       preparing_files: 'Preparing recovery data', moving_files: 'Moving library files',
       restoring_files: 'Restoring library files', saving_catalog: 'Saving catalog changes',
       merging_performers: 'Merging performers',
-      writing_nfo: 'Writing performer metadata files',
-      applying_metadata: 'Writing metadata and NFO files',
+      applying_metadata: 'Writing metadata and artwork files',
       downloading_artwork: 'Looking up and downloading scene artwork',
       generating_artwork: 'Extracting artwork from a video frame',
       scanning_metadata: 'Scanning external metadata providers',

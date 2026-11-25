@@ -1,4 +1,4 @@
-"""Helpers shared by the one-off performer and NFO cleanup scripts under ``scripts/``.
+"""Helpers shared by the one-off performer cleanup scripts under ``scripts/``.
 
 Script-level settings (``BASE_DIR``, the ``sync`` module, the backup directory) are
 passed in as arguments. The scripts keep their own names
@@ -8,13 +8,11 @@ for these helpers as thin wrappers, so module globals are read at call time.
 from __future__ import annotations
 
 import gzip
-import json
 import subprocess
 import time
 from pathlib import Path
 
 from common import db
-from common.json_helpers import json_set_or_empty
 
 
 def docker_pg_dump_backup(backup_dir: Path, prefix: str) -> Path:
@@ -40,91 +38,3 @@ def create_db_backup(db_url: str | None, backup_dir: Path, prefix: str) -> Path:
         return db.pg_backup(db_url, backup_dir, prefix=prefix)
     except RuntimeError:
         return docker_pg_dump_backup(backup_dir, prefix)
-
-
-def build_video_nfo(conn, row, new_perfs: list, *, sync_api) -> tuple[dict, set, set]:
-    """Build the NFO video dict, genre set and tag set for one ``videos`` row.
-
-    ``row`` follows this column order: id, provider, title, slug, duration,
-    thumbnail, performers, categories, tags, studio, first_seen. The performers
-    column is ignored because ``new_perfs`` replaces it. Building happens before
-    any file write so the caller can keep its own error handling around the write.
-    """
-    (
-        vid_id,
-        prov,
-        title,
-        slug,
-        dur,
-        thumb,
-        _perfs_raw,
-        cats_raw,
-        tags_raw,
-        studio,
-        first_seen,
-    ) = row
-    tag_set = json_set_or_empty(tags_raw)
-    genres = json_set_or_empty(cats_raw)
-
-    video_dict = {
-        "id": vid_id,
-        "provider": prov,
-        "provider_video_id": vid_id.split(":", 1)[-1],
-        "title": title or vid_id,
-        "slug": slug or "",
-        "duration": dur or 0,
-        "thumbnail": thumb or "",
-        "performers": new_perfs,
-        "performer_thumbs": sync_api.load_performer_thumbs(conn, new_perfs),
-        "studio": studio or "",
-        "dateadded": sync_api.format_dateadded(first_seen or time.time()),
-    }
-    return video_dict, genres, tag_set
-
-
-def regenerate_telegram_nfo(
-    conn, video_id: str, performers: list[str], *, media_dir: Path, sync_api
-) -> bool:
-    """Rewrite one video's NFO for ``performers``. Return False when the row or NFO file is missing."""
-    row = conn.execute(
-        """
-        SELECT provider,title,slug,duration,thumbnail,categories,tags,studio,first_seen,source_text
-        FROM videos WHERE id=%s
-    """,
-        (video_id,),
-    ).fetchone()
-    if not row:
-        return False
-    (
-        provider,
-        title,
-        slug,
-        duration,
-        thumbnail,
-        categories,
-        tags,
-        studio,
-        first_seen,
-        source_text,
-    ) = row
-    categories = categories if isinstance(categories, list) else json.loads(categories or "[]")
-    tags = tags if isinstance(tags, list) else json.loads(tags or "[]")
-    path = media_dir / f"{sync_api.stable_media_basename(video_id)}.nfo"
-    if not path.exists():
-        return False
-    video = {
-        "id": video_id,
-        "provider": provider,
-        "provider_video_id": video_id.split(":", 1)[-1],
-        "title": title or video_id,
-        "slug": slug or "",
-        "duration": duration or 0,
-        "thumbnail": thumbnail or "",
-        "performers": performers,
-        "plot": source_text or "",
-        "performer_thumbs": sync_api.load_performer_thumbs(conn, performers),
-        "studio": studio or "",
-        "dateadded": sync_api.format_dateadded(first_seen or 0),
-    }
-    sync_api.create_nfo_file(video, set(categories), set(tags), path, conn=conn)
-    return True

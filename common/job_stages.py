@@ -5,7 +5,7 @@ WORKING_STAGES = frozenset({
     "restoring_files", "merging_performers",
     "applying_metadata", "checking_availability", "auditing_library", "auditing_metadata",
     "creating_backup", "testing_backup_restore",
-    "repairing_nfo", "writing_nfo", "scanning_metadata", "downloading_artwork", "generating_artwork",
+    "scanning_metadata", "downloading_artwork", "generating_artwork",
     "metadata_pbc", "metadata_photos", "metadata_tpdb", "metadata_stashdb", "metadata_fansdb", "metadata_scenes",
     "pruning_history", "syncing_performer_catalog", "syncing_fansdb_performer_catalog", "cleaning_telegram_titles",
     "removing_source_data", "generating_phash",

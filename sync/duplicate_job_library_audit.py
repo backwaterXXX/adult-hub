@@ -2,10 +2,7 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import time
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from common import db
@@ -117,61 +114,12 @@ def _index_registered_rows(rows, media_dir: Path, media_root: Path, services) ->
     return registered_streams
 
 
-def _nfo_mismatch_result(ctx: _AuditContext, nfo, source: dict, stored_overrides: dict, video_id):
-    """Compare the stored NFO with a freshly rendered one; return (kind, evidence, details)."""
-    effective = ctx.resolve_metadata(source, stored_overrides)
-    nfo_video = {**source, **effective,
-                 "dateadded": ctx.services.format_dateadded(source.get("first_seen"))}
-    categories = {str(category[0]) for category in ctx.conn.execute(
-        "SELECT category FROM video_categories WHERE video_id=%s ORDER BY category",
-        (video_id,),
-    ).fetchall() if category[0]}
-    tags = set(effective.get("tags") or [])
-    expected_nfo = _expected_nfo_root(ctx.services, nfo_video, categories, tags)
-    mismatched_fields = _core._audit_nfo_metadata_differences(nfo, expected_nfo)
-    if mismatched_fields:
-        details = _core._audit_nfo_metadata_diff_details(nfo, expected_nfo)
-        evidence = ("NFO metadata differs from current effective catalog metadata "
-                    f"(fields: {', '.join(mismatched_fields)}).")
-        return "nfo_metadata_mismatch", evidence, details
-    return None, "", {}
-
-
-def _expected_nfo_root(services, nfo_video: dict, categories: set, tags: set):
-    fd, expected_path = tempfile.mkstemp(prefix="adult-hub-audit-", suffix=".nfo")
-    os.close(fd)
-    try:
-        expected_path = Path(expected_path)
-        services.create_nfo_file(nfo_video, categories, tags, expected_path)
-        expected_nfo = ET.parse(expected_path).getroot()
-    finally:
-        try:
-            expected_path.unlink()
-        except OSError:
-            pass
-    return expected_nfo
-
-
-def _classify_nfo(ctx: _AuditContext, stream_path: Path, source: dict, stored_overrides: dict, video_id):
-    nfo_path = stream_path.with_suffix(".nfo")
-    try:
-        nfo = ET.parse(nfo_path).getroot()
-    except (ET.ParseError, OSError):
-        return "invalid_nfo", "The NFO sidecar is not readable XML.", {}
-    return _nfo_mismatch_result(ctx, nfo, source, stored_overrides, video_id)
-
-
-def _classify_stream(ctx: _AuditContext, stream_path: Path, source: dict, stored_overrides: dict, video_id):
-    kind, evidence, details = None, "", {}
+def _classify_stream(ctx: _AuditContext, stream_path: Path):
     if stream_path.is_symlink() or not stream_path.resolve().is_relative_to(ctx.media_dir.resolve()):
-        kind, evidence = "unknown_mapping", "The registered file path could not be safely mapped inside the library."
-    elif not stream_path.is_file():
-        kind, evidence = "missing_stream", "The registered stream file is missing."
-    elif not stream_path.with_suffix(".nfo").is_file():
-        kind, evidence = "missing_nfo", "The stream file exists, but its NFO sidecar is missing."
-    else:
-        return _classify_nfo(ctx, stream_path, source, stored_overrides, video_id)
-    return kind, evidence, details
+        return "unknown_mapping", "The registered file path could not be safely mapped inside the library.", {}
+    if not stream_path.is_file():
+        return "missing_stream", "The registered stream file is missing.", {}
+    return None, "", {}
 
 
 def _record_missing_artwork_if_needed(ctx: _AuditContext, video_id, thumbnail_url, stream_path: Path) -> None:
@@ -201,7 +149,7 @@ def _audit_video_file(ctx: _AuditContext, stored_path, video_id, source: dict, o
         ctx.missing_metadata_seen.add(str(video_id))
     try:
         stream_path = ctx.services.resolve_media_path(stored_path, ctx.media_dir)
-        kind, evidence, details = _classify_stream(ctx, stream_path, source, stored_overrides, video_id)
+        kind, evidence, details = _classify_stream(ctx, stream_path)
         _record_missing_artwork_if_needed(ctx, video_id, thumbnail_url, stream_path)
     except ValueError:
         kind, evidence = "unknown_mapping", "The registered file path could not be safely mapped inside the library."
@@ -241,7 +189,7 @@ def _store_orphan_findings(ctx: _AuditContext, orphan_families) -> None:
             ctx.conn.execute(
                 "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence,details,checked_at) "
                 "VALUES (%s,NULL,'orphan_file','open',%s,%s,to_timestamp(%s))",
-                (ctx.job_id, "Unregistered STRM, NFO, or artwork files share this basename family.",
+                (ctx.job_id, "Unregistered STRM or artwork files share this basename family.",
                  Jsonb(family), int(time.time())),
             )
         ctx.findings += 1
@@ -257,13 +205,13 @@ def _resolve_stale_quality_findings(ctx: _AuditContext) -> None:
             "AND old.kind=ANY(%s) AND NOT EXISTS ("
             "SELECT 1 FROM admin_audit_items current WHERE current.job_id=%s "
             "AND current.video_id=old.video_id AND current.kind=old.kind AND current.status='open')",
-            (ctx.job_id, ["missing_nfo", "invalid_nfo", "nfo_metadata_mismatch", "missing_artwork"]
+            (ctx.job_id, ["missing_stream", "unknown_mapping", "missing_artwork"]
              + (["missing_metadata"] if ctx.mode == "full" else []), ctx.job_id),
         )
 
 
 def _consistency_audit(conn, job_id: str, media_dir: Path, services, payload: dict | None = None) -> dict:
-    """Read-only audit of registered STRM/NFO files; never repairs or deletes."""
+    """Read-only audit of the registered STRM streams and their artwork; never repairs or deletes."""
     payload = payload if isinstance(payload, dict) else {}
     mode = payload.get("mode", "full")
     if mode not in {"full", "file_consistency"}:
@@ -301,9 +249,9 @@ def _consistency_audit(conn, job_id: str, media_dir: Path, services, payload: di
         result["audit_batch_id"] = payload["audit_batch_id"]
     return result
 
-def _audit_repair_nfo(conn, job_id: str, payload: dict, media_dir: Path, services) -> dict:
-    """Compatibility facade for explicit local NFO and artwork repairs."""
-    from sync.duplicate_job_audit_repairs import _audit_repair_nfo as implementation
+def _audit_repair_artwork(conn, job_id: str, payload: dict, media_dir: Path, services) -> dict:
+    """Compatibility facade for explicit local stream and artwork repairs."""
+    from sync.duplicate_job_audit_repairs import _audit_repair_artwork as implementation
     return implementation(conn, job_id, payload, media_dir, services)
 
 

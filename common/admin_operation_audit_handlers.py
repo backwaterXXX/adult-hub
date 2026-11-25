@@ -40,8 +40,8 @@ def handle_orphan_file_operation(conn, db_url, plan_id, row, config, scope, revi
         return {'outcome': 'queued', 'plan_id': plan_id, 'jobs': jobs, 'reused': reused}
     return None
 
-def handle_audit_repair_nfo(conn, db_url, plan_id, row, config, scope, revisions, now):
-    if row['operation_type'] == 'audit_repair_nfo':
+def handle_audit_repair_files(conn, db_url, plan_id, row, config, scope, revisions, now):
+    if row['operation_type'] == 'audit_repair_files':
         audit_id = str(scope.get('audit_id') or '') if isinstance(scope, dict) else ''
         finding_ids = scope.get('finding_ids') if isinstance(scope, dict) else None
         if not audit_id or not isinstance(finding_ids, list) or (not finding_ids) or (len(finding_ids) > _core.MAX_AUDIT_REPAIR_BATCH) or any((type(value) is not int or value <= 0 for value in finding_ids)):
@@ -51,9 +51,9 @@ def handle_audit_repair_nfo(conn, db_url, plan_id, row, config, scope, revisions
         if current is None or current['revisions'] != revisions:
             conn.commit()
             return {'outcome': 'stale', 'stale_ids': [str(item.get('video_id')) for item in (row['preview'].get('items', []) if isinstance(row['preview'], dict) else [])], 'message': 'Audit findings or library metadata changed after this preview. Create a new preview.'}
-        conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', ('enqueue_job:audit_repair_nfo',))
+        conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', ('enqueue_job:audit_repair_files',))
         job_id = None
-        for queued_id, queued_payload in conn.execute("SELECT id,payload FROM video_duplicate_jobs WHERE action='audit_repair_nfo' AND state IN ('queued','processing') ORDER BY created_at,id").fetchall():
+        for queued_id, queued_payload in conn.execute("SELECT id,payload FROM video_duplicate_jobs WHERE action='audit_repair_files' AND state IN ('queued','processing') ORDER BY created_at,id").fetchall():
             try:
                 decoded = _core.json.loads(queued_payload) if isinstance(queued_payload, str) else queued_payload
             except (TypeError, ValueError):
@@ -64,7 +64,7 @@ def handle_audit_repair_nfo(conn, db_url, plan_id, row, config, scope, revisions
         reused = job_id is not None
         if not reused:
             job_id = _core.uuid.uuid4().hex
-            conn.execute("INSERT INTO video_duplicate_jobs (id,action,state,payload,result,created_at,updated_at) VALUES (%s,'audit_repair_nfo','queued',%s,NULL,%s,%s)", (job_id, _core.json.dumps({'plan_id': plan_id}, ensure_ascii=False), now, now))
+            conn.execute("INSERT INTO video_duplicate_jobs (id,action,state,payload,result,created_at,updated_at) VALUES (%s,'audit_repair_files','queued',%s,NULL,%s,%s)", (job_id, _core.json.dumps({'plan_id': plan_id}, ensure_ascii=False), now, now))
         jobs = [{'job_id': job_id, 'reused': reused}]
         result = {'jobs': jobs}
         conn.execute("UPDATE admin_operation_plans SET state='queued',result=%s,consumed_at=to_timestamp(%s) WHERE plan_id=%s AND state='previewed'", (_core.Jsonb(result), now, plan_id))

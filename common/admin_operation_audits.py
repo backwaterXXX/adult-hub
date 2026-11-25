@@ -101,13 +101,13 @@ def preview_audit_repair(db_url: str | None, audit_id: str, finding_ids: list[in
         conn.execute(
             "INSERT INTO admin_operation_plans "
             "(plan_id,operation_type,state,scope,revisions,preview,created_at,expires_at) "
-            "VALUES (%s,'audit_repair_nfo','previewed',%s,%s,%s,to_timestamp(%s),to_timestamp(%s))",
+            "VALUES (%s,'audit_repair_files','previewed',%s,%s,%s,to_timestamp(%s),to_timestamp(%s))",
             (plan_id, Jsonb({"audit_id": audit_id, "finding_ids": finding_ids}),
              Jsonb(state["revisions"]), Jsonb({"items": state["items"]}), now, expires_at),
         )
         conn.commit()
         return {"outcome": "previewed", "plan_id": plan_id, "expires_at": expires_at,
-                "operation_type": "audit_repair_nfo", "items": state["items"]}
+                "operation_type": "audit_repair_files", "items": state["items"]}
     except Exception:
         conn.rollback()
         raise

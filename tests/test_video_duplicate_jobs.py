@@ -75,7 +75,6 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         self.assertIsNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
         quarantine = self.root / "duplicate-quarantine" / job_id / "files"
         self.assertTrue(list(quarantine.rglob("*.strm")))
-        self.assertTrue(list(quarantine.rglob("*.nfo")))
         self.assertTrue(list(quarantine.rglob("*.jpg")))
 
         # Check video_sources registration
@@ -183,10 +182,9 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
 
         family = self.media / "manual-import" / "unregistered"
         family.parent.mkdir()
-        paths = [family.with_suffix(suffix) for suffix in (".strm", ".nfo", ".jpg")]
+        paths = [family.with_suffix(suffix) for suffix in (".strm", ".jpg")]
         paths[0].write_text("https://example.invalid/stream", encoding="utf-8")
-        paths[1].write_text("<movie/>", encoding="utf-8")
-        paths[2].write_bytes(b"artwork")
+        paths[1].write_bytes(b"artwork")
         family_files = []
         for path in paths:
             stat = path.stat()
@@ -233,7 +231,6 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         self.assertEqual(tuple(decision), (self.loser, "active"))
         quarantine = self.root / "duplicate-quarantine" / job_id / "files"
         self.assertTrue(list(quarantine.rglob("*.strm")))
-        self.assertTrue(list(quarantine.rglob("*.nfo")))
         self.assertTrue(list(quarantine.rglob("*.jpg")))
 
         undo_id = enqueue_job(self.db_path, "undo", {"operation_id": job_id})
@@ -549,7 +546,6 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
 
         basename = sync.stable_media_basename(self.loser)
         self.assertTrue((self.media / f"{basename}.strm").exists())
-        self.assertTrue((self.media / f"{basename}.nfo").exists())
         self.assertTrue((self.media / f"{basename}.jpg").exists())
         self.assertIsNotNone(self.conn.execute("SELECT 1 FROM videos WHERE id=%s", (self.loser,)).fetchone())
         self.assertEqual(self.conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()[0], "failed")
@@ -623,7 +619,6 @@ class TestVideoDuplicateJobs(BaseVideoDuplicateJobsTestCase):
         self.assertEqual(sync.process_video_duplicate_jobs(self.conn, self.media), 1)
         basename = sync.stable_media_basename(self.loser)
         self.assertTrue((self.media / f"{basename}.strm").exists())
-        self.assertTrue((self.media / f"{basename}.nfo").exists())
         self.assertTrue((self.media / f"{basename}.jpg").exists())
         self.assertEqual(self.conn.execute("SELECT state FROM video_duplicate_jobs WHERE id=%s", (undo_id,)).fetchone()[0], "done")
 

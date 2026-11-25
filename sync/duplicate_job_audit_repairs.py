@@ -1,8 +1,7 @@
-"""Explicit local stream, NFO and artwork repairs for audit findings."""
+"""Explicit local stream and artwork repairs for audit findings."""
 from __future__ import annotations
 
 import json
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -14,12 +13,8 @@ from sync import duplicate_jobs as _core
 class _RepairTarget:
     """One selected catalog item with the inputs its repair needs."""
     item: dict
-    nfo_video: dict
-    categories: set
-    tags: set
     streams: list
     can_restore_stream: bool
-    repair_nfo: bool
     repair_artwork: bool
     thumbnail_url: str
 
@@ -38,7 +33,8 @@ def _load_audit_repair_plan(conn, payload: dict):
     operation_type, raw_scope, raw_revisions = plan
     scope = raw_scope if isinstance(raw_scope, dict) else json.loads(raw_scope or "{}")
     revisions = raw_revisions if isinstance(raw_revisions, dict) else json.loads(raw_revisions or "{}")
-    if operation_type != "audit_repair_nfo" or not isinstance(scope, dict):
+    if not isinstance(operation_type, str) or not operation_type.startswith("audit_repair") \
+            or not isinstance(scope, dict):
         raise ValueError("Invalid audit repair plan.")
     audit_id, finding_ids = scope.get("audit_id"), scope.get("finding_ids")
     if (not isinstance(audit_id, str) or not isinstance(finding_ids, list) or not finding_ids
@@ -47,13 +43,11 @@ def _load_audit_repair_plan(conn, payload: dict):
     return audit_id, finding_ids, revisions
 
 
-def _repair_flags(findings: list) -> tuple[bool, bool, bool]:
-    """Return ``(can_restore_stream, repair_nfo, repair_artwork)`` for one item's findings."""
+def _repair_flags(findings: list) -> tuple[bool, bool]:
+    """Return ``(can_restore_stream, repair_artwork)`` for one item's findings."""
     can_restore_stream = any(finding["kind"] == "missing_stream" for finding in findings)
-    repair_nfo = any(finding["kind"] in {"missing_nfo", "invalid_nfo", "nfo_metadata_mismatch"}
-                     for finding in findings)
     repair_artwork = any(finding["kind"] == "missing_artwork" for finding in findings)
-    return can_restore_stream, repair_nfo, repair_artwork
+    return can_restore_stream, repair_artwork
 
 
 def _stream_entries(conn, video_id: str, media_dir: Path, media_root: Path, services,
@@ -75,33 +69,13 @@ def _stream_entries(conn, video_id: str, media_dir: Path, media_root: Path, serv
             raise ValueError("A registered stream path is unavailable or unsafe.")
         if not exists and not can_restore_stream:
             raise ValueError("A registered stream is missing without a selected stream repair finding.")
-        nfo_path = stream.with_suffix(".nfo")
-        if nfo_path.is_symlink() or not nfo_path.resolve().is_relative_to(media_root):
-            raise ValueError("An NFO path is unavailable or unsafe.")
         artwork_path = stream.with_suffix(".jpg")
         if artwork_path.is_symlink() or not artwork_path.resolve().is_relative_to(media_root):
             raise ValueError("An artwork path is unavailable or unsafe.")
         if repair_artwork and artwork_path.exists() and not artwork_path.is_file():
             raise ValueError("An artwork path is unavailable or unsafe.")
-        streams.append((stream, nfo_path, exists, artwork_path))
+        streams.append((stream, exists, artwork_path))
     return streams
-
-
-def _add_publication_fields(conn, video: dict, video_id: str, services) -> None:
-    """Restore the fields a scan supplies to the NFO writer but a catalog read does not.
-
-    ``create_nfo_file`` takes the provider unique id and the per-performer
-    thumbnails from the prepared publication record. A repair that starts from
-    the catalog row alone has neither, so writing it back would silently blank
-    ``<uniqueid>`` and every ``<actor><thumb>``.
-    """
-    video["provider_video_id"] = str(video_id).split(":", 1)[-1]
-    if services.thumbnail_urls is not None:
-        public_thumb_url, _download_url = services.thumbnail_urls(video.get("thumbnail"))
-        video["thumbnail"] = public_thumb_url
-    performers = video.get("performers") or []
-    if performers and services.load_performer_thumbs is not None:
-        video["performer_thumbs"] = services.load_performer_thumbs(conn, performers)
 
 
 def _collect_target(conn, item: dict, media_dir: Path, media_root: Path, services,
@@ -110,60 +84,25 @@ def _collect_target(conn, item: dict, media_dir: Path, media_root: Path, service
     state = load_metadata_state(conn, video_id)
     if state is None:
         raise ValueError("A selected catalog item is no longer available.")
-    can_restore_stream, repair_nfo, repair_artwork = _repair_flags(item["findings"])
+    can_restore_stream, repair_artwork = _repair_flags(item["findings"])
     streams = _stream_entries(conn, video_id, media_dir, media_root, services,
                               can_restore_stream, repair_artwork)
     if not streams:
         raise ValueError("No registered stream files are available for a selected item.")
-    categories = {str(row[0]) for row in conn.execute(
-        "SELECT category FROM video_categories WHERE video_id=%s ORDER BY category", (video_id,)
-    ).fetchall() if row[0]}
-    tags = set(state["metadata"].get("tags") or [])
-    nfo_video = {**state["source"], **state["metadata"],
-                 "dateadded": services.format_dateadded(state["source"].get("first_seen"))}
-    _add_publication_fields(conn, nfo_video, video_id, services)
     thumbnail_url = str(state["source"].get("thumbnail") or "").strip()
     if repair_artwork and (not thumbnail_url or services.thumbnail_urls is None
                            or services.download_image_if_missing is None):
         raise ValueError("The selected artwork cannot be safely restored from its current catalog source.")
-    return _RepairTarget(item=item, nfo_video=nfo_video, categories=categories, tags=tags,
-                         streams=streams, can_restore_stream=can_restore_stream,
-                         repair_nfo=repair_nfo, repair_artwork=repair_artwork,
-                         thumbnail_url=thumbnail_url)
+    return _RepairTarget(item=item, streams=streams, can_restore_stream=can_restore_stream,
+                         repair_artwork=repair_artwork, thumbnail_url=thumbnail_url)
 
 
 def _restore_streams(target: _RepairTarget, services) -> int:
     restored = 0
-    for stream_path, _nfo_path, _existed, _artwork_path in target.streams:
+    for stream_path, _existed, _artwork_path in target.streams:
         if target.can_restore_stream and services.create_stream_file(stream_path, target.item["video_id"]):
             restored += 1
     return restored
-
-
-def _nfo_matches_publication(root, nfo_video: dict) -> bool:
-    """True when a regenerated NFO still carries the publication-only metadata."""
-    if root.tag != "movie":
-        return False
-    if (root.findtext("originaltitle", "") or "") != str(nfo_video.get("title") or ""):
-        return False
-    provider = str(nfo_video.get("provider") or "telegram")
-    provider_video_id = str(nfo_video.get("provider_video_id") or "")
-    if not provider_video_id:
-        return True
-    for node in root.findall("uniqueid"):
-        if node.get("type") == provider:
-            return (node.text or "").strip() == provider_video_id
-    return False
-
-
-def _write_nfos(target: _RepairTarget, services) -> int:
-    written = 0
-    for _stream_path, nfo_path, _existed, _artwork_path in target.streams:
-        services.create_nfo_file(target.nfo_video, target.categories, target.tags, nfo_path)
-        if not _nfo_matches_publication(ET.parse(nfo_path).getroot(), target.nfo_video):
-            raise RuntimeError("Generated NFO validation failed.")
-        written += 1
-    return written
 
 
 def _restore_artwork(target: _RepairTarget, services) -> int:
@@ -172,15 +111,15 @@ def _restore_artwork(target: _RepairTarget, services) -> int:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("The selected artwork source is unavailable or unsafe.")
     written = 0
-    for _stream_path, _nfo_path, _existed, artwork_path in target.streams:
+    for _stream_path, _existed, artwork_path in target.streams:
         if not services.download_image_if_missing(download_url, artwork_path):
             raise RuntimeError("Artwork could not be restored without replacing an existing file.")
         written += 1
     return written
 
 
-def _audit_repair_nfo(conn, job_id: str, payload: dict, media_dir: Path, services) -> dict:
-    """Repair explicit, revision-checked local stream/NFO findings."""
+def _audit_repair_artwork(conn, job_id: str, payload: dict, media_dir: Path, services) -> dict:
+    """Repair explicit, revision-checked local stream and artwork findings."""
     from common.admin_operations import _audit_repair_state
     from common.video_metadata import load_metadata_state
     audit_id, finding_ids, revisions = _load_audit_repair_plan(conn, payload)
@@ -193,27 +132,20 @@ def _audit_repair_nfo(conn, job_id: str, payload: dict, media_dir: Path, service
                for item in current["items"]]
 
     restored_streams = 0
-    repaired_nfo_files = 0
-    has_stream_repair = any(any(finding["kind"] in {"missing_stream", "missing_artwork"}
-                                for finding in target.item["findings"])
-                            for target in targets)
     repaired_artwork_files = 0
     for index, target in enumerate(targets, start=1):
         latest = _audit_repair_state(conn, audit_id, finding_ids)
         if latest is None or latest["revisions"] != revisions:
-            raise ValueError("Audit findings or library metadata changed before NFO repair.")
-        _core._record_job_progress(conn, job_id, "repairing_nfo", completed=index - 1, total=len(targets))
+            raise ValueError("Audit findings or library metadata changed before the repair.")
+        _core._record_job_progress(conn, job_id, "restoring_files", completed=index - 1, total=len(targets))
         restored_streams += _restore_streams(target, services)
-        if target.repair_nfo:
-            repaired_nfo_files += _write_nfos(target, services)
         if target.repair_artwork:
             repaired_artwork_files += _restore_artwork(target, services)
-        _core._record_job_progress(conn, job_id, "repairing_nfo", completed=index, total=len(targets))
-    local_state = "files_repaired" if has_stream_repair else "nfo_repaired"
+        _core._record_job_progress(conn, job_id, "restoring_files", completed=index, total=len(targets))
+    local_state = "files_repaired"
     _core._store_job_result_field(conn, job_id, "local_state", local_state)
     with conn:
         conn.execute("UPDATE admin_audit_items SET status='resolved' WHERE job_id=%s AND id=ANY(%s) AND status='open'",
                      (audit_id, finding_ids))
     return {"audit_id": audit_id, "repaired_items": len(targets), "restored_streams": restored_streams,
-            "repaired_nfo_files": repaired_nfo_files, "repaired_artwork_files": repaired_artwork_files,
-            "local_state": local_state}
+            "repaired_artwork_files": repaired_artwork_files, "local_state": local_state}

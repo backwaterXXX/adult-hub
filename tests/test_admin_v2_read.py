@@ -123,23 +123,23 @@ class TestCatalogReadContract(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for suffix in (".strm", ".nfo", ".jpg"):
+            for suffix in (".strm", ".jpg"):
                 (root / f"stable{suffix}").write_text("x", encoding="utf-8")
             self.assertEqual(admin_library_v2._local_file_status(["stable.strm"], root),
-                             {"stream": "present", "nfo": "present", "artwork": "present"})
-            (root / "stable.nfo").unlink()
+                             {"stream": "present", "artwork": "present"})
+            (root / "stable.jpg").unlink()
             self.assertEqual(admin_library_v2._local_file_status(["stable.strm"], root),
-                             {"stream": "present", "nfo": "missing", "artwork": "present"})
+                             {"stream": "present", "artwork": "missing"})
             (root / "stable.strm").unlink()
             (root / "stable.strm").symlink_to(root / "outside.strm")
             self.assertEqual(admin_library_v2._local_file_status(["stable.strm"], root)["stream"], "unknown")
             self.assertEqual(admin_library_v2._local_file_status(["../outside.strm"], root),
-                             {"stream": "unknown", "nfo": "unknown", "artwork": "unknown"})
+                             {"stream": "unknown", "artwork": "unknown"})
             self.assertEqual(admin_library_v2._local_file_status(["stable.strm"], root / "missing"),
-                             {"stream": "unknown", "nfo": "unknown", "artwork": "unknown"})
+                             {"stream": "unknown", "artwork": "unknown"})
             with patch.object(admin_library_v2.os, "scandir", side_effect=PermissionError):
                 self.assertEqual(admin_library_v2._local_file_status(["stable.strm"], root),
-                                 {"stream": "unknown", "nfo": "unknown", "artwork": "unknown"})
+                                 {"stream": "unknown", "artwork": "unknown"})
 
             # If artwork file is a black image, report artwork as missing
             from PIL import Image
@@ -147,9 +147,8 @@ class TestCatalogReadContract(unittest.TestCase):
             black_img.save(root / "stable.jpg", format="JPEG")
             (root / "stable.strm").unlink()
             (root / "stable.strm").write_text("x", encoding="utf-8")
-            (root / "stable.nfo").write_text("x", encoding="utf-8")
             self.assertEqual(admin_library_v2._local_file_status(["stable.strm"], root),
-                             {"stream": "present", "nfo": "present", "artwork": "missing"})
+                             {"stream": "present", "artwork": "missing"})
 
     def test_generate_artwork_endpoint_queues_job_and_wakes_worker(self):
         admin = admin_stub()
@@ -338,7 +337,7 @@ class TestCatalogReadContract(unittest.TestCase):
         self.assertEqual(video["scene_match_url"], "https://stashdb.org/scenes/abc-uuid")
         source_query = next(sql for sql in conn.sql if "FROM video_sources" in sql)
         self.assertNotIn("source_url", source_query)
-        self.assertEqual(video["local_files"], {"stream": "unknown", "nfo": "unknown", "artwork": "unknown"})
+        self.assertEqual(video["local_files"], {"stream": "unknown", "artwork": "unknown"})
         self.assertNotIn("file_path", video)
 
 

@@ -24,7 +24,7 @@ PHASE 1: Library Indexing (Background)
   │ Telegram Channels │ ───────────────────────► │ Sync Service │
   └───────────────────┘                          └──────┬───────┘
                                                         │ 2. Writes: .strm (links)
-                                                        │    + .nfo + thumbnails
+                                                        │    + thumbnails
                                                         ▼
                                                  ┌────────────────────────┐
                                                  │ PostgreSQL catalog      │
@@ -134,7 +134,7 @@ Management actions use the configured admin write token (`ADMIN_WRITE_TOKEN`) an
 ## Architecture
 
 - **Resolver (`resolver/`):** serves the Admin UI, management API, artwork, and on-demand Telegram streams.
-- **Sync (`sync/`):** indexes channels, maintains PostgreSQL records, generates STRM/NFO files and artwork, schedules verified PostgreSQL snapshots, and processes background work.
+- **Sync (`sync/`):** indexes channels, maintains PostgreSQL records, generates STRM files and artwork, schedules verified PostgreSQL snapshots, and processes background work.
 - **Shared code (`common/`):** configuration validation, database access, versioned migrations, durable task queue, and client authentication.
 - **PostgreSQL:** stores the catalog and task queue.
 

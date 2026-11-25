@@ -67,8 +67,7 @@ def make_admin(*, configured=None, history=None, library=None, backup=None, qual
         },
         _quality_summary=lambda _url: quality if quality is not None else {
             "available": True, "status": "ready", "counts": {
-                "missing_metadata": 0, "missing_nfo": 0, "invalid_nfo": 0,
-                "nfo_metadata_mismatch": 0, "missing_artwork": 0,
+                "missing_metadata": 0, "missing_artwork": 0,
             }, "latest_audit": {"created_at": NOW - 30},
         },
         _admin_blocked=lambda _request: False,
@@ -82,17 +81,14 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
         endpoint = {route.path: route.endpoint for route in admin_v2_issues.build_router(make_admin()).routes}["/api/v2/issues"]
         issue_rows = [
             {"kind": "quality_finding", "object_id": "missing_metadata", "severity": "medium", "status": "open", "last_seen": NOW},
-            {"kind": "quality_finding", "object_id": "missing_nfo", "severity": "medium", "status": "open", "last_seen": NOW},
-            {"kind": "quality_finding", "object_id": "invalid_nfo", "severity": "medium", "status": "open", "last_seen": NOW},
-            {"kind": "quality_finding", "object_id": "nfo_metadata_mismatch", "severity": "medium", "status": "open", "last_seen": NOW},
             {"kind": "quality_finding", "object_id": "missing_artwork", "severity": "medium", "status": "open", "last_seen": NOW},
         ]
         with patch("resolver.admin_v2_issues._build_issues", return_value=(issue_rows, {})):
             result = self._run(endpoint(
-                request("/admin/api/v2/issues?kind=missing_nfo"), severity="", kind="missing_nfo",
+                request("/admin/api/v2/issues?kind=missing_artwork"), severity="", kind="missing_artwork",
                 status="open", offset=0, limit=50,
             ))
-        self.assertEqual([item["object_id"] for item in result["issues"]], ["missing_nfo"])
+        self.assertEqual([item["object_id"] for item in result["issues"]], ["missing_artwork"])
 
     @staticmethod
     def _run(awaitable):
@@ -102,8 +98,7 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
     def test_quality_findings_are_summarized_and_deep_link_to_the_category(self):
         admin = make_admin(quality={
             "available": True, "status": "ready", "counts": {
-                "missing_metadata": 1, "missing_nfo": 2, "invalid_nfo": 0,
-                "nfo_metadata_mismatch": 7, "missing_artwork": 0,
+                "missing_metadata": 1, "missing_artwork": 7,
             }, "latest_audit": {"created_at": NOW - 120},
         })
         with patch("resolver.admin_services.sync_backlog", return_value={"available": True, "queued": 0}), \
@@ -113,13 +108,13 @@ class TestAdminV2IssueSemantics(unittest.TestCase):
             issues, health = admin_v2_issues._build_issues(admin, NOW)
 
         quality = [issue for issue in issues if issue["kind"] == "quality_finding"]
-        mismatch = next(issue for issue in quality if issue["object_id"] == "nfo_metadata_mismatch")
-        self.assertEqual(len(quality), 3)
-        self.assertEqual(mismatch["count"], 7)
-        self.assertIn("7 open item(s)", mismatch["message"])
-        self.assertEqual(mismatch["action"]["route"], "/admin/v2/#system")
-        self.assertEqual(mismatch["list_route"], "/admin/v2/#system")
-        self.assertEqual(mismatch["first_seen"], admin_v2_issues._iso_time(NOW - 120))
+        artwork = next(issue for issue in quality if issue["object_id"] == "missing_artwork")
+        self.assertEqual(len(quality), 2)
+        self.assertEqual(artwork["count"], 7)
+        self.assertIn("7 open item(s)", artwork["message"])
+        self.assertEqual(artwork["action"]["route"], "/admin/v2/#system")
+        self.assertEqual(artwork["list_route"], "/admin/v2/#system")
+        self.assertEqual(artwork["first_seen"], admin_v2_issues._iso_time(NOW - 120))
         self.assertTrue(health["available"]["quality_audit"])
         self.assertFalse(health["incomplete"])
 
@@ -540,12 +535,12 @@ class TestAdminV2ProblemGroups(unittest.TestCase):
 
     def test_multi_object_group_links_to_the_category_not_one_arbitrary_object(self):
         rows = [
-            {"kind": "quality_finding", "object_id": "nfo_metadata_mismatch", "severity": "medium", "status": "open",
-             "last_seen": NOW, "count": 7, "title": "NFO metadata differs",
+            {"kind": "quality_finding", "object_id": "missing_artwork", "severity": "medium", "status": "open",
+             "last_seen": NOW, "count": 7, "title": "Artwork files are missing",
              "action": {"label": "Review video", "route": "/admin/v2/?video_id=1#library"},
              "list_route": "/admin/v2/#system"},
-            {"kind": "quality_finding", "object_id": "nfo_metadata_mismatch", "severity": "medium", "status": "open",
-             "last_seen": NOW - 5, "title": "NFO metadata differs",
+            {"kind": "quality_finding", "object_id": "missing_artwork", "severity": "medium", "status": "open",
+             "last_seen": NOW - 5, "title": "Artwork files are missing",
              "action": {"label": "Review video", "route": "/admin/v2/?video_id=2#library"},
              "list_route": "/admin/v2/#system"},
         ]
@@ -629,7 +624,7 @@ class TestAdminV2IssueRoute(unittest.IsolatedAsyncioTestCase):
         admin = self.make_admin()
         endpoint = admin_v2_issues.build_router(admin).routes[0].endpoint
         issue = {"kind": "quality_finding", "severity": "medium", "status": "open",
-                 "last_seen": None, "object_id": "nfo_metadata_mismatch"}
+                 "last_seen": None, "object_id": "missing_artwork"}
         with patch.object(admin_v2_issues, "_build_issues", return_value=([issue], {"available": {}})):
             response = await endpoint(self.make_request(), "", "quality_finding", "open", 0, 50)
 

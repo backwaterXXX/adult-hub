@@ -20,9 +20,11 @@ from common.http_rate_limit import wait_for_host_slot
 MAX_BODY_BYTES = 8 * 1024 * 1024
 PHASH_ALGORITHM_VERSION = "stash-phash-689a6b400625d6da2afb58a7f908c88bcdb6f8ab-v2"
 _VIDEO_ID = re.compile(r"telegram:-?\d+:\d+:\d{1,20}\Z")
+_CLIENT_USER_ID = re.compile(r"usr_[0-9a-f]{32}\Z")
 _HASH = re.compile(r"[0-9a-f]{16}\Z")
 _SERVER_PROFILE = "resolver-ffmpeg-stash-v2"
 logger = logging.getLogger(__name__)
+_warned_user_ids: set[str] = set()
 
 
 def _valid_frame_request(body: object, profiles: set[str]) -> bool:
@@ -61,6 +63,30 @@ def _bearer_token(request: Request) -> str:
     return token.strip() if scheme.lower() == "bearer" else ""
 
 
+def _allowed_user_ids() -> set[str]:
+    """Client user IDs (``client_users.id``) allowed to upload besides admins.
+
+    Entries that do not look like a client user ID are ignored and reported once:
+    the retired media server identified its users with bare hex IDs, and such a
+    leftover must not silently keep the allow-list dead.
+    """
+    allowed: set[str] = set()
+    for part in os.getenv("PHASH_ALLOWED_USER_IDS", "").split(","):
+        candidate = part.strip().lower()
+        if not candidate:
+            continue
+        if _CLIENT_USER_ID.fullmatch(candidate):
+            allowed.add(candidate)
+        elif candidate not in _warned_user_ids:
+            _warned_user_ids.add(candidate)
+            logger.warning(
+                "PHASH_ALLOWED_USER_IDS entry %s is not a client user ID (usr_...); "
+                "ignoring it. Use client_users.id instead.",
+                candidate[:12] + "…",
+            )
+    return allowed
+
+
 def _lookup_client_session(admin, token: str) -> dict | None:
     conn = db.connect(admin.HUB_DB_URL)
     try:
@@ -80,8 +106,7 @@ async def _authorized_user(admin, token: str) -> dict | None:
         return None
     if not isinstance(user, dict):
         return None
-    allowed = {part.strip().lower() for part in os.getenv("PHASH_ALLOWED_USER_IDS", "").split(",")
-               if part.strip()}
+    allowed = _allowed_user_ids()
     user_id = str(user.get("user_id") or "")
     if user.get("is_admin") or (user_id and user_id.lower() in allowed):
         return user

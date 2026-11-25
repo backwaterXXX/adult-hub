@@ -135,7 +135,7 @@ class TestAdminV2Operations(unittest.IsolatedAsyncioTestCase):
         with patch("common.admin_operations.preview_metadata_batch_plan") as preview_batch:
             response = await endpoint(request("/admin/api/v2/operations/preview", {
                 "type": "metadata_update_batch", "video_ids": ["video-a"],
-                "changes": {"title": "Edited"}, "reset_fields": [], "path": "/data/video.nfo",
+                "changes": {"title": "Edited"}, "reset_fields": [], "path": "/data/video.jpg",
             }))
         self.assertEqual(response.status_code, 400)
         preview_batch.assert_not_called()

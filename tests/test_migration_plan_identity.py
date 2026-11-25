@@ -19,7 +19,7 @@ class MigrationPlanIdentityTests(unittest.TestCase):
                    record(11, '0011_video_metadata_overrides')]
         pending = _migration_plan(applied)
         self.assertEqual(pending[0].name, '0012_video_availability_checks')
-        self.assertEqual(pending[-1].name, '0074_drop_jellyfin_person_sync')
+        self.assertEqual(pending[-1].name, '0075_drop_nfo_audit_kinds')
 
 
 if __name__ == '__main__':

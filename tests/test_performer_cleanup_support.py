@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gzip
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -66,107 +65,6 @@ class PerformerCleanupSupportTest(unittest.TestCase):
 
             self.assertEqual(result, expected_path)
             mock_docker.assert_called_once_with(tmp_path, "pref")
-
-    def test_build_video_nfo(self):
-        mock_conn = MagicMock()
-        mock_sync_api = MagicMock()
-        mock_sync_api.load_performer_thumbs.return_value = {"Alice": "http://thumb/alice"}
-        mock_sync_api.format_dateadded.return_value = "2026-01-01 12:00:00"
-
-        row = (
-            "telegram:chan:123",  # id
-            "telegram",           # provider
-            "Sample Video",       # title
-            "sample-video",       # slug
-            3600,                 # duration
-            "http://thumb/v.jpg", # thumb
-            "ignored_raw_perfs",  # _perfs_raw
-            json.dumps(["Cat1", "Cat2"]),  # cats_raw
-            json.dumps(["Tag1", "Tag2"]),  # tags_raw
-            "Studio X",           # studio
-            1700000000.0,         # first_seen
-        )
-
-        new_perfs = ["Alice", "Bob"]
-        video_dict, genres, tag_set = pcs.build_video_nfo(
-            mock_conn, row, new_perfs, sync_api=mock_sync_api
-        )
-
-        self.assertEqual(video_dict["id"], "telegram:chan:123")
-        self.assertEqual(video_dict["provider"], "telegram")
-        self.assertEqual(video_dict["provider_video_id"], "chan:123")
-        self.assertEqual(video_dict["title"], "Sample Video")
-        self.assertEqual(video_dict["slug"], "sample-video")
-        self.assertEqual(video_dict["duration"], 3600)
-        self.assertEqual(video_dict["thumbnail"], "http://thumb/v.jpg")
-        self.assertEqual(video_dict["performers"], ["Alice", "Bob"])
-        self.assertEqual(video_dict["performer_thumbs"], {"Alice": "http://thumb/alice"})
-        self.assertEqual(video_dict["studio"], "Studio X")
-        self.assertEqual(video_dict["dateadded"], "2026-01-01 12:00:00")
-
-        self.assertEqual(genres, {"Cat1", "Cat2"})
-        self.assertEqual(tag_set, {"Tag1", "Tag2"})
-
-    def test_regenerate_telegram_nfo_not_found(self):
-        with tempfile.TemporaryDirectory() as td:
-            mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchone.return_value = None
-            mock_sync_api = MagicMock()
-
-            ok = pcs.regenerate_telegram_nfo(
-                mock_conn, "telegram:123", ["Performer 1"], media_dir=Path(td), sync_api=mock_sync_api
-            )
-            self.assertFalse(ok)
-
-    def test_regenerate_telegram_nfo_file_missing(self):
-        with tempfile.TemporaryDirectory() as td:
-            mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchone.return_value = (
-                "telegram", "Title", "slug", 100, "thumb", json.dumps(["Cat"]),
-                json.dumps(["Tag"]), "Studio", 1700000000, "description plot",
-            )
-            mock_sync_api = MagicMock()
-            mock_sync_api.stable_media_basename.return_value = "video_base"
-
-            ok = pcs.regenerate_telegram_nfo(
-                mock_conn, "telegram:123", ["Performer 1"], media_dir=Path(td), sync_api=mock_sync_api
-            )
-            self.assertFalse(ok)
-
-    def test_regenerate_telegram_nfo_success(self):
-        with tempfile.TemporaryDirectory() as td:
-            tmp_path = Path(td)
-            mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchone.return_value = (
-                "telegram", None, None, None, None, ["CatA"],
-                ["TagA"], None, None, "Plot summary",
-            )
-            mock_sync_api = MagicMock()
-            mock_sync_api.stable_media_basename.return_value = "video_base"
-            mock_sync_api.load_performer_thumbs.return_value = {"Performer 1": "thumb.jpg"}
-            mock_sync_api.format_dateadded.return_value = "2026-01-01"
-
-            nfo_file = tmp_path / "video_base.nfo"
-            nfo_file.write_text("<movie></movie>")
-
-            ok = pcs.regenerate_telegram_nfo(
-                mock_conn, "telegram:123", ["Performer 1"], media_dir=tmp_path, sync_api=mock_sync_api
-            )
-            self.assertTrue(ok)
-
-            mock_sync_api.create_nfo_file.assert_called_once()
-            call_args = mock_sync_api.create_nfo_file.call_args[0]
-            video_dict = call_args[0]
-            cats = call_args[1]
-            tags = call_args[2]
-            path = call_args[3]
-
-            self.assertEqual(video_dict["id"], "telegram:123")
-            self.assertEqual(video_dict["title"], "telegram:123")
-            self.assertEqual(video_dict["plot"], "Plot summary")
-            self.assertEqual(cats, {"CatA"})
-            self.assertEqual(tags, {"TagA"})
-            self.assertEqual(path, nfo_file)
 
 
 if __name__ == "__main__":

@@ -43,20 +43,6 @@ def _check_source_fingerprint(source: dict, expected_source_fingerprint, revisio
             raise ValueError('Metadata source values changed after the preview. Reload and review the latest values.')
 
 
-def _job_result_so_far(conn, job_id: str, payload: dict) -> dict:
-    result_row = conn.execute('SELECT result FROM video_duplicate_jobs WHERE id=%s', (job_id,)).fetchone()
-    try:
-        job_result = payload.get('_resume') if isinstance(payload.get('_resume'), dict) else {}
-        current_result = _core.json.loads(result_row[0]) if result_row and result_row[0] else {}
-        if isinstance(current_result, dict):
-            job_result = {**job_result, **current_result}
-    except (TypeError, ValueError):
-        job_result = {}
-    if not isinstance(job_result, dict):
-        job_result = {}
-    return job_result
-
-
 def _apply_metadata_revision(conn, job_id: str, video_id: str, source: dict, current: dict, target: dict,
                              changes: dict, resets, revision: int, expected_revision: int) -> int:
     if revision == expected_revision:
@@ -74,44 +60,8 @@ def _apply_metadata_revision(conn, job_id: str, video_id: str, source: dict, cur
     raise ValueError('Metadata changed after the preview. Reload and review the latest values.')
 
 
-def _collect_metadata_streams(conn, video_id: str, media_dir, services) -> tuple:
-    files = conn.execute('SELECT file_path FROM synced_files WHERE video_id=%s ORDER BY file_path', (video_id,)).fetchall()
-    streams = []
-    media_root = media_dir.resolve()
-    for file_row in files:
-        stream = services.resolve_media_path(str(file_row[0]), media_dir)
-        if stream.is_symlink() or not stream.resolve().is_relative_to(media_root):
-            raise ValueError('Unsafe library path detected.')
-        if stream.suffix == '.strm':
-            streams.append(stream)
-    if not streams:
-        raise ValueError('No synchronized library file is available for the metadata update.')
-    return streams, media_root
-
-
-def _write_metadata_nfos(conn, job_id: str, video_id: str, source: dict, effective: dict,
-                         media_dir, services, revision: int, source_fingerprint: str) -> None:
-    _core._record_job_progress(conn, job_id, 'applying_metadata')
-    streams, media_root = _collect_metadata_streams(conn, video_id, media_dir, services)
-    categories = {str(row[0]) for row in conn.execute('SELECT category FROM video_categories WHERE video_id=%s ORDER BY category', (video_id,)).fetchall() if row[0]}
-    tags = set(effective.get('tags') or [])
-    nfo_video = {**source, **effective, 'dateadded': services.format_dateadded(source.get('first_seen'))}
-    for stream in streams:
-        nfo_path = stream.with_suffix('.nfo')
-        if nfo_path.is_symlink() or not nfo_path.resolve().is_relative_to(media_root):
-            raise ValueError('Unsafe NFO path detected.')
-        services.create_nfo_file(nfo_video, categories, tags, nfo_path)
-    nfo_content_hashes = {stream.with_suffix('.nfo').name: _core.hashlib.sha256(stream.with_suffix('.nfo').read_bytes()).hexdigest() for stream in streams}
-    _core._store_job_result_field(conn, job_id, 'metadata_revision', revision)
-    _core._store_job_result_field(conn, job_id, 'nfo_source_fingerprint', source_fingerprint)
-    _core._store_job_result_field(conn, job_id, 'nfo_content_hashes', nfo_content_hashes)
-    _core._store_job_result_field(conn, job_id, 'nfo_written', True)
-    _core._store_job_result_field(conn, job_id, 'local_state', 'metadata_updated')
-
-
 def _metadata_update(conn, job_id: str, payload: dict, media_dir: _core.Path, services) -> dict:
-    """Apply revisioned title/plot overrides and regenerate the local NFOs."""
-    from common.video_metadata import resolve_metadata
+    """Apply revisioned title/plot overrides."""
     video_id, expected_revision, changes, resets = _validate_metadata_request(payload)
     source, override_row = _lock_metadata_rows(conn, video_id)
     expected_source_fingerprint = payload.get('expected_source_fingerprint')
@@ -122,14 +72,8 @@ def _metadata_update(conn, job_id: str, payload: dict, media_dir: _core.Path, se
     for field in resets:
         target.pop(field, None)
     _check_source_fingerprint(source, expected_source_fingerprint, revision, expected_revision)
-    job_result = _job_result_so_far(conn, job_id, payload)
     revision = _apply_metadata_revision(conn, job_id, video_id, source, current, target,
                                         changes, resets, revision, expected_revision)
-    effective = resolve_metadata(source, target)
-    source_fingerprint = _core.hashlib.sha256(_core.json.dumps({field: source.get(field) for field in ('title', 'plot')}, sort_keys=True, ensure_ascii=False, default=str, separators=(',', ':')).encode('utf-8')).hexdigest()
-    needs_nfo = not (job_result.get('metadata_revision') == revision and job_result.get('nfo_source_fingerprint') == source_fingerprint and (job_result.get('nfo_written') is True))
-    if needs_nfo:
-        _write_metadata_nfos(conn, job_id, video_id, source, effective, media_dir, services, revision, source_fingerprint)
     return {'video_id': video_id, 'metadata_revision': revision, 'local_state': 'metadata_updated'}
 
 def _validate_video_ids(payload: dict) -> list:

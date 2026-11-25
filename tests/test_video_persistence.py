@@ -39,9 +39,6 @@ class TestVideoPersistence(PgTestCase):
             "map_categories": lambda cats, title="": set(cats),
             "normalize_performers": lambda perfs: list(perfs),
             "thumbnail_urls": lambda url: (url or "", url or ""),
-            "load_performer_thumbs": lambda conn, perfs: {},
-            "format_dateadded": lambda ts: "2026-01-01 00:00:00",
-            "create_nfo_file": MagicMock(),
             "download_image": MagicMock(),
             "write_stream_file": MagicMock(return_value=True),
             "sync_unique_video": None,  # assigned below if not overridden
@@ -166,13 +163,11 @@ class TestVideoPersistence(PgTestCase):
         self.assertEqual(prepared["title"], "Sample Video")
         # Preparing only computes metadata; sidecars stay unwritten until the
         # catalog row is durable, so a rolled-back batch leaves no stray files.
-        services.create_nfo_file.assert_not_called()
         services.download_image.assert_not_called()
         services.write_stream_file.assert_not_called()
         self.assertEqual(self.conn.execute("SELECT count(*) FROM videos").fetchone()[0], 0)
 
         write_media_files(services, prepared, self.conn)
-        services.create_nfo_file.assert_called_once()
         services.download_image.assert_called_once()
         services.write_stream_file.assert_called_once()
         # Registration is the last step: a file that is on disk is the file the
@@ -303,35 +298,32 @@ class TestVideoPersistence(PgTestCase):
         )
         return services
 
-    def test_catalog_scene_match_keeps_catalog_title_in_db_and_nfo(self):
+    def test_catalog_scene_match_keeps_catalog_title_and_identity_in_db(self):
         video_id = "telegram:-1001:42:999"
         self._insert_matched_scene(video_id, "Rinse and Rim")
 
-        services = self._persist_telegram_listing(video_id, "Lukayan SHOW #42")
+        self._persist_telegram_listing(video_id, "Lukayan SHOW #42")
 
-        row = self.conn.execute("SELECT title FROM videos WHERE id=%s", (video_id,)).fetchone()
+        row = self.conn.execute(
+            "SELECT title, scene_match_source, scene_match_external_id"
+            " FROM videos WHERE id=%s", (video_id,)).fetchone()
         self.assertEqual(row[0], "Rinse and Rim")
-        nfo_video = services.create_nfo_file.call_args[0][0]
-        self.assertEqual(nfo_video["title"], "Rinse and Rim")
-        # The provider caption stays available as provenance.
-        self.assertEqual(nfo_video["original_title"], "Lukayan SHOW #42")
-        # The catalog identity must survive the NFO rewrite.
-        self.assertEqual(nfo_video["scene_match_source"], "stashdb:phash")
-        self.assertEqual(nfo_video["scene_match_external_id"], "stash-uuid-1")
+        # The catalog identity is durable.
+        self.assertEqual(row[1], "stashdb:phash")
+        self.assertEqual(row[2], "stash-uuid-1")
 
     def test_operator_title_override_wins_over_catalog_title(self):
         video_id = "telegram:-1001:43:998"
         self._insert_matched_scene(video_id, "Rinse and Rim", override="Operator Title")
 
-        services = self._persist_telegram_listing(video_id, "Lukayan SHOW #43")
+        self._persist_telegram_listing(video_id, "Lukayan SHOW #43")
 
         # An operator override must never be replaced by the catalog title.
-        row = self.conn.execute("SELECT title FROM videos WHERE id=%s", (video_id,)).fetchone()
+        row = self.conn.execute(
+            "SELECT title, scene_match_external_id FROM videos WHERE id=%s", (video_id,)).fetchone()
         self.assertEqual(row[0], "Lukayan SHOW #43")
-        nfo_video = services.create_nfo_file.call_args[0][0]
-        self.assertEqual(nfo_video["title"], "Lukayan SHOW #43")
-        # The catalog identity still belongs in the NFO.
-        self.assertEqual(nfo_video["scene_match_external_id"], "stash-uuid-1")
+        # The catalog identity is still recorded.
+        self.assertEqual(row[1], "stash-uuid-1")
 
     def test_listing_without_catalog_match_keeps_provider_title(self):
         video_id = "telegram:-1001:44:997"
@@ -342,27 +334,18 @@ class TestVideoPersistence(PgTestCase):
         )
         self.conn.commit()
 
-        services = self._persist_telegram_listing(video_id, "Lukayan SHOW #44")
+        self._persist_telegram_listing(video_id, "Lukayan SHOW #44")
 
-        row = self.conn.execute("SELECT title FROM videos WHERE id=%s", (video_id,)).fetchone()
+        row = self.conn.execute(
+            "SELECT title, scene_match_source FROM videos WHERE id=%s", (video_id,)).fetchone()
         self.assertEqual(row[0], "Lukayan SHOW #44")
-        nfo_video = services.create_nfo_file.call_args[0][0]
-        self.assertEqual(nfo_video["title"], "Lukayan SHOW #44")
-        self.assertNotIn("original_title", nfo_video)
+        self.assertIsNone(row[1])
 
-    def test_catalog_title_reaches_the_written_nfo(self):
-        try:
-            from test_support import load_sync_module
-            sync_module = load_sync_module()
-        except ImportError:
-            self.skipTest("sync module not available")
+    def test_catalog_title_reaches_the_catalog_row_and_writes_no_sidecar_metadata(self):
         video_id = "telegram:-1001:45:996"
         self._insert_matched_scene(video_id, "Rinse and Rim")
 
-        def real_create_nfo(video, genres, tags, path):
-            sync_module.create_nfo_file(video, genres, tags, path, conn=self.conn)
-
-        services = self._make_services(create_nfo_file=real_create_nfo)
+        services = self._make_services()
         sync_unique_video(
             video={
                 "provider": "telegram",
@@ -380,14 +363,13 @@ class TestVideoPersistence(PgTestCase):
             services=services,
         )
 
-        nfo_path = self.media_dir / "telegram_-1001_45_996.nfo"
-        self.assertTrue(nfo_path.is_file())
-        xml = nfo_path.read_text(encoding="utf-8")
-        # The locked Telegram entry keeps this sidecar.
-        self.assertIn("<title>Rinse and Rim</title>", xml)
-        self.assertIn("<originaltitle>Lukayan SHOW #45</originaltitle>", xml)
-        self.assertIn('<uniqueid type="stashdb" default="false">stash-uuid-1</uniqueid>', xml)
-        self.assertIn("<lockdata>true</lockdata>", xml)
+        row = self.conn.execute(
+            "SELECT title, scene_match_external_id FROM videos WHERE id=%s",
+            (video_id,)).fetchone()
+        self.assertEqual(row[0], "Rinse and Rim")
+        self.assertEqual(row[1], "stash-uuid-1")
+        # The library keeps only the stream pointer and artwork; Kodi metadata is gone.
+        self.assertEqual(list(self.media_dir.glob("*.nfo")), [])
 
     def _collect_one(self, video_id="testprov:v9"):
         return {
@@ -404,15 +386,10 @@ class TestVideoPersistence(PgTestCase):
                         encoding="utf-8")
         return True
 
-    def _write_nfo_from_catalog(self, video, genres, tags, path):
-        path.write_text(f"<movie><title>{video.get('title')}</title>"
-                        f"<genre>{','.join(sorted(genres))}</genre></movie>", encoding="utf-8")
-
     def test_file_write_failure_after_the_commit_keeps_the_entry_unpublished(self):
         """A catalog row that could not be published stays pending, not lost."""
         services = self._make_services(
             write_stream_file=MagicMock(side_effect=OSError("Read-only file system")),
-            create_nfo_file=self._write_nfo_from_catalog,
         )
         collected = self._collect_one()
 
@@ -431,7 +408,6 @@ class TestVideoPersistence(PgTestCase):
         """Publication retries from the database, so a restart can still recover."""
         broken = self._make_services(
             write_stream_file=MagicMock(side_effect=OSError("Read-only file system")),
-            create_nfo_file=self._write_nfo_from_catalog,
         )
         with self.assertRaises(RuntimeError):
             flush_collected(collected=self._collect_one(), conn=self.conn,
@@ -440,8 +416,7 @@ class TestVideoPersistence(PgTestCase):
         self.conn = db.connect(self.db_url)
         self.addCleanup(self.conn.close)
 
-        recovered = self._make_services(write_stream_file=self._publish_for_real,
-                                        create_nfo_file=self._write_nfo_from_catalog)
+        recovered = self._make_services(write_stream_file=self._publish_for_real)
         result = republish_pending_videos(self.conn, self.media_dir, services=recovered)
 
         self.assertEqual(result, {"pending": 1, "published": 1, "failed": 0})
@@ -452,13 +427,8 @@ class TestVideoPersistence(PgTestCase):
         self.assertEqual(publication_pending_ids(self.conn, 10), [])
         self.assertEqual(
             sorted(path.name for path in self.media_dir.glob("*")),
-            ["testprov_v9.nfo", "testprov_v9.strm"],
+            ["testprov_v9.strm"],
         )
-        # The retry rebuilds metadata from the catalog row, not from memory.
-        self.assertIn("<title>Unpublished Video</title>",
-                      (self.media_dir / "testprov_v9.nfo").read_text(encoding="utf-8"))
-        self.assertIn("<genre>Action</genre>",
-                      (self.media_dir / "testprov_v9.nfo").read_text(encoding="utf-8"))
 
     def test_republish_pending_videos_leaves_a_hidden_duplicate_alone(self):
         """Merging a video away is a decision; a retry pass must not undo it."""
@@ -568,7 +538,6 @@ class TestVideoPersistence(PgTestCase):
     def test_telegram_primary_source_survives_sidecar_file_write_failure(self):
         services = self._make_services(
             write_stream_file=MagicMock(side_effect=OSError("Disk full")),
-            create_nfo_file=self._write_nfo_from_catalog,
         )
         vid_id = "telegram:-100123:55:1"
         collected = {
@@ -688,9 +657,6 @@ class TestVideoPersistenceChannelHints(unittest.TestCase):
             "map_categories": lambda cats, title="": set(cats),
             "normalize_performers": lambda perfs: list(perfs),
             "thumbnail_urls": lambda url: (url or "", url or ""),
-            "load_performer_thumbs": lambda conn, perfs: {},
-            "format_dateadded": lambda ts: "2026-01-01 00:00:00",
-            "create_nfo_file": MagicMock(),
             "download_image": MagicMock(),
             "write_stream_file": MagicMock(return_value=True),
             "sync_unique_video": None,
@@ -746,8 +712,7 @@ class TestVideoPersistenceChannelHints(unittest.TestCase):
             self.assertEqual(prep_no_hint["video"].get("studio"), "CustomChannel")
             self.assertEqual(prep_no_hint.get("studio"), "CustomChannel")
 
-    def test_telegram_channel_name_hints_downstream_nfo_behavior(self):
-        from sync.nfo import create_nfo_file
+    def test_telegram_channel_name_hints_shape_channel_and_studio(self):
         services = self._make_services()
         video_base = {
             "provider": "telegram",
@@ -773,23 +738,7 @@ class TestVideoPersistenceChannelHints(unittest.TestCase):
             self.assertEqual(prep_hint["video"].get("channel"), "MyTelegramSource")
             self.assertEqual(prep_hint["video"].get("studio"), "BelAmi")
             self.assertEqual(prep_hint.get("studio"), "BelAmi")
-            nfo_path_hint = self.media_dir / "hint_test.nfo"
-            create_nfo_file(
-                prep_hint["video"],
-                set(),
-                set(),
-                nfo_path_hint,
-                get_provider_info_fn=lambda _: {"name": "Telegram", "domain": "t.me"},
-                clean_display_title_fn=lambda t, **_: t,
-                normalize_performers_fn=lambda p: p,
-                map_categories_fn=lambda c, **_: c,
-            )
-            content_hint = nfo_path_hint.read_text(encoding="utf-8")
-            self.assertIn("<tagline>Kanał: MyTelegramSource</tagline>", content_hint)
-            self.assertIn("<studio>BelAmi</studio>", content_hint)
-            self.assertNotIn("<studio>MyTelegramSource</studio>", content_hint)
-
-        # Without hints: channel is not recognized, so production studio falls back to channel_name in NFO
+        # Without hints the channel is not recognized, so the studio falls back to the provider.
         with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": ""}):
             prep_no_hint = sync_unique_video(
                 video=dict(video_base),
@@ -803,21 +752,6 @@ class TestVideoPersistenceChannelHints(unittest.TestCase):
             )
             self.assertIsNone(prep_no_hint["video"].get("channel"))
             self.assertEqual(prep_no_hint["video"].get("studio"), "BelAmi")
-            nfo_path_no_hint = self.media_dir / "no_hint_test.nfo"
-            create_nfo_file(
-                prep_no_hint["video"],
-                set(),
-                set(),
-                nfo_path_no_hint,
-                get_provider_info_fn=lambda _: {"name": "Telegram", "domain": "t.me"},
-                clean_display_title_fn=lambda t, **_: t,
-                normalize_performers_fn=lambda p: p,
-                map_categories_fn=lambda c, **_: c,
-            )
-            content_no_hint = nfo_path_no_hint.read_text(encoding="utf-8")
-            # Without hints, MyTelegramSource channel was lost; BelAmi became the channel_name tagline
-            self.assertNotIn("Kanał: MyTelegramSource", content_no_hint)
-            self.assertIn("<tagline>Kanał: BelAmi</tagline>", content_no_hint)
 
     def test_startup_warning_when_telegram_configured_and_hints_empty(self):
         reset_channel_hints_warning()
@@ -1045,8 +979,6 @@ class TestVideoSourcesPersistenceUnit(unittest.TestCase):
         services.normalize_performers = lambda p: list(p)
         services.time_fn.return_value = 1700000000.0
         services.thumbnail_urls.return_value = ("", "")
-        services.load_performer_thumbs.return_value = {}
-        services.format_dateadded.return_value = "2026-01-01 00:00:00"
 
         from sync.video_persistence import persist_prepared_video
         services.persist_prepared_video = lambda c, p: persist_prepared_video(c, p)

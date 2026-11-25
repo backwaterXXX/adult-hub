@@ -243,7 +243,7 @@ def _attach_sync_failures(job: dict, history: dict | None) -> None:
         return
 
 
-_LOCAL_STATES = frozenset({"hidden", "dismissed", "restored", "quarantined", "source_removed", "source_readded", "metadata_updated", "metadata_scan_completed", "telegram_fingerprint_scan_completed", "artwork_downloaded", "artwork_generated", "artwork_already_valid", "artwork_not_found", "artwork_download_failed", "artwork_lookup_failed", "availability_checked", "audit_queued", "audit_completed", "metadata_quality_audit_completed", "nfo_repaired", "files_repaired"})
+_LOCAL_STATES = frozenset({"hidden", "dismissed", "restored", "quarantined", "source_removed", "source_readded", "metadata_updated", "metadata_scan_completed", "telegram_fingerprint_scan_completed", "artwork_downloaded", "artwork_generated", "artwork_already_valid", "artwork_not_found", "artwork_download_failed", "artwork_lookup_failed", "availability_checked", "audit_queued", "audit_completed", "metadata_quality_audit_completed", "files_repaired"})
 
 
 def _choice(value, allowed) -> str | None:

@@ -9,7 +9,7 @@ Provides:
   - GET /api/v1/catalog/videos/{video_id} (canonical detail with alias resolution)
   - GET /api/v1/catalog/channels (registered Telegram channels catalog)
   - GET /api/v1/catalog/channels/{channel_id} (channel detail)
-- Zero metadata leaks: no local filesystem paths (.strm, .nfo), no raw Telegram URLs/credentials,
+- Zero metadata leaks: no local filesystem paths (.strm, .jpg), no raw Telegram URLs/credentials,
   no internal admin audit fields, no is_admin exposure in client models
 - Strict Cache-Control: private, no-store on sensitive endpoints and error paths
 - Actual bounded pre-auth HTTP body reads (max 32 KB) and typed string enforcement

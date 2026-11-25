@@ -47,7 +47,7 @@ def _project_quarantine_files(files):
         path = item.get("path") if isinstance(item, dict) else None
         parsed = PurePosixPath(path) if isinstance(path, str) else None
         if (parsed is None or parsed.is_absolute() or ".." in parsed.parts or "\\" in path
-                or parsed.suffix.lower() not in {".strm", ".nfo", ".jpg"}):
+                or parsed.suffix.lower() not in {".strm", ".jpg"}):
             continue
         projected.append({"path": path, "size": int(item.get("size") or 0)})
     return projected

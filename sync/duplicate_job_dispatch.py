@@ -21,7 +21,7 @@ def _run_catalog_full_audit(conn) -> dict:
     batch_id = uuid.uuid4().hex
     audit_ids = enqueue_jobs_batch(getattr(conn, '_url', None), [
         ('metadata_quality_audit', {'audit_batch_id': batch_id}),
-        ('consistency_audit', {'mode': 'file_consistency', 'audit_batch_id': batch_id, 'auto_repair': True}),
+        ('consistency_audit', {'mode': 'file_consistency', 'audit_batch_id': batch_id}),
     ])
     return {'local_state': 'audit_queued', 'audit_batch_id': batch_id,
             'audit_job_ids': audit_ids}

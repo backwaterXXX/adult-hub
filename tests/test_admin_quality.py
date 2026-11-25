@@ -55,15 +55,15 @@ class TestAdminQuality(PgTestCase):
                                   inventory=None, created=100, batch_id=batch_id)
         files = self.add_audit(mode="file_consistency", created=101, batch_id=batch_id)
         self.add_item(metadata, "telegram:quality:full-metadata", "missing_metadata", {"fields": ["plot"]})
-        self.add_item(files, "telegram:quality:full-file", "nfo_metadata_mismatch", {
-            "diffs": [{"field": "Title", "current": "Old", "expected": "New"}],
+        self.add_item(files, "telegram:quality:full-file", "missing_artwork", {
+            "fields": ["thumbnail"],
         })
 
         summary = read_quality_summary(self.db_url)
         self.assertEqual(summary["latest_audit"]["mode"], "full")
         self.assertEqual(set(summary["latest_audit"]["job_ids"]), {metadata, files})
         self.assertEqual(summary["counts"]["missing_metadata"], 1)
-        self.assertEqual(summary["counts"]["nfo_metadata_mismatch"], 1)
+        self.assertEqual(summary["counts"]["missing_artwork"], 1)
 
     def test_full_audit_is_in_progress_until_both_child_jobs_finish(self):
         baseline = self.add_audit(created=50)
@@ -112,12 +112,12 @@ class TestAdminQuality(PgTestCase):
 
     def test_latest_complete_audit_and_counts_ignore_incomplete_newer_run(self):
         older = self.add_audit(created=50)
-        self.add_item(older, "telegram:quality:old-1", "missing_nfo")
-        self.add_item(older, "telegram:quality:old-2", "missing_nfo")
+        self.add_item(older, "telegram:quality:old-1", "missing_artwork")
+        self.add_item(older, "telegram:quality:old-2", "missing_artwork")
         self.add_item(older, "telegram:quality:old-3", "missing_metadata", {"fields": ["plot"]})
         complete = self.add_audit(created=100)
-        self.add_item(complete, "telegram:quality:1", "nfo_metadata_mismatch", {
-            "diffs": [{"field": "Title", "current": "Old", "expected": "New"}],
+        self.add_item(complete, "telegram:quality:1", "missing_artwork", {
+            "fields": ["thumbnail"],
         })
         self.add_item(complete, "telegram:quality:2", "missing_metadata", {"fields": ["performers"]})
         self.add_item(complete, "telegram:quality:3", "missing_metadata", {"fields": ["plot", "studio"]})
@@ -125,7 +125,7 @@ class TestAdminQuality(PgTestCase):
         summary = read_quality_summary(self.db_url)
         self.assertEqual(summary["status"], "ready")
         self.assertEqual(summary["latest_audit"]["id"], complete)
-        self.assertEqual(summary["counts"]["nfo_metadata_mismatch"], 1)
+        self.assertEqual(summary["counts"]["missing_artwork"], 1)
         self.assertEqual(summary["counts"]["missing_metadata"], 2)
         self.assertEqual(summary["missing_fields"]["performers"], 1)
         self.assertEqual(summary["missing_fields"]["plot"], 1)
@@ -133,12 +133,12 @@ class TestAdminQuality(PgTestCase):
         self.assertEqual(summary["total"], 3)
         self.assertEqual([audit["id"] for audit in summary["history"]], [complete, older])
         self.assertEqual([audit["open_total"] for audit in summary["history"]], [3, 3])
-        self.assertEqual(summary["history"][1]["counts"]["missing_nfo"], 2)
+        self.assertEqual(summary["history"][1]["counts"]["missing_artwork"], 2)
 
     def test_partial_filesystem_inventory_keeps_complete_catalog_quality_findings_visible(self):
         audit = self.add_audit(checked=2, total=2, inventory="partial")
-        self.add_item(audit, "telegram:quality:partial-inventory", "nfo_metadata_mismatch", {
-            "diffs": [{"field": "Plot", "current": "Old description", "expected": "Current description"}],
+        self.add_item(audit, "telegram:quality:partial-inventory", "missing_artwork", {
+            "fields": ["thumbnail"],
         })
 
         summary = read_quality_summary(self.db_url)
@@ -148,7 +148,7 @@ class TestAdminQuality(PgTestCase):
         self.assertEqual(summary["latest_audit"]["total"], 2)
         self.assertEqual(summary["latest_audit"]["library_inventory_status"], "partial")
         self.assertEqual(summary["history"][0]["library_inventory_status"], "partial")
-        self.assertEqual(summary["counts"]["nfo_metadata_mismatch"], 1)
+        self.assertEqual(summary["counts"]["missing_artwork"], 1)
 
 
 if __name__ == "__main__":

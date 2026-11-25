@@ -5,7 +5,6 @@ For every pending proposal where the candidate unambiguously matches exactly one
 active multi-word performer in performer_catalog:
 1. Updates proposal status to 'approved' and sets performer_id.
 2. Adds the canonical performer name to videos.performers (preserving existing performers).
-3. Regenerates the corresponding NFO file if it exists.
 """
 from __future__ import annotations
 
@@ -13,30 +12,10 @@ import argparse
 import collections
 import json
 import os
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent.parent
 
 from common import db
 from common.performer_catalog import normalize_name
-from common.performer_cleanup_support import regenerate_telegram_nfo
 from common.performers import is_valid_performer_name
-from sync import sync as S
-
-MEDIA_DIR = Path(os.getenv("MEDIA_DIR", str(ROOT / "media" / "adult")))
-
-
-def _regenerate_nfo(conn, video_id: str, performers: list[str]) -> bool:
-    if S is None:
-        return False
-    return regenerate_telegram_nfo(conn, video_id, performers, media_dir=MEDIA_DIR, sync_api=S)
-
-
-def _try_regenerate_nfo(conn, video_id: str, performers: list[str]) -> bool:
-    try:
-        return _regenerate_nfo(conn, video_id, performers)
-    except Exception:
-        return False
 
 
 def _load_catalog_index(cursor) -> dict[str, list[tuple[str, str]]]:
@@ -128,10 +107,9 @@ def _approve_items(conn, items, current_performers) -> tuple[list, bool]:
     return new_performers, video_changed
 
 
-def _apply_approvals(conn, unambiguous_by_video) -> tuple[int, int, int]:
+def _apply_approvals(conn, unambiguous_by_video) -> tuple[int, int]:
     approved_count = 0
     videos_updated = 0
-    nfos_updated = 0
 
     with conn:
         for vid, items in unambiguous_by_video.items():
@@ -148,10 +126,8 @@ def _apply_approvals(conn, unambiguous_by_video) -> tuple[int, int, int]:
                 conn.execute("UPDATE videos SET performers = %s WHERE id = %s",
                              (json.dumps(new_performers, ensure_ascii=False), vid))
                 videos_updated += 1
-                if _try_regenerate_nfo(conn, vid, new_performers):
-                    nfos_updated += 1
 
-    return approved_count, videos_updated, nfos_updated
+    return approved_count, videos_updated
 
 
 def run(db_url: str | None = None, apply: bool = False) -> None:
@@ -175,11 +151,10 @@ def run(db_url: str | None = None, apply: bool = False) -> None:
         return
 
     print("\nApplying approvals and updating videos...")
-    approved_count, videos_updated, nfos_updated = _apply_approvals(conn, unambiguous_by_video)
+    approved_count, videos_updated = _apply_approvals(conn, unambiguous_by_video)
 
     print(f"Successfully approved {approved_count} proposals!")
     print(f"Updated {videos_updated} videos with new performers.")
-    print(f"Regenerated {nfos_updated} NFO files.")
 
 
 def main() -> None:

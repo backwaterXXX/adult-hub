@@ -11,20 +11,10 @@ import os
 import uuid
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-
 from common import db
 from common.performer_catalog import (load_catalog, match_catalog, normalize_name,
                                       prepare_catalog)
-from common.performer_cleanup_support import regenerate_telegram_nfo
 from common.performers import is_non_performer_name
-from sync import sync as S
-
-MEDIA_DIR = Path(os.getenv("MEDIA_DIR", str(ROOT / "media" / "adult")))
-
-
-def _regenerate_nfo(conn, video_id: str, performers: list[str]) -> bool:
-    return regenerate_telegram_nfo(conn, video_id, performers, media_dir=MEDIA_DIR, sync_api=S)
 
 
 def _merge_performers(existing: list, matched: list[dict], prepared: dict) -> list[str]:
@@ -67,31 +57,16 @@ def _ensure_bio_backup_table(conn) -> None:
     """)
 
 
-def _regenerate_nfos(conn, nfo_tasks) -> tuple[int, int]:
-    """Regenerate NFOs for (video_id, performers) pairs; return (updated, failed)."""
-    # Kept separate from common.fuzzy_merge._regenerate_nfos, which batches and returns error text.
-    updated = failed = 0
-    for video_id, performers in nfo_tasks:
-        try:
-            updated += int(_regenerate_nfo(conn, video_id, performers))
-        except Exception:
-            failed += 1
-    return updated, failed
-
-
-def _restore_rollback_rows(conn, rows, bio_rows) -> list:
-    nfo_tasks = []
+def _restore_rollback_rows(conn, rows, bio_rows) -> None:
     with conn:
         for video_id, old_performers in rows:
             conn.execute("UPDATE videos SET performers=%s WHERE id=%s",
                          (json.dumps(old_performers, ensure_ascii=False), video_id))
-            nfo_tasks.append((video_id, old_performers))
         for name, aliases in bio_rows:
             conn.execute("""
                 INSERT INTO performer_bios (name,aliases) VALUES (%s,%s)
                 ON CONFLICT(name) DO NOTHING
             """, (name, aliases))
-    return nfo_tasks
 
 
 def _rollback(conn, rollback: str) -> dict:
@@ -108,11 +83,9 @@ def _rollback(conn, rollback: str) -> dict:
         SELECT name,aliases FROM telegram_performer_rebuild_bio_backup
         WHERE run_id=%s ORDER BY name
     """, (run_id,)).fetchall()
-    nfo_tasks = _restore_rollback_rows(conn, rows, bio_rows)
-    nfos_updated, nfos_failed = _regenerate_nfos(conn, nfo_tasks)
+    _restore_rollback_rows(conn, rows, bio_rows)
     return {"rolled_back_run": run_id, "videos_restored": len(rows),
-            "performer_profiles_restored": len(bio_rows),
-            "nfos_updated": nfos_updated, "nfos_failed": nfos_failed}
+            "performer_profiles_restored": len(bio_rows)}
 
 
 def _load_catalog_state(conn):
@@ -187,7 +160,7 @@ def _queue_proposal(conn, vid, proposal: dict) -> None:
 
 
 def _process_row(conn, row, *, apply, queue_proposals, run_id, catalog, catalog_index,
-                 catalog_names, report, nfo_tasks) -> None:
+                 catalog_names, report) -> None:
     (vid, provider, title, slug, duration, thumbnail, raw_performers,
      studio, first_seen, source_text, filename, override) = row
     if override:
@@ -204,7 +177,6 @@ def _process_row(conn, row, *, apply, queue_proposals, run_id, catalog, catalog_
         report["changed"].append({"video_id": vid, "old": old, "new": new})
         if apply:
             _write_changed_video(conn, run_id, vid, old, new)
-            nfo_tasks.append((vid, new))
     else:
         report["unchanged"] += 1
     for proposal in proposals:
@@ -221,16 +193,13 @@ def _rebuild(conn, apply: bool, limit, queue_proposals: bool) -> dict:
     report = {"run_id": run_id, "videos": len(rows), "changed": [], "unchanged": 0,
               "manual_override_skipped": 0, "proposals": [], "limit": limit,
               "proposals_queued": 0, "performer_profiles_removed": 0}
-    nfo_tasks: list = []
     with conn:
         if apply:
             report["performer_profiles_removed"] = _backup_removed_profiles(conn, run_id)
         for row in rows:
             _process_row(conn, row, apply=apply, queue_proposals=queue_proposals,
                          run_id=run_id, catalog=catalog, catalog_index=catalog_index,
-                         catalog_names=catalog_names, report=report, nfo_tasks=nfo_tasks)
-    if apply:
-        report["nfos_updated"], report["nfos_failed"] = _regenerate_nfos(conn, nfo_tasks)
+                         catalog_names=catalog_names, report=report)
     return report
 
 

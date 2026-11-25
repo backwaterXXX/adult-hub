@@ -190,7 +190,6 @@ def _run_startup_maintenance(conn) -> None:
     # alongside cleanup_retention() with providers_succeeded.
     _core.migrate_synced_files(conn, _core.MEDIA_DIR)
     _core.migrate_categories(conn, _core.MEDIA_DIR)
-    _core.migrate_display_titles(conn, _core.MEDIA_DIR)
     _core.migrate_redundant_performers(conn, _core.MEDIA_DIR)
     _core.cleanup_legacy_folders(_core.MEDIA_DIR)
     _core.cleanup_old_transcodes()
@@ -477,7 +476,7 @@ def _run_telegram_title_cleanup(sp: _SyncPass) -> None:
             _core._ACTIVE_SYNC_METRICS["telegram_title_cleanup"] = {
                 key: cleanup_result.get(key) for key in (
                     "status", "processed", "total", "titles_changed", "tags_added",
-                    "categories_added", "nfos_missing", "nfos_failed", "last_result",
+                    "categories_added", "last_result",
                 )
             }
     except Exception as e:

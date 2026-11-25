@@ -48,7 +48,7 @@ def thumbnail_urls(raw_url: str, *,
     """Return the client-facing URL and the URL sync should download.
 
     Telegram previews are served by the resolver. Keep the public HTTPS URL
-    in video metadata/NFO, but fetch the image over the internal Compose network.
+    in video metadata, but fetch the image over the internal Compose network.
     """
     url = (raw_url or "").strip()
     parsed = urlparse(url)

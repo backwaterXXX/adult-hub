@@ -362,7 +362,7 @@ def _update_media_files(
     conn: Optional[Any] = None,
     strict: bool = False,
 ) -> None:
-    """Compatibility facade for matched NFO and artwork persistence."""
+    """Compatibility facade for matched artwork persistence."""
     from sync.scene_scraper_media_files import _update_media_files as implementation
     return implementation(media_dir, video_id, matched, performers, http_client, conn, strict)
 

@@ -98,11 +98,11 @@ function walk(root, output = []) {
   };
   const calls = [];
   const target = {
-    id: 'target-7', queue: 'jobs', action: 'performer_refresh', state: 'processing', stage: 'writing_nfo',
+    id: 'target-7', queue: 'jobs', action: 'metadata_backfill', state: 'processing', stage: 'scanning_metadata',
     activity_stale: true,
-    progress: { stage: 'writing_nfo', completed: 1, total: 1 },
+    progress: { stage: 'scanning_metadata', completed: 1, total: 1 },
     created_at: 1791367200, updated_at: Math.floor(Date.now() / 1000) - 180,
-    events: [{ stage: 'writing_nfo', completed: 1, total: 1 }]
+    events: [{ stage: 'scanning_metadata', completed: 1, total: 1 }]
   };
   const metadataTask = {
     id: 'metadata-8', queue: 'jobs', action: 'lukayan_fingerprint', state: 'processing', stage: 'metadata_tpdb',
@@ -220,8 +220,8 @@ function walk(root, output = []) {
   const detailRow = document.getElementById(detailsButton.getAttribute('aria-controls'));
   assert.equal(detailRow.hidden, false);
   const detailText = walk(detailRow).map(item => item.textContent).join(' ');
-  assert.match(detailText, /Writing performer metadata files/);
-  assert.match(detailText, /1 of 1 files handled/);
+  assert.match(detailText, /Scanning external metadata providers/);
+  assert.match(detailText, /1 of 1 provider steps/);
   assert.match(detailText, /No worker activity has been recorded for more than 90 seconds/,
     'processing tasks with a stale heartbeat must show an operator warning');
   assert.equal(walk(detailRow).some(item => item.dataset.jobRetry), false,

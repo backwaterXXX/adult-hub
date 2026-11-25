@@ -259,7 +259,7 @@ def _remove_managed_files(paths, media_dir: Path, services, deleted_videos: int,
         file_families.append(stream_path)
 
     for stream_path in file_families:
-        for suffix in (".strm", ".nfo", ".jpg", ".thumb_fail"):
+        for suffix in (".strm", ".jpg", ".thumb_fail"):
             candidate = stream_path.with_suffix(suffix)
             try:
                 if candidate.exists() or candidate.is_symlink():

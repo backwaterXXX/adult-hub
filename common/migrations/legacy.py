@@ -113,6 +113,9 @@ from common.migrations.m0073_performer_catalog_image import (
 from common.migrations.m0074_drop_jellyfin_person_sync import (
     migration as drop_jellyfin_person_sync,
 )
+from common.migrations.m0075_drop_nfo_audit_kinds import (
+    migration as drop_nfo_audit_kinds,
+)
 
 LEGACY_MIGRATIONS: tuple[Migration, ...] = (
     m0001,
@@ -191,4 +194,5 @@ POST_BASELINE_MIGRATIONS: tuple[Migration, ...] = (
     performer_lookup_indexes,
     performer_catalog_image,
     drop_jellyfin_person_sync,
+    drop_nfo_audit_kinds,
 )

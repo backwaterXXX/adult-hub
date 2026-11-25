@@ -54,7 +54,7 @@ def _safe_orphan_files(raw, media_root: Path) -> list[dict] | None:
         if posix is None:
             return None
         suffix = Path(relative).suffix.lower()
-        if suffix not in {".strm", ".nfo", ".jpg"} or item.get("suffix") != suffix:
+        if suffix not in {".strm", ".jpg"} or item.get("suffix") != suffix:
             return None
         family_key = (posix.parent.as_posix(), posix.stem)
         if family is None:

@@ -20,7 +20,7 @@
   const DUPLICATE_SCAN_CACHE_TTL_MS = 30_000;
   const SAVED_VIEWS_KEY = 'adminV2SavedViews';
   const ISSUE_SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
-  const ISSUE_KINDS = new Set(['sync_failure', 'sync_never_run', 'sync_backlog', 'job_failure', 'job_stalled', 'unavailable_video', 'missing_metadata', 'missing_nfo', 'invalid_nfo', 'nfo_metadata_mismatch', 'missing_artwork', 'backup', 'quality_finding', 'quality_audit', 'system']);
+  const ISSUE_KINDS = new Set(['sync_failure', 'sync_never_run', 'sync_backlog', 'job_failure', 'job_stalled', 'unavailable_video', 'missing_metadata', 'missing_artwork', 'backup', 'quality_finding', 'quality_audit', 'system']);
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const state = { route: 'start', detailId: null, libraryTab: 'videos', duplicateMatch: 'catalog', performersTab: 'review', qualityTab: null, systemTab: null, peopleDirectoryQuery: '', status: null, statusLoaded: false, statusRequestSeq: 0,

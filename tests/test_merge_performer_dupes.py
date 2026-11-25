@@ -1,21 +1,17 @@
-"""Merging bracketed performer nicknames: catalog tables, aliases, disk sidecars, and the CLI."""
+"""Merging bracketed performer nicknames: catalog tables, aliases, and the CLI."""
 
 import io
 import json
 import sys
-import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from pg_helper import PgTestCase
 
 # Import the implementation from the sync package, not the root compatibility wrapper.
 import sync.merge_performer_dupes as merger
-from test_support import load_sync_module
-sync_facade = load_sync_module()
 
 RAW = "Adam Snow (AdamSnowXXX)"
 BASE = "Adam Snow"
@@ -56,13 +52,6 @@ class CatalogDouble:
 
 class MergeHarness(PgTestCase):
     """Shared fixtures and CLI harness; carries no tests of its own."""
-
-    def setUp(self):
-        super().setUp()
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.media_dir = Path(self.tmp.name) / "media"
-        self.media_dir.mkdir()
 
     # --- fixtures ---------------------------------------------------------
 
@@ -115,23 +104,9 @@ class MergeHarness(PgTestCase):
 
     # --- CLI harness ------------------------------------------------------
 
-    def stub_sync(self, **overrides):
-        stubs = {
-            "stable_media_basename": lambda vid: vid.replace(":", "_"),
-            "load_performer_thumbs": lambda conn, names: {},
-            "format_dateadded": lambda ts: "2026-01-01 00:00:00",
-            "create_nfo_file": MagicMock(),
-        }
-        stubs.update(overrides)
-        for name, value in stubs.items():
-            patcher = patch.object(sync_facade, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        return SimpleNamespace(**stubs)
-
     def run_cli(self, *flags):
         """Run ``main()`` with a deterministic argv and captured stdout."""
-        args = ["--db-url", self.db_url, "--media", str(self.media_dir), *flags]
+        args = ["--db-url", self.db_url, *flags]
         buffer = io.StringIO()
         with patch.object(sys, "argv", ["merge_performer_dupes.py", *args]), \
                 redirect_stdout(buffer):
@@ -235,7 +210,6 @@ class TestPreMergeBackup(MergeHarness):
 class TestMergeDryRun(MergeHarness):
     def test_dry_run_reports_the_plan_without_touching_anything(self):
         self.seed_full_merge()
-        sync = self.stub_sync()
         with patch.object(merger, "make_backup") as backup:
             code, output = self.run_cli()
 
@@ -245,12 +219,10 @@ class TestMergeDryRun(MergeHarness):
         self.assertEqual(self.rows("SELECT name FROM performer_photos WHERE name=%s", (BASE,)), [])
         self.assertEqual(self.rows("SELECT alias FROM performer_aliases"), [])
         backup.assert_not_called()
-        sync.create_nfo_file.assert_not_called()
 
     def test_dry_run_tolerates_manually_overridden_profiles(self):
         self.seed_full_merge()
         self.add_profile_override(BASE)
-        self.stub_sync()
 
         code, _ = self.run_cli()
 
@@ -260,7 +232,6 @@ class TestMergeDryRun(MergeHarness):
     def test_sample_listing_is_capped_at_twenty_mappings(self):
         for index in range(25):
             self.add_photo(f"Person {index} (Nick{index})")
-        self.stub_sync()
 
         _, output = self.run_cli()
 
@@ -268,9 +239,8 @@ class TestMergeDryRun(MergeHarness):
 
 
 class TestMergeApply(MergeHarness):
-    def test_apply_rewrites_videos_photos_bios_aliases_and_nfo(self):
+    def test_apply_rewrites_videos_photos_bios_and_aliases(self):
         self.seed_full_merge()
-        sync = self.stub_sync()
         with patch.object(merger, "make_backup") as backup:
             code, _ = self.run_cli("--apply", "--skip-backup")
 
@@ -288,37 +258,9 @@ class TestMergeApply(MergeHarness):
         self.assertEqual(
             sorted((row[0], row[1]) for row in self.rows("SELECT alias, canonical FROM performer_aliases")),
             sorted([(RAW.lower(), BASE), (NICK.lower(), BASE)]))
-        sync.create_nfo_file.assert_called_once()
-        video_dict, genres, tags, nfo_path = sync.create_nfo_file.call_args[0]
-        self.assertEqual(nfo_path, self.media_dir / "telegram_1.nfo")
-        self.assertEqual(video_dict["performers"], [BASE, "Plain Name"])
-        self.assertEqual(video_dict["id"], "telegram:1")
-        self.assertEqual(video_dict["provider_video_id"], "1")
-        self.assertEqual(video_dict["dateadded"], "2026-01-01 00:00:00")
-        self.assertEqual(genres, {"Action"})
-        self.assertEqual(tags, {"tag1"})
-
-    def test_apply_defaults_missing_studio_and_first_seen(self):
-        # categories/tags are NOT NULL jsonb arrays, so an empty library row is
-        # the closest reachable case to "no metadata at all".
-        self.add_video("telegram:30", json.dumps([RAW]), categories='[]', tags='[]',
-                       studio=None, first_seen=None)
-        date_inputs = []
-        sync = self.stub_sync(format_dateadded=lambda ts: date_inputs.append(ts) or "2026-01-01 00:00:00")
-
-        code, _ = self.run_cli("--apply", "--skip-backup")
-
-        self.assertEqual(code, 0)
-        video_dict, genres, tags, _ = sync.create_nfo_file.call_args[0]
-        self.assertEqual((genres, tags), (set(), set()))
-        self.assertEqual(video_dict["studio"], "")
-        # first_seen is NULL, so the merge falls back to "now".
-        self.assertIsInstance(date_inputs[0], float)
-        self.assertGreater(date_inputs[0], 1_600_000_000)
 
     def test_apply_backs_up_before_touching_the_catalog(self):
         self.seed_full_merge()
-        self.stub_sync()
         seen = {}
 
         def fake_backup(url):
@@ -337,7 +279,6 @@ class TestMergeApply(MergeHarness):
 
     def test_apply_aborts_when_the_backup_fails(self):
         self.seed_full_merge()
-        self.stub_sync()
         with patch.object(merger, "make_backup", side_effect=RuntimeError("pg_dump missing")):
             code, _ = self.run_cli("--apply")
 
@@ -348,7 +289,6 @@ class TestMergeApply(MergeHarness):
     def test_apply_refuses_to_merge_manually_overridden_profiles(self):
         self.seed_full_merge()
         self.add_profile_override(BASE, fields=("bio", "photo", "aliases"))
-        self.stub_sync()
         with patch.object(merger, "make_backup") as backup:
             code, _ = self.run_cli("--apply", "--skip-backup")
 
@@ -361,7 +301,6 @@ class TestMergeApply(MergeHarness):
         self.add_video("telegram:20", json.dumps([RAW]))
         self.add_photo(RAW, thumb="raw-thumb")
         self.add_photo(BASE, thumb="canonical-thumb")
-        self.stub_sync()
 
         code, _ = self.run_cli("--apply", "--skip-backup")
 
@@ -373,7 +312,6 @@ class TestMergeApply(MergeHarness):
         self.add_video("telegram:21", json.dumps([RAW]))
         self.add_bio(RAW, bio="raw bio", birth="1991-02-02")
         self.add_bio(BASE, bio="canonical bio", birth="")
-        self.stub_sync()
 
         code, _ = self.run_cli("--apply", "--skip-backup")
 
@@ -386,7 +324,6 @@ class TestMergeApply(MergeHarness):
     def test_apply_records_one_alias_when_the_nick_matches_the_name(self):
         self.add_video("telegram:22", json.dumps(["Ann (ann)"]))
         self.add_alias("ann (ann)", "Existing Canonical")
-        self.stub_sync()
 
         code, _ = self.run_cli("--apply", "--skip-backup")
 
@@ -396,44 +333,6 @@ class TestMergeApply(MergeHarness):
         self.assertEqual(
             sorted((row[0], row[1]) for row in self.rows("SELECT alias, canonical FROM performer_aliases")),
             [("ann (ann)", "Existing Canonical")])
-
-    def test_apply_skips_videos_that_disappeared_before_the_nfo_pass(self):
-        self.seed_full_merge()
-        sync = self.stub_sync()
-        with patch.object(merger, "plan_video_updates",
-                          return_value=[("telegram:gone", [RAW], [BASE])]):
-            code, _ = self.run_cli("--apply", "--skip-backup")
-
-        self.assertEqual(code, 0)
-        sync.create_nfo_file.assert_not_called()
-
-    def test_apply_continues_when_one_nfo_rewrite_fails(self):
-        self.add_video("telegram:24", json.dumps([RAW]))
-        self.add_video("telegram:25", json.dumps([RAW]))
-        failing = self.media_dir / "telegram_24.nfo"
-
-        def create_nfo(video, genres, tags, path):
-            if path == failing:
-                raise OSError("disk full")
-
-        sync = self.stub_sync(create_nfo_file=MagicMock(side_effect=create_nfo))
-
-        code, _ = self.run_cli("--apply", "--skip-backup")
-
-        self.assertEqual(code, 0)
-        self.assertEqual(sync.create_nfo_file.call_count, 2)
-        self.assertEqual(self.video_performers("telegram:24"), [BASE])
-        self.assertEqual(self.video_performers("telegram:25"), [BASE])
-
-    def test_apply_completes_when_the_sync_facade_cannot_be_imported(self):
-        self.seed_full_merge()
-        with patch.object(merger, "plan_video_updates",
-                          return_value=[("telegram:1", [RAW, "Plain Name"], [BASE, "Plain Name"])]), \
-                patch.dict(sys.modules, {"sync": None}):
-            code, _ = self.run_cli("--apply", "--skip-backup")
-
-        self.assertEqual(code, 0)
-        self.assertEqual(self.video_performers("telegram:1"), [BASE, "Plain Name"])
 
 
 if __name__ == "__main__":

@@ -114,7 +114,7 @@ class TestAdminJobInspection(PgTestCase):
             with conn:
                 conn.execute(
                     "UPDATE video_duplicate_jobs SET state='failed',result=%s,updated_at=to_timestamp(10) WHERE id=%s",
-                    (json.dumps({"nfo_written": True, "metadata_revision": 3}), failed_id),
+                    (json.dumps({"metadata_written": True, "metadata_revision": 3}), failed_id),
                 )
         finally:
             conn.close()

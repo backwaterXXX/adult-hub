@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cleanup trailing scene/season/episode suffixes (e.g. s1, s2, s3) across the catalog and NFOs."""
+"""Cleanup trailing scene/season/episode suffixes (e.g. s1, s2, s3) across the catalog."""
 import json
 import os
 from pathlib import Path
@@ -8,10 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 from common import db
 from common.json_helpers import json_list_or_empty
-from common.performer_cleanup_support import (
-    build_video_nfo,
-    create_db_backup,
-)
+from common.performer_cleanup_support import create_db_backup
 from common.performers import (
     SCENE_SUFFIX_RE,
     STANDALONE_SCENE_RE,
@@ -19,7 +16,6 @@ from common.performers import (
     normalize_performers,
     strip_scene_suffix,
 )
-from sync import sync as S
 
 RAW_DB_URL = (os.getenv("DATABASE_URL") or "").strip()
 if not RAW_DB_URL:
@@ -43,7 +39,6 @@ else:
     DB_URL = RAW_DB_URL or None
 
 BACKUP_DIR = BASE_DIR / "data" / "backups"
-MEDIA_DIR = BASE_DIR / "media" / "adult"
 
 
 def _create_backup() -> Path:
@@ -95,30 +90,17 @@ def _clean_suffixed_names(conn, table: str) -> None:
     print(f"{table}: {deleted_count} deleted, {updated_count} updated.")
 
 
-def _regenerate_video_nfo(conn, row, new_perfs: list, nfo_path: Path) -> bool:
-    video_dict, genres, tag_set = build_video_nfo(conn, row, new_perfs, sync_api=S)
-    try:
-        S.create_nfo_file(video_dict, genres, tag_set, nfo_path)
-        return True
-    except Exception as e:
-        print(f"  Error updating NFO {nfo_path}: {e}")
-        return False
-
-
-def _clean_videos(conn) -> tuple[int, int]:
-    """Normalize suffixed performers on videos (and their NFOs); return (videos, nfos) updated."""
+def _clean_videos(conn) -> int:
+    """Normalize suffixed performers on videos; return how many videos were updated."""
     print("Selecting videos with scene-suffixed performers...")
     rows = conn.execute(
-        "SELECT id, provider, title, slug, duration, thumbnail, performers, categories, tags, studio, first_seen "
-        "FROM videos WHERE performers <> '[]'::jsonb"
+        "SELECT id, performers FROM videos WHERE performers <> '[]'::jsonb"
     ).fetchall()
 
     videos_updated = 0
-    nfos_updated = 0
 
     with conn:
-        for row in rows:
-            vid_id, perfs_raw = row[0], row[6]
+        for vid_id, perfs_raw in rows:
             old_perfs = json_list_or_empty(perfs_raw)
 
             if not any(SCENE_SUFFIX_RE.search(p) or STANDALONE_SCENE_RE.match(p) for p in old_perfs):
@@ -133,12 +115,7 @@ def _clean_videos(conn) -> tuple[int, int]:
                     (json.dumps(new_perfs, ensure_ascii=False), vid_id),
                 )
 
-                # Update NFO file if it exists
-                nfo_path = MEDIA_DIR / f"{S.stable_media_basename(vid_id)}.nfo"
-                if nfo_path.exists() and _regenerate_video_nfo(conn, row, new_perfs, nfo_path):
-                    nfos_updated += 1
-
-    return videos_updated, nfos_updated
+    return videos_updated
 
 
 def _invalidate_resolver_cache() -> None:
@@ -166,10 +143,10 @@ def run_cleanup():
     for table in ("performer_photos", "performer_bios"):
         _clean_suffixed_names(conn, table)
 
-    # 3. Clean videos table and NFO files
-    videos_updated, nfos_updated = _clean_videos(conn)
+    # 3. Clean videos table
+    videos_updated = _clean_videos(conn)
 
-    print(f"Cleanup finished: {videos_updated} videos updated in DB, {nfos_updated} NFO files regenerated.")
+    print(f"Cleanup finished: {videos_updated} videos updated in DB.")
     conn.close()
 
     # Invalidate resolver fuzzy cache

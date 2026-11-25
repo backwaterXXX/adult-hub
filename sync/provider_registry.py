@@ -34,7 +34,7 @@ _PROVIDER_INFO: Dict[str, Dict[str, str]] = {
 }
 
 def get_provider_info(provider_key: str) -> Dict[str, str]:
-    """Metadata for NFO/studio files; historical names survive via fallback."""
+    """Metadata for studio and channel naming; historical names survive via fallback."""
     key = (provider_key or "").strip().lower()
     if key in _PROVIDER_INFO:
         return _PROVIDER_INFO[key]

@@ -13,7 +13,7 @@
     ['duplicate_reconcile', 'Duplicate reconciliation'], ['performer_merge', 'Merge performers'],
     ['availability_check', 'Check availability'], ['metadata_update', 'Update metadata'],
     ['metadata_backfill', 'External metadata scan'],
-    ['audit_repair_nfo', 'Repair catalog files'],
+    ['audit_repair_files', 'Repair catalog files'],
   ]);
   const failureMessages = new Map([
     ['operation_timeout', 'A required operation timed out.'], ['connection_failed', 'Could not connect to a required service.'],

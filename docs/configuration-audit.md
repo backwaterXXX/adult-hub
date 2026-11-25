@@ -112,7 +112,7 @@ The following table inventories every configuration parameter across the Adult H
 | `VIDEO_VISUAL_WORKER_ENABLED` | resolver | No | Code: `false`; Compose: `false` | No | Restart | Env | Demote to Advanced | Background visual duplicate worker |
 | `PHASH_UPLOAD_ENABLED` | resolver | No | Code: `false`; Compose: `false` | No | Restart | Env | Demote to Advanced | Accept client-submitted pHashes |
 | `PHASH_ACCEPTED_DECODER_PROFILES` | resolver | No | Code: `""`; Compose: `""` | No | Restart | Env | Demote to Advanced | Decoder profiles |
-| `PHASH_ALLOWED_USER_IDS` | resolver | No | Code: `""`; Compose: `""` | No | Restart | Env | Demote to Advanced | Non-admin client user whitelist |
+| `PHASH_ALLOWED_USER_IDS` | resolver | No | Code: `""`; Compose: `""` | No | Restart | Env | Demote to Advanced | Non-admin client user allow-list, values are `client_users.id` (`usr_...`); entries that are not client user IDs are ignored with a warning |
 | `PHASH_SERVER_BYTE_BUDGET` | resolver | No | Code: `268435456` (256MB) | No | Restart | Env | Demote to Advanced | Server-side pHash byte limit |
 | `PHASH_SERVER_TIMEOUT_SECONDS` | resolver | No | Code: `1200` (20m) | No | Restart | Env | Demote to Advanced | Server-side pHash timeout |
 | `PHASH_SERVER_BYTES_PER_SECOND` | resolver | No | Code: `2097152` (2MB/s) | No | Restart | Env | Demote to Advanced | Server-side pHash stream rate |

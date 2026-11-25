@@ -31,19 +31,19 @@ class TelegramUnavailableTests(unittest.TestCase):
             media = root / "media"
             media.mkdir()
             quarantine = root / "private-quarantine"
-            for suffix in (".strm", ".nfo", ".jpg", ".thumb_fail"):
+            for suffix in (".strm", ".jpg", ".thumb_fail"):
                 (media / f"stable{suffix}").write_text(suffix, encoding="utf-8")
 
             moved = _quarantine_files(
                 _FilesConn(["stable.strm"]), "telegram:-100123:456:doc", media, quarantine
             )
 
-            self.assertEqual(len(moved), 4)
+            self.assertEqual(len(moved), 3)
             self.assertFalse((media / "stable.strm").exists())
             self.assertTrue(all(Path(item["quarantine"]).exists() for item in moved))
             _restore_files(json.dumps(moved))
             self.assertEqual({p.suffix for p in media.iterdir()},
-                             {".strm", ".nfo", ".jpg", ".thumb_fail"})
+                             {".strm", ".jpg", ".thumb_fail"})
             self.assertTrue(all(not Path(item["quarantine"]).exists() for item in moved))
 
     def test_restore_keeps_regenerated_media_file(self):

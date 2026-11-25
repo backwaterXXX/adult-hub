@@ -103,7 +103,7 @@ def execute_operation(db_url: str | None, plan_id: str, config_path: str | None 
             handlers.handle_metadata_update_batch,
             handlers.handle_metadata_update,
             handlers.handle_performer_merge,
-            handlers.handle_audit_repair_nfo,
+            handlers.handle_audit_repair_files,
             handlers.handle_quarantine,
         ):
             result = handler(*operation_context)

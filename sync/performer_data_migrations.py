@@ -10,7 +10,6 @@ from typing import Any, Dict, Optional, Tuple
 import logging
 
 from common import db
-from common.json_helpers import json_set_or_empty as _json_set
 from common.performers import is_safe_alias, is_valid_performer_name
 
 logger = logging.getLogger(__name__)
@@ -220,41 +219,10 @@ def _restore_known_performers(conn: db.Connection, svc: Any, title_pattern: str,
         svc.logger.warning("Failed to fix performers for %s: %s", label, e)
 
 
-def _nfo_genres_and_tags(cats_raw, tags_raw) -> Tuple[set, set]:
-    genres = _json_set(cats_raw)
-    tags = _json_set(tags_raw)
-    return genres, tags
-
-
-def _write_pruned_nfo(conn: db.Connection, svc: Any, media_dir: Path, row, pruned) -> None:
-    """Rewrite the NFO of one video with its pruned performer list, when the NFO exists."""
-    vid_id, provider, title, slug, duration, thumb, _perfs_raw, cats_raw, tags_raw, studio, first_seen = row
-    nfo_path = media_dir / f"{svc.stable_media_basename(vid_id)}.nfo"
-    if not nfo_path.exists():
-        return
-    genres, tags = _nfo_genres_and_tags(cats_raw, tags_raw)
-    pid = vid_id.split(":", 1)[-1] if ":" in vid_id else vid_id
-    video = {
-        "id": vid_id,
-        "provider": provider,
-        "provider_video_id": pid,
-        "title": title or pid,
-        "slug": slug or "",
-        "duration": duration or 0,
-        "thumbnail": thumb or "",
-        "performers": pruned,
-        "performer_thumbs": svc.load_performer_thumbs(conn, pruned),
-        "studio": studio or "",
-        "dateadded": svc.format_dateadded(first_seen) if first_seen else "",
-    }
-    svc.create_nfo_file(video, genres, tags, nfo_path)
-
-
-def _apply_pruned_performers(conn: db.Connection, svc: Any, media_dir: Path, row, pruned) -> None:
+def _apply_pruned_performers(conn: db.Connection, row, pruned) -> None:
     vid_id = row[0]
     with conn:
         conn.execute("UPDATE videos SET performers = %s WHERE id = %s", (json.dumps(pruned), vid_id))
-    _write_pruned_nfo(conn, svc, media_dir, row, pruned)
 
 
 def _record_redundant_version(conn: db.Connection, redundant_performers_version: int, svc: Any) -> None:
@@ -279,7 +247,7 @@ def _performer_list(perfs_raw) -> list:
 def migrate_redundant_performers(conn: db.Connection, media_dir: Path, *,
                                  services: Optional[Any] = None,
                                  redundant_performers_version: int = REDUNDANT_PERFORMERS_VERSION) -> int:
-    """Clean up redundant single-word sub-names and nationality-prefixed duplicates from DB and NFOs."""
+    """Clean up redundant single-word sub-names and nationality-prefixed duplicates in the database."""
     svc = _resolve_services(services)
     if _redundant_version_applied(conn, redundant_performers_version, svc):
         return 0
@@ -300,7 +268,7 @@ def migrate_redundant_performers(conn: db.Connection, media_dir: Path, *,
     alias_rows = conn.execute("SELECT alias, canonical FROM performer_aliases").fetchall() if "performer_aliases" in tables else []
     alias_map = {str(a).strip().lower(): str(c).strip() for a, c in alias_rows if a and c}
 
-    svc.logger.info("Checking database and NFO files for redundant performer cleanup...")
+    svc.logger.info("Checking database for redundant performer cleanup...")
     rows = conn.execute(
         """SELECT id, provider, title, slug, duration, thumbnail,
                   performers, categories, tags, studio, first_seen
@@ -320,7 +288,7 @@ def migrate_redundant_performers(conn: db.Connection, media_dir: Path, *,
             continue
 
         try:
-            _apply_pruned_performers(conn, svc, media_dir, row, pruned)
+            _apply_pruned_performers(conn, row, pruned)
             updated += 1
         except Exception as e:
             svc.logger.warning("Failed to update performers for %s: %s", row[0], e)
@@ -328,5 +296,5 @@ def migrate_redundant_performers(conn: db.Connection, media_dir: Path, *,
     _record_redundant_version(conn, redundant_performers_version, svc)
 
     if updated > 0:
-        svc.logger.info("Cleaned up redundant performers in %s videos and NFO files.", updated)
+        svc.logger.info("Cleaned up redundant performers in %s videos.", updated)
     return updated

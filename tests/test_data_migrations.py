@@ -9,12 +9,10 @@ from sync.category_mapping import map_categories
 from common.performers import prune_redundant_performers
 from sync.data_migrations import (
     CATEGORY_MAPPING_VERSION,
-    DISPLAY_TITLE_VERSION,
     REDUNDANT_PERFORMERS_VERSION,
     DataMigrationServices,
     _resolve_default_services,
     migrate_categories,
-    migrate_display_titles,
     migrate_redundant_performers,
     migrate_synced_files,
 )
@@ -43,9 +41,6 @@ class TestDataMigrations(PgTestCase):
             write_stream_file=lambda path, vid: path.write_text("http://stream", encoding="utf-8"),
             map_categories=map_categories,
             prune_redundant_performers=prune_redundant_performers,
-            load_performer_thumbs=lambda conn, perfs: {},
-            format_dateadded=lambda ts: "2026-01-01",
-            create_nfo_file=lambda video, genres, tags, path, **_kwargs: path.write_text(f"<movie><title>{video['title']}</title></movie>", encoding="utf-8"),
         )
 
     def test_resolve_default_services(self):
@@ -79,17 +74,14 @@ class TestDataMigrations(PgTestCase):
             )
 
         (self.media / f"{legacy_base}.strm").write_text("http://stream", encoding="utf-8")
-        (self.media / f"{legacy_base}.nfo").write_text("<movie></movie>", encoding="utf-8")
         (self.media / f"{legacy_base}.jpg").write_bytes(b"image")
 
         migrate_synced_files(self.conn, self.media, services=self.services)
 
         self.assertFalse((self.media / f"{legacy_base}.strm").exists())
-        self.assertFalse((self.media / f"{legacy_base}.nfo").exists())
         self.assertFalse((self.media / f"{legacy_base}.jpg").exists())
 
         self.assertTrue((self.media / f"{stable_base}.strm").exists())
-        self.assertTrue((self.media / f"{stable_base}.nfo").exists())
         self.assertTrue((self.media / f"{stable_base}.jpg").exists())
 
         row = self.conn.execute("SELECT file_path FROM synced_files WHERE video_id = %s", (vid_id,)).fetchone()
@@ -108,9 +100,6 @@ class TestDataMigrations(PgTestCase):
                 (f"{stable_base}.strm", vid_id, "bareback", 1700000000),
             )
 
-        nfo_path = self.media / f"{stable_base}.nfo"
-        nfo_path.write_text("<movie><title>Muscle Stud</title><genre>raw</genre><uniqueid>vid_cat</uniqueid></movie>", encoding="utf-8")
-
         migrate_categories(self.conn, self.media, services=self.services, category_mapping_version=CATEGORY_MAPPING_VERSION)
 
         meta_ver = self.conn.execute("SELECT value FROM meta WHERE key = 'category_mapping_version'").fetchone()
@@ -125,35 +114,9 @@ class TestDataMigrations(PgTestCase):
         junction = [r[0] for r in self.conn.execute("SELECT category FROM video_categories WHERE video_id = %s", (vid_id,)).fetchall()]
         self.assertIn("Bareback & Breeding", junction)
 
-        # Check NFO updated
-        nfo_content = nfo_path.read_text(encoding="utf-8")
-        self.assertIn("<genre>Muscle &amp; Jocks</genre>", nfo_content)
-
-    def test_migrate_display_titles(self):
-        vid_id = "sample:disp_title"
-        stable_base = stable_media_basename(vid_id)
-        with self.conn:
-            self.conn.execute(
-                """INSERT INTO videos (id, provider, title, slug, duration,
-                                      performers, categories, tags, first_seen)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (vid_id, "sample", "Raw Title", "raw-title", 600,
-                 '["Performer A"]', '["Solo"]', '["tag1"]', 1700000000),
-            )
-
-        nfo_path = self.media / f"{stable_base}.nfo"
-        nfo_path.write_text("<movie><title>Old Title</title></movie>", encoding="utf-8")
-
-        updated = migrate_display_titles(self.conn, self.media, services=self.services, display_title_version=DISPLAY_TITLE_VERSION)
-        self.assertEqual(updated, 1)
-
-        # Running again should skip due to meta version
-        second_run = migrate_display_titles(self.conn, self.media, services=self.services, display_title_version=DISPLAY_TITLE_VERSION)
-        self.assertEqual(second_run, 0)
 
     def test_migrate_redundant_performers(self):
         vid_id = "sample:red_perf"
-        stable_base = stable_media_basename(vid_id)
         # "Colombiano Alex Smith" is redundant when "Alex Smith" is present
         perfs = ["Colombiano Alex Smith", "Alex Smith"]
         with self.conn:
@@ -169,9 +132,6 @@ class TestDataMigrations(PgTestCase):
             self.conn.execute("INSERT INTO performer_bios (name) VALUES ('fucking')")
             self.conn.execute("INSERT INTO performer_bios (name) VALUES ('black')")
             self.conn.execute("INSERT INTO performer_bios (name) VALUES ('Jordan')")
-
-        nfo_path = self.media / f"{stable_base}.nfo"
-        nfo_path.write_text("<movie><title>Test</title></movie>", encoding="utf-8")
 
         updated = migrate_redundant_performers(self.conn, self.media, services=self.services, redundant_performers_version=REDUNDANT_PERFORMERS_VERSION)
         self.assertEqual(updated, 1)

@@ -8,13 +8,10 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 from common.json_helpers import json_list_or_empty
-from common.performer_cleanup_support import build_video_nfo
 from common.performers import is_valid_performer_name, NATIONALITY_PREFIXES
 from common.performer_titles import parse_title_performers_with_known_map
-from sync import sync as S
 
 DB_URL = (os.getenv("DATABASE_URL") or "").strip() or None
-MEDIA_DIR = BASE_DIR / "media" / "adult"
 
 
 def _name_is_word_subset(short_name: str, long_name: str) -> bool:
@@ -80,36 +77,22 @@ def _should_update(old_perfs: list, new_perfs: list) -> bool:
     return _has_nationality_prefix(old_perfs)
 
 
-def _regenerate_nfo(conn, row, new_perfs: list, nfo_path: Path) -> bool:
-    video_dict, genres, tag_set = build_video_nfo(conn, row, new_perfs, sync_api=S)
-    try:
-        S.create_nfo_file(video_dict, genres, tag_set, nfo_path)
-        return True
-    except Exception:
-        return False
-
-
-def _process_row(conn, row, known_map: dict) -> tuple[bool, bool]:
-    """Reparse one Telegram video; return (video_updated, nfo_updated)."""
-    vid_id, title, perfs_raw = row[0], row[2], row[6]
+def _process_row(conn, row, known_map: dict) -> bool:
+    """Reparse one Telegram video; return whether the row was updated."""
+    vid_id, title, perfs_raw = row
     old_perfs = json_list_or_empty(perfs_raw)
 
     raw_title = title or ""
     new_perfs = parse_title_performers_with_known_map(raw_title, known_map)
 
     if not new_perfs or not _should_update(old_perfs, new_perfs):
-        return False, False
+        return False
 
     conn.execute(
         "UPDATE videos SET performers = %s WHERE id = %s",
         (json.dumps(new_perfs, ensure_ascii=False), vid_id),
     )
-
-    nfo_path = MEDIA_DIR / f"{S.stable_media_basename(vid_id)}.nfo"
-    nfo_updated = False
-    if nfo_path.exists():
-        nfo_updated = _regenerate_nfo(conn, row, new_perfs, nfo_path)
-    return True, nfo_updated
+    return True
 
 
 def run():
@@ -117,24 +100,18 @@ def run():
     known_map = _load_known_map(conn)
 
     rows = conn.execute(
-        "SELECT id, provider, title, slug, duration, thumbnail, performers, categories, tags, studio, first_seen "
-        "FROM videos WHERE provider = 'telegram'"
+        "SELECT id, title, performers FROM videos WHERE provider = 'telegram'"
     ).fetchall()
 
     videos_updated = 0
-    nfos_updated = 0
 
     print(f"Scanning {len(rows)} Telegram videos...")
     with conn:
         for row in rows:
-            video_updated, nfo_updated = _process_row(conn, row, known_map)
-            videos_updated += int(video_updated)
-            nfos_updated += int(nfo_updated)
+            videos_updated += int(_process_row(conn, row, known_map))
 
     conn.close()
-    print(
-        f"Database & NFO update complete: {videos_updated} videos updated, {nfos_updated} NFOs regenerated."
-    )
+    print(f"Database update complete: {videos_updated} videos updated.")
 
 if __name__ == "__main__":
     run()

@@ -286,21 +286,7 @@ def _strongest_performers(merge: _KeeperMerge) -> None:
         }
 
 
-def _refresh_keeper_nfo(conn, merge: _KeeperMerge, keeper: str, media_dir, services, now) -> None:
-    k_vid = merge.k_vid
-    try:
-        k_file = conn.execute('SELECT file_path FROM synced_files WHERE video_id=%s', (keeper,)).fetchone()
-        if k_file:
-            k_strm = services.resolve_media_path(k_file[0], media_dir)
-            k_nfo = k_strm.with_suffix('.nfo')
-            if k_nfo.exists():
-                k_dict = {'id': keeper, 'provider': k_vid.get('provider', 'telegram'), 'provider_video_id': keeper.split(':', 1)[-1] if ':' in keeper else keeper, 'title': k_vid.get('title', ''), 'slug': k_vid.get('slug', ''), 'duration': k_vid.get('duration', 0), 'thumbnail': k_vid.get('thumbnail', ''), 'performers': sorted(merge.merged_perfs), 'performer_thumbs': services.load_performer_thumbs(conn, sorted(merge.merged_perfs)), 'studio': k_vid.get('studio') or '', 'plot': k_vid.get('plot', ''), 'date_released': k_vid.get('date_released', ''), 'dateadded': services.format_dateadded(k_vid.get('first_seen') or now)}
-                services.create_nfo_file(k_dict, set(merge.merged_cats), merge.merged_tags, k_nfo)
-    except Exception as nfo_exc:
-        services.logger.warning('Could not update keeper NFO metadata: %s', nfo_exc)
-
-
-def _finalize_keeper_row(conn, merge: _KeeperMerge, keeper: str, job_id, snapshots, media_dir, services, now) -> None:
+def _finalize_keeper_row(conn, merge: _KeeperMerge, keeper: str, job_id, snapshots) -> None:
     k_vid = merge.k_vid
     merge.merged_perfs.update(_parse_list_field(k_vid.get('performers')))
     merge.merged_tags.update(_parse_list_field(k_vid.get('tags')))
@@ -335,7 +321,6 @@ def _finalize_keeper_row(conn, merge: _KeeperMerge, keeper: str, job_id, snapsho
         snapshot['keeper_after'] = {'video': keeper_after, 'overrides': keeper_after_overrides}
     for cat in merge.merged_cats:
         conn.execute('INSERT INTO video_categories (video_id, category) VALUES (%s, %s) ON CONFLICT DO NOTHING', (keeper, cat))
-    _refresh_keeper_nfo(conn, merge, keeper, media_dir, services, now)
 
 
 def _merge_keeper_metadata(conn, keeper, job_id, payload, snapshots, media_dir, services, now) -> None:
@@ -345,4 +330,4 @@ def _merge_keeper_metadata(conn, keeper, job_id, payload, snapshots, media_dir, 
     for snapshot in snapshots:
         _merge_loser(conn, merge, keeper, job_id, payload, snapshot, now)
     if merge.k_row:
-        _finalize_keeper_row(conn, merge, keeper, job_id, snapshots, media_dir, services, now)
+        _finalize_keeper_row(conn, merge, keeper, job_id, snapshots)

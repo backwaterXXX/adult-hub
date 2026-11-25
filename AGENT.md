@@ -1,6 +1,6 @@
 # Agent notes
 
-The core is Telegram-only: Telegram support, an HTTP resolver, and a shared PostgreSQL/NFO/STRM library.
+The core is Telegram-only: Telegram support, an HTTP resolver, and a shared PostgreSQL/STRM library.
 
 - `common/config_loader.py` is the only configuration loader. Both images install `common` into `site-packages`. Code that needs the raw base YAML (before managed overrides) calls `read_base_config()` from that module and must not open `config.yaml` itself.
 - `resolver/providers/__init__.py` registers Telegram only.

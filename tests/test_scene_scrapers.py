@@ -8,7 +8,6 @@ from unittest.mock import patch, MagicMock
 from pg_helper import PgTestCase
 
 
-import sync.nfo as nfo
 from sync.scene_scrapers import (
     ScrapedScene,
     backfill_scenes,
@@ -16,36 +15,6 @@ from sync.scene_scrapers import (
     _telegram_fingerprint_batch_limit,
     _telegram_oshash,
 )
-
-
-class TestNfoPlotAndPremiered(unittest.TestCase):
-    def test_nfo_custom_plot_and_premiered(self):
-        video = {
-            "provider": "telegram",
-            "provider_video_id": "-1001:42:100",
-            "title": "Summer Buddies",
-            "plot": "Official synopsis of the scene.",
-            "date_released": "2006-06-01",
-            "performers": ["Aiden Shaw"],
-            "studio": "Falcon Studios",
-        }
-        with tempfile.TemporaryDirectory() as d:
-            nfo_file = Path(d) / "test.nfo"
-            nfo.create_nfo_file(
-                video,
-                genres={"Anal"},
-                tags={"Falcon Studios"},
-                dest_path=nfo_file,
-                get_provider_info_fn=lambda p: {"name": "Telegram", "domain": "t.me", "base_url": "https://t.me"},
-                clean_display_title_fn=lambda t, **kw: t,
-                normalize_performers_fn=lambda p: p,
-                map_categories_fn=lambda c, **kw: c,
-            )
-            xml_text = nfo_file.read_text(encoding="utf-8")
-            self.assertIn("<plot>Official synopsis of the scene.</plot>", xml_text)
-            self.assertIn("<premiered>2006-06-01</premiered>", xml_text)
-            self.assertIn("<year>2006</year>", xml_text)
-            self.assertIn("<studio>Falcon Studios</studio>", xml_text)
 
 
 class TestOshashAlgorithm(unittest.TestCase):
@@ -132,28 +101,20 @@ class TestBackfillScenes(PgTestCase):
         self.assertEqual(tuple(proposal), ('pending', 1))
         self.assertEqual(self.conn.execute('SELECT plot FROM videos WHERE id=%s', (video_id,)).fetchone()[0], 'Old plot')
 
-    def test_pending_proposal_updates_every_registered_nfo_and_retries_missing(self):
+    def test_pending_proposal_applies_when_registered_media_exists(self):
         from common.metadata_review import store_metadata_review_proposal
         from sync.scene_scraper_backfill import apply_pending_fingerprint_proposals
         video_id = 'telegram:-1001:103:999'
         self.conn.execute("INSERT INTO videos (id,provider,title,plot,first_seen,last_seen,scene_match_source,scene_match_external_id) VALUES (%s,'telegram','Old','Old plot',1,1,'stashdb:title_exact','scene-1')", (video_id,))
         for name in ('first', 'second'):
             self.conn.execute('INSERT INTO synced_files (file_path,video_id) VALUES (%s,%s)', (name + '.strm', video_id))
-        (self.media_dir / 'first.nfo').write_text('<movie><plot>Old plot</plot></movie>')
         store_metadata_review_proposal(self.conn, video_id, {'plot': 'New plot'}, source='stashdb:title_exact', external_id='scene-1', source_url='', confidence=0.9)
         self.conn.commit()
-        self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (0, 0))
-        self.assertEqual(self.conn.execute('SELECT status FROM metadata_review_proposals WHERE video_id=%s', (video_id,)).fetchone()[0], 'pending')
-        (self.media_dir / 'second.nfo').write_text('<movie><plot>Old plot</plot></movie>')
-        self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (0, 0),
-                         'failed proposals wait until their retry time')
-        self.conn.execute("UPDATE metadata_review_proposals SET next_attempt_at=CURRENT_TIMESTAMP WHERE video_id=%s", (video_id,))
-        self.conn.commit()
         self.assertEqual(apply_pending_fingerprint_proposals(self.conn, self.media_dir), (1, 1))
-        for name in ('first', 'second'):
-            self.assertIn('<plot>New plot</plot>', (self.media_dir / (name + '.nfo')).read_text())
+        self.assertEqual(self.conn.execute('SELECT status FROM metadata_review_proposals WHERE video_id=%s', (video_id,)).fetchone()[0], 'accepted')
+        self.assertEqual(self.conn.execute('SELECT plot FROM videos WHERE id=%s', (video_id,)).fetchone()[0], 'New plot')
 
-    def test_backfill_scenes_enriches_db_and_nfo(self):
+    def test_backfill_scenes_enriches_db(self):
         vid_id = "telegram:-1001:42:999"
         self.conn.execute(
             """
@@ -170,13 +131,6 @@ class TestBackfillScenes(PgTestCase):
             ("Aiden Shaw", "bio", 100, "https://stashdb.org/performers/aiden", "https://pbc.xxx/wiki/Aiden_Shaw"),
         )
         self.conn.commit()
-
-        # Create initial dummy NFO
-        nfo_path = self.media_dir / "telegram [-1001_42_999-abcdef123456].nfo"
-        nfo_path.write_text(
-            "<movie><title>Summer Buddies</title><plot></plot><actor><name>Aiden Shaw</name><role>Performer</role></actor></movie>",
-            encoding="utf-8",
-        )
 
         mock_scene = ScrapedScene(
             title="Summer Buddies",
@@ -212,16 +166,6 @@ class TestBackfillScenes(PgTestCase):
         ).fetchone()
         self.assertIsNone(proposal)
 
-        # Check NFO update
-        updated_nfo = nfo_path.read_text(encoding="utf-8")
-        self.assertIn("<plot>Sweaty gym jocks action.</plot>", updated_nfo)
-        self.assertIn("<premiered>2006-06-01</premiered>", updated_nfo)
-        self.assertIn("<year>2006</year>", updated_nfo)
-        self.assertIn('<uniqueid type="stashdb" default="false">stash-uuid-12345</uniqueid>', updated_nfo)
-        self.assertIn("<website>https://stashdb.org/scenes/stash-uuid-12345</website>", updated_nfo)
-        self.assertIn("<profile>https://stashdb.org/performers/aiden</profile>", updated_nfo)
-        self.assertIn("<profile>https://pbc.xxx/wiki/Aiden_Shaw</profile>", updated_nfo)
-
     def test_telegram_fingerprint_match_fills_blanks_and_stages_existing_values(self):
         vid_id = "telegram:-1001234567890:42:999"
         other_id = "telegram:-1001234567890:43:998"
@@ -240,8 +184,6 @@ class TestBackfillScenes(PgTestCase):
             (other_id, "0123456789abcdef"),
         )
         self.conn.commit()
-        nfo_path = self.media_dir / "Example 42.nfo"
-        nfo_path.write_text("<movie><title>Example Scene #42</title><plot></plot></movie>", encoding="utf-8")
         scene = ScrapedScene(
             title="Scene from exact hash", plot="Scene description", date="2020-01-02",
             performers=["Performer One"], tags=["Drama"], studio="Known Studio",
@@ -260,9 +202,6 @@ class TestBackfillScenes(PgTestCase):
         self.assertEqual(json.loads(row[3]), ["Performer One"])
         self.assertEqual(json.loads(row[4]), ["Drama"])
         self.assertEqual(row[5], "Example Studio")
-        updated_nfo = nfo_path.read_text(encoding="utf-8")
-        self.assertIn("<title>Example Scene #42</title>", updated_nfo)
-        self.assertIn("<plot>Scene description</plot>", updated_nfo)
         proposal = self.conn.execute(
             "SELECT changes FROM metadata_review_proposals WHERE video_id=%s AND status='pending'", (vid_id,),
         ).fetchone()
@@ -283,7 +222,7 @@ class TestBackfillScenes(PgTestCase):
             "SELECT count(*) FROM video_duplicate_jobs WHERE action='hide'",
         ).fetchone()[0], 0)
 
-    def test_catalog_scene_match_replaces_provider_title_in_nfo(self):
+    def test_catalog_scene_match_replaces_provider_title(self):
         vid_id = "telegram:-1001234567890:42:999"
         self.conn.execute(
             """INSERT INTO videos (id,provider,title,duration,performers,studio,first_seen,last_seen)
@@ -293,10 +232,6 @@ class TestBackfillScenes(PgTestCase):
         self.conn.commit()
         self.conn.execute("INSERT INTO synced_files (file_path,video_id) VALUES (%s,%s)", ("Example 42.strm", vid_id))
         self.conn.commit()
-        nfo_path = self.media_dir / "Example 42.nfo"
-        nfo_path.write_text(
-            "<movie><title>Provider Caption #42</title><plot></plot></movie>", encoding="utf-8",
-        )
         scene = ScrapedScene(
             title="Catalog Scene Title", plot="Scene description", date="2020-01-02",
             performers=["Performer One"], tags=["Drama"], studio="Known Studio",
@@ -315,10 +250,6 @@ class TestBackfillScenes(PgTestCase):
         self.assertEqual(row[0], "Catalog Scene Title")
         self.assertEqual(row[1], "stashdb:phash")
         self.assertEqual(row[2], "stash-uuid-1")
-        # The locked NFO must carry the catalog title.
-        updated_nfo = nfo_path.read_text(encoding="utf-8")
-        self.assertIn("<title>Catalog Scene Title</title>", updated_nfo)
-        self.assertNotIn("<title>Provider Caption #42</title>", updated_nfo)
 
     def test_telegram_fingerprint_backfill_covers_all_channels(self):
         video_ids = [

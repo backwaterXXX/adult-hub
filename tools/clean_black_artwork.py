@@ -84,27 +84,6 @@ def purge_black_files(black_files: list[Path], execute: bool):
         print("[DRY RUN] Run with --execute to perform actual deletion.")
 
 
-def clean_nfo_thumbnail(nfo_path: Path) -> bool:
-    """Remove root-level <thumb> elements from NFO file, preserving actor thumbs."""
-    if not nfo_path.is_file():
-        return False
-    try:
-        import xml.etree.ElementTree as ET
-        tree = ET.parse(str(nfo_path))
-        root = tree.getroot()
-        changed = False
-        for child in list(root):
-            if child.tag == "thumb":
-                root.remove(child)
-                changed = True
-        if changed:
-            tree.write(str(nfo_path), encoding="utf-8", xml_declaration=True)
-            return True
-        return False
-    except Exception:
-        return False
-
-
 def _hash_valid_files(valid_files: list[Path]) -> dict[Path, str]:
     file_hashes: dict[Path, str] = {}
     start_time = time.time()
@@ -165,7 +144,6 @@ def _collect_cluster_stats(clusters: list, purge: bool) -> tuple[int, set[str], 
 def _purge_bumpers(to_purge: list[Path], execute: bool) -> None:
     print(f"\nAction: {'PURGING' if execute else 'DRY RUN - WOULD PURGE'} {len(to_purge)} bumper artwork files:")
     p_count = 0
-    nfo_count = 0
     marker_count = 0
     for p in to_purge:
         if execute:
@@ -176,9 +154,6 @@ def _purge_bumpers(to_purge: list[Path], execute: bool) -> None:
                 if fail_marker.exists():
                     fail_marker.unlink(missing_ok=True)
                     marker_count += 1
-                nfo_path = p.with_suffix(".nfo")
-                if clean_nfo_thumbnail(nfo_path):
-                    nfo_count += 1
             except Exception as e:
                 print(f"  Error deleting {p.name}: {e}", file=sys.stderr)
         else:
@@ -186,7 +161,7 @@ def _purge_bumpers(to_purge: list[Path], execute: bool) -> None:
                 print(f"  [DRY RUN] Would purge bumper: {p.name}")
             p_count += 1
     if execute:
-        print(f"Successfully purged {p_count} bumper files, cleaned {marker_count} .thumb_fail markers, updated {nfo_count} NFO files.")
+        print(f"Successfully purged {p_count} bumper files and cleaned {marker_count} .thumb_fail markers.")
     else:
         print("[DRY RUN] Run with --execute --purge-bumpers to perform actual deletion.")
 

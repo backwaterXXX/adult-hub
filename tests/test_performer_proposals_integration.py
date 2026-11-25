@@ -107,7 +107,7 @@ class TestPerformerProposalIntegration(PgTestCase):
             ("Mapped Legacy Person", "legacy", True),
             ("old stage name", "legacy", True),
         ])
-        self.assertEqual(wake, ["jobs"])
+        self.assertEqual(wake, [])
 
         bio_proposal_id = self.add_proposal("Bio Stage Name")
         self.conn.commit()
@@ -133,7 +133,7 @@ class TestPerformerProposalIntegration(PgTestCase):
             ("Bio Stage Name", "reviewed", True),
             ("Legacy Bio Person", "legacy", True),
         ])
-        self.assertEqual(wake, ["jobs", "jobs"])
+        self.assertEqual(wake, [])
 
     def test_fuzzy_scan_reads_jsonb_performers_and_finds_diacritic_variants(self):
         self.conn.execute(
@@ -153,7 +153,7 @@ class TestPerformerProposalIntegration(PgTestCase):
         self.assertEqual(group["canonical_video_count"], 1)
         self.assertEqual(sum(variant["video_count"] for variant in group["variants"]), 1)
 
-    def test_fuzzy_merge_preview_execute_and_worker_update_jsonb_and_nfo(self):
+    def test_fuzzy_merge_preview_execute_and_worker_update_jsonb(self):
         self.conn.execute(
             "INSERT INTO videos(id,provider,title,performers,categories,tags) "
             "VALUES (%s,'telegram',%s,%s,%s,%s),(%s,'telegram',%s,%s,%s,%s)",
@@ -180,8 +180,6 @@ class TestPerformerProposalIntegration(PgTestCase):
                  patch("common.fuzzy_performers.make_backup",
                        return_value=root / "pre-merge.dump.gz"):
                 self.assertEqual(sync.process_video_duplicate_jobs(self.conn, media), 1)
-            self.assertTrue((media / f"{sync.stable_media_basename('telegram:merge-alias')}.nfo").is_file())
-            self.assertTrue((media / f"{sync.stable_media_basename('telegram:merge-canonical')}.nfo").is_file())
 
         names = self.conn.execute(
             "SELECT performers FROM videos WHERE id IN (%s,%s) ORDER BY id",
@@ -198,9 +196,8 @@ class TestPerformerProposalIntegration(PgTestCase):
         if isinstance(merge_result, str):
             merge_result = json.loads(merge_result)
         self.assertEqual(merge_result["videos_updated"], 1)
-        self.assertEqual(merge_result["nfos_updated"], 2)
 
-    def test_approval_commits_catalog_change_and_real_refresh_job(self):
+    def test_approval_commits_catalog_change(self):
         proposal_id = self.add_proposal("Alias Name")
         self.conn.commit()
         wake = []
@@ -210,9 +207,8 @@ class TestPerformerProposalIntegration(PgTestCase):
             wake_worker=wake.append,
         )
 
-        self.assertEqual(result["status"], "approved")
-        self.assertTrue(result["refresh_pending"])
-        self.assertEqual(wake, ["jobs"])
+        self.assertEqual(result, {"ok": True, "status": "approved", "performer": "Canonical Name"})
+        self.assertEqual(wake, [])
         proposal = self.conn.execute(
             "SELECT status,performer_id FROM telegram_performer_proposals WHERE id=%s", (proposal_id,)
         ).fetchone()
@@ -226,39 +222,13 @@ class TestPerformerProposalIntegration(PgTestCase):
         self.assertEqual(self.conn.execute(
             "SELECT canonical FROM performer_aliases WHERE alias='alias name'"
         ).fetchone()[0], "Canonical Name")
-        job = read_job(self.db_url, result["refresh_job_id"])
-        payload = job["payload"]
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        self.assertEqual((job["action"], job["state"], payload),
-                         ("performer_refresh", "queued", {"video_ids": ["telegram:proposal-1"]}))
-        self.conn.execute("UPDATE video_duplicate_jobs SET state='processing' WHERE id=%s",
-                          (result["refresh_job_id"],))
-        self.conn.commit()
-
-        with tempfile.TemporaryDirectory(prefix="performer-proposal-refresh-") as directory:
-            root = Path(directory)
-            media = root / "library"
-            media.mkdir()
-            with patch.object(sync, "DATA_DIR", root / "data"), \
-                 patch.object(sync, "create_nfo_file") as create_nfo:
-                self.assertEqual(sync.process_video_duplicate_jobs(self.conn, media), 1)
-            create_nfo.assert_called_once()
-            self.assertEqual(create_nfo.call_args.args[0]["performers"], ["Canonical Name", "Other Name"])
-        finished_job = read_job(self.db_url, result["refresh_job_id"])
-        self.assertEqual(finished_job["state"], "done")
-        finished_result = finished_job["result"]
-        if isinstance(finished_result, str):
-            finished_result = json.loads(finished_result)
-        self.assertEqual(finished_result["videos_refreshed"], 1)
-
         with self.assertRaises(performer_proposals.ProposalError) as repeated:
             performer_proposals.review_proposal(
                 self.db_url, proposal_id, {"action": "approve", "performer_id": "p1"},
                 wake_worker=wake.append,
             )
         self.assertEqual(repeated.exception.status_code, 404)
-        self.assertEqual(wake, ["jobs"])
+        self.assertEqual(wake, [])
 
     def test_approval_can_create_a_local_performer_without_catalog_selection(self):
         proposal_id = self.add_proposal("New Local Performer")
@@ -272,9 +242,8 @@ class TestPerformerProposalIntegration(PgTestCase):
         )
 
         self.assertEqual(result["status"], "approved")
-        self.assertEqual((result["performer"], result["refresh_pending"]),
-                         ("New Local Performer", True))
-        self.assertEqual(wake, ["jobs"])
+        self.assertEqual(result["performer"], "New Local Performer")
+        self.assertEqual(wake, [])
         performer_id = self.conn.execute(
             "SELECT performer_id FROM telegram_performer_proposals WHERE id=%s",
             (proposal_id,),
@@ -292,9 +261,6 @@ class TestPerformerProposalIntegration(PgTestCase):
         self.assertEqual(json.loads(self.conn.execute(
             "SELECT performers FROM videos WHERE id='telegram:proposal-1'"
         ).fetchone()[0]), ["Alias Name", "Other Name", "New Local Performer"])
-        refresh_job = read_job(self.db_url, result["refresh_job_id"])
-        self.assertEqual((refresh_job["action"], refresh_job["state"]),
-                         ("performer_refresh", "queued"))
 
     def test_reject_and_manual_override_conflict_are_durable_and_safe(self):
         rejected_id = self.add_proposal("Rejected Alias")
@@ -350,7 +316,7 @@ class TestPerformerProposalIntegration(PgTestCase):
             "SELECT performers FROM videos WHERE id='telegram:proposal-1'"
         ).fetchone()[0]), ["Alias Name", "Other Name"])
 
-    def test_concurrent_reviews_apply_only_one_decision_and_at_most_one_refresh_job(self):
+    def test_concurrent_reviews_apply_only_one_decision_without_queueing(self):
         proposal_id = self.add_proposal("Race Alias")
         self.conn.commit()
         barrier = __import__("threading").Barrier(2)
@@ -374,32 +340,34 @@ class TestPerformerProposalIntegration(PgTestCase):
         status = self.conn.execute(
             "SELECT status FROM telegram_performer_proposals WHERE id=%s", (proposal_id,)
         ).fetchone()[0]
-        queued_refreshes = self.conn.execute(
-            "SELECT count(*) FROM video_duplicate_jobs WHERE action='performer_refresh'"
-        ).fetchone()[0]
+        queued_jobs = self.conn.execute("SELECT count(*) FROM video_duplicate_jobs").fetchone()[0]
         self.assertIn(status, {"approved", "rejected"})
-        self.assertEqual(queued_refreshes, 1 if status == "approved" else 0)
+        self.assertEqual(queued_jobs, 0)
 
 
-    def test_group_review_and_reconciliation_expose_refresh_task_references(self):
+    def test_group_review_and_reconciliation_apply_catalog_changes(self):
         self.add_proposal("Alias Name")
         self.conn.commit()
         grouped = performer_proposals.review_proposal_group(
             self.db_url, "aliasname", "possible_typo", {"action": "approve", "performer_id": "p1"},
             wake_worker=lambda *_: None,
         )
-        self.assertEqual(grouped["reviewed"], 1)
-        self.assertEqual(len(grouped["refresh_job_ids"]), 1)
-        self.assertEqual(read_job(self.db_url, grouped["refresh_job_ids"][0])["action"], "performer_refresh")
+        self.assertEqual(grouped, {"ok": True, "reviewed": 1, "limit": 100})
         self.conn.execute("INSERT INTO videos(id,provider,title,performers,source_text) VALUES ('telegram:proposal-2','telegram','Reconcile fixture','[]','Cast: Rowan Example')")
         proposal_id = self.add_proposal("Rowan Example", video_id="telegram:proposal-2")
         self.conn.execute("UPDATE telegram_performer_proposals SET reason='uncatalogued_credit' WHERE id=%s", (proposal_id,))
         self.conn.commit()
         reconciled = performer_proposals.reconcile_clear_matches(self.db_url, wake_worker=lambda *_: None)
-        self.assertEqual(reconciled["resolved"], 1)
-        self.assertTrue(reconciled["refresh_job_ids"])
-        for job_id in reconciled["refresh_job_ids"]:
-            self.assertEqual(read_job(self.db_url, job_id)["state"], "queued")
+        self.assertEqual((reconciled["processed"], reconciled["resolved"]), (1, 1))
+        self.assertEqual(
+            json.loads(self.conn.execute(
+                "SELECT performers FROM videos WHERE id='telegram:proposal-2'",
+            ).fetchone()[0]),
+            ["Rowan Example"],
+        )
+        self.assertEqual(self.conn.execute(
+            "SELECT status FROM telegram_performer_proposals WHERE id=%s", (proposal_id,),
+        ).fetchone()[0], "approved")
 
 
 if __name__ == "__main__":

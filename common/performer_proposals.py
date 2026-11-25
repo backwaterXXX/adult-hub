@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import json
-import logging
 import uuid
 from typing import Callable
 
 from common import db
-
-logger = logging.getLogger(__name__)
 
 
 class ProposalError(Exception):
@@ -88,14 +85,10 @@ def review_proposal_group(db_url: str | None, key: str, reason: str, body: dict,
         performer_id = _ensure_group_canonical_performer(db_url, canonical)
         decision = {"action": "approve", "performer_id": performer_id}
     reviewed = 0
-    refresh_job_ids = []
     for proposal_id in ids:
-        result = review_proposal(db_url, proposal_id, decision, wake_worker=wake_worker)
-        if result.get("refresh_job_id"):
-            refresh_job_ids.append(result["refresh_job_id"])
+        review_proposal(db_url, proposal_id, decision, wake_worker=wake_worker)
         reviewed += 1
-    return {"ok": True, "reviewed": reviewed, "limit": 100,
-            "refresh_job_ids": list(dict.fromkeys(refresh_job_ids))}
+    return {"ok": True, "reviewed": reviewed, "limit": 100}
 
 
 def _validate_group_request(key: str, reason: str, body: dict):
@@ -169,7 +162,6 @@ def reconcile_clear_matches(db_url: str | None, after_id: int = 0, limit: int = 
     safe_after = max(0, min(int(after_id), 2_147_483_647))
     safe_limit = max(1, min(int(limit), 1000))
     conn = db.connect(db_url)
-    refreshed = []
     try:
         records = load_catalog(conn)
         prepared = prepare_catalog(records)
@@ -206,15 +198,12 @@ def reconcile_clear_matches(db_url: str | None, after_id: int = 0, limit: int = 
             approved.append((int(proposal_id), str(selected["id"])))
 
         with conn:
-            resolved = _persist_clear_matches(conn, auto_created, video_updates, refreshed)
+            resolved = _persist_clear_matches(conn, auto_created, video_updates)
         cursor = int(rows[-1][0])
         has_more = len(rows) == safe_limit
     finally:
         conn.close()
-    refresh_queued, refresh_job_ids, refresh_error = _enqueue_clear_match_refresh(db_url, refreshed, wake_worker)
-    return {"processed": len(rows), "resolved": resolved, "after_id": cursor, "has_more": has_more,
-            "refresh_queued": refresh_queued, "refresh_error": refresh_error,
-            "refresh_job_ids": list(dict.fromkeys(refresh_job_ids))}
+    return {"processed": len(rows), "resolved": resolved, "after_id": cursor, "has_more": has_more}
 
 
 def _select_clear_match(
@@ -290,7 +279,7 @@ def _select_uncatalogued_credit_record(key: str, source_text, aliases: dict, aut
     return None
 
 
-def _persist_clear_matches(conn, auto_created: dict, video_updates: dict, refreshed: list) -> int:
+def _persist_clear_matches(conn, auto_created: dict, video_updates: dict) -> int:
     """Write new local performers, updated video lists and approved proposals; return how many proposals changed."""
     from common.performer_catalog import normalize_name
 
@@ -317,26 +306,7 @@ def _persist_clear_matches(conn, auto_created: dict, video_updates: dict, refres
                 "WHERE id=%s AND status='pending'", (performer_id, proposal_id),
             ).rowcount
             resolved += changed
-        if approvals:
-            refreshed.append(video_id)
     return resolved
-
-
-def _enqueue_clear_match_refresh(db_url: str | None, refreshed: list, wake_worker: Callable[[str], None]) -> tuple[int, list, bool]:
-    """Queue performer refresh jobs for the videos that changed; return (queued, job ids, error flag)."""
-    refresh_queued = 0
-    refresh_job_ids = []
-    refresh_error = False
-    if refreshed:
-        try:
-            from resolver.video_duplicates import enqueue_job
-            for offset in range(0, len(refreshed), 50):
-                refresh_job_ids.append(enqueue_job(db_url, "performer_refresh", {"video_ids": refreshed[offset:offset + 50]}))
-                refresh_queued += min(50, len(refreshed) - offset)
-            wake_worker("jobs")
-        except Exception:
-            refresh_error = True
-    return refresh_queued, refresh_job_ids, refresh_error
 
 
 def search_catalog(db_url: str | None, query: str = "", limit: int = 100) -> dict:
@@ -380,7 +350,7 @@ def review_proposal(
     *,
     wake_worker: Callable[[str], None],
 ) -> dict:
-    """Apply one reviewed proposal, then request refresh metadata asynchronously."""
+    """Apply one reviewed proposal and its catalog metadata changes."""
     action = body.get("action")
     performer_id = body.get("performer_id")
     if action not in {"approve", "reject"}:
@@ -408,9 +378,7 @@ def review_proposal(
                 UPDATE telegram_performer_proposals SET status='approved',performer_id=%s WHERE id=%s
             """, (performer_id, proposal_id))
 
-        refresh_job_id = _enqueue_proposal_refresh(db_url, video_id, wake_worker)
-        return {"ok": True, "status": "approved", "performer": canonical,
-                "refresh_job_id": refresh_job_id, "refresh_pending": bool(refresh_job_id)}
+        return {"ok": True, "status": "approved", "performer": canonical}
     finally:
         conn.close()
 
@@ -535,17 +503,3 @@ def _apply_approved_video_performers(conn, video_id, alias: str, canonical: str)
         revised.append(canonical)
     if revised != names:
         conn.execute("UPDATE videos SET performers=%s WHERE id=%s", (json.dumps(revised, ensure_ascii=False), video_id))
-
-
-def _enqueue_proposal_refresh(db_url: str | None, video_id, wake_worker: Callable[[str], None]):
-    """Queue a best-effort performer refresh for the video; return the job id or None."""
-    refresh_job_id = None
-    try:
-        from resolver.video_duplicates import enqueue_job
-        refresh_job_id = enqueue_job(db_url, "performer_refresh", {"video_ids": [video_id]})
-        wake_worker("jobs")
-    except Exception:
-        logger.debug("Ignored exception in review_proposal", exc_info=True)
-        # The reviewed catalog change is committed; refresh is best-effort
-        # and its absence is reported explicitly for later recovery.
-    return refresh_job_id

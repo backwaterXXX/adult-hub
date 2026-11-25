@@ -32,7 +32,7 @@ def _quarantine_files(conn, video_id: str, media_dir: Path, quarantine_dir: Path
                 stream.relative_to(media_dir.resolve())
             except (ValueError, OSError, TypeError):
                 continue
-            for suffix in (".strm", ".nfo", ".jpg", ".thumb_fail"):
+            for suffix in (".strm", ".jpg", ".thumb_fail"):
                 source = stream.with_suffix(suffix)
                 if not source.is_file():
                     continue

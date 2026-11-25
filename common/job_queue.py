@@ -27,9 +27,9 @@ from common.queue_primitives import (
 
 # Actions the generic jobs-only worker can execute while holding its lock.
 WORKER_ACTIONS = (
-    "hide", "dismiss", "undo", "undismiss", "performer_merge", "performer_refresh",
+    "hide", "dismiss", "undo", "undismiss", "performer_merge",
     "quarantine", "metadata_update", "availability_check",
-    "consistency_audit", "metadata_quality_audit", "catalog_full_audit", "audit_repair_nfo", "orphan_file_operation",
+    "consistency_audit", "metadata_quality_audit", "catalog_full_audit", "audit_repair_files", "orphan_file_operation",
     "backup_create", "backup_restore_test", "metadata_backfill", "telegram_fingerprint_scan", "artwork_download", "artwork_generate", "duplicate_reconcile",
     # One-off triggers for the dependent stages listed in the Schedules UI.
     "history_cleanup", "performer_catalog", "fansdb_performer_catalog", "scene_backfill", "telegram_title_cleanup",
@@ -170,7 +170,7 @@ def _mark_metadata_resume(payload: dict, result: dict) -> None:
     # Keep only markers that prove a local stage already completed. The
     # worker still rechecks source fingerprint and override revision.
     resume = payload.get("_resume") if isinstance(payload.get("_resume"), dict) else {}
-    for key in ("metadata_revision", "nfo_source_fingerprint", "nfo_written", "local_state"):
+    for key in ("metadata_revision", "local_state"):
         if key in result:
             resume[key] = result[key]
     if resume:

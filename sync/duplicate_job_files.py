@@ -13,7 +13,7 @@ def _append_sidecar_moves(services, relative: str, media_dir, op_dir, file_snaps
     if stream.is_symlink() or not stream.resolve().is_relative_to(media_dir.resolve()):
         raise ValueError('Unsafe library path detected.')
     rel = stream.relative_to(media_dir.resolve())
-    for suffix in ('.strm', '.nfo', '.jpg', '.thumb_fail'):
+    for suffix in ('.strm', '.jpg', '.thumb_fail'):
         src = stream.with_suffix(suffix)
         dst = op_dir / 'files' / rel.parent / (rel.stem + suffix)
         if src.is_symlink():

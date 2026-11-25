@@ -142,10 +142,6 @@ def _cleanup_summary(cleanup: dict, library_sync_running: bool) -> dict:
             f"{int(cleanup.get('tags_added') or 0)} tags added; "
             f"{int(cleanup.get('categories_added') or 0)} categories added"
         )
-    if cleanup.get("nfos_missing"):
-        progress.append(f"{int(cleanup['nfos_missing'])} NFO files were missing")
-    if cleanup.get("nfos_failed"):
-        progress.append(f"{int(cleanup['nfos_failed'])} NFO files could not be updated")
     if status == "pending":
         progress.append("It resumes with the next library sync")
     progress_details = ". ".join(progress)
@@ -193,10 +189,7 @@ def _dependent_row(stage, cleanup: dict, summary: dict) -> dict:
         row["last_result"] = summary["result"] or None
         row["last_run_at"] = cleanup.get("last_run_at")
     row["error"] = stage["last_error"] or summary["error"]
-    row["problem"] = bool(
-        row["problem"] or summary["failed"]
-        or int(cleanup.get("nfos_failed") or 0) > 0
-    )
+    row["problem"] = bool(row["problem"] or summary["failed"])
     return row
 
 

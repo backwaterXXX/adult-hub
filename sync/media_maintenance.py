@@ -93,7 +93,7 @@ def _owned_legacy_files(streams: list[Path]) -> set[Path]:
                 or not route.endswith("/stream"):
             return set()
         owned_files.add(stream)
-        for suffix in (".nfo", ".jpg", ".thumb_fail"):
+        for suffix in (".jpg", ".thumb_fail"):
             sidecar = stream.with_suffix(suffix)
             if sidecar.exists():
                 owned_files.add(sidecar)

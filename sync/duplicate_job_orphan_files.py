@@ -103,7 +103,7 @@ def _journal_paths(item: dict, media_root: Path, quarantine_root: Path) -> tuple
     qrel = Path(str(item.get("quarantine_path") or ""))
     if (rel.is_absolute() or qrel.is_absolute() or ".." in rel.parts or ".." in qrel.parts
             or "\\" in str(item.get("path") or "") or "\\" in str(item.get("quarantine_path") or "")
-            or rel.suffix.lower() not in {".strm", ".nfo", ".jpg"}):
+            or rel.suffix.lower() not in {".strm", ".jpg"}):
         raise ValueError("Unsafe path in orphan file operation journal.")
     original = media_root.joinpath(*rel.parts)
     quarantined = quarantine_root.joinpath(*qrel.parts)
