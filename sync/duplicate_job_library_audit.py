@@ -11,6 +11,12 @@ from psycopg.types.json import Jsonb
 from sync import duplicate_jobs as _core
 
 
+def _prune_superseded_findings(conn) -> int:
+    """Drop findings of audit passes the quality centre no longer reads."""
+    from common.audit_finding_retention import prune_superseded_findings
+    return prune_superseded_findings(conn)
+
+
 def _parse_stored_overrides(overrides) -> dict:
     if isinstance(overrides, str):
         try:
@@ -78,9 +84,11 @@ def _metadata_quality_audit(conn, job_id: str, payload: dict | None = None) -> d
             "AND current.video_id=old.video_id AND current.kind='missing_metadata' AND current.status='open')",
             (job_id, job_id),
         )
+    pruned = _prune_superseded_findings(conn)
     payload = payload if isinstance(payload, dict) else {}
     result = {"local_state": "metadata_quality_audit_completed", "audit_mode": "metadata_quality",
-              "checked": total, "total": total, "findings": findings}
+              "checked": total, "total": total, "findings": findings,
+              "findings_pruned": pruned}
     if isinstance(payload.get("audit_batch_id"), str):
         result["audit_batch_id"] = payload["audit_batch_id"]
     return result
@@ -238,11 +246,14 @@ def _consistency_audit(conn, job_id: str, media_dir: Path, services, payload: di
     _store_orphan_findings(ctx, orphan_families)
     if not inventory_complete:
         services.logger.warning("Consistency audit inventory is partial (entry/depth limit or filesystem access)")
+    pruned = 0
     if inventory_complete:
         _resolve_stale_quality_findings(ctx)
+        pruned = _prune_superseded_findings(conn)
     result = {"local_state": "audit_completed", "checked": ctx.checked, "total": len(rows),
               "audit_mode": mode,
               "findings": ctx.findings,
+              "findings_pruned": pruned,
               "library_inventory_status": "complete" if inventory_complete else "partial",
               "library_inventory_entries": inventory_entries}
     if isinstance(payload.get("audit_batch_id"), str):

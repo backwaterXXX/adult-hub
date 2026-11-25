@@ -447,6 +447,7 @@ class TestMigrationsEngine(PgTestCase):
             (73, "0073_performer_catalog_image"),
             (74, "0074_drop_jellyfin_person_sync"),
             (75, "0075_drop_nfo_audit_kinds"),
+            (76, "0076_prune_superseded_audit_findings"),
         ])
 
     def test_interim_v9_baseline_is_renumbered_to_v1(self):
