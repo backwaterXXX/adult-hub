@@ -57,6 +57,61 @@ def _message_cache_size_bytes(message: Any) -> int:
 
 _CLIENT_STABLE_IDS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
+# A cold client cannot resolve a numeric channel ref until it has seen the account's
+# dialogs: Telethon only knows the channel's access hash from the session entity cache.
+# Warm that cache once per client (with a cooldown) instead of failing the first stream
+# after every resolver restart.
+_DIALOG_WARMUP_LIMIT = 100
+_DIALOG_WARMUP_COOLDOWN = 300.0
+_DIALOG_WARMED: Dict[str, float] = {}
+
+_UNKNOWN_ENTITY_MARKER = "Could not find the input entity"
+
+
+def _is_unknown_entity_error(exc: BaseException) -> bool:
+    return _UNKNOWN_ENTITY_MARKER in str(exc or "")
+
+
+async def _warm_dialog_entities(client, client_key: str) -> None:
+    """Fill the client's entity cache once so numeric channel refs resolve."""
+    last = _DIALOG_WARMED.get(client_key)
+    now = time.monotonic()
+    if last is not None and now - last < _DIALOG_WARMUP_COOLDOWN:
+        return
+    _DIALOG_WARMED[client_key] = now
+    try:
+        await asyncio.wait_for(
+            client.get_dialogs(limit=_DIALOG_WARMUP_LIMIT),
+            timeout=get_telegram_metadata_timeout(),
+        )
+    except Exception:
+        logger.debug("Telegram dialog warm-up failed for %s", client_key, exc_info=True)
+
+
+async def _resolve_channel_entity(client, channel_ref: str, client_key: str):
+    """Resolve a channel ref, warming the dialog cache when the client is cold."""
+    ref = _entity_ref(channel_ref)
+    try:
+        return await asyncio.wait_for(
+            client.get_entity(ref), timeout=get_telegram_metadata_timeout(),
+        )
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        logger.warning("Telegram get_entity timeout for %s", channel_ref)
+        # None means "message does not exist" to callers, so a timeout must surface as an error.
+        raise TimeoutError("Telegram get_entity timed out") from exc
+    except ValueError as exc:
+        if not _is_unknown_entity_error(exc):
+            raise
+        logger.info("Telegram channel %s is not cached yet; warming dialogs once", channel_ref)
+        await _warm_dialog_entities(client, client_key)
+        try:
+            return await asyncio.wait_for(
+                client.get_entity(ref), timeout=get_telegram_metadata_timeout(),
+            )
+        except (asyncio.TimeoutError, TimeoutError) as retry_exc:
+            logger.warning("Telegram get_entity timeout for %s", channel_ref)
+            raise TimeoutError("Telegram get_entity timed out") from retry_exc
+
 
 def _client_session_key(client: Any, account_id: Optional[str] = None) -> str:
     """Derive a stable account/session-isolated cache prefix."""
@@ -123,19 +178,11 @@ async def _get_cached_message(  # noqa: C901
     if cached_ent and (now - cached_ent[0]) < _ENTITY_CACHE_TTL:
         entity = cached_ent[1]
     else:
-        try:
-            entity = await asyncio.wait_for(
-                client.get_entity(_entity_ref(channel_ref)),
-                timeout=get_telegram_metadata_timeout(),
-            )
-            if entity:
-                _ENTITY_CACHE[ent_key] = (now, entity)
-                if len(_ENTITY_CACHE) > 500:
-                    _ENTITY_CACHE.pop(next(iter(_ENTITY_CACHE)), None)
-        except (asyncio.TimeoutError, TimeoutError) as exc:
-            logger.warning("Telegram get_entity timeout for %s", channel_ref)
-            # None means "message does not exist" to callers, so a timeout must surface as an error.
-            raise TimeoutError("Telegram get_entity timed out") from exc
+        entity = await _resolve_channel_entity(client, channel_ref, client_key)
+        if entity:
+            _ENTITY_CACHE[ent_key] = (now, entity)
+            if len(_ENTITY_CACHE) > 500:
+                _ENTITY_CACHE.pop(next(iter(_ENTITY_CACHE)), None)
 
     try:
         message = await asyncio.wait_for(
