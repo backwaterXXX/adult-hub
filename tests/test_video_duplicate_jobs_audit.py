@@ -1,5 +1,6 @@
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -504,7 +505,17 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
 
 
     def test_live_inventory_bound_covers_current_library_headroom(self):
-        self.assertGreaterEqual(duplicate_jobs._AUDIT_INVENTORY_MAX_ENTRIES, 100000)
+        """The walk must finish on the real library, or every audit stays partial."""
+
+        self.assertGreaterEqual(duplicate_jobs._AUDIT_INVENTORY_MAX_ENTRIES, 250000)
+
+    def test_the_inventory_bound_can_be_raised_from_the_environment(self):
+        with patch.dict(os.environ, {"AUDIT_INVENTORY_MAX_ENTRIES": "400000"}):
+            self.assertEqual(duplicate_jobs._audit_entry_limit(), 400000)
+        with patch.dict(os.environ, {"AUDIT_INVENTORY_MAX_ENTRIES": "nonsense"}):
+            self.assertEqual(duplicate_jobs._audit_entry_limit(), 250000)
+        with patch.dict(os.environ, {"AUDIT_INVENTORY_MAX_ENTRIES": "0"}):
+            self.assertEqual(duplicate_jobs._audit_entry_limit(), 250000)
 
 
     def test_consistency_audit_reports_invalid_and_stale_nfo_without_exposing_contents(self):

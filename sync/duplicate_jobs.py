@@ -22,7 +22,25 @@ _LONG_RUNNING_WORKER_ACTIONS = frozenset({
     "filesize_backfill", "dead_stream_quarantine",
 })
 
-_AUDIT_INVENTORY_MAX_ENTRIES = 100000
+def _audit_entry_limit() -> int:
+    """Return the inventory walk bound, overridable for unusually large libraries.
+
+    The walk is a runaway guard, not a sampling policy: when it trips, the audit
+    reports itself as partial and stale findings are never resolved. It has to
+    stay above the live file count (about 110k today).
+    """
+    raw = os.getenv("AUDIT_INVENTORY_MAX_ENTRIES", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+    return 250000
+
+
+_AUDIT_INVENTORY_MAX_ENTRIES = _audit_entry_limit()
 _AUDIT_INVENTORY_MAX_DEPTH = 12
 
 
