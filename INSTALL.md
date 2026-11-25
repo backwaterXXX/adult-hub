@@ -78,7 +78,7 @@ The standalone release bundle is the fastest and cleanest installation method fo
 
 ### Overview and Bundle Contents
 
-The downloadable archive (`adult-hub-standalone-v0.4.15.tar.gz` or `.zip`) contains everything needed to operate the stack:
+The downloadable archive (`adult-hub-standalone-v0.5.0.tar.gz` or `.zip`) contains everything needed to operate the stack:
 
 ```
 adult-hub/
@@ -631,7 +631,7 @@ curl -i https://hub.example.com/api/v1/version
 Expected response: HTTP `200 OK` JSON with `api_version`, `server_version`, and `capabilities`:
 
 ```json
-{"api_version":"1.0.0","server_version":"0.4.15","capabilities":{"auth":true,"catalog":true,"channels":true,"playback":true,"user":true}}
+{"api_version":"1.0.0","server_version":"0.5.0","capabilities":{"auth":true,"catalog":true,"channels":true,"playback":true,"user":true}}
 ```
 
 ### Example Caddy Configuration

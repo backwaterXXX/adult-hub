@@ -26,7 +26,7 @@ services:
       start_period: 10s
 
   migration:
-    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:0.4.15}
+    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:0.5.0}
     restart: "no"
     command:
       - python
@@ -45,7 +45,7 @@ services:
       - ${CONFIG_PATH:-./config.yaml}:/config/config.yaml:ro
 
   resolver:
-    image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:0.4.15}
+    image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:0.5.0}
     restart: unless-stopped
     ports:
       - "${RESOLVER_BIND_IP:-127.0.0.1}:${RESOLVER_PORT:-8090}:8090"
@@ -69,7 +69,7 @@ services:
     environment:
       - TZ=${TZ:-Europe/Warsaw}
       - PYTHONUNBUFFERED=1
-      - APP_VERSION=${APP_VERSION:-0.4.15}
+      - APP_VERSION=${APP_VERSION:-0.5.0}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - ADMIN_V2_MONITOR_BACKUPS=${ADMIN_V2_MONITOR_BACKUPS:-false}
       - RESOLVER_WATCHDOG_INTERVAL_SECONDS=${RESOLVER_WATCHDOG_INTERVAL_SECONDS:-10}
@@ -126,7 +126,7 @@ services:
       - PHASH_SERVER_IDLE_BYTES_PER_SECOND=${PHASH_SERVER_IDLE_BYTES_PER_SECOND:-10000000}
 
   sync:
-    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:0.4.15}
+    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:0.5.0}
     restart: unless-stopped
     stop_grace_period: 4m
     mem_limit: 1g
@@ -163,7 +163,7 @@ services:
     environment:
       - TZ=${TZ:-Europe/Warsaw}
       - PYTHONUNBUFFERED=1
-      - APP_VERSION=${APP_VERSION:-0.4.15}
+      - APP_VERSION=${APP_VERSION:-0.5.0}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
       - ADMIN_SOURCE_OVERRIDES_PATH=${ADMIN_SOURCE_OVERRIDES_PATH:-/data/admin-source-overrides.json}
@@ -207,7 +207,7 @@ services:
       - TELEGRAM_PHASH_TIMEOUT_SECONDS=${TELEGRAM_PHASH_TIMEOUT_SECONDS:-1200}
 
   telegram-auth:
-    image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:0.4.15}
+    image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:0.5.0}
     profiles: ["tools"]
     restart: "no"
     stdin_open: true
