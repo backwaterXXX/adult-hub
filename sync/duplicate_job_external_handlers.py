@@ -437,8 +437,12 @@ def _action_history_cleanup(conn, job_id, payload, media_dir, services):
     # retired client-auth rows are ever cleaned. Prune served rate-limit windows,
     # expired pairing sessions and revoked sessions here or those tables grow with
     # every pairing attempt and session refresh, forever.
+    from common import db
     from common.client_auth.service import prune_retired_auth_data
-    auth_counts = prune_retired_auth_data(conn)
+    # An old schema without the client-auth tables must not fail the whole
+    # cleanup: the history prune above already did its work.
+    auth_counts = (prune_retired_auth_data(conn)
+                   if "client_auth_rate_limits" in db.table_names(conn) else {})
     return {"history_rows_removed": counts, "auth_rows_removed": auth_counts,
             "local_state": "history_cleanup_completed"}, False
 

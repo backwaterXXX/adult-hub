@@ -15,6 +15,7 @@ class HistoryCleanupActionTest(unittest.TestCase):
                        "pruned_sessions": 1}
         with mock.patch.object(handlers._core, "_record_job_progress") as progress, \
              mock.patch("common.history_retention.prune_history", return_value=history_counts) as prune_history, \
+             mock.patch("common.db.table_names", return_value=["client_auth_rate_limits"]), \
              mock.patch("common.client_auth.service.prune_retired_auth_data",
                         return_value=auth_counts) as prune_auth:
             result, _wake = handlers._action_history_cleanup(
@@ -27,16 +28,17 @@ class HistoryCleanupActionTest(unittest.TestCase):
         self.assertEqual(result["auth_rows_removed"], auth_counts)
         self.assertEqual(result["local_state"], "history_cleanup_completed")
 
-    def test_auth_pruning_failure_does_not_hide_the_history_result(self):
-        backing = mock.Mock(rowcount=0)
+    def test_a_schema_without_auth_tables_still_completes_the_cleanup(self):
         conn = mock.Mock()
-        conn.execute.return_value = backing
         with mock.patch.object(handlers._core, "_record_job_progress"), \
-             mock.patch("common.history_retention.prune_history", return_value={"history_rows": 0}), \
-             mock.patch("common.client_auth.service.prune_retired_auth_data",
-                        side_effect=RuntimeError("auth tables missing")):
-            with self.assertRaises(RuntimeError):
-                handlers._action_history_cleanup(conn, "job-2", {}, None, None)
+             mock.patch("common.history_retention.prune_history", return_value={"history_rows": 3}), \
+             mock.patch("common.db.table_names", return_value=["videos"]), \
+             mock.patch("common.client_auth.service.prune_retired_auth_data") as prune_auth:
+            result, _wake = handlers._action_history_cleanup(conn, "job-2", {}, None, None)
+
+        prune_auth.assert_not_called()
+        self.assertEqual(result["auth_rows_removed"], {})
+        self.assertEqual(result["history_rows_removed"], {"history_rows": 3})
 
 
 if __name__ == "__main__":
