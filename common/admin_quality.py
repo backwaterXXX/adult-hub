@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 
 from common import db
 from common.admin_v2_quality import QUALITY_FIELDS, QUALITY_KINDS
@@ -165,11 +164,6 @@ def _fingerprint_coverage(conn):
     return {"available": True, "total_videos": total,
             "oshash": int(row[0] or 0), "phash": int(row[1] or 0)}
 
-
-def _safe_value(value):
-    text = re.sub(r"https?://\S+", "[link]", str(value or ""), flags=re.IGNORECASE)
-    text = "".join(char for char in text if char >= " " or char in "\t\n")
-    return text[:300]
 
 
 def _no_complete_reason(current, current_state):

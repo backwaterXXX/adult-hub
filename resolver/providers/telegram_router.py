@@ -188,10 +188,6 @@ class TelegramAccountRouter:
         remaining = self._cooldown_until.get(valid_id, 0.0) - self._clock()
         return max(0, int(remaining))
 
-    def clear_cooldown(self, account_id: str) -> None:
-        valid_id = validate_account_id(account_id)
-        self._cooldown_until.pop(valid_id, None)
-
     def record_bytes(self, account_id: str, count: int) -> None:
         """Record transferred bytes for account."""
         valid_id = validate_account_id(account_id)
@@ -663,10 +659,6 @@ class TelegramAccountRouter:
         evt = self._lease_event
         self._lease_event = asyncio.Event()
         evt.set()
-
-    async def _release_lease(self, account_id: str) -> None:
-        """Async compatibility wrapper."""
-        self._release_lease_sync(account_id)
 
     def handle_request_exception(
         self, account_id: str, channel_id: str, exc: BaseException

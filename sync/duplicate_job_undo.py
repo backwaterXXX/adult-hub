@@ -12,15 +12,6 @@ logger = logging.getLogger(__name__)
 from sync import duplicate_jobs as _core  # noqa: E402
 
 
-def _restore_list(value):
-    if isinstance(value, list):
-        return value
-    try:
-        parsed = _core.json.loads(value or '[]')
-        return parsed if isinstance(parsed, list) else []
-    except (TypeError, ValueError):
-        return []
-
 
 def _check_undo_move_paths(snapshot: dict, media_root, quarantine_base) -> None:
     for move in snapshot.get('files', []):

@@ -254,13 +254,3 @@ def migrate_redundant_performers(
     )
 
 
-def _load_json_field(raw, as_set: bool):
-    """Decode a JSON column. Empty or invalid values give [] (or set() when as_set is True)."""
-    empty = set() if as_set else []
-    if not raw:
-        return empty
-    try:
-        value = json.loads(raw)
-        return set(value) if as_set else value
-    except Exception:
-        return empty

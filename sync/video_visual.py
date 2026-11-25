@@ -21,60 +21,6 @@ def _distance(left: str, right: str) -> int:
         return 64
 
 
-def screen_signatures(left: dict, right: dict) -> bool:
-    """Require several informative near-matches spread over the timeline."""
-    a = [x for x in (left or {}).get("samples", []) if x.get("valid")]
-    b = [x for x in (right or {}).get("samples", []) if x.get("valid")]
-    if len(a) < 8 or len(b) < 8:
-        return False
-    hits = []
-    for x in a:
-        if not b:
-            break
-        y = min(b, key=lambda item: abs(float(item["t"]) / max(1, float((left or {}).get("duration", 1)))
-                                       - float(item["t"]) / max(1, float((right or {}).get("duration", 1)))))
-        if _distance(x.get("phash"), y.get("phash")) <= 12 and _distance(x.get("dhash"), y.get("dhash")) <= 10:
-            hits.append(float(x["t"]) / max(1, float((left or {}).get("duration", 1))))
-    return len(hits) >= 5 and any(t < .34 for t in hits) and any(.33 <= t <= .67 for t in hits) and any(t > .66 for t in hits)
-
-
-def compare_signatures(left: dict, right: dict) -> tuple[str, dict]:
-    """Conservative matching with normalized timeline alignment and offsets."""
-    a = [x for x in (left or {}).get("samples", []) if x.get("valid")]
-    b = [x for x in (right or {}).get("samples", []) if x.get("valid")]
-    if len(a) < 8 or len(b) < 8:
-        return "inconclusive", {"reason": "insufficient_informative_frames"}
-    da = float((left or {}).get("duration", 0) or 0)
-    db = float((right or {}).get("duration", 0) or 0)
-    if da <= 0 or db <= 0:
-        return "inconclusive", {"reason": "missing_duration"}
-    matches, all_distances = [], []
-    for x in a:
-        normalized = float(x["t"]) / da
-        y = min(b, key=lambda item: abs(float(item["t"]) / db - normalized))
-        pd, dd = _distance(x.get("phash"), y.get("phash")), _distance(x.get("dhash"), y.get("dhash"))
-        all_distances.append((pd, dd))
-        if pd <= 6 and dd <= 6:
-            matches.append({"left_t": x["t"], "right_t": y["t"], "phash": pd, "dhash": dd})
-    loose = sum(pd <= 12 and dd <= 10 for pd, dd in all_distances)
-    sections = {"beginning": False, "middle": False, "end": False}
-    for match in matches:
-        t = float(match["left_t"]) / da
-        sections["beginning" if t < .34 else "end" if t > .66 else "middle"] = True
-    median_dhash = sorted(x["dhash"] for x in matches)[len(matches)//2] if matches else 64
-    evidence = {"matches": matches, "informative_frames": len(a), "loose_matches": loose,
-                "median_dhash": median_dhash, "sections": sections,
-                "algorithm_version": ALGORITHM_VERSION,
-                "note": "sequence_hash_screen; exact frame SSIM verification required"}
-    strict_matches = [item for item in matches if item["phash"] <= 4 and item["dhash"] <= 4]
-    if len(strict_matches) >= 8 and all(sections.values()) and median_dhash <= 2:
-        evidence["verification_method"] = "25-frame sequence hashes"
-        return "confirmed", evidence
-    if len(matches) >= 7 and all(sections.values()) and median_dhash <= 4:
-        return "review", evidence
-    if len(a) >= 8 and loose <= 2:
-        return "different", evidence
-    return "inconclusive", evidence
 
 
 def _ssim(left, right) -> float:

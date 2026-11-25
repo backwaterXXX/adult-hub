@@ -90,10 +90,6 @@ def _normalize_known_map(known_set: Mapping[str, str] | Iterable[str] | None) ->
     return NormalizedKnownMap(normalized)
 
 
-def normalize_known_map(known_set: Mapping[str, str] | Iterable[str] | None) -> NormalizedKnownMap:
-    """Normalize a performer map once for reuse across multiple title parses."""
-    return _normalize_known_map(known_set)
-
 
 def _prefix_length_ignore_case(text: str, lower_prefix: str) -> int | None:
     """Find a lowercase prefix without assuming Unicode lowercasing preserves length."""

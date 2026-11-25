@@ -20,13 +20,6 @@ def json_list_or_empty(raw) -> list:
         return []
 
 
-def json_set_or_empty(raw) -> set:
-    """Decode a JSON array text into a set. Empty or undecodable input gives an empty set."""
-    try:
-        return set(json.loads(raw)) if raw else set()
-    except Exception:
-        return set()
-
 
 def json_object(value) -> dict:
     """Return a dict from a decoded object or from its JSON text. Anything else gives {}."""
