@@ -958,14 +958,18 @@ class TestClientAuthLive(PgTestCase):
         """Rapid polling exceeding rate limit (max 2 per second) raises RateLimitExceeded."""
         init = initiate_pairing(self.conn, "TV_Limiter", "tv-limiter-1", "127.0.0.1")
         secret = init["secret"]
-        # Poll 1 and 2 succeed within 1s window
-        p1 = poll_pairing_status(self.conn, secret, client_ip="127.0.0.1")
-        self.assertEqual(p1["status"], "pending")
-        p2 = poll_pairing_status(self.conn, secret, client_ip="127.0.0.1")
-        self.assertEqual(p2["status"], "pending")
-        # Poll 3 immediately without advancing window triggers RateLimitExceeded
-        with self.assertRaises(RateLimitExceeded):
-            poll_pairing_status(self.conn, secret, client_ip="127.0.0.1")
+        # The limiter counts attempts in whole-second windows, so pin the clock:
+        # a real clock can cross a window boundary between two polls and make
+        # this regression test pass or fail depending on scheduling luck.
+        frozen = 1_700_000_000.0
+        with patch("common.client_auth.rate_limit.time.time", return_value=frozen):
+            p1 = poll_pairing_status(self.conn, secret, client_ip="127.0.0.1")
+            self.assertEqual(p1["status"], "pending")
+            p2 = poll_pairing_status(self.conn, secret, client_ip="127.0.0.1")
+            self.assertEqual(p2["status"], "pending")
+            # Poll 3 in the same window triggers RateLimitExceeded
+            with self.assertRaises(RateLimitExceeded):
+                poll_pairing_status(self.conn, secret, client_ip="127.0.0.1")
 
 
 if __name__ == "__main__":

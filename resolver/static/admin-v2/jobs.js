@@ -23,6 +23,8 @@
     performer_merge: 'Merge performers', metadata_backfill: 'External metadata scan', telegram_fingerprint_scan: 'Scene fingerprint scan', artwork_download: 'Download artwork', artwork_generate: 'Generate artwork', quarantine: 'Quarantine', orphan_file_operation: 'Orphan file quarantine or restore', metadata_update: 'Update metadata', availability_check: 'Check availability', catalog_full_audit: 'Full catalog audit', consistency_audit: 'Consistency audit', metadata_quality_audit: 'Metadata quality audit', audit_repair_files: 'Repair audit files', backup_create: 'Create backup', backup_restore_test: 'Test backup restore', history_cleanup: 'Backup history cleanup', performer_catalog: 'StashDB performer catalog', fansdb_performer_catalog: 'FansDB performer catalog', scene_backfill: 'Scene identification', telegram_title_cleanup: 'Telegram title cleanup', source_remove: 'Remove Telegram channel', source_readd: 'Re-add/rename Telegram channel', filesize_backfill: 'Backfill file sizes', dead_stream_quarantine: 'Dead stream quarantine', visual_compare: 'Compare video frames', visual_signature: 'Build frame signatures', sync: 'Sync'
   };
   const HISTORICAL_ACTION_LABELS = {
+    performer_refresh: 'Performer metadata refresh · retired',
+    audit_repair_nfo: 'Repair NFO metadata · retired',
     lukayan_fingerprint: 'Scene fingerprint · legacy',
     telegram_fingerprint: 'Scene fingerprint',
     lukayan_oshash: 'OSHASH fingerprint · legacy',
