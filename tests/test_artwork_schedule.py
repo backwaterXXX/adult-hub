@@ -68,7 +68,7 @@ class ArtworkScheduleTests(unittest.TestCase):
         self.assertTrue(all(action == "artwork_generate" for action, _payload in jobs))
         self.assertTrue(all(payload["only_if_artwork_invalid"] for _action, payload in jobs))
 
-    def test_limit_is_hard_capped_at_one_hundred(self):
+    def test_limit_is_hard_capped_at_the_batch_size(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             media = Path(temp_dir)
             rows = []

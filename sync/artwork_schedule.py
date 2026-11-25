@@ -12,10 +12,11 @@ from common.image_utils import compute_dhash, is_black_image, is_bumper_hash
 logger = logging.getLogger(__name__)
 
 
-# The daily schedule wakes every four hours, so this cap sets the real pace of
-# the artwork backlog. 100 per run left roughly three thousand items waiting for
-# weeks; 200 clears the same backlog in days without hammering Telegram.
-MAX_ARTWORK_GENERATION_ITEMS = 200
+# The schedule wakes every four hours, so this cap sets the real pace of the
+# artwork backlog. A measured 200-job run needs about ten minutes of the single
+# worker, so 400 still finishes well inside the window while halving the time a
+# backlog needs to drain.
+MAX_ARTWORK_GENERATION_ITEMS = 400
 ARTWORK_GENERATION_OFFSET_SECONDS = 60
 
 
