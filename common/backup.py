@@ -98,10 +98,79 @@ def _write_checksum_sidecar(dest) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def prune_old_backups(dest_dir, current_dest=None, keep_days: int | None = None) -> int:
-    """Retain BACKUP_KEEP_DAYS archives including legacy and job-id naming.
+def backup_directory(backup_dir=None):
+    """Return the directory backups are written to.
 
-    Removes companion .sha256 sidecars together with expired archives.
+    ``BACKUP_DIR`` points at persistent storage in the containers; the relative
+    default only exists for tests and local runs.
+    """
+    from pathlib import Path as _Path
+
+    return _Path(backup_dir) if backup_dir else _Path(
+        os.getenv("BACKUP_DIR", "./data/backups"))
+
+
+def _env_int(value, name: str, default: int) -> int:
+    """Return ``value`` or the integer environment override ``name``."""
+    if value is not None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _backup_prefix(name: str) -> str:
+    """Return the archive family of a dump name (``adulthub``, ``adulthub-pre-...``)."""
+    import re as _re
+
+    match = _re.match(r"^(?P<prefix>.+?)-(?:job-[a-f0-9]{32}|[0-9]{8}-[0-9]{6})[.]dump[.]gz$", name)
+    return match.group("prefix") if match else ""
+
+
+def _drop_backup(path, logger) -> bool:
+    """Delete one archive with its checksum sidecar; log instead of raising."""
+    try:
+        path.unlink()
+        path.with_name(path.name + ".sha256").unlink(missing_ok=True)
+        return True
+    except OSError as exc:
+        logger.warning("Prune warning for %s: %s", path.name, exc)
+        return False
+
+
+def _expired_and_families(dest_path, cutoff, cur_resolved, logger):
+    """Split archives into expired files and per-family candidates to keep one of."""
+    expired = []
+    families: dict[str, list] = {}
+    for old in dest_path.glob("adulthub-*.dump.gz"):
+        try:
+            if cur_resolved and old.resolve() == cur_resolved:
+                continue
+            info = old.stat()
+        except OSError as exc:
+            logger.warning("Prune warning for %s: %s", old.name, exc)
+            continue
+        if info.st_mtime < cutoff:
+            expired.append(old)
+            continue
+        family = _backup_prefix(old.name)
+        if family:
+            families.setdefault(family, []).append((info.st_mtime, old))
+    return expired, families
+
+
+def prune_old_backups(dest_dir, current_dest=None, keep_days: int | None = None,
+                      keep_count: int | None = None) -> int:
+    """Retain BACKUP_KEEP_DAYS archives and BACKUP_KEEP_COUNT newest per family.
+
+    Removes companion .sha256 sidecars together with expired archives. Age alone
+    is not enough: a workflow that dumps before every batch writes hundreds of
+    hundreds-of-megabytes archives inside the retention window, so each archive
+    family also keeps only its newest ``keep_count`` members.
     Per-file prune errors are logged as warnings so the backup remains successful.
     """
     import logging
@@ -109,25 +178,17 @@ def prune_old_backups(dest_dir, current_dest=None, keep_days: int | None = None)
     from pathlib import Path as _Path
 
     logger = logging.getLogger("common.backup")
-    if keep_days is None:
-        try:
-            keep_days = int(os.getenv("BACKUP_KEEP_DAYS", "7"))
-        except (ValueError, TypeError):
-            keep_days = 7
+    keep_days = _env_int(keep_days, "BACKUP_KEEP_DAYS", 7)
+    keep_count = max(_env_int(keep_count, "BACKUP_KEEP_COUNT", 5), 1)
     cutoff = _time.time() - max(keep_days, 1) * 86400
-    pruned = 0
     dest_path = _Path(dest_dir)
     cur_resolved = _Path(current_dest).resolve() if current_dest else None
-    for old in dest_path.glob("adulthub-*.dump.gz"):
-        try:
-            if cur_resolved and old.resolve() == cur_resolved:
-                continue
-            if old.stat().st_mtime < cutoff:
-                old.unlink()
-                old.with_name(old.name + ".sha256").unlink(missing_ok=True)
-                pruned += 1
-        except OSError as exc:
-            logger.warning("Prune warning for %s: %s", old.name, exc)
+    expired, families = _expired_and_families(dest_path, cutoff, cur_resolved, logger)
+    pruned = sum(1 for path in expired if _drop_backup(path, logger))
+    for entries in families.values():
+        entries.sort(key=lambda item: item[0], reverse=True)
+        for _mtime, old in entries[keep_count:]:
+            pruned += 1 if _drop_backup(old, logger) else 0
     return pruned
 
 
@@ -136,10 +197,8 @@ def pg_backup(db_url: str | None = None, backup_dir=None, prefix: str = "adulthu
     import shutil
     import uuid
     import time as _time
-    from pathlib import Path as _Path
 
-    dest_dir = _Path(backup_dir) if backup_dir else _Path(
-        os.getenv("BACKUP_DIR", "./data/backups"))
+    dest_dir = backup_directory(backup_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     if job_id is not None and not re.fullmatch(r"[a-f0-9]{32}", job_id):
         raise ValueError("Invalid backup job identifier.")

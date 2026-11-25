@@ -119,6 +119,11 @@ services:
       - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
       - TELEGRAM_SESSION_PATH=${TELEGRAM_SESSION_PATH:-/data/telegram.session}
       - DUPLICATE_AUTO_MERGE_ENABLED=${DUPLICATE_AUTO_MERGE_ENABLED:-false}
+      # The jobs worker runs fuzzy performer merges, and each merge needs a
+      # pre-merge dump. Keep those on the mounted data volume: the previous
+      # default (./data/backups, i.e. /app/data/backups) lives in the container
+      # layer, so it disappears on the next deploy and protects nothing.
+      - BACKUP_DIR=${BACKUP_DIR:-/data/backups}
       - DUPLICATE_AUTO_MERGE_LIMIT=${DUPLICATE_AUTO_MERGE_LIMIT:-1000}
       - STASHDB_API_KEY=${STASHDB_API_KEY:-${STASH_API_KEY:-}}
       - FANSDB_API_KEY=${FANSDB_API_KEY:-}

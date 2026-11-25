@@ -230,8 +230,59 @@ def _resolve_merge_chains(clean_merges: Dict[str, str]) -> Dict[str, str]:
     return resolved_merges
 
 
+FUZZY_MERGE_BACKUP_REUSE_HOURS = 6.0
+
+
+def _merge_backup_reuse_seconds() -> float:
+    """Return how long a pre-merge dump stays usable as the rollback point."""
+    import os
+
+    try:
+        hours = float(os.getenv("FUZZY_MERGE_BACKUP_REUSE_HOURS",
+                                FUZZY_MERGE_BACKUP_REUSE_HOURS))
+    except (TypeError, ValueError):
+        hours = FUZZY_MERGE_BACKUP_REUSE_HOURS
+    return max(hours, 0.0) * 3600
+
+
+def _reusable_merge_backup(directory, max_age_seconds: float):
+    """Return the newest verified pre-merge dump inside the reuse window."""
+    import time
+    from pathlib import Path
+
+    if max_age_seconds <= 0:
+        return None
+    cutoff = time.time() - max_age_seconds
+    newest = None
+    for path in Path(directory).glob("adulthub-pre-fuzzy-merge-*.dump.gz"):
+        try:
+            info = path.stat()
+        except OSError:
+            continue
+        if info.st_size <= 0 or info.st_mtime < cutoff:
+            continue
+        if not path.with_name(path.name + ".sha256").is_file():
+            continue
+        if newest is None or info.st_mtime > newest[0]:
+            newest = (info.st_mtime, path)
+    return newest[1] if newest else None
+
+
 def _make_merge_backup(db_url, _core) -> str:
-    """Create the pre-merge database backup and log its path."""
+    """Create - or reuse a recent - pre-merge database backup and log its path.
+
+    A burst of queued merges used to dump the whole database once per batch: the
+    archive is about 370 MB, and the worker produced one every half minute. The
+    dump is a rollback point for the whole merge window rather than for a single
+    batch, so a fresh archive is reused until it ages out.
+    """
+    from common.backup import backup_directory
+
+    directory = backup_directory()
+    reusable = _reusable_merge_backup(directory, _merge_backup_reuse_seconds())
+    if reusable is not None:
+        _core["logger"].info("Reusing pre-merge database backup: %s", reusable)
+        return str(reusable)
     backup_path = str(_core["make_backup"](db_url))
     _core["logger"].info("Database backup created: %s", backup_path)
     return backup_path
