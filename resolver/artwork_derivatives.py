@@ -115,11 +115,17 @@ def _prune(limit_bytes: int, keep: Path | None = None) -> None:
             return
         _LAST_PRUNE = now
         directory = derivatives_dir()
+        # The prewarm bookkeeping lives next to the derivatives, and a partial
+        # write from another process may still be a *.tmp file: evicting either
+        # would force a full re-read of the media tree on the next pass.
+        reserved = _state_path().name
         try:
             files = [
                 (entry, entry.stat())
                 for entry in directory.iterdir()
                 if entry.is_file()
+                and entry.name != reserved
+                and not entry.name.endswith(".tmp")
             ]
         except OSError:
             return
@@ -237,6 +243,21 @@ def _save_prewarm_state(state: dict) -> None:
             pass
 
 
+def _artwork_candidates(root_path: Path) -> list[tuple[Path, int, int]]:
+    """Return (path, mtime_ns, size) for every artwork file under ``root_path``."""
+    candidates: list[tuple[Path, int, int]] = []
+    for path in root_path.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+            continue
+        try:
+            stat_result = path.stat()
+        except OSError:
+            continue
+        candidates.append((path, stat_result.st_mtime_ns, stat_result.st_size))
+    candidates.sort(key=lambda item: item[1], reverse=True)
+    return candidates
+
+
 def prewarm_directory(
     root: Path | str,
     *,
@@ -253,39 +274,41 @@ def prewarm_directory(
     if limit <= 0 or not root_path.is_dir():
         return {"scanned": 0, "generated_files": 0, "generated_variants": 0, "skipped": 0}
 
-    candidates: list[tuple[Path, int, int]] = []
-    for path in root_path.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+    candidates = _artwork_candidates(root_path)
+
+    with _STATE_LOCK:
+        known = dict(_load_prewarm_state()["files"])
+
+    planned: list[tuple[Path, str, str]] = []
+    skipped = 0
+    for path, mtime_ns, size in candidates:
+        if len(planned) >= limit:
+            break
+        key = str(path)
+        signature = f"{mtime_ns}:{size}"
+        if known.get(key) == signature:
+            skipped += 1
             continue
-        try:
-            stat_result = path.stat()
-        except OSError:
-            continue
-        candidates.append((path, stat_result.st_mtime_ns, stat_result.st_size))
-    candidates.sort(key=lambda item: item[1], reverse=True)
+        planned.append((path, key, signature))
+
+    # Encoding happens outside the lock: a second prewarm (the daily batch plus a
+    # CLI run) waits for the state file, not for a hundred JPEG encodes.
+    generated_files = 0
+    generated_variants = 0
+    updates: dict[str, str] = {}
+    for path, key, signature in planned:
+        variants = prewarm_file(path, widths)
+        updates[key] = signature
+        if variants:
+            generated_files += 1
+            generated_variants += variants
 
     with _STATE_LOCK:
         state = _load_prewarm_state()
-        known = state["files"]
-        generated_files = 0
-        generated_variants = 0
-        skipped = 0
-        for path, mtime_ns, size in candidates:
-            if generated_files >= limit:
-                break
-            key = str(path)
-            signature = f"{mtime_ns}:{size}"
-            if known.get(key) == signature:
-                skipped += 1
-                continue
-            variants = prewarm_file(path, widths)
-            known[key] = signature
-            if variants:
-                generated_files += 1
-                generated_variants += variants
-        if len(known) > 200_000:
+        state["files"].update(updates)
+        if len(state["files"]) > 200_000:
             # Keep the state bounded; a forgotten entry only costs one re-check.
-            state["files"] = dict(list(known.items())[-100_000:])
+            state["files"] = dict(list(state["files"].items())[-100_000:])
         _save_prewarm_state(state)
 
     return {

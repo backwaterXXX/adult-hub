@@ -611,6 +611,34 @@ class TestClientCatalogPostgresIntegration(PgTestCase):
         self.assertEqual(query_catalog_videos(self.conn, channel="BelAmi").total_count, 0)
         self.assertEqual(query_catalog_videos(self.conn).total_count, 2)
 
+    def test_channel_label_filter_reaches_merged_source_channels(self):
+        """A merged duplicate keeps its channel in video_sources, not in channel_name."""
+        with self.conn:
+            self.conn.execute("""
+                INSERT INTO videos (
+                    id, provider, title, duration, first_seen, studio, channel_name, playable
+                ) VALUES
+                    ('telegram:-100111:1:1', 'telegram', 'Keeper', 600,
+                     '2026-10-01 10:00:00+00', '', 'Alpha Label', 1),
+                    ('telegram:-100333:9:9', 'telegram', 'Only Beta', 600,
+                     '2026-10-01 12:00:00+00', '', 'Beta Label', 1)
+            """)
+            self.conn.execute("""
+                INSERT INTO video_sources (video_id, source_id, provider, channel_id, priority, is_active, created_at)
+                VALUES ('telegram:-100111:1:1', 'src_beta', 'telegram', '-100333', 1, 1,
+                        '2026-10-01 11:00:00+00')
+            """)
+
+        alpha = query_catalog_videos(self.conn, channel="alpha label")
+        self.assertEqual([item.id for item in alpha.items], ["telegram:-100111:1:1"])
+
+        # The keeper never carries Beta's label: only its active source row ties
+        # it to that channel, and the filter has to follow it.
+        beta = query_catalog_videos(self.conn, channel="beta label")
+        self.assertEqual(sorted(item.id for item in beta.items),
+                         ["telegram:-100111:1:1", "telegram:-100333:9:9"])
+        self.assertEqual(beta.total_count, 2)
+
     def test_multiple_sources_and_source_aware_channel_membership(self):
         """Test canonical videos with multiple sources and source-aware channel membership."""
         with self.conn:

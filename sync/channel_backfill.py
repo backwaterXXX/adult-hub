@@ -46,6 +46,8 @@ def reconcile_channel_names(conn, config) -> tuple[int, int]:
     if not mapping:
         return 0, 0
     from common import db
+    from common.managed_sources import channel_aliases
+    from sync.studio_tags import looks_like_channel_label
 
     try:
         tables = db.table_names(conn)
@@ -64,8 +66,24 @@ def reconcile_channel_names(conn, config) -> tuple[int, int]:
     # One statement for every channel: a per-channel loop rescanned the whole
     # table once per channel, which made the maintenance pass the slowest
     # statement of the service.
-    channel_ids = [channel_id for channel_id, _label in sorted(mapping.items())]
-    labels = [mapping[channel_id] for channel_id in channel_ids]
+    # The video id carries the channel id the way Telegram reported it, which is
+    # not always the spelling the configuration keeps (-100 prefix or not), so a
+    # channel matches under both forms.
+    channel_ids: list[str] = []
+    labels: list[str] = []
+    for channel_id, label in sorted(mapping.items()):
+        for alias in sorted(channel_aliases(channel_id)):
+            channel_ids.append(alias)
+            labels.append(label)
+    # A channel may be named exactly like the studio that publishes on it. Its
+    # label is still a channel label for ``channel_name``, but it must not be
+    # moved out of ``studio``: only labels that cannot name a production studio
+    # are cleared below.
+    studio_pairs = [(alias, label) for alias, label in zip(channel_ids, labels)
+                    if looks_like_channel_label(label)]
+    studio_ids = [alias for alias, _label in studio_pairs]
+    studio_pair_labels = [label for _alias, label in studio_pairs]
+    studio_labels = sorted(set(studio_pair_labels))
     with conn:
         labelled = len(conn.execute(
             "UPDATE videos v SET channel_name = m.label "
@@ -77,33 +95,35 @@ def reconcile_channel_names(conn, config) -> tuple[int, int]:
             "RETURNING 1",
             (channel_ids, labels),
         ).fetchall())
-    with conn:
+    cleared = 0
+    if studio_pairs:
         # The channel label was never a studio: move it to the channel column
         # (already set above) and leave the studio empty for enrichment.
-        cleared = len(conn.execute(
-            "UPDATE videos v SET studio = '' "
-            "FROM (SELECT unnest(%s::text[]) AS channel_id, "
-            "             unnest(%s::text[]) AS label) m "
-            "WHERE v.provider = 'telegram' "
-            "AND coalesce(v.studio, '') = m.label "
-            "AND split_part(v.id, ':', 2) = m.channel_id"
-            f"{override_guard} "
-            "RETURNING 1",
-            (channel_ids, labels),
-        ).fetchall())
+        with conn:
+            cleared = len(conn.execute(
+                "UPDATE videos v SET studio = '' "
+                "FROM (SELECT unnest(%s::text[]) AS channel_id, "
+                "             unnest(%s::text[]) AS label) m "
+                "WHERE v.provider = 'telegram' "
+                "AND coalesce(v.studio, '') = m.label "
+                "AND split_part(v.id, ':', 2) = m.channel_id"
+                f"{override_guard} "
+                "RETURNING 1",
+                (studio_ids, studio_pair_labels),
+            ).fetchall())
     # A renamed or reused channel leaves labels from the other channel behind;
     # any remaining configured label is still a channel name, never a studio.
-    all_labels = sorted(set(labels))
-    with conn:
-        rows = conn.execute(
-            "UPDATE videos v SET studio = '' "
-            "WHERE v.provider = 'telegram' "
-            "AND coalesce(v.studio, '') = ANY(%s)"
-            f"{override_guard} "
-            "RETURNING 1",
-            (all_labels,),
-        ).fetchall()
-    cleared += len(rows)
+    if studio_labels:
+        with conn:
+            rows = conn.execute(
+                "UPDATE videos v SET studio = '' "
+                "WHERE v.provider = 'telegram' "
+                "AND coalesce(v.studio, '') = ANY(%s)"
+                f"{override_guard} "
+                "RETURNING 1",
+                (studio_labels,),
+            ).fetchall()
+        cleared += len(rows)
     cleared += _clear_channel_handles(conn, override_guard)
     return labelled, cleared
 

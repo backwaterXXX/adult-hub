@@ -103,6 +103,32 @@ class ChannelReconciliationTests(PgTestCase):
 
         self.assertEqual(self._row("telegram:belami:9:9"), ("belami", ""))
 
+    def test_a_channel_matches_under_both_id_spellings(self):
+        # Telegram reports the bare id while the configuration kept the -100
+        # supergroup form; the maintenance pass has to match either of them.
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO videos (id,provider,title,duration,playable,studio,channel_name) "
+                "VALUES ('telegram:1234567890:20:20','telegram','Twenty',900,1,'Alpha','')"
+            )
+
+        reconcile_channel_names(self.conn, _config([("-1001234567890", "Alpha")]))
+
+        self.assertEqual(self._row("telegram:1234567890:20:20"), ("", "Alpha"))
+
+    def test_a_channel_labelled_like_a_studio_keeps_real_studios(self):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO videos (id,provider,title,duration,playable,studio,channel_name) "
+                "VALUES ('telegram:-1001:30:30','telegram','Thirty',900,1,'BelAmi','')"
+            )
+
+        reconcile_channel_names(self.conn, _config([("-1001", "BelAmi")]))
+
+        # A channel named after the studio that publishes on it still labels the
+        # rows, but it cannot prove the studio is wrong.
+        self.assertEqual(self._row("telegram:-1001:30:30"), ("BelAmi", "BelAmi"))
+
     def test_a_second_pass_changes_nothing(self):
         reconcile_channel_names(self.conn, self.config)
 

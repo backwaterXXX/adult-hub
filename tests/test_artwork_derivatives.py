@@ -87,6 +87,41 @@ class ArtworkDerivativeTests(unittest.TestCase):
         for width in (240, 480):
             self.assertTrue(derivatives.derivative_path(source, width).is_file())
 
+    def test_prune_keeps_the_state_file_and_partial_writes(self) -> None:
+        derivatives._LAST_PRUNE = 0.0
+        self.addCleanup(setattr, derivatives, "_LAST_PRUNE", 0.0)
+
+        state = derivatives._state_path()
+        state.write_text('{"files": {}}')
+        derivative = Path(self.tmp.name) / "old-derivative.jpg"
+        derivative.write_bytes(b"x" * 4096)
+        temporary = Path(self.tmp.name) / "other.jpg.123.tmp"
+        temporary.write_bytes(b"x" * 4096)
+
+        derivatives._prune(limit_bytes=1024)
+
+        # Evicting the bookkeeping file would force a full re-read of the media
+        # tree on the next prewarm, and a *.tmp file belongs to another process.
+        self.assertTrue(state.is_file(), "the prewarm state must never be evicted")
+        self.assertTrue(temporary.is_file(), "a partial write belongs to another process")
+        self.assertFalse(derivative.is_file(), "derivatives are still evicted")
+
+    def test_prewarm_merges_state_written_by_another_process(self) -> None:
+        root = Path(self.tmp.name) / "media"
+        root.mkdir()
+        (root / "poster.jpg").write_bytes(_png(400, 600))
+
+        derivatives.prewarm_directory(root, widths=(240,), limit=1)
+        state = derivatives._load_prewarm_state()
+        state["files"]["foreign/poster.jpg"] = "1:1"
+        derivatives._save_prewarm_state(state)
+
+        derivatives.prewarm_directory(root, widths=(240,), limit=1)
+
+        # Encoding happens outside the state lock, so the second run must merge
+        # into the current file instead of overwriting it with its own snapshot.
+        self.assertIn("foreign/poster.jpg", derivatives._load_prewarm_state()["files"])
+
     def test_prewarm_directory_is_bounded_and_incremental(self) -> None:
         root = Path(self.tmp.name) / "media"
         root.mkdir()

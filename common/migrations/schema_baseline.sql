@@ -1222,6 +1222,12 @@ CREATE INDEX idx_videos_bitrate ON public.videos USING btree (bitrate_kbps) WHER
 
 CREATE INDEX idx_videos_quality_tier ON public.videos USING btree (quality_tier) WHERE (quality_tier IS NOT NULL);
 
+--
+-- Name: idx_videos_channel_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_videos_channel_name ON public.videos USING btree (lower(btrim(COALESCE(channel_name, ''::text))));
+
 CREATE INDEX idx_vs_source_id ON public.video_sources USING btree (source_id);
 
 CREATE INDEX idx_vs_video_id ON public.video_sources USING btree (video_id, is_active, priority);

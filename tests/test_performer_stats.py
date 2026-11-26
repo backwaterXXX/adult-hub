@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import unittest
 from unittest import mock
 
@@ -185,6 +186,40 @@ class TestSyncRefreshHook(unittest.TestCase):
             sync_orchestration._refresh_catalog_caches(conn)
         self.assertEqual(events[0][0], "warning")
         self.assertIn("database is gone", events[0][1])
+
+
+class TestColdRefreshSerialisation(unittest.TestCase):
+    """A cold performer list is materialised once, not once per waiting request."""
+
+    def test_concurrent_cold_reads_refresh_only_once(self):
+        refreshed = threading.Event()
+        calls: list[int] = []
+
+        def state(_conn):
+            return {"config_fingerprint": "fp"} if refreshed.is_set() else None
+
+        def refresh(_conn):
+            calls.append(1)
+            refreshed.set()
+
+        with mock.patch.object(client_catalog, "performer_stats_state", side_effect=state), \
+                mock.patch.object(client_catalog, "_performer_stats_fingerprint", return_value="fp"), \
+                mock.patch.object(client_catalog, "refresh_performer_stats", side_effect=refresh):
+            threads = [threading.Thread(target=client_catalog._ensure_performer_stats, args=(None,))
+                       for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        self.assertEqual(len(calls), 1)
+
+    def test_a_failed_refresh_reports_no_state(self):
+        with mock.patch.object(client_catalog, "performer_stats_state", return_value=None), \
+                mock.patch.object(client_catalog, "_performer_stats_fingerprint", return_value="fp"), \
+                mock.patch.object(client_catalog, "refresh_performer_stats",
+                                  side_effect=RuntimeError("database is gone")):
+            self.assertIsNone(client_catalog._ensure_performer_stats(None))
 
 
 if __name__ == "__main__":

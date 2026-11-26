@@ -1128,22 +1128,59 @@ def _append_search_filter(
         params.extend(search_params)
 
 
+def _channel_ids_for_label(conn: Any, label: str) -> list[str]:
+    """Return the channel ids of the videos carrying ``label``.
+
+    The label is stored once per channel, so the id part of the video rows that
+    carry it names the channel it belongs to. Merged duplicates keep that channel
+    only in ``video_sources`` (the losing row is gone), which is why the filter
+    needs the ids rather than just the label.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT split_part(v.id, ':', 2) FROM videos v "
+            "WHERE v.provider = 'telegram' "
+            "AND lower(btrim(COALESCE(v.channel_name, ''))) = lower(%s)",
+            (label,),
+        ).fetchall()
+    except Exception:
+        logger.debug("Could not resolve the channel ids behind the label %r", label,
+                     exc_info=True)
+        return []
+    return sorted({str(row[0]) for row in rows if row and row[0]})
+
+
 def _append_channel_name_filter(conditions: list[str], params: list[Any], channel: str | None,
-                                columns: set[str]) -> None:
+                                columns: set[str], conn: Any, has_sources: bool) -> None:
     """Filter by the display label of the source channel.
 
     The label lives in ``videos.channel_name``; a database synced before that
     column existed keeps the channel inside the id, so the fallback matches the id
-    part instead of returning nothing.
+    part instead of returning nothing. Videos merged from a duplicate of the same
+    scene only carry their own label, so the source rows of the labelled videos
+    widen the filter to every channel that shares a scene with them.
     """
     if not channel or not str(channel).strip():
         return
     label = str(channel).strip()
-    if "channel_name" in columns:
-        conditions.append("lower(btrim(COALESCE(v.channel_name, ''))) = lower(%s)")
-    else:
+    if "channel_name" not in columns:
         conditions.append("lower(btrim(split_part(v.id, ':', 2))) = lower(%s)")
-    params.append(label)
+        params.append(label)
+        return
+    aliases: set[str] = set()
+    if has_sources:
+        for channel_id in _channel_ids_for_label(conn, label):
+            aliases |= channel_aliases(channel_id)
+    if not aliases:
+        conditions.append("lower(btrim(COALESCE(v.channel_name, ''))) = lower(%s)")
+        params.append(label)
+        return
+    conditions.append(
+        "(lower(btrim(COALESCE(v.channel_name, ''))) = lower(%s) "
+        "OR EXISTS (SELECT 1 FROM video_sources vs WHERE vs.video_id = v.id "
+        "AND vs.provider = 'telegram' AND vs.is_active = 1 AND vs.channel_id = ANY(%s)))"
+    )
+    params.extend([label, sorted(aliases)])
 
 
 def _append_exact_filters(
@@ -1490,7 +1527,7 @@ def query_catalog_videos(
     # 2. Source-Aware Channel Filter (explicit Telegram provider only)
     if channel_id:
         _append_channel_filter(conditions, params, channel_id, disabled_set, has_sources)
-    _append_channel_name_filter(conditions, params, channel, columns)
+    _append_channel_name_filter(conditions, params, channel, columns, conn, has_sources)
 
     # 3. Search Query (q) with literal LIKE wildcard escaping
     _append_search_filter(conditions, params, q, columns, has_overrides)
@@ -2414,6 +2451,33 @@ def _performers_lateral_sql(
     return from_sql, cat_id_expr, cat_name_expr
 
 
+_PERFORMER_STATS_REFRESH_LOCK = threading.Lock()
+
+
+def _ensure_performer_stats(conn: Any) -> dict[str, Any] | None:
+    """Return the fresh stats state, materialising it at most once at a time.
+
+    The first read after a deploy or a configuration change has to rebuild the
+    table. Concurrent client requests would each rebuild it, so the check is
+    repeated under the lock and the followers simply read the result of the
+    leader. A lock per process is enough: a second worker rebuilding once more is
+    rare and harmless, a thundering herd on every cold page is not.
+    """
+    state = performer_stats_state(conn)
+    if state is not None and state["config_fingerprint"] == _performer_stats_fingerprint():
+        return state
+    with _PERFORMER_STATS_REFRESH_LOCK:
+        state = performer_stats_state(conn)
+        if state is not None and state["config_fingerprint"] == _performer_stats_fingerprint():
+            return state
+        try:
+            refresh_performer_stats(conn)
+        except Exception:
+            logger.debug("Could not refresh performer_stats", exc_info=True)
+            return None
+        return performer_stats_state(conn)
+
+
 def _performers_page_from_stats(
     conn: Any,
     tables: set[str],
@@ -2430,16 +2494,7 @@ def _performers_page_from_stats(
     """Serve the list from performer_stats, refreshing it when missing or stale."""
     if PERFORMER_STATS_TABLE not in tables:
         return None
-    state = performer_stats_state(conn)
-    if state is None or state["config_fingerprint"] != _performer_stats_fingerprint():
-        # First read after a deploy or a configuration change: materialise once
-        # instead of unnesting the whole catalog on every page.
-        try:
-            refresh_performer_stats(conn)
-            state = performer_stats_state(conn)
-        except Exception:
-            logger.debug("Could not refresh performer_stats", exc_info=True)
-            state = None
+    state = _ensure_performer_stats(conn)
     if state is None:
         return None
     return _query_performers_from_stats(

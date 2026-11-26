@@ -152,10 +152,10 @@ class ArtworkGenerateFallbackTests(unittest.TestCase):
             result, success = handlers._action_artwork_generate(
                 conn, "job-1", {"video_id": "telegram:1:2"}, Path("/media/adult"), None
             )
-        return result, success, fallback
+        return result, success, fallback, conn
 
     def test_undecodable_stream_still_gets_a_poster(self):
-        result, success, fallback = self._run((False, "ffmpeg failed"), "stored")
+        result, success, fallback, _conn = self._run((False, "ffmpeg failed"), "stored")
 
         self.assertTrue(success)
         self.assertEqual(result["local_state"], "artwork_from_thumbnail")
@@ -163,12 +163,21 @@ class ArtworkGenerateFallbackTests(unittest.TestCase):
 
     def test_terminal_items_get_a_generated_poster(self):
         with mock.patch("common.artwork_placeholder.write_placeholder_artwork", return_value=True) as write:
-            result, success, _fallback = self._run((False, "ffmpeg failed"), "missing")
+            result, success, _fallback, _conn = self._run((False, "ffmpeg failed"), "missing")
 
         self.assertTrue(success)
         self.assertEqual(result["local_state"], "artwork_placeholder")
         self.assertEqual(write.call_args.kwargs["title"], "Chasing the Sun")
         self.assertEqual(write.call_args.kwargs["studio"], "BelAmi")
+
+    def test_the_poster_signature_falls_back_to_the_channel_label(self):
+        with mock.patch("common.artwork_placeholder.write_placeholder_artwork", return_value=True):
+            _result, _success, _fallback, conn = self._run((False, "ffmpeg failed"), "missing")
+
+        sql = conn.execute.call_args.args[0]
+        # Telegram rows have no studio once the channel label moved out of it.
+        self.assertIn("NULLIF(studio, '')", sql)
+        self.assertIn("channel_name", sql)
 
     def test_without_a_usable_preview_the_job_still_fails(self):
         import httpx

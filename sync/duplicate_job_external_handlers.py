@@ -431,7 +431,14 @@ def _action_artwork_generate(conn, job_id, payload, media_dir, services):
         if preview == "missing":
             from common.artwork_placeholder import write_placeholder_artwork
 
-            source = conn.execute("SELECT title, studio FROM videos WHERE id=%s", (video_id,)).fetchone()
+            # The channel label moved out of studio, so Telegram-only rows keep
+            # their origin there: without the fallback the placeholder loses the
+            # only attribution the item has.
+            source = conn.execute(
+                "SELECT title, COALESCE(NULLIF(studio, ''), channel_name) "
+                "FROM videos WHERE id=%s",
+                (video_id,),
+            ).fetchone()
             title = str(source[0] or "") if source else ""
             studio = str(source[1] or "") if source else ""
             if write_placeholder_artwork(dest, title=title, studio=studio):
