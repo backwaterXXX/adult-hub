@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+from unittest import mock
 
 from common import db
 from common.migrations import (
@@ -247,6 +248,39 @@ class TestMigrationsEngine(PgTestCase):
         self.assertEqual([m.version for m in applied], [1, 2, 3, 4, 5, 6, 7, 8, 9])
         self.assertIsNone(
             self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone())
+
+    def test_stale_rows_of_the_removed_chain_are_dropped(self):
+        recreate_database(self.conn)
+        with self.conn:
+            _record(self.conn, 10, "0010_admin_operation_plans")
+            _record(self.conn, 77, "0077_remove_dangling_synced_files")
+
+        self.assertEqual(apply_migrations(self.conn), [])
+
+        versions = [record.version for record in get_applied_migrations(self.conn)]
+        self.assertNotIn(10, versions)
+        self.assertNotIn(77, versions)
+        status = get_migration_status(self.conn)
+        self.assertEqual(status.current_version, 9)
+        self.assertTrue(status.is_up_to_date)
+
+    def test_a_new_migration_takes_over_a_number_the_removed_chain_held(self):
+        recreate_database(self.conn)
+        self.addCleanup(recreate_database, self.conn)
+        with self.conn:
+            _record(self.conn, 10, "0010_admin_operation_plans")
+
+        def _add_marker(conn, **_kwargs):
+            conn.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS test_marker integer")
+
+        fake = Migration(version=10, name="0010_test_marker", description="fixture",
+                         apply_fn=_add_marker)
+        with mock.patch("common.migrations.runner.MIGRATIONS", MIGRATIONS + (fake,)):
+            applied = apply_migrations(self.conn)
+
+        self.assertEqual([record.version for record in applied], [10])
+        self.assertEqual(applied[0].name, "0010_test_marker")
+        self.assertIn("test_marker", db.table_columns(self.conn, "videos"))
 
     def test_catalog_sort_indexes_exist_after_the_chain(self):
         recreate_database(self.conn)

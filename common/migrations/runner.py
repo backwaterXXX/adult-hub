@@ -200,6 +200,38 @@ def _pre_squash_history(applied: list[MigrationRecord]) -> RuntimeError:
     )
 
 
+def _prune_stale_history(
+    conn: db.Connection,
+    applied: list[MigrationRecord],
+) -> list[MigrationRecord]:
+    """Drop the bookkeeping of the numbered chain the squash replaced.
+
+    A database squashed in place keeps the rows of the removed chain next to the
+    baseline row. Their numbers stay taken, so a new migration with the same
+    number looks already applied (or collides on the primary key) and never
+    reaches the schema. Once the baseline row proves this is the squashed
+    history, a row that does not name one of the active migrations describes a
+    chain that no longer exists and is dropped. Renaming a migration that is
+    already applied re-runs it, which the chain survives: every step is
+    idempotent.
+    """
+    known = {(migration.version, migration.name) for migration in MIGRATIONS}
+    stale = [record.version for record in applied
+             if (record.version, record.name) not in known]
+    if not stale or not _baseline_is_recorded(applied):
+        return applied
+    with conn:
+        conn.execute(
+            f"DELETE FROM {SCHEMA_MIGRATIONS_TABLE} WHERE version = ANY(%s)",
+            (stale,),
+        )
+    logger.info(
+        "Dropped %d bookkeeping rows of the pre-0.6.0 chain (versions %s).",
+        len(stale), ", ".join(str(version) for version in stale),
+    )
+    return [record for record in applied if (record.version, record.name) in known]
+
+
 def _plan_for_connection(
     conn: db.Connection,
     applied: list[MigrationRecord],
@@ -223,7 +255,11 @@ def get_migration_status(conn_or_url: db.Connection | str | None = None) -> Migr
     try:
         applied = get_applied_migrations(conn)
         pending = _plan_for_connection(conn, applied)
-        curr_ver = max((rec.version for rec in applied), default=0)
+        # Report the version of this chain: a squashed database can still list
+        # rows of the removed one, and its highest number says nothing here.
+        known = {(migration.version, migration.name) for migration in MIGRATIONS}
+        curr_ver = max((rec.version for rec in applied
+                        if (rec.version, rec.name) in known), default=0)
         return MigrationStatus(current_version=curr_ver, applied=applied, pending=pending)
     finally:
         if owned:
@@ -244,7 +280,7 @@ def apply_migrations(
         conn.commit()
         try:
             ensure_schema_migrations_table(conn)
-            applied = get_applied_migrations(conn)
+            applied = _prune_stale_history(conn, get_applied_migrations(conn))
             plan = _plan_for_connection(conn, applied)
             for migration in plan:
                 logger.info("Applying migration %04d: %s...", migration.version, migration.name)
