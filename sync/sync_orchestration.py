@@ -493,13 +493,16 @@ def _library_maintenance_pass(sp: _SyncPass) -> None:
         _core.logger.warning("Orphaned-record cleanup failed: %s", e)
     _core.cleanup_retention(sp.conn, _core.MEDIA_DIR, _core.RETENTION_DAYS, sp.providers_succeeded)
     try:
-        from sync.studio_backfill import backfill_channel_studio
+        from sync.channel_backfill import reconcile_channel_names
 
-        filled = backfill_channel_studio(sp.conn, _core.CONFIG)
-        if filled:
-            _core.logger.info("Filled %s studio label(s) from channel configuration", filled)
+        labelled, cleared = reconcile_channel_names(sp.conn, _core.CONFIG)
+        if labelled or cleared:
+            _core.logger.info(
+                "Channel labels: %s video(s) labelled, %s channel name(s) moved out of studio",
+                labelled, cleared,
+            )
     except Exception as e:
-        _core.logger.warning("Studio backfill failed: %s", e)
+        _core.logger.warning("Channel label reconciliation failed: %s", e)
 
 
 def _run_duplicate_upkeep(sp: _SyncPass) -> None:

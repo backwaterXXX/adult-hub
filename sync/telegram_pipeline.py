@@ -83,7 +83,10 @@ def collect_single_telegram_video(
         categories[0].strip() if categories and isinstance(categories[0], str)
         and categories[0].strip() else channel_id
     )
-    vid["studio"] = display
+    # ``studio`` belongs to the production company (scene match or override);
+    # the channel a Telegram item came from is its own field.
+    vid["channel_name"] = display
+    vid.setdefault("studio", "")
     thumbnail = (vid.get("thumbnail") or "").strip()
     if thumbnail.startswith("/"):
         vid["thumbnail"] = f"{services.resolver_public_url.rstrip('/')}{thumbnail}"
@@ -91,7 +94,7 @@ def collect_single_telegram_video(
         collected[comp_id] = {"video": vid, "genres": set(), "tags": set()}
     else:
         services.merge_video_fields(collected[comp_id]["video"], vid)
-        collected[comp_id]["video"]["studio"] = display
+        collected[comp_id]["video"]["channel_name"] = display
     for category in vid.get("categories", []):
         mapped = services.map_category(category)
         if mapped:

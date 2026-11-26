@@ -30,11 +30,12 @@ def _parse_stored_overrides(overrides) -> dict:
 def _missing_metadata_fields(effective: dict, source: dict) -> list:
     """Return the catalog fields that are missing *and* obtainable for this item.
 
-    Telegram scenes carry a title, studio and thumbnail, but a plot and performer
-    credits only arrive with an external scene match. Report those two only when
-    the item matched something to enrich from: otherwise the gap can never be
-    filled and only inflates the quality centre (21 080 plot and 8 450 performer
-    gaps belonged to unmatched items).
+    Telegram scenes carry a title and a thumbnail, but the studio, plot and
+    performer credits only arrive with an external scene match. Report those
+    three only when the item matched something to enrich from: otherwise the gap
+    can never be filled and only inflates the quality centre (21 080 plot and
+    8 450 performer gaps belonged to unmatched items, and every Telegram-only
+    item was reported as missing a studio).
     """
     missing_fields = []
     enrichable = bool(str(source.get("scene_matched_at") or "").strip())
@@ -42,7 +43,7 @@ def _missing_metadata_fields(effective: dict, source: dict) -> list:
         missing_fields.append("title")
     if enrichable and not effective.get("performers"):
         missing_fields.append("performers")
-    if not str(effective.get("studio") or "").strip():
+    if enrichable and not str(effective.get("studio") or "").strip():
         missing_fields.append("studio")
     if enrichable and not str(effective.get("plot") or "").strip():
         missing_fields.append("plot")

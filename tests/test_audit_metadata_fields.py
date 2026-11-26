@@ -26,11 +26,20 @@ class MissingMetadataFieldsTest(unittest.TestCase):
 
         self.assertEqual(fields, [])
 
-    def test_unmatched_item_still_reports_studio_title_and_thumbnail(self):
+    def test_unmatched_item_reports_title_and_thumbnail_but_not_studio(self):
+        # The channel label lives in channel_name; a studio arrives only with a
+        # scene match, so an unmatched item cannot be missing one.
         fields = _missing_metadata_fields(
             _effective(studio="", title=""), _source(studio="", thumbnail=""))
 
-        self.assertEqual(fields, ["title", "studio", "thumbnail"])
+        self.assertEqual(fields, ["title", "thumbnail"])
+
+    def test_matched_item_reports_a_missing_studio(self):
+        fields = _missing_metadata_fields(
+            _effective(studio="", plot="Plot", performers=["Jane Doe"]),
+            _source(studio="", scene_matched_at="2026-11-01 10:00:00+00"))
+
+        self.assertEqual(fields, ["studio"])
 
     def test_matched_item_reports_plot_and_performers(self):
         fields = _missing_metadata_fields(

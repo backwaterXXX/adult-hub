@@ -846,6 +846,7 @@ CREATE TABLE public.videos (
     embed_host text,
     playable integer,
     studio text,
+    channel_name text,
     performers_checked_at timestamp with time zone,
     performers_audited_at timestamp with time zone,
     plot text,
