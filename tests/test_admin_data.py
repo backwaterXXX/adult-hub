@@ -365,6 +365,38 @@ class TestQuarantineReport(PgTestCase):
         self.assertEqual(data["total"], 0)
 
 
+class TestChannelBreakdownExpression(unittest.TestCase):
+    def test_the_stored_channel_label_wins(self):
+        expression = admin_data._channel_breakdown_expression({"id", "channel_name", "provider"})
+
+        self.assertIn("btrim(channel_name)", expression)
+        self.assertIn("split_part(id, ':', 2)", expression, "rows without a label fall back to the id")
+
+    def test_an_old_schema_uses_the_channel_part_of_the_id(self):
+        expression = admin_data._channel_breakdown_expression({"id", "provider"})
+
+        self.assertEqual(expression, "NULLIF(split_part(id, ':', 2), '')")
+
+    def test_a_stored_label_is_not_mapped_twice(self):
+        by_provider, tg_channels, tg_total = admin_data._provider_totals(
+            [("telegram", "Lukayan SHOW", 3)],
+            {"-1001618765010": "Lukayan SHOW"},
+        )
+
+        self.assertEqual(tg_channels, {"Lukayan SHOW": 3})
+        self.assertEqual(by_provider, {"tg:[Lukayan SHOW]": 3})
+        self.assertEqual(tg_total, 3)
+
+    def test_a_bare_channel_id_still_gets_its_label(self):
+        by_provider, tg_channels, tg_total = admin_data._provider_totals(
+            [("telegram", "-1001618765010", 2)],
+            {"-1001618765010": "Lukayan SHOW"},
+        )
+
+        self.assertEqual(tg_channels, {"Lukayan SHOW": 2})
+        self.assertEqual(tg_total, 2)
+
+
 class TestBackupStatus(unittest.TestCase):
     def test_distinguishes_empty_inventory_from_unreadable_directory(self):
         with tempfile.TemporaryDirectory() as directory:

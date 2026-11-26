@@ -136,6 +136,7 @@ def _serialize_video(row, *, detail: bool, local_files: dict[str, str] | None = 
     video = {
         "id": get("id"),
         "channel_id": _channel_id(get("id")),
+        "channel_name": get("channel_name"),
         "provider": get("provider"),
         "telegram_url": _safe_telegram_post_url(get("provider"), get("id")),
         "title": get("title"),

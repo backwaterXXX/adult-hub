@@ -249,17 +249,32 @@ def _collect_db_stats(conn, out: dict, config_path, media_dir) -> None:
     _collect_table_totals(conn, out)
 
 
+def _channel_breakdown_expression(columns: set[str]) -> str:
+    """Return the SQL that names the source channel of a video row.
+
+    The sync writes the channel label to ``videos.channel_name``; the id keeps
+    the stable ``telegram:<channel>:...`` form, but videos.studio is production
+    metadata and can be changed by enrichment. Old databases (and rows synced
+    before the column existed) fall back to the channel part of the id, which the
+    config labels map still translates.
+    """
+    if "channel_name" in columns:
+        return "COALESCE(NULLIF(btrim(channel_name), ''), NULLIF(split_part(id, ':', 2), ''))"
+    return "NULLIF(split_part(id, ':', 2), '')"
+
+
 def _collect_provider_breakdown(conn, out: dict, config_path) -> None:
     tg_ch_map = channel_labels(config_path)
-    # Telegram IDs look like ``telegram:<channel>:...``. Use this
-    # stable source identity; videos.studio is production metadata
-    # and can be changed by enrichment.
-    query = """
+    try:
+        columns = set(db.table_columns(conn, "videos"))
+    except Exception:
+        columns = set()
+    channel_expr = _channel_breakdown_expression(columns)
+    query = f"""
         SELECT
             provider,
             CASE
-                WHEN provider = 'telegram' THEN
-                    NULLIF(split_part(id, ':', 2), '')
+                WHEN provider = 'telegram' THEN {channel_expr}
                 ELSE ''
             END AS ch,
             count(*)

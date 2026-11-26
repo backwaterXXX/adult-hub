@@ -52,11 +52,13 @@ class TestCatalogReadContract(unittest.TestCase):
             "id": "telegram:-100123:message", "provider": "telegram", "title": "Example",
             "duration": 90, "thumbnail": "https://resolver.invalid/admin/api/thumb?provider=telegram&ref=-100123%3A42%3Aunique",
             "performers": '["Performer"]', "categories": "[]", "tags": '["Drama"]',
-            "playable": None, "studio": "Studio", "plot": "Summary", "first_seen": 1,
+            "playable": None, "studio": "Studio", "channel_name": "Lukayan SHOW",
+            "plot": "Summary", "first_seen": 1,
             "last_seen": None, "file_count": 1, "file_categories": ["video"],
             "has_local_files": True, "dead_stream": False,
         }, detail=True)
         self.assertEqual(video["channel_id"], "-100123")
+        self.assertEqual(video["channel_name"], "Lukayan SHOW")
         self.assertEqual(video["first_seen"], "1970-01-01T00:00:01Z")
         self.assertEqual(video["availability"], "unknown")
         self.assertNotIn("local_path", video)
