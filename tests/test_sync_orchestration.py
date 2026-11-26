@@ -283,6 +283,9 @@ class SyncPassHarness(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.stack.enter_context(
             patch.object(sync_orchestration, "snapshot_host_rate_limit_stats", self.limiter))
+        # The catalog cache refresh talks to the database; a pass harness has none.
+        self.stack.enter_context(
+            patch.object(sync_orchestration, "_refresh_catalog_caches", lambda conn: None))
         self.use_core(config=self.config)
 
     def use_core(self, **overrides):

@@ -1311,3 +1311,28 @@ ALTER TABLE ONLY public.telegram_account_channels
 INSERT INTO public.admin_schedules (id,name,action,payload,schedule_type,interval_minutes,timezone,enabled,revision,next_run_at)
 VALUES ('duplicate-reconcile','Duplicate reconciliation','duplicate_reconcile','{}','interval',15,'Europe/Warsaw',FALSE,1,NULL)
 ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS public.performer_stats (
+    canonical_id text NOT NULL,
+    canonical_name text NOT NULL,
+    search_names text[] DEFAULT '{}'::text[] NOT NULL,
+    video_count integer NOT NULL,
+    has_photo boolean DEFAULT false NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.performer_stats_meta (
+    id boolean DEFAULT true NOT NULL,
+    config_fingerprint text NOT NULL,
+    refreshed_at timestamp with time zone DEFAULT now() NOT NULL,
+    row_count integer DEFAULT 0 NOT NULL
+);
+
+ALTER TABLE ONLY public.performer_stats
+    ADD CONSTRAINT performer_stats_pkey PRIMARY KEY (canonical_id);
+
+ALTER TABLE ONLY public.performer_stats_meta
+    ADD CONSTRAINT performer_stats_meta_pkey PRIMARY KEY (id);
+
+CREATE INDEX IF NOT EXISTS idx_performer_stats_name ON public.performer_stats USING btree (canonical_name);
+
+CREATE INDEX IF NOT EXISTS idx_performer_stats_video_count ON public.performer_stats USING btree (video_count DESC, canonical_name, canonical_id);

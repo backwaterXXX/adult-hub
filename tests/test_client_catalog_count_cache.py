@@ -132,7 +132,8 @@ class _PerformerCountRecorder:
 
 
 class PerformerTotalCachePgTest(PgTestCase):
-    def test_performer_total_is_counted_once_per_ttl(self):
+    def test_legacy_performer_total_is_counted_once_per_ttl(self):
+        """The materialised list skips this query, so check the fallback path."""
         with self.conn:
             self.conn.execute(
                 "INSERT INTO videos (id,provider,title,duration,playable,performers) VALUES "
@@ -141,8 +142,9 @@ class PerformerTotalCachePgTest(PgTestCase):
             )
 
         recorded = _PerformerCountRecorder(self.conn)
-        first = query_catalog_performers(recorded, limit=10)
-        second = query_catalog_performers(recorded, limit=10)
+        with mock.patch.object(client_catalog, "PERFORMER_STATS_TABLE", "performer_stats_absent"):
+            first = query_catalog_performers(recorded, limit=10)
+            second = query_catalog_performers(recorded, limit=10)
 
         self.assertEqual(first.total_count, 2)
         self.assertEqual(second.total_count, 2)

@@ -79,7 +79,7 @@ class TestActiveMigrationValidation(unittest.TestCase):
             _validate_active_migrations((self._migration(2), self._migration(1)))
 
     def test_chain_is_the_baseline_plus_appended_migrations(self):
-        self.assertEqual([migration.version for migration in MIGRATIONS], [1, 2])
+        self.assertEqual([migration.version for migration in MIGRATIONS], [1, 2, 3])
         self.assertEqual(MIGRATIONS[0].name, "0001_baseline")
         self.assertIs(MIGRATIONS[0], baseline)
         self.assertEqual(MIGRATIONS[1].name, "0002_catalog_sort_indexes")
@@ -88,17 +88,18 @@ class TestActiveMigrationValidation(unittest.TestCase):
 class TestMigrationsEngine(PgTestCase):
     def test_fresh_database_applies_the_chain_and_is_then_up_to_date(self):
         applied = recreate_database(self.conn)
-        self.assertEqual([m.version for m in applied], [1, 2])
+        self.assertEqual([m.version for m in applied], [1, 2, 3])
         self.assertEqual(applied[0].name, "0001_baseline")
 
         status = get_migration_status(self.conn)
         self.assertTrue(status.is_up_to_date)
-        self.assertEqual(status.current_version, 2)
+        self.assertEqual(status.current_version, 3)
         self.assertEqual(status.pending, [])
 
         records = get_applied_migrations(self.conn)
         self.assertEqual([(r.version, r.name) for r in records],
-                         [(1, "0001_baseline"), (2, "0002_catalog_sort_indexes")])
+                         [(1, "0001_baseline"), (2, "0002_catalog_sort_indexes"),
+                      (3, "0003_performer_stats")])
 
         existing_tables = db.table_names(self.conn)
         for table in APPLICATION_TABLES:
@@ -133,7 +134,7 @@ class TestMigrationsEngine(PgTestCase):
         _drop_everything(self.conn)
         self.addCleanup(recreate_database, self.conn)
         applied = apply_migrations(self.conn)
-        self.assertEqual([m.version for m in applied], [1, 2])
+        self.assertEqual([m.version for m in applied], [1, 2, 3])
 
     def test_concurrent_apply_migrations_is_serialized(self):
         # Containers starting together may both call apply_migrations on an
@@ -174,7 +175,7 @@ class TestMigrationsEngine(PgTestCase):
             self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone())
 
         applied = recreate_database(self.conn)
-        self.assertEqual([m.version for m in applied], [1, 2])
+        self.assertEqual([m.version for m in applied], [1, 2, 3])
         self.assertIsNone(
             self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone())
 

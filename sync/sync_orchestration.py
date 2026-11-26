@@ -601,6 +601,22 @@ def _finish_sync_pass(sp: _SyncPass, started_at: int) -> bool:
     return True
 
 
+def _refresh_catalog_caches(conn) -> None:
+    """Rebuild the materialised performer list the client catalog reads.
+
+    The list must follow every visible-video change from this pass (new items,
+    dead streams, merges), so it is refreshed after the duplicate upkeep rather
+    than during the request that happens to arrive first.
+    """
+    try:
+        from resolver.client_catalog import refresh_performer_stats
+
+        rows = refresh_performer_stats(conn)
+        _core.logger.info("[sync] Refreshed performer list (%s performers)", rows)
+    except Exception as exc:
+        _core.logger.warning("[sync] Could not refresh the performer list: %s", exc)
+
+
 def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "scheduled",
                      skip_telegram_channels: bool = False):
     snapshot_host_rate_limit_stats(reset=True)
@@ -634,6 +650,7 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         _run_telegram_title_cleanup(sp)
         sp.recorder.run("library-maintenance", None, lambda: _library_maintenance_pass(sp))
         _run_duplicate_upkeep(sp)
+        _refresh_catalog_caches(conn)
         return _finish_sync_pass(sp, started_at)
     finally:
         bind_active_metrics(None)
