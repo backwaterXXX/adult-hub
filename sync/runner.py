@@ -553,22 +553,6 @@ def _latest_scheduled_sync_start() -> int | None:
     return max(candidates) if candidates else None
 
 
-def _scheduled_sync_was_missed(seconds_to_next_slot: float) -> bool:
-    """True when the daily slot has already passed without a completed pass.
-
-    Restarting after the scheduled time used to wait for the next slot, so one
-    deploy cost the catalogue a whole day of syncing.
-    """
-    if not daily_at:
-        return False
-    last_success = _latest_scheduled_sync_start()
-    if last_success is None:
-        # Nothing completed to compare against (fresh or never-successful daemon):
-        # honour run_on_startup and wait for the slot.
-        return False
-    return last_success < int(time.time()) + int(seconds_to_next_slot) - 86400
-
-
 def _claim_pending_sync_job():
     try:
         return claim_job(DB_URL, "sync")

@@ -648,19 +648,6 @@ def list_channel_access(
         return _list_memory_channel_access(account_id, channel_id)
 
 
-def get_channel_access_status(account_id: str, channel_id: str) -> str:
-    """Return the access status ('accessible', 'inaccessible', 'unknown') for an account and channel."""
-    valid_id = validate_account_id(account_id)
-    clean_channel = str(channel_id).strip()
-    rec = _MEMORY_CHANNEL_ACCESS.get((valid_id, clean_channel))
-    if rec:
-        return rec.access_status
-    access_list = list_channel_access(account_id=valid_id, channel_id=clean_channel)
-    if access_list:
-        return access_list[0].access_status
-    return "unknown"
-
-
 VALID_ACCESS_STATUSES = {
     "accessible",
     "inaccessible",
@@ -729,28 +716,3 @@ def _get_memory_accessible_accounts(clean_channel: str) -> List[str]:
     accessible.sort()
     return accessible
 
-
-def get_accessible_accounts_for_channel(channel_id: str, conn=None) -> List[str]:
-    """Return account IDs with verified 'accessible' status for channel_id."""
-    clean_channel = str(channel_id).strip()
-    if is_memory_only_mode() and conn is None:
-        return _get_memory_accessible_accounts(clean_channel)
-
-    def _execute(c):
-        rows = c.execute(
-            "SELECT a.account_id FROM public.telegram_accounts a "
-            "JOIN public.telegram_account_channels ac ON a.account_id = ac.account_id "
-            "WHERE ac.channel_id = %s AND ac.access_status = 'accessible' AND a.enabled = true "
-            "ORDER BY a.account_id",
-            (clean_channel,),
-        ).fetchall()
-        return [r[0] for r in rows]
-
-    try:
-        if conn is not None:
-            return _execute(conn)
-        with db.connection(connect_timeout=3) as c:
-            return _execute(c)
-    except Exception as exc:
-        logger.debug("Database query for accessible accounts failed: %s", exc)
-        return _get_memory_accessible_accounts(clean_channel)

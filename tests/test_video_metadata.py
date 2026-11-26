@@ -1,5 +1,6 @@
 """Contract tests for source and overridden video metadata semantics."""
 
+import json
 import unittest
 
 
@@ -9,7 +10,6 @@ from common.video_metadata import (
     MetadataValidationError,
     load_metadata_state,
     resolve_metadata,
-    update_metadata_state,
     validate_override_patch,
 )
 
@@ -80,10 +80,20 @@ class TestPersistentVideoMetadataOverrides(PgTestCase):
                 "VALUES ('telegram:10:metadata','telegram','Source title','Source plot','[]','[]','[]')"
             )
 
-    def test_revisioned_empty_override_survives_source_change_and_reset_inherits(self):
+    def _save_override(self, fields, revision):
+        """Write an override row the way the durable metadata job does."""
         with self.conn:
-            first = update_metadata_state(self.conn, "telegram:10:metadata", 0, {"title": ""})
-        self.assertEqual(first["outcome"], "saved")
+            self.conn.execute(
+                "INSERT INTO video_metadata_overrides (video_id,fields,revision,updated_at) "
+                "VALUES ('telegram:10:metadata',%s::jsonb,%s,CURRENT_TIMESTAMP) "
+                "ON CONFLICT (video_id) DO UPDATE SET fields=EXCLUDED.fields,"
+                "revision=EXCLUDED.revision,updated_at=CURRENT_TIMESTAMP",
+                (json.dumps(fields), revision),
+            )
+
+    def test_revisioned_empty_override_survives_source_change_and_reset_inherits(self):
+        self._save_override({"title": ""}, 1)
+        first = load_metadata_state(self.conn, "telegram:10:metadata")
         self.assertEqual(first["revision"], 1)
         self.assertEqual(first["metadata"]["title"], "")
 
@@ -93,21 +103,20 @@ class TestPersistentVideoMetadataOverrides(PgTestCase):
         self.assertEqual(current["metadata"]["title"], "")
         self.assertEqual(current["metadata"]["metadata_fields"]["title"]["source"], "Latest source title")
 
-        with self.conn:
-            reset = update_metadata_state(self.conn, "telegram:10:metadata", 1, {}, ["title"])
+        # Resetting the field drops it from the override row and reveals the source again.
+        self._save_override({}, 2)
+        reset = load_metadata_state(self.conn, "telegram:10:metadata")
         self.assertEqual(reset["revision"], 2)
         self.assertEqual(reset["metadata"]["title"], "Latest source title")
         self.assertFalse(reset["metadata"]["metadata_fields"]["title"]["overridden"])
 
-    def test_stale_revision_is_rejected_without_changing_the_override(self):
-        with self.conn:
-            first = update_metadata_state(self.conn, "telegram:10:metadata", 0, {"plot": "Edited"})
-        with self.conn:
-            stale = update_metadata_state(self.conn, "telegram:10:metadata", 0, {"plot": "Lost update"})
-        self.assertEqual(first["revision"], 1)
-        self.assertEqual(stale["outcome"], "stale")
-        self.assertEqual(stale["revision"], 1)
-        self.assertEqual(load_metadata_state(self.conn, "telegram:10:metadata")["metadata"]["plot"], "Edited")
+    def test_override_state_exposes_raw_fields_and_updated_at(self):
+        self._save_override({"plot": "Edited"}, 1)
+        state = load_metadata_state(self.conn, "telegram:10:metadata")
+        self.assertEqual(state["overrides"], {"plot": "Edited"})
+        self.assertIsNotNone(state["updated_at"])
+        self.assertEqual(state["metadata"]["plot"], "Edited")
+        self.assertEqual(state["metadata"]["metadata_fields"]["plot"]["source"], "Source plot")
 
     def test_array_and_date_overrides_keep_source_values_separate(self):
         with self.conn:
@@ -115,10 +124,9 @@ class TestPersistentVideoMetadataOverrides(PgTestCase):
                 "UPDATE videos SET performers='[\"Source actor\"]',tags='[\"Source tag\"]',"
                 "studio='Source studio',date_released='2020-01-01' WHERE id='telegram:10:metadata'"
             )
-            saved = update_metadata_state(self.conn, "telegram:10:metadata", 0, {
-                "performers": ["Manual actor"], "tags": [],
-                "studio": "Manual studio", "date_released": "2026-02-03",
-            })
+        self._save_override({"performers": ["Manual actor"], "tags": [],
+                             "studio": "Manual studio", "date_released": "2026-02-03"}, 1)
+        saved = load_metadata_state(self.conn, "telegram:10:metadata")
         self.assertEqual(saved["metadata"]["performers"], ["Manual actor"])
         self.assertEqual(saved["metadata"]["tags"], [])
         self.assertEqual(saved["metadata"]["studio"], "Manual studio")

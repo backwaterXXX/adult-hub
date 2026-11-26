@@ -421,22 +421,6 @@ def get_backup_dir(env: Mapping[str, str] | None = None) -> Path:
     return get_data_dir(env=env) / "backups"
 
 
-def get_backup_keep_days(env: Mapping[str, str] | None = None) -> int:
-    """Return backup retention in days (minimum 1)."""
-    env_map = os.environ if env is None else env
-    return parse_int(
-        env_map.get("BACKUP_KEEP_DAYS"),
-        DEFAULT_BACKUP_KEEP_DAYS,
-        minimum=1,
-        name="BACKUP_KEEP_DAYS",
-    )
-
-
-def get_backup_daily_at(env: Mapping[str, str] | None = None) -> str:
-    """Return daily backup time string in HH:MM format."""
-    env_map = os.environ if env is None else env
-    return parse_daily_at(env_map.get("BACKUP_DAILY_AT"), DEFAULT_BACKUP_DAILY_AT, name="BACKUP_DAILY_AT")
-
 def get_telegram_metadata_timeout(env: Mapping[str, str] | None = None) -> int:
     """Return timeout for Telegram metadata lookups (get_entity, file_size etc.)."""
     env_map = os.environ if env is None else env

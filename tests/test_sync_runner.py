@@ -557,31 +557,5 @@ class TestMissedDailySlot(RunnerHarness):
         self.history({"runs": "not a list"})
         self.assertIsNone(module._latest_scheduled_sync_start())
 
-    def test_a_restart_that_missed_the_slot_is_owed_that_slot(self):
-        # The 03:30 pass ran yesterday; this start waits 19h40m for tomorrow's.
-        module = self.load(daily_at="03:30")
-        self.history(self.entry(started_at=self.ago(102_000)))
-
-        self.assertTrue(module._scheduled_sync_was_missed(70_800.0))
-
-    def test_a_restart_after_the_day_s_pass_waits_for_the_next_slot(self):
-        module = self.load(daily_at="03:30")
-        self.history(self.entry(started_at=self.ago(15_600)))
-
-        self.assertFalse(module._scheduled_sync_was_missed(70_800.0))
-
-    def test_a_first_start_with_no_history_honours_run_on_startup(self):
-        module = self.load(daily_at="03:30")
-
-        self.assertFalse(module._scheduled_sync_was_missed(70_800.0))
-
-    def test_a_daemon_on_an_interval_has_no_slot_to_miss(self):
-        module = self.load()
-        self.history(self.entry(started_at=self.ago(102_000)))
-
-        self.assertFalse(module._scheduled_sync_was_missed(900.0))
-
-
-
 if __name__ == "__main__":
     unittest.main()

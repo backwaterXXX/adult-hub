@@ -5,8 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 
-from psycopg.types.json import Jsonb
-
 from common import db
 from common.json_helpers import json_object as _json_object
 
@@ -166,44 +164,6 @@ def load_metadata_states(conn, video_ids: list[str]) -> dict[str, dict]:
             "metadata": resolve_metadata(source, overrides),
         }
     return states
-
-
-def update_metadata_state(conn, video_id: str, expected_revision: int,
-                          patch: dict, reset_fields=()) -> dict:
-    """Save a validated override change under the catalog row lock.
-
-    The caller owns the surrounding transaction and must commit or roll it
-    back. An absent override row starts at revision zero; every accepted write
-    increments the monotonic revision, including a reset to inherited values.
-    """
-    normalized, resets = validate_override_patch(patch, reset_fields)
-    columns = db.table_columns(conn, "videos")
-    source_row = conn.execute("SELECT * FROM videos WHERE id=%s FOR UPDATE", (video_id,)).fetchone()
-    if source_row is None:
-        return {"outcome": "not_found"}
-    source = dict(zip(columns, source_row))
-    record = conn.execute(
-        "SELECT fields,revision FROM video_metadata_overrides WHERE video_id=%s FOR UPDATE",
-        (video_id,),
-    ).fetchone()
-    current = _json_object(record[0]) if record else {}
-    revision = int(record[1]) if record else 0
-    if int(expected_revision) != revision:
-        return {"outcome": "stale", "revision": revision,
-                "metadata": resolve_metadata(source, current)}
-    updated = dict(current)
-    updated.update(normalized)
-    for field in resets:
-        updated.pop(field, None)
-    next_revision = revision + 1
-    conn.execute(
-        "INSERT INTO video_metadata_overrides (video_id,fields,revision,updated_at) "
-        "VALUES (%s,%s,%s,CURRENT_TIMESTAMP) ON CONFLICT(video_id) DO UPDATE SET "
-        "fields=EXCLUDED.fields,revision=EXCLUDED.revision,updated_at=EXCLUDED.updated_at",
-        (video_id, Jsonb(updated), next_revision),
-    )
-    return {"outcome": "saved", "revision": next_revision,
-            "overrides": updated, "metadata": resolve_metadata(source, updated)}
 
 
 def preview_metadata_update(db_url: str | None, video_id: str, expected_revision: int,

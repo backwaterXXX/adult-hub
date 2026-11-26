@@ -110,10 +110,6 @@ def registry() -> tuple[Stage, ...]:
     return STAGES
 
 
-def get_stage(stage_id: str) -> Stage | None:
-    return _BY_ID.get(stage_id)
-
-
 def stage_for_job(action: str):
     """The (schedule, stage) row a durable job action reports into, if any."""
     return JOB_STAGES.get(action)

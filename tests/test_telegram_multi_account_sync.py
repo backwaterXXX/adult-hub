@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from resolver.providers.telegram_account_store import (
     _MEMORY_ACCOUNTS,
     _MEMORY_CHANNEL_ACCESS,
-    get_channel_access_status,
+    list_channel_access,
     set_memory_only_mode,
     upsert_account,
 )
@@ -144,7 +144,8 @@ class TestTelegramMultiAccountSync(unittest.IsolatedAsyncioTestCase):
             router.handle_request_exception("acc1", self.channel, ChannelPrivateError("Channel private"))
 
             # Account 1 is now marked inaccessible / no_access in store
-            self.assertIn(get_channel_access_status("acc1", self.channel), {"inaccessible", "no_access"})
+            statuses = {r.access_status for r in list_channel_access(channel_id=self.channel)}
+            self.assertTrue(statuses & {"inaccessible", "no_access"}, statuses)
 
             # Next selection MUST pick Account 2
             next_selected = await router.select_eligible_account(self.channel)

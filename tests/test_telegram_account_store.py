@@ -13,7 +13,6 @@ from resolver.providers.telegram_account_store import (
     _MEMORY_CHANNEL_ACCESS,
     create_account,
     delete_account,
-    get_accessible_accounts_for_channel,
     get_account,
     list_accounts,
     list_channel_access,
@@ -270,7 +269,7 @@ class TestTelegramAccountStore(BaseTelegramAccountStoreTestCase):
         access_records = list_channel_access(channel_id="-100123456")
         self.assertEqual(len(access_records), 2)
 
-        accessible = get_accessible_accounts_for_channel("-100123456")
+        accessible = [r.account_id for r in access_records if r.access_status == "accessible"]
         self.assertEqual(accessible, ["acc1"])
 
 
@@ -459,12 +458,12 @@ class TestTelegramAccountStore(BaseTelegramAccountStoreTestCase):
             self.assertEqual(channel_records[0].account_id, "worker_mut")
             self.assertEqual(channel_records[0].access_status, "accessible")
 
-            # worker_mut is disabled, so accessible accounts should be empty
-            self.assertEqual(get_accessible_accounts_for_channel("-100987654"), [])
+            # worker_mut is disabled; the flag survives the connection boundary
+            self.assertFalse(get_account("worker_mut").enabled)
 
             # Re-enable worker_mut
             update_account("worker_mut", enabled=True)
-            self.assertEqual(get_accessible_accounts_for_channel("-100987654"), ["worker_mut"])
+            self.assertTrue(get_account("worker_mut").enabled)
 
             # 4. delete_account: persists deletion across connection boundaries
             self.assertTrue(delete_account("worker_mut"))

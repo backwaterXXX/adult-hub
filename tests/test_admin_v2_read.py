@@ -413,11 +413,13 @@ class TestCatalogMetadataOverrides(PgTestCase):
                 "INSERT INTO videos (id,provider,title,plot,performers,categories,tags) "
                 "VALUES ('telegram:10:override','telegram','Source title','Source plot','[]','[]','[]')"
             )
-            from common.video_metadata import update_metadata_state
-            update_metadata_state(self.conn, "telegram:10:override", 0,
-                                  {"title": "Manual title", "plot": "", "studio": "Manual studio",
-                                   "performers": ["Manual actor"], "tags": [],
-                                   "date_released": "2026-02-03"})
+            self.conn.execute(
+                "INSERT INTO video_metadata_overrides (video_id,fields,revision) "
+                "VALUES ('telegram:10:override',%s::jsonb,1)",
+                (json.dumps({"title": "Manual title", "plot": "", "studio": "Manual studio",
+                             "performers": ["Manual actor"], "tags": [],
+                             "date_released": "2026-02-03"}),),
+            )
 
     def test_catalog_search_missing_filter_and_detail_use_effective_values(self):
         query = {

@@ -99,18 +99,6 @@ def redact_sensitive_text(text: str) -> str:
     return redacted
 
 
-def redact_value(key: str, value: Any) -> str:
-    """Return redacted string for sensitive configuration values."""
-    if value is None or str(value).strip() == "":
-        return "<unset>"
-    if key in SECRET_KEYS or any(s in key.lower() for s in ("token", "password", "secret", "hash", "key")):
-        return "[REDACTED]"
-    val_str = str(value)
-    if "://" in val_str:
-        return redact_url_credentials(val_str)
-    return val_str
-
-
 def _check_database_url(env_map: Mapping[str, str], warnings: list[str], summary: dict[str, str]) -> None:
     raw_db = env_map.get("DATABASE_URL") or env_map.get("STANDALONE_DATABASE_URL") or ""
     if not raw_db:

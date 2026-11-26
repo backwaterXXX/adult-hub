@@ -120,13 +120,14 @@ class TestVideoDuplicateJobsWorker(BaseVideoDuplicateJobsTestCase):
 
 
     def test_source_sync_updates_raw_title_but_keeps_manual_override_title(self):
-        from common.video_metadata import load_metadata_state, update_metadata_state
+        from common.video_metadata import load_metadata_state
 
         with self.conn:
-            result = update_metadata_state(
-                self.conn, self.loser, 0, {"title": "Manual title"}, []
+            self.conn.execute(
+                "INSERT INTO video_metadata_overrides (video_id,fields,revision) "
+                "VALUES (%s,%s::jsonb,1)",
+                (self.loser, json.dumps({"title": "Manual title"})),
             )
-            self.assertEqual(result["outcome"], "saved")
         sync.sync_unique_video({
             "id": self.loser,
             "provider": "telegram",

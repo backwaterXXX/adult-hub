@@ -23,7 +23,6 @@ class TestStageRegistry(unittest.TestCase):
         for stage in schedule_stages.registry():
             self.assertIn(stage.schedule_id, {"library-sync", "database-backup"})
             self.assertTrue(stage.name and stage.details)
-            self.assertEqual(schedule_stages.get_stage(stage.id), stage)
             runnable = stage.run_action is not None
             self.assertEqual(runnable, stage.run_unavailable_reason is None)
 

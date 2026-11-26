@@ -26,8 +26,6 @@ from common.config import (
     DEFAULT_RESOLVER_WATCHDOG_FAILURES,
     get_admin_public,
     get_admin_write_token,
-    get_backup_daily_at,
-    get_backup_keep_days,
     get_database_url,
     get_fansdb_api_key,
     get_fansdb_api_url,
@@ -51,7 +49,6 @@ from common.config_migration import (
     audit_configuration,
     import_yaml_sources_to_overlay,
     redact_sensitive_text,
-    redact_value,
 )
 from common.managed_sources import read_overrides
 
@@ -270,11 +267,6 @@ class TestLegacyAliasesAndGetters(unittest.TestCase):
         }):
             self.assertEqual(get_stream_public_url_telegram(), "https://main.example.org")
 
-    def test_backup_helpers(self):
-        with patch.dict(os.environ, {"BACKUP_KEEP_DAYS": "14", "BACKUP_DAILY_AT": "02:15"}):
-            self.assertEqual(get_backup_keep_days(), 14)
-            self.assertEqual(get_backup_daily_at(), "02:15")
-
     def test_resolver_public_url(self):
         with patch.dict(os.environ, {"RESOLVER_PUBLIC_URL": "https://pub.example.org"}):
             self.assertEqual(get_resolver_public_url(), "https://pub.example.org")
@@ -395,13 +387,6 @@ sources:
 
 class TestConfigMigrationAndRedaction(unittest.TestCase):
     """Test audit_configuration and idempotent YAML channel import."""
-
-    def test_redact_value_protects_secrets(self):
-        self.assertEqual(redact_value("DATABASE_URL", "postgresql://user:secret@db:5432/db"), "[REDACTED]")
-        self.assertEqual(redact_value("ADMIN_WRITE_TOKEN", "supersecrettoken"), "[REDACTED]")
-        self.assertEqual(redact_value("TELEGRAM_API_HASH", "abcdef0123456789"), "[REDACTED]")
-        self.assertEqual(redact_value("RESOLVER_PUBLIC_URL", "https://example.com"), "https://example.com")
-        self.assertEqual(redact_value("LOG_LEVEL", "INFO"), "INFO")
 
     def test_audit_configuration_reports_aliases_and_validates(self):
         test_env = {
