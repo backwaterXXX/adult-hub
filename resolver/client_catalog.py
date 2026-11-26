@@ -17,7 +17,7 @@ Strictly enforces response allowlisting:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import logging
@@ -31,21 +31,54 @@ from common.db import Record
 from common.db import table_columns as _db_table_columns
 from common.db import table_names as _db_table_names
 from common.managed_sources import canonical_channel_id, channel_aliases
-from resolver.admin_catalog_queries import (
-    _effective_value,
-    _tables_and_columns,
-)
+from resolver.admin_catalog_queries import CatalogUnavailable, _effective_value
 from resolver.admin_catalog_serialization import _iso_time, _json_value, _row_value
+
+# The catalog schema is fixed for the life of a deployment, but every read
+# previously asked pg_catalog and information_schema for it again (two queries,
+# ~3.5 ms). Snapshot it per database for a short TTL; callers that change the
+# schema clear this cache through ``clear_catalog_count_cache``.
+_SCHEMA_CACHE_TTL_SECONDS = float(os.getenv("CATALOG_SCHEMA_CACHE_TTL_SECONDS", "30"))
+_SCHEMA_CACHE_MAX_ENTRIES = 32
+_SCHEMA_CACHE: dict[str, tuple[float, set[str], set[str]]] = {}
+_SCHEMA_CACHE_LOCK = threading.Lock()
+
+
+def _cached_schema(conn: Any) -> tuple[set[str], set[str]]:
+    """Return the table and ``videos`` column names for this database."""
+    database = str(getattr(getattr(conn, "info", None), "dbname", "") or "")
+    now = time.monotonic()
+    with _SCHEMA_CACHE_LOCK:
+        cached = _SCHEMA_CACHE.get(database)
+        if cached is not None and now - cached[0] < _SCHEMA_CACHE_TTL_SECONDS:
+            return set(cached[1]), set(cached[2])
+    tables = set(_db_table_names(conn))
+    columns = set(_db_table_columns(conn, "videos"))
+    with _SCHEMA_CACHE_LOCK:
+        if len(_SCHEMA_CACHE) >= _SCHEMA_CACHE_MAX_ENTRIES:
+            _SCHEMA_CACHE.clear()
+        _SCHEMA_CACHE[database] = (now, tables, columns)
+    return set(tables), set(columns)
 
 
 def _get_existing_tables(conn: Any) -> set[str]:
     """Return table names in the current schema."""
-    return set(_db_table_names(conn))
+    return _cached_schema(conn)[0]
 
 
 def _get_table_columns(conn: Any, table: str) -> set[str]:
     """Return column names for a table in the current schema."""
+    if table == "videos":
+        return _cached_schema(conn)[1]
     return set(_db_table_columns(conn, table))
+
+
+def _tables_and_columns(conn: Any) -> tuple[set[str], set[str]]:
+    """Return the filtered schema, refusing a catalog without ``videos.id``."""
+    tables, columns = _cached_schema(conn)
+    if "videos" not in tables or "id" not in columns:
+        raise CatalogUnavailable("The catalog table is unavailable.")
+    return tables, columns
 
 logger = logging.getLogger(__name__)
 
@@ -825,23 +858,54 @@ def _lookup_performers_catalog(
 
     unresolved_names = [n for n in clean_names if n.lower() not in result]
     if unresolved_names and "performer_catalog_aliases" in tables:
-        alias_rows = conn.execute(
-            """
-            SELECT a.performer_id, c.name, a.alias
-            FROM performer_catalog_aliases a
-            JOIN performer_catalog c ON c.id = a.performer_id
-            WHERE c.active = true AND a.approved = true AND lower(a.alias) = ANY(%s)
-            """,
-            ([n.lower() for n in unresolved_names],),
-        ).fetchall()
-        for ar in alias_rows:
-            p_id = str(ar[0] if isinstance(ar, (list, tuple)) else ar["performer_id"]).strip()
-            c_name = str(ar[1] if isinstance(ar, (list, tuple)) else ar["name"]).strip()
-            alias = str(ar[2] if isinstance(ar, (list, tuple)) else ar["alias"]).strip()
+        alias_pairs, names_by_id = _resolve_alias_canonical_names(conn, unresolved_names)
+        for p_id, alias in alias_pairs:
+            c_name = names_by_id.get(p_id)
+            if not c_name:
+                continue
             result[alias.lower()] = (p_id, c_name)
             result[p_id] = (p_id, c_name)
 
     return result
+
+
+def _resolve_alias_canonical_names(
+    conn: Any,
+    unresolved_names: Sequence[str],
+) -> tuple[list[tuple[str, str]], dict[str, str]]:
+    """Return approved alias rows and the canonical names of their performers.
+
+    The alias rows are resolved first (covered by ``lower(alias)``) and the
+    canonical performers are read only by primary key. Joining both tables in
+    one statement made the planner hash a full scan of ``performer_catalog``
+    (~15 ms) for every alias hit.
+    """
+    alias_rows = conn.execute(
+        """
+        SELECT a.performer_id, a.alias
+        FROM performer_catalog_aliases a
+        WHERE a.approved = true AND lower(a.alias) = ANY(%s)
+        """,
+        ([n.lower() for n in unresolved_names],),
+    ).fetchall()
+    alias_pairs: list[tuple[str, str]] = []
+    for ar in alias_rows:
+        p_id = str(ar[0] if isinstance(ar, (list, tuple)) else ar["performer_id"]).strip()
+        alias = str(ar[1] if isinstance(ar, (list, tuple)) else ar["alias"]).strip()
+        if p_id and alias:
+            alias_pairs.append((p_id, alias))
+
+    names_by_id: dict[str, str] = {}
+    alias_ids = sorted({p_id for p_id, _ in alias_pairs})
+    if alias_ids:
+        for row in conn.execute(
+            "SELECT id, name FROM performer_catalog WHERE active = true AND id = ANY(%s)",
+            (alias_ids,),
+        ).fetchall():
+            names_by_id[
+                str(row[0] if isinstance(row, (list, tuple)) else row["id"]).strip()
+            ] = str(row[1] if isinstance(row, (list, tuple)) else row["name"]).strip()
+    return alias_pairs, names_by_id
 
 
 # ---------------------------------------------------------------------------
@@ -1130,6 +1194,52 @@ _COUNT_CACHE_MAX_ENTRIES = 512
 _COUNT_CACHE: dict[tuple[str, str, tuple], tuple[float, int]] = {}
 _COUNT_CACHE_LOCK = threading.Lock()
 
+# Taxonomy (categories, studios, tags) and channel counts are catalog-wide: every
+# signed-in user sees the same list, and the sync process only rewrites them
+# between passes. Rebuilding them unnest the whole catalog (~165 ms for
+# categories, ~490 ms for tags) and count channel membership (~295 ms), so a
+# short shared snapshot keeps repeat screen loads off the CPU.
+_CATALOG_RESULT_CACHE_TTL_SECONDS = float(
+    os.getenv("CATALOG_RESULT_CACHE_TTL_SECONDS", "60")
+)
+_CATALOG_RESULT_CACHE_MAX_ENTRIES = 256
+_CATALOG_RESULT_CACHE: dict[tuple, tuple[float, Any]] = {}
+_CATALOG_RESULT_CACHE_LOCK = threading.Lock()
+
+
+def _catalog_result_cache_key(conn: Any, kind: str, *parts: Any) -> tuple:
+    """Identify one catalog-wide read by database, kind and request shape."""
+    database = str(getattr(getattr(conn, "info", None), "dbname", "") or "")
+    return (database, kind, *parts)
+
+
+def _catalog_result_cache_get(key: tuple) -> Any | None:
+    """Return a cached catalog read while it is younger than the TTL."""
+    ttl = _CATALOG_RESULT_CACHE_TTL_SECONDS
+    if ttl <= 0:
+        return None
+    now = time.monotonic()
+    with _CATALOG_RESULT_CACHE_LOCK:
+        cached = _CATALOG_RESULT_CACHE.get(key)
+        if cached is None or now - cached[0] >= ttl:
+            return None
+        value = cached[1]
+    if isinstance(value, PaginatedTaxonomy):
+        return replace(value, items=list(value.items))
+    if isinstance(value, dict):
+        return dict(value)
+    return value
+
+
+def _catalog_result_cache_put(key: tuple, value: Any) -> None:
+    """Remember one catalog-wide read for the next request."""
+    if _CATALOG_RESULT_CACHE_TTL_SECONDS <= 0:
+        return
+    with _CATALOG_RESULT_CACHE_LOCK:
+        if len(_CATALOG_RESULT_CACHE) >= _CATALOG_RESULT_CACHE_MAX_ENTRIES:
+            _CATALOG_RESULT_CACHE.clear()
+        _CATALOG_RESULT_CACHE[key] = (time.monotonic(), value)
+
 
 def _freeze_params(params: Sequence[Any]) -> tuple:
     """Return a hashable form of the query parameters for the cache key."""
@@ -1172,9 +1282,18 @@ def _catalog_total(conn: Any, sql: str, params: Sequence[Any], *, cache: bool = 
 
 
 def clear_catalog_count_cache() -> None:
-    """Drop every cached total so the next list read counts the catalog again."""
+    """Drop every cached catalog read so the next request rebuilds it.
+
+    Covers the exact pagination totals plus the shared taxonomy and channel
+    count snapshots. Tests truncate the catalog between cases, so they call
+    this after every reset.
+    """
     with _COUNT_CACHE_LOCK:
         _COUNT_CACHE.clear()
+    with _CATALOG_RESULT_CACHE_LOCK:
+        _CATALOG_RESULT_CACHE.clear()
+    with _SCHEMA_CACHE_LOCK:
+        _SCHEMA_CACHE.clear()
 
 
 def query_catalog_videos(
@@ -1247,9 +1366,10 @@ def query_catalog_videos(
 
     # Count Query for exact total
     count_sql = f"SELECT count(*) FROM videos v{join_overrides}{where_sql}"
-    # Personalized totals (favorites, watch state) change while the user is
-    # looking at them, so only the shared browse filters reuse a cached count.
-    total_count = _catalog_total(conn, count_sql, params, cache=user_id is None)
+    # The total depends on the signed-in user only when the favorite filter is
+    # applied; the other filters are catalog-wide, so an authenticated browse
+    # still reuses the shared count.
+    total_count = _catalog_total(conn, count_sql, params, cache=is_favorite is None)
 
     # Sorting (omit random; default to latest)
     effective_title_expr = _effective_value("title", columns, has_overrides)
@@ -1448,6 +1568,36 @@ def _fetch_source_aware_channel_counts(
     disabled_channel_ids: set[str] | None = None,
     config_sources: Sequence[dict[str, Any]] | None = None,
 ) -> dict[str, int]:
+    """Return the channel counts, reusing the shared snapshot for one TTL."""
+    disabled_set = _extract_disabled_channel_ids(
+        configured=config_sources,
+        explicit_disabled=disabled_channel_ids,
+    )
+    key = _catalog_result_cache_key(
+        conn, "channel_counts", tuple(sorted(disabled_set))
+    )
+    cached = _catalog_result_cache_get(key)
+    if cached is not None:
+        return cached
+    counts = _fetch_source_aware_channel_counts_uncached(
+        conn,
+        tables,
+        columns,
+        disabled_channel_ids=disabled_channel_ids,
+        config_sources=config_sources,
+    )
+    _catalog_result_cache_put(key, dict(counts))
+    return counts
+
+
+def _fetch_source_aware_channel_counts_uncached(
+    conn: Any,
+    tables: set[str],
+    columns: set[str],
+    *,
+    disabled_channel_ids: set[str] | None = None,
+    config_sources: Sequence[dict[str, Any]] | None = None,
+) -> dict[str, int]:
     """Calculate deduplicated canonical video counts grouped by canonical channel ID."""
     if hasattr(conn, "row_factory") and conn.row_factory is not Record:
         conn.row_factory = Record
@@ -1483,10 +1633,9 @@ def _fetch_source_aware_channel_counts(
           AND vs.channel_id != ''
         """
 
-    # In psycopg, literal percent inside parameter-bound SQL must be doubled (%%)
-    # when parameters are sent. For parameterless execution, single percent (%) is expected.
-    has_params = bool(vis_params)
-    like_pattern = "telegram:%%" if has_params else "telegram:%"
+    # The statements below always carry parameters (possibly an empty list), so
+    # every literal percent has to be doubled for psycopg's placeholder parser.
+    like_pattern = "telegram:%%"
 
     sql = f"""
     WITH visible_videos AS (
@@ -1506,29 +1655,33 @@ def _fetch_source_aware_channel_counts(
         WHERE channel_id IS NOT NULL AND channel_id != ''
         {source_branch}
     )
-    SELECT DISTINCT video_id, channel_id
+    SELECT
+        CASE
+            WHEN btrim(channel_id) LIKE '-100%%' THEN substr(btrim(channel_id), 5)
+            ELSE ltrim(btrim(channel_id), '-')
+        END AS canonical_channel_id,
+        count(DISTINCT video_id) AS video_count
     FROM all_memberships
+    GROUP BY 1
     """
 
-    if has_params:
-        rows = conn.execute(sql, vis_params).fetchall()
-    else:
-        rows = conn.execute(sql).fetchall()
-
-    # Deduplicate canonical video and canonical channel across raw alias forms
-    canon_video_pairs: set[tuple[str, str]] = set()
-    for r in rows:
-        vid = str(r[0] if isinstance(r, (list, tuple)) else r["video_id"]).strip()
-        cid = str(r[1] if isinstance(r, (list, tuple)) else r["channel_id"]).strip()
-        if vid and cid:
-            canon_c = canonical_channel_id(cid)
-            if disabled_canons and (canon_c in disabled_canons or cid in disabled_set):
-                continue
-            canon_video_pairs.add((vid, canon_c))
+    # The aggregation runs in PostgreSQL: a catalog of this size has tens of
+    # thousands of (video, channel) pairs, and streaming them to Python just to
+    # count them dominated the request (~295 ms). ``canonical_channel_id`` is a
+    # pure string normalisation, so the SQL expression mirrors the Python helper.
+    rows = conn.execute(sql, vis_params).fetchall()
 
     canon_counts: dict[str, int] = {}
-    for _, canon_cid in canon_video_pairs:
-        canon_counts[canon_cid] = canon_counts.get(canon_cid, 0) + 1
+    for r in rows:
+        canon_cid = str(
+            r[0] if isinstance(r, (list, tuple)) else r["canonical_channel_id"]
+        ).strip()
+        count = int(r[1] if isinstance(r, (list, tuple)) else r["video_count"])
+        if not canon_cid:
+            continue
+        if disabled_canons and canon_cid in disabled_canons:
+            continue
+        canon_counts[canon_cid] = canon_counts.get(canon_cid, 0) + count
 
     return canon_counts
 
@@ -1713,7 +1866,46 @@ def query_catalog_channel_detail(
 # Taxonomy Queries: Categories, Studios, Tags, Performers
 # ---------------------------------------------------------------------------
 
+def _taxonomy_total_from_rows(
+    rows: Sequence[Any],
+    offset: int,
+    conn: Any,
+    count_sql: str,
+    count_params: Sequence[Any],
+) -> int:
+    """Read the windowed total, falling back to a count for pages past the end."""
+    if rows:
+        first = rows[0]
+        return int(first[2] if isinstance(first, (list, tuple)) else first["total_count"])
+    if offset > 0:
+        total_row = conn.execute(count_sql, count_params).fetchone()
+        return int(total_row[0] if total_row else 0)
+    return 0
+
+
 def query_catalog_categories(
+    conn: Any,
+    *,
+    q: str | None = None,
+    offset: int = 0,
+    limit: int = 100,
+) -> PaginatedTaxonomy:
+    """List video categories, reusing the shared snapshot for one TTL."""
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    disabled_set = _extract_disabled_channel_ids()
+    key = _catalog_result_cache_key(
+        conn, "categories", q or "", offset, limit, tuple(sorted(disabled_set))
+    )
+    cached = _catalog_result_cache_get(key)
+    if cached is not None:
+        return cached
+    result = _query_catalog_categories_uncached(conn, q=q, offset=offset, limit=limit)
+    _catalog_result_cache_put(key, result)
+    return result
+
+
+def _query_catalog_categories_uncached(
     conn: Any,
     *,
     q: str | None = None,
@@ -1756,25 +1948,27 @@ def query_catalog_categories(
         ) cat
         WHERE trim(cat.name) <> '' {and_sql}
     """
-    total_row = conn.execute(count_sql, params + and_params).fetchone()
-    total_count = int(total_row[0] if total_row else 0)
-
+    # One unnest/group pass returns the page and the total together; the
+    # separate ``COUNT(DISTINCT ...)`` query doubled the work for every call.
     items_sql = f"""
-        SELECT
-            trim(cat.name) AS name,
-            COUNT(DISTINCT cat.id) AS count
+        SELECT name, item_count, count(*) OVER () AS total_count
         FROM (
             SELECT
-                v.id,
-                jsonb_array_elements_text(
-                    CASE WHEN jsonb_typeof({cat_expr}) = 'array' THEN {cat_expr} ELSE '[]'::jsonb END
-                ) AS name
-            FROM videos v{join_overrides}
-            {where_sql}
-        ) cat
-        WHERE trim(cat.name) <> '' {and_sql}
-        GROUP BY trim(cat.name)
-        ORDER BY count DESC, name ASC
+                trim(cat.name) AS name,
+                COUNT(DISTINCT cat.id) AS item_count
+            FROM (
+                SELECT
+                    v.id,
+                    jsonb_array_elements_text(
+                        CASE WHEN jsonb_typeof({cat_expr}) = 'array' THEN {cat_expr} ELSE '[]'::jsonb END
+                    ) AS name
+                FROM videos v{join_overrides}
+                {where_sql}
+            ) cat
+            WHERE trim(cat.name) <> '' {and_sql}
+            GROUP BY trim(cat.name)
+        ) grouped
+        ORDER BY item_count DESC, name ASC
         LIMIT %s OFFSET %s
     """
     query_params = params + and_params + [limit, offset]
@@ -1783,10 +1977,11 @@ def query_catalog_categories(
     items = [
         TaxonomyItem(
             name=str(r[0] if isinstance(r, (list, tuple)) else r["name"]).strip(),
-            count=int(r[1] if isinstance(r, (list, tuple)) else r["count"]),
+            count=int(r[1] if isinstance(r, (list, tuple)) else r["item_count"]),
         )
         for r in rows
     ]
+    total_count = _taxonomy_total_from_rows(rows, offset, conn, count_sql, params + and_params)
 
     return PaginatedTaxonomy(
         items=items,
@@ -1798,6 +1993,28 @@ def query_catalog_categories(
 
 
 def query_catalog_studios(
+    conn: Any,
+    *,
+    q: str | None = None,
+    offset: int = 0,
+    limit: int = 100,
+) -> PaginatedTaxonomy:
+    """List studios, reusing the shared snapshot for one TTL."""
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    disabled_set = _extract_disabled_channel_ids()
+    key = _catalog_result_cache_key(
+        conn, "studios", q or "", offset, limit, tuple(sorted(disabled_set))
+    )
+    cached = _catalog_result_cache_get(key)
+    if cached is not None:
+        return cached
+    result = _query_catalog_studios_uncached(conn, q=q, offset=offset, limit=limit)
+    _catalog_result_cache_put(key, result)
+    return result
+
+
+def _query_catalog_studios_uncached(
     conn: Any,
     *,
     q: str | None = None,
@@ -1832,17 +2049,17 @@ def query_catalog_studios(
         FROM videos v{join_overrides}
         {where_sql}
     """
-    total_row = conn.execute(count_sql, params).fetchone()
-    total_count = int(total_row[0] if total_row else 0)
-
     items_sql = f"""
-        SELECT
-            trim({studio_expr}::text) AS name,
-            COUNT(DISTINCT v.id) AS count
-        FROM videos v{join_overrides}
-        {where_sql}
-        GROUP BY trim({studio_expr}::text)
-        ORDER BY count DESC, name ASC
+        SELECT name, item_count, count(*) OVER () AS total_count
+        FROM (
+            SELECT
+                trim({studio_expr}::text) AS name,
+                COUNT(DISTINCT v.id) AS item_count
+            FROM videos v{join_overrides}
+            {where_sql}
+            GROUP BY trim({studio_expr}::text)
+        ) grouped
+        ORDER BY item_count DESC, name ASC
         LIMIT %s OFFSET %s
     """
     query_params = params + [limit, offset]
@@ -1851,10 +2068,11 @@ def query_catalog_studios(
     items = [
         TaxonomyItem(
             name=str(r[0] if isinstance(r, (list, tuple)) else r["name"]).strip(),
-            count=int(r[1] if isinstance(r, (list, tuple)) else r["count"]),
+            count=int(r[1] if isinstance(r, (list, tuple)) else r["item_count"]),
         )
         for r in rows
     ]
+    total_count = _taxonomy_total_from_rows(rows, offset, conn, count_sql, params)
 
     return PaginatedTaxonomy(
         items=items,
@@ -1866,6 +2084,28 @@ def query_catalog_studios(
 
 
 def query_catalog_tags(
+    conn: Any,
+    *,
+    q: str | None = None,
+    offset: int = 0,
+    limit: int = 100,
+) -> PaginatedTaxonomy:
+    """List tags, reusing the shared snapshot for one TTL."""
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    disabled_set = _extract_disabled_channel_ids()
+    key = _catalog_result_cache_key(
+        conn, "tags", q or "", offset, limit, tuple(sorted(disabled_set))
+    )
+    cached = _catalog_result_cache_get(key)
+    if cached is not None:
+        return cached
+    result = _query_catalog_tags_uncached(conn, q=q, offset=offset, limit=limit)
+    _catalog_result_cache_put(key, result)
+    return result
+
+
+def _query_catalog_tags_uncached(
     conn: Any,
     *,
     q: str | None = None,
@@ -1908,25 +2148,25 @@ def query_catalog_tags(
         ) tag
         WHERE trim(tag.name) <> '' {and_sql}
     """
-    total_row = conn.execute(count_sql, params + and_params).fetchone()
-    total_count = int(total_row[0] if total_row else 0)
-
     items_sql = f"""
-        SELECT
-            trim(tag.name) AS name,
-            COUNT(DISTINCT tag.id) AS count
+        SELECT name, item_count, count(*) OVER () AS total_count
         FROM (
             SELECT
-                v.id,
-                jsonb_array_elements_text(
-                    CASE WHEN jsonb_typeof({tags_expr}) = 'array' THEN {tags_expr} ELSE '[]'::jsonb END
-                ) AS name
-            FROM videos v{join_overrides}
-            {where_sql}
-        ) tag
-        WHERE trim(tag.name) <> '' {and_sql}
-        GROUP BY trim(tag.name)
-        ORDER BY count DESC, name ASC
+                trim(tag.name) AS name,
+                COUNT(DISTINCT tag.id) AS item_count
+            FROM (
+                SELECT
+                    v.id,
+                    jsonb_array_elements_text(
+                        CASE WHEN jsonb_typeof({tags_expr}) = 'array' THEN {tags_expr} ELSE '[]'::jsonb END
+                    ) AS name
+                FROM videos v{join_overrides}
+                {where_sql}
+            ) tag
+            WHERE trim(tag.name) <> '' {and_sql}
+            GROUP BY trim(tag.name)
+        ) grouped
+        ORDER BY item_count DESC, name ASC
         LIMIT %s OFFSET %s
     """
     query_params = params + and_params + [limit, offset]
@@ -1935,10 +2175,11 @@ def query_catalog_tags(
     items = [
         TaxonomyItem(
             name=str(r[0] if isinstance(r, (list, tuple)) else r["name"]).strip(),
-            count=int(r[1] if isinstance(r, (list, tuple)) else r["count"]),
+            count=int(r[1] if isinstance(r, (list, tuple)) else r["item_count"]),
         )
         for r in rows
     ]
+    total_count = _taxonomy_total_from_rows(rows, offset, conn, count_sql, params + and_params)
 
     return PaginatedTaxonomy(
         items=items,
