@@ -68,7 +68,7 @@ class ThumbnailFallbackTests(unittest.TestCase):
                 }.get(key, default)),
                 time=mock.Mock())), \
                 mock.patch("sync.thumbnails.download_image_if_missing", fake_download):
-            self.assertTrue(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", dest))
+            self.assertEqual(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", dest), "stored")
 
         self.assertEqual(captured["url"], "http://resolver:8090/admin/api/thumb"
                                           "?provider=telegram&ref=-100%3A1%3A2")
@@ -79,7 +79,8 @@ class ThumbnailFallbackTests(unittest.TestCase):
     def test_missing_thumbnail_is_not_a_fallback(self):
         conn = _RowConnection("")
         with mock.patch("sync.thumbnails.download_image_if_missing") as download:
-            self.assertFalse(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", Path("/x.jpg")))
+            self.assertEqual(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", Path("/x.jpg")),
+                             "unavailable")
         download.assert_not_called()
 
     def test_preview_bytes_are_validated_and_stored_next_to_the_stream(self):
@@ -103,7 +104,7 @@ class ThumbnailFallbackTests(unittest.TestCase):
                 os=mock.Mock(getenv=lambda key, default=None: default),
                 time=mock.Mock())), \
                 mock.patch("httpx.Client", lambda **_kwargs: _FakeClient(buffer.getvalue())):
-            self.assertTrue(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", dest))
+            self.assertEqual(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", dest), "stored")
 
         self.assertTrue(dest.is_file())
         self.assertGreater(dest.stat().st_size, 1000)
@@ -114,7 +115,21 @@ class ThumbnailFallbackTests(unittest.TestCase):
                 os=mock.Mock(getenv=lambda key, default=None: default),
                 time=mock.Mock())), \
                 mock.patch("sync.thumbnails.download_image_if_missing", return_value=False):
-            self.assertFalse(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", Path("/x.jpg")))
+            self.assertEqual(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", Path("/x.jpg")),
+                             "error")
+
+    def test_a_missing_preview_is_reported_as_terminal(self):
+        import httpx
+
+        response = httpx.Response(404, request=httpx.Request("GET", "http://resolver:8090/admin/api/thumb"))
+        conn = _RowConnection("/admin/api/thumb?provider=telegram&ref=-100%3A1%3A2")
+        with mock.patch.object(handlers, "_core", SimpleNamespace(
+                os=mock.Mock(getenv=lambda key, default=None: default),
+                time=mock.Mock())), \
+                mock.patch("httpx.Client", side_effect=httpx.HTTPStatusError(
+                    "404", request=response.request, response=response)):
+            self.assertEqual(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", Path("/x.jpg")),
+                             "missing")
 
 
 class ArtworkGenerateFallbackTests(unittest.TestCase):
@@ -122,6 +137,7 @@ class ArtworkGenerateFallbackTests(unittest.TestCase):
 
     def _run(self, extract_result, fallback_result):
         conn = mock.Mock()
+        conn.execute.return_value.fetchone.return_value = ("Chasing the Sun", "BelAmi")
         progress = mock.Mock()
         core = SimpleNamespace(os=mock.Mock(), time=mock.Mock(), _record_job_progress=progress)
         dest = Path("/media/adult/item.jpg")
@@ -139,20 +155,74 @@ class ArtworkGenerateFallbackTests(unittest.TestCase):
         return result, success, fallback
 
     def test_undecodable_stream_still_gets_a_poster(self):
-        result, success, fallback = self._run((False, "ffmpeg failed"), True)
+        result, success, fallback = self._run((False, "ffmpeg failed"), "stored")
 
         self.assertTrue(success)
         self.assertEqual(result["local_state"], "artwork_from_thumbnail")
         fallback.assert_called_once()
+
+    def test_terminal_items_get_a_generated_poster(self):
+        with mock.patch("common.artwork_placeholder.write_placeholder_artwork", return_value=True) as write:
+            result, success, _fallback = self._run((False, "ffmpeg failed"), "missing")
+
+        self.assertTrue(success)
+        self.assertEqual(result["local_state"], "artwork_placeholder")
+        self.assertEqual(write.call_args.kwargs["title"], "Chasing the Sun")
+        self.assertEqual(write.call_args.kwargs["studio"], "BelAmi")
 
     def test_without_a_usable_preview_the_job_still_fails(self):
         import httpx
 
         with mock.patch.object(httpx, "get", side_effect=httpx.ConnectError("no resolver")):
             with self.assertRaises(RuntimeError) as raised:
-                self._run((False, "ffmpeg failed"), False)
+                self._run((False, "ffmpeg failed"), "error")
 
         self.assertIn("Failed to generate artwork", str(raised.exception))
+
+
+
+class PlaceholderArtworkTests(unittest.TestCase):
+    def test_initials_never_come_back_empty(self):
+        from common.artwork_placeholder import placeholder_initials
+
+        self.assertEqual(placeholder_initials("Chasing the Sun"), "CT")
+        self.assertEqual(placeholder_initials("Men"), "M")
+        self.assertEqual(placeholder_initials(""), "?")
+        self.assertEqual(placeholder_initials("---"), "?")
+
+    def test_placeholder_is_a_readable_non_black_poster(self):
+        import tempfile
+
+        from PIL import Image
+
+        from common.artwork_placeholder import write_placeholder_artwork
+        from common.image_utils import is_black_image
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        dest = Path(directory.name) / "nested" / "item.jpg"
+
+        self.assertTrue(write_placeholder_artwork(dest, title="Chasing the Sun", studio="BelAmi"))
+        data = dest.read_bytes()
+        self.assertFalse(is_black_image(data))
+        with Image.open(dest) as image:
+            self.assertEqual(image.size, (640, 360))
+            self.assertEqual(image.mode, "RGB")
+
+    def test_a_symlink_destination_is_refused(self):
+        import tempfile
+
+        from common.artwork_placeholder import write_placeholder_artwork
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        target = Path(directory.name) / "real.jpg"
+        target.write_bytes(b"x")
+        link = Path(directory.name) / "link.jpg"
+        link.symlink_to(target)
+
+        self.assertFalse(write_placeholder_artwork(link, title="Anything"))
+        self.assertEqual(target.read_bytes(), b"x")
 
 
 if __name__ == "__main__":

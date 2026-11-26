@@ -340,18 +340,23 @@ def _thumbnail_http_get(url: str, timeout: float = 15.0, **_kwargs) -> bytes:
         return response.content
 
 
-def _artwork_thumbnail_fallback(conn, video_id: str, dest) -> bool:
+def _artwork_thumbnail_fallback(conn, video_id: str, dest) -> str:
     """Store the provider preview when ffmpeg cannot decode the stream.
 
     Telegram keeps some files as undecodable previews, so frame extraction fails
     forever and those items stay without a poster. The catalog already holds a
     thumbnail URL for them (usually our own ``/admin/api/thumb`` preview proxy),
     and downloading that image needs no decoder at all.
+
+    Returns ``"stored"``, ``"missing"`` when the provider had a thumbnail but no
+    preview at all (the terminal case that earns a generated poster),
+    ``"unavailable"`` when the item never had a thumbnail to try, or ``"error"``
+    when the lookup failed for a transient reason and the job should be retried.
     """
     row = conn.execute("SELECT thumbnail FROM videos WHERE id=%s", (video_id,)).fetchone()
     raw_url = str(row[0] or "").strip() if row else ""
     if not raw_url:
-        return False
+        return "unavailable"
     try:
         from sync.thumbnails import (
             ThumbnailServices,
@@ -371,10 +376,20 @@ def _artwork_thumbnail_fallback(conn, video_id: str, dest) -> bool:
             # The preview is a retry path, not a cache: never skip it on a marker.
             fail_ttl_seconds=0,
         )
-        return download_image_if_missing(fetch_url, dest, services=services)
-    except Exception:
+        if download_image_if_missing(fetch_url, dest, services=services):
+            return "stored"
+        return "error"
+    except Exception as exc:
+        if _is_missing_preview_error(exc):
+            return "missing"
         logger.debug("Artwork thumbnail fallback failed for %s", video_id, exc_info=True)
-        return False
+        return "error"
+
+
+def _is_missing_preview_error(exc: Exception) -> bool:
+    """True when the provider answered that this item has no preview at all."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status in (404, 410)
 
 
 def _action_artwork_generate(conn, job_id, payload, media_dir, services):
@@ -399,8 +414,17 @@ def _action_artwork_generate(conn, job_id, payload, media_dir, services):
         extract_video_frame, stream_url, dest, offset=offset, timeout=timeout,
     )
     if not success:
-        if _artwork_thumbnail_fallback(conn, video_id, dest):
+        preview = _artwork_thumbnail_fallback(conn, video_id, dest)
+        if preview == "stored":
             return {"local_state": "artwork_from_thumbnail", "variant": "thumbnail"}, True
+        if preview == "missing":
+            from common.artwork_placeholder import write_placeholder_artwork
+
+            source = conn.execute("SELECT title, studio FROM videos WHERE id=%s", (video_id,)).fetchone()
+            title = str(source[0] or "") if source else ""
+            studio = str(source[1] or "") if source else ""
+            if write_placeholder_artwork(dest, title=title, studio=studio):
+                return {"local_state": "artwork_placeholder"}, True
         try:
             import httpx
             probe = httpx.get(f"{api_base}/play/{quote(video_id, safe='')}/variants", timeout=3.0)
