@@ -137,6 +137,10 @@ class PgTestCase(unittest.TestCase):
 
     def setUp(self):
         reset_db(self.db_url)
+        # The catalog list caches exact totals per filter set; a fresh database
+        # per test must not inherit a total counted for the previous fixture.
+        from resolver.client_catalog import clear_catalog_count_cache
+        clear_catalog_count_cache()
         self.conn = db.connect(self.db_url)
         # Most DB tests focus on unrelated catalog behavior. Give those
         # fixtures a valid, known duration when they omit the field; tests

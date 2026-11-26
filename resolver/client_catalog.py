@@ -19,6 +19,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import logging
+import os
+import threading
+import time
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
@@ -1120,6 +1123,58 @@ def _performer_lookup_keys(rows: Any) -> tuple[set[str], set[str]]:
     return all_perf_names, all_perf_ids
 
 
+_COUNT_CACHE_TTL_SECONDS = float(os.getenv("CATALOG_COUNT_CACHE_TTL_SECONDS", "30"))
+_COUNT_CACHE_MAX_ENTRIES = 512
+_COUNT_CACHE: dict[tuple[str, str, tuple], tuple[float, int]] = {}
+_COUNT_CACHE_LOCK = threading.Lock()
+
+
+def _freeze_params(params: Sequence[Any]) -> tuple:
+    """Return a hashable form of the query parameters for the cache key."""
+    frozen = []
+    for value in params:
+        if isinstance(value, (list, tuple, set)):
+            frozen.append(tuple(value))
+        else:
+            frozen.append(value)
+    return tuple(frozen)
+
+
+def _catalog_total(conn: Any, sql: str, params: Sequence[Any], *, cache: bool = True) -> int:
+    """Return the exact row count for one filter set, reusing a short-lived result.
+
+    The page itself is index-ordered (~0.2 ms) while the ``count(*)`` behind the
+    pagination metadata scans the filtered catalog (~13 ms on 28k rows), so the
+    total dominates the request. A client paging through the same filter set asks
+    for the same total repeatedly, so a short TTL removes that work without
+    changing the contract: only the total is cached, and only for
+    ``CATALOG_COUNT_CACHE_TTL_SECONDS`` (30 s by default). A total written by
+    the sync process therefore trails the catalog by at most one TTL.
+    """
+    ttl = _COUNT_CACHE_TTL_SECONDS if cache else 0.0
+    if ttl <= 0:
+        return int(conn.execute(sql, params).fetchone()[0])
+    database = str(getattr(getattr(conn, "info", None), "dbname", "") or "")
+    key = (database, sql, _freeze_params(params))
+    now = time.monotonic()
+    with _COUNT_CACHE_LOCK:
+        cached = _COUNT_CACHE.get(key)
+        if cached is not None and now - cached[0] < ttl:
+            return cached[1]
+    total = int(conn.execute(sql, params).fetchone()[0])
+    with _COUNT_CACHE_LOCK:
+        if len(_COUNT_CACHE) >= _COUNT_CACHE_MAX_ENTRIES:
+            _COUNT_CACHE.clear()
+        _COUNT_CACHE[key] = (now, total)
+    return total
+
+
+def clear_catalog_count_cache() -> None:
+    """Drop every cached total so the next list read counts the catalog again."""
+    with _COUNT_CACHE_LOCK:
+        _COUNT_CACHE.clear()
+
+
 def query_catalog_videos(
     conn: Any,
     *,
@@ -1190,7 +1245,9 @@ def query_catalog_videos(
 
     # Count Query for exact total
     count_sql = f"SELECT count(*) FROM videos v{join_overrides}{where_sql}"
-    total_count = int(conn.execute(count_sql, params).fetchone()[0])
+    # Personalized totals (favorites, watch state) change while the user is
+    # looking at them, so only the shared browse filters reuse a cached count.
+    total_count = _catalog_total(conn, count_sql, params, cache=user_id is None)
 
     # Sorting (omit random; default to latest)
     effective_title_expr = _effective_value("title", columns, has_overrides)
