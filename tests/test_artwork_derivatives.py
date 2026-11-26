@@ -35,6 +35,31 @@ class ArtworkDerivativeTests(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
+    def test_an_unmounted_cache_dir_is_not_the_derivative_store(self) -> None:
+        # The image ships an empty /cache; only a mount carries the shared files.
+        cache_root = Path(self.tmp.name) / "cache"
+        cache_root.mkdir()
+        data_root = Path(self.tmp.name) / "data"
+        data_root.mkdir()
+        with mock.patch.dict(os.environ, {"ARTWORK_DERIVATIVE_DIR": ""}), \
+                mock.patch.object(derivatives, "_CACHE_ROOT", cache_root), \
+                mock.patch.object(derivatives, "_DATA_ROOT", data_root), \
+                mock.patch("resolver.artwork_derivatives.os.path.ismount", return_value=False):
+            self.assertEqual(derivatives.derivatives_dir(),
+                             data_root / "cache" / "artwork-derivatives")
+
+    def test_a_mounted_cache_volume_wins_over_the_data_root(self) -> None:
+        cache_root = Path(self.tmp.name) / "cache"
+        cache_root.mkdir()
+        data_root = Path(self.tmp.name) / "data"
+        data_root.mkdir()
+        with mock.patch.dict(os.environ, {"ARTWORK_DERIVATIVE_DIR": ""}), \
+                mock.patch.object(derivatives, "_CACHE_ROOT", cache_root), \
+                mock.patch.object(derivatives, "_DATA_ROOT", data_root), \
+                mock.patch("resolver.artwork_derivatives.os.path.ismount", return_value=True):
+            self.assertEqual(derivatives.derivatives_dir(),
+                             cache_root / "artwork-derivatives")
+
     def test_smaller_variant_is_jpeg_at_requested_width(self) -> None:
         encoded = derivatives.get_derivative(_png(800, 1200), 400)
 

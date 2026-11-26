@@ -38,16 +38,35 @@ _PRUNE_INTERVAL_SECONDS = 300.0
 _STATE_LOCK = threading.Lock()
 
 
+_CACHE_ROOT = Path("/cache")
+_DATA_ROOT = Path("/data")
+
+
+def _shared_cache_dir() -> Path | None:
+    """Return the derivative directory of a shared volume, when this host has one.
+
+    The image ships an empty ``/cache``, so its presence proves nothing: only a
+    mount carries what the resolver serves. Without the mount check the sync pass
+    pre-generated posters into the container layer, where nothing ever read them.
+    Containers that mount the data volume instead (sync writes ``/data/cache``)
+    reach the same host files through it.
+    """
+    if _CACHE_ROOT.is_dir() and os.path.ismount(_CACHE_ROOT):
+        return _CACHE_ROOT / "artwork-derivatives"
+    if _DATA_ROOT.is_dir():
+        return _DATA_ROOT / "cache" / "artwork-derivatives"
+    return None
+
+
 def derivatives_dir() -> Path:
     """Return the derivative cache directory, creating it when needed."""
     configured = os.getenv("ARTWORK_DERIVATIVE_DIR", "").strip()
     if configured:
         directory = Path(configured)
-    elif Path("/cache").is_dir():
-        # The resolver container mounts the shared cache volume here.
-        directory = Path("/cache") / "artwork-derivatives"
     else:
-        directory = Path(__file__).resolve().parents[1] / "data" / "cache" / "artwork-derivatives"
+        directory = _shared_cache_dir() or (
+            Path(__file__).resolve().parents[1] / "data" / "cache" / "artwork-derivatives"
+        )
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 

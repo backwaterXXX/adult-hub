@@ -134,6 +134,10 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ./config.yaml:/config/config.yaml:ro
+      # The same host directory the resolver serves as /cache: the sync pass
+      # pre-generates poster derivatives, and without the mount the image's empty
+      # /cache swallowed them, so every client decoded the full-resolution poster.
+      - ./data/cache:/cache
       - ${MEDIA_DIR:-${MEDIA_PATH:-./media/adult}}:/media/adult
       - ./data:/data
 
