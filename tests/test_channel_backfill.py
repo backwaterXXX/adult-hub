@@ -53,6 +53,10 @@ class ChannelReconciliationTests(PgTestCase):
                 "('telegram:-1002:5:5','telegram','Five',900,1,'Beta',NULL),"
                 # a label from a channel this item does not belong to
                 "('telegram:-1002:7:7','telegram','Seven',900,1,'Alpha',''),"
+                # a channel dropped from the config kept only its handle
+                "('telegram:abandoned:8:8','telegram','Eight',900,1,'abandoned',''),"
+                # a channel named after the studio it publishes keeps the studio
+                "('telegram:belami:9:9','telegram','Nine',900,1,'belami',''),"
                 "('other:6:6','other','Six',900,1,'Alpha','')"
             )
             self.conn.execute(
@@ -73,7 +77,7 @@ class ChannelReconciliationTests(PgTestCase):
         labelled, cleared = reconcile_channel_names(self.conn, self.config)
 
         self.assertEqual(labelled, 6)
-        self.assertEqual(cleared, 3)
+        self.assertEqual(cleared, 4)
         self.assertEqual(self._row("telegram:-1001:1:1"), ("", "Alpha"))
         self.assertEqual(self._row("telegram:-1002:5:5"), ("", "Beta"))
         self.assertEqual(self._row("telegram:-1001:3:3"), ("BelAmi", "Alpha"))
@@ -88,6 +92,16 @@ class ChannelReconciliationTests(PgTestCase):
         reconcile_channel_names(self.conn, self.config)
 
         self.assertEqual(self._row("other:6:6"), ("Alpha", ""))
+
+    def test_an_abandoned_channel_handle_leaves_the_studio(self):
+        reconcile_channel_names(self.conn, self.config)
+
+        self.assertEqual(self._row("telegram:abandoned:8:8"), ("", ""))
+
+    def test_a_channel_named_after_its_studio_keeps_it(self):
+        reconcile_channel_names(self.conn, self.config)
+
+        self.assertEqual(self._row("telegram:belami:9:9"), ("belami", ""))
 
     def test_a_second_pass_changes_nothing(self):
         reconcile_channel_names(self.conn, self.config)
@@ -106,6 +120,42 @@ class MissingMetadataRuleTests(unittest.TestCase):
 
         self.assertNotIn("studio", unmatched)
         self.assertIn("studio", matched)
+
+
+class ChannelLabelHeuristicTests(unittest.TestCase):
+    def test_a_channel_title_is_not_a_studio(self):
+        from sync.studio_tags import looks_like_channel_label
+
+        self.assertTrue(looks_like_channel_label("Lukayan SHOW"))
+        self.assertTrue(looks_like_channel_label("naughtyandhorny"))
+        self.assertTrue(looks_like_channel_label("telegram"))
+
+    def test_a_known_production_studio_is_not_a_channel_label(self):
+        from sync.studio_tags import looks_like_channel_label
+
+        self.assertFalse(looks_like_channel_label("BelAmi"))
+        self.assertFalse(looks_like_channel_label("Men.com"))
+
+    def test_an_empty_value_is_not_a_label(self):
+        from sync.studio_tags import looks_like_channel_label
+
+        self.assertFalse(looks_like_channel_label(""))
+        self.assertFalse(looks_like_channel_label(None))
+
+
+class OwnChannelLabelTests(unittest.TestCase):
+    def test_a_value_equal_to_the_items_channel_is_a_channel_name(self):
+        from sync.video_persistence import _is_own_channel_label
+
+        video = {"channel_name": "Lukayan SHOW"}
+        self.assertTrue(_is_own_channel_label("lukayan show", video))
+        self.assertFalse(_is_own_channel_label("BelAmi", video))
+        self.assertFalse(_is_own_channel_label("Lukayan SHOW", {}))
+
+    def test_a_studio_named_channel_keeps_its_studio(self):
+        from sync.video_persistence import _is_own_channel_label
+
+        self.assertFalse(_is_own_channel_label("Men.com", {"channel_name": "Men.com"}))
 
 
 if __name__ == "__main__":

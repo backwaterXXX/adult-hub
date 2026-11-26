@@ -6,6 +6,7 @@ import os
 from common import db
 from common.duration import passes_minimum_video_duration
 from common.performer_catalog import normalize_name
+from sync.studio_tags import looks_like_channel_label
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -465,13 +466,27 @@ def _is_telegram_channel_studio(studio_val: str) -> bool:
     ))
 
 
+def _is_own_channel_label(studio_val: str, video: Dict[str, Any]) -> bool:
+    """True when the studio value is just this item's channel name.
+
+    Channels removed from the configuration no longer contribute a hint, so the
+    only trace of the old copy is the value matching ``channel_name``. Known
+    production studios are exempt: a channel may legitimately be named after the
+    studio it publishes.
+    """
+    channel_name = str(video.get("channel_name") or "").strip()
+    if not channel_name or studio_val.strip().casefold() != channel_name.casefold():
+        return False
+    return looks_like_channel_label(studio_val)
+
+
 def _apply_studio_fields(video: Dict[str, Any], title: str, tags, provider: str, studio_val: str,
                         services: VideoPersistenceServices):
     """Set studio/channel on the video dict. Returns (tags, studio value stored in the DB)."""
     tags, prod_names = _detect_studio_names(video, title, tags)
     if provider == "telegram":
         warn_if_channel_hints_missing(services.logger if services else None, is_configured=True)
-    is_tg_chan = _is_telegram_channel_studio(studio_val)
+    is_tg_chan = _is_telegram_channel_studio(studio_val) or _is_own_channel_label(studio_val, video)
     if is_tg_chan:
         video["channel"] = studio_val
         video["studio"] = prod_names[0] if prod_names else ""

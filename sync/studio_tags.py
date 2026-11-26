@@ -96,6 +96,26 @@ def detect_production_studios(title: str, existing_tags: Optional[Iterable[str]]
     return sorted(detected)
 
 
+CHANNEL_LABEL_VALUES = frozenset({"telegram", "t.me", "telegram (t.me)"})
+
+
+def looks_like_channel_label(value: str) -> bool:
+    """Return True when the value cannot be a production studio.
+
+    Telegram sources used to copy the channel title into ``videos.studio``. The
+    channel label is now a column of its own, but old rows (and abandoned
+    channels, whose label is no longer in the configuration) still carry it, so
+    every writer and the maintenance pass need the same verdict: a value that
+    names no known production studio is a channel label, never a studio.
+    """
+    label = str(value or "").strip()
+    if not label:
+        return False
+    if label.casefold() in CHANNEL_LABEL_VALUES:
+        return True
+    return not detect_production_studio_names(label)
+
+
 def detect_production_studio_names(title: str, existing_tags: Optional[Iterable[str]] = None) -> List[str]:
     """Detect known production studios from title and raw tags.
 
