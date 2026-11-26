@@ -10,6 +10,32 @@ from unittest import mock
 from sync import duplicate_job_external_handlers as handlers
 
 
+class _FakeResponse:
+    def __init__(self, content):
+        self.content = content
+
+    def raise_for_status(self):
+        return None
+
+
+class _FakeClient:
+    """Minimal httpx.Client stand-in so the real fetch helper is exercised."""
+
+    def __init__(self, content, **_kwargs):
+        self._content = content
+        self.calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get(self, url, **_kwargs):
+        self.calls.append(url)
+        return _FakeResponse(self._content)
+
+
 class _RowConnection:
     def __init__(self, thumbnail):
         self.thumbnail = thumbnail
@@ -55,6 +81,32 @@ class ThumbnailFallbackTests(unittest.TestCase):
         with mock.patch("sync.thumbnails.download_image_if_missing") as download:
             self.assertFalse(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", Path("/x.jpg")))
         download.assert_not_called()
+
+    def test_preview_bytes_are_validated_and_stored_next_to_the_stream(self):
+        import io
+        import random
+        import tempfile
+
+        from PIL import Image
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        dest = Path(directory.name) / "item.jpg"
+        image = Image.new("RGB", (400, 400))
+        image.putdata([(random.randrange(256), random.randrange(256), random.randrange(256))
+                       for _ in range(400 * 400)])
+        buffer = io.BytesIO()
+        image.save(buffer, "JPEG", quality=92)
+
+        conn = _RowConnection("/admin/api/thumb?provider=telegram&ref=-100%3A1%3A2")
+        with mock.patch.object(handlers, "_core", SimpleNamespace(
+                os=mock.Mock(getenv=lambda key, default=None: default),
+                time=mock.Mock())), \
+                mock.patch("httpx.Client", lambda **_kwargs: _FakeClient(buffer.getvalue())):
+            self.assertTrue(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", dest))
+
+        self.assertTrue(dest.is_file())
+        self.assertGreater(dest.stat().st_size, 1000)
 
     def test_unusable_preview_reports_failure(self):
         conn = _RowConnection("https://cdn.example.test/poster.jpg")

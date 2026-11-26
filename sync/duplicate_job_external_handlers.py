@@ -330,6 +330,16 @@ def _extract_artwork_frame(extract, stream_url, dest, *, offset, timeout):
     return False, error
 
 
+def _thumbnail_http_get(url: str, timeout: float = 15.0, **_kwargs) -> bytes:
+    """Fetch one preview image; the resolver proxy is always plain HTTP here."""
+    import httpx
+
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        response = client.get(url)
+        response.raise_for_status()
+        return response.content
+
+
 def _artwork_thumbnail_fallback(conn, video_id: str, dest) -> bool:
     """Store the provider preview when ffmpeg cannot decode the stream.
 
@@ -343,7 +353,6 @@ def _artwork_thumbnail_fallback(conn, video_id: str, dest) -> bool:
     if not raw_url:
         return False
     try:
-        from sync.http_client import http_get
         from sync.thumbnails import (
             ThumbnailServices,
             download_image_if_missing,
@@ -356,7 +365,7 @@ def _artwork_thumbnail_fallback(conn, video_id: str, dest) -> bool:
             resolver_api_url=_core.os.getenv("RESOLVER_API_URL", "http://resolver:8090"),
         )
         services = ThumbnailServices(
-            http_get=http_get,
+            http_get=_thumbnail_http_get,
             logger=logger,
             time=_core.time,
             # The preview is a retry path, not a cache: never skip it on a marker.
