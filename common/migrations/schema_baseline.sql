@@ -1373,3 +1373,14 @@ CREATE INDEX IF NOT EXISTS idx_performer_stats_video_count ON public.performer_s
 CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_audit_items_open_video
     ON public.admin_audit_items USING btree (kind, video_id)
     WHERE ((status = 'open'::text) AND (video_id IS NOT NULL));
+
+--
+-- Trigram search and favorite lookup indexes (migration 0010)
+--
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS idx_videos_title_trgm ON public.videos USING gin (title gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_videos_studio_trgm ON public.videos USING gin (studio gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_videos_plot_trgm ON public.videos USING gin (plot gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_client_user_favorites_user_video ON public.client_user_favorites USING btree (user_id, video_id);
+CREATE INDEX IF NOT EXISTS idx_video_performers_name_lower ON public.video_performers (lower(performer_name), video_id);
+CREATE INDEX IF NOT EXISTS idx_video_categories_category_lower ON public.video_categories (lower(category), video_id);

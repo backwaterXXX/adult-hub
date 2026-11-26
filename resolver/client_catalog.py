@@ -1102,30 +1102,87 @@ def _append_channel_filter(
             params.append(patterns)
 
 
+def _override_search_ids(conn: Any, term: str) -> list[str]:
+    """Return the ids whose overridden title, studio or plot contains ``term``.
+
+    Override values cannot be indexed (the override table is tiny, but the
+    expression sits on the outer side of a join), so they would force a
+    sequential scan if they stayed inside the search predicate. Resolving them
+    once per request keeps the main predicate on the trigram indexes.
+    """
+    needle = term.lower()
+    try:
+        rows = conn.execute(
+            "SELECT video_id, fields FROM video_metadata_overrides "
+            "WHERE fields ?| ARRAY['title', 'plot', 'studio']"
+        ).fetchall()
+    except Exception:
+        logger.debug("Could not read metadata overrides for search", exc_info=True)
+        return []
+    matched: list[str] = []
+    for row in rows:
+        fields = _row_val(row, "fields") or {}
+        if isinstance(fields, str):
+            # The database layer hands JSON back as text.
+            try:
+                fields = json.loads(fields)
+            except ValueError:
+                continue
+        if not isinstance(fields, dict):
+            continue
+        for field_name in ("title", "plot", "studio"):
+            value = fields.get(field_name)
+            if isinstance(value, str) and needle in value.lower():
+                matched.append(str(_row_val(row, "video_id") or ""))
+                break
+    return [video_id for video_id in matched if video_id]
+
+
 def _append_search_filter(
     conditions: list[str],
     params: list[Any],
     q: str | None,
     columns: set[str],
     has_overrides: bool,
+    conn: Any,
 ) -> None:
-    """Append a literal, case-insensitive search over public text fields only."""
-    # Search public text only: title, plot, studio (and v.id)
-    # Strictly never search raw performer or tag JSON columns to prevent exposing non-public fields.
-    if q and str(q).strip():
-        search_term = str(q).strip()
-        escaped_q = _escape_like_pattern(search_term)
-        search_val = f"%{escaped_q}%"
-        search_parts = ["COALESCE(v.id, '') ILIKE %s ESCAPE '\\'"]
-        search_params = [search_val]
-        for field_name in ("title", "plot", "studio"):
-            if field_name in columns:
-                search_parts.append(
-                    f"COALESCE({_effective_value(field_name, columns, has_overrides)}::text, '') ILIKE %s ESCAPE '\\'"
-                )
-                search_params.append(search_val)
-        conditions.append("(" + " OR ".join(search_parts) + ")")
-        params.extend(search_params)
+    """Append a literal, case-insensitive search over public text fields only.
+
+    The base columns carry trigram indexes, so the predicate stays on them and
+    rows with a metadata override are matched by their override value resolved
+    up front. Search deliberately covers title, plot, studio and the exact id;
+    performer and tag JSON stay out of it so non-public fields cannot leak.
+    """
+    if not q or not str(q).strip():
+        return
+    search_term = str(q).strip()
+    escaped_q = _escape_like_pattern(search_term)
+    search_val = f"%{escaped_q}%"
+    search_parts: list[str] = []
+    search_params: list[Any] = []
+    for field_name in ("title", "plot", "studio"):
+        if field_name not in columns:
+            continue
+        if has_overrides:
+            search_parts.append(
+                f"((mo.fields IS NULL OR NOT (mo.fields ? '{field_name}')) "
+                f"AND v.{field_name} ILIKE %s ESCAPE '\\')"
+            )
+        else:
+            search_parts.append(f"v.{field_name} ILIKE %s ESCAPE '\\'")
+        search_params.append(search_val)
+    if "id" in columns:
+        search_parts.append("v.id = %s")
+        search_params.append(search_term)
+    if has_overrides:
+        override_ids = _override_search_ids(conn, search_term)
+        if override_ids:
+            search_parts.append("v.id = ANY(%s)")
+            search_params.append(override_ids)
+    if not search_parts:
+        return
+    conditions.append("(" + " OR ".join(search_parts) + ")")
+    params.extend(search_params)
 
 
 def _channel_ids_for_label(conn: Any, label: str) -> list[str]:
@@ -1148,7 +1205,6 @@ def _channel_ids_for_label(conn: Any, label: str) -> list[str]:
                      exc_info=True)
         return []
     return sorted({str(row[0]) for row in rows if row and row[0]})
-
 
 def _append_channel_name_filter(conditions: list[str], params: list[Any], channel: str | None,
                                 columns: set[str], conn: Any, has_sources: bool) -> None:
@@ -1182,6 +1238,42 @@ def _append_channel_name_filter(conditions: list[str], params: list[Any], channe
     )
     params.extend([label, sorted(aliases)])
 
+_MIRROR_CACHE_TTL_SECONDS = 60.0
+_MIRROR_CACHE: dict[str, tuple[float, bool]] = {}
+_MIRROR_CACHE_LOCK = threading.Lock()
+
+
+def _categories_mirror_complete(conn: Any) -> bool:
+    """Tell whether every categorized video has rows in ``video_categories``.
+
+    The sync writes both the JSON column and the mirror, but a freshly inserted
+    test fixture (or a rebuild in progress) can leave videos without mirror rows.
+    When that happens the filter must read the JSON column instead, so the
+    catalog never silently loses videos. The answer is cached briefly because the
+    probe scans the catalog once.
+    """
+    database = str(getattr(getattr(conn, "info", None), "dbname", "") or "")
+    now = time.monotonic()
+    with _MIRROR_CACHE_LOCK:
+        cached = _MIRROR_CACHE.get(database)
+        if cached is not None and now - cached[0] < _MIRROR_CACHE_TTL_SECONDS:
+            return cached[1]
+    complete = False
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM videos v WHERE "
+            "jsonb_array_length(CASE WHEN jsonb_typeof(v.categories) = 'array' "
+            "THEN v.categories ELSE '[]'::jsonb END) > 0 "
+            "AND NOT EXISTS (SELECT 1 FROM video_categories vc WHERE vc.video_id = v.id) "
+            "LIMIT 1"
+        ).fetchone()
+        complete = row is None
+    except Exception:
+        logger.debug("Could not verify the category mirror", exc_info=True)
+    with _MIRROR_CACHE_LOCK:
+        _MIRROR_CACHE[database] = (now, complete)
+    return complete
+
 
 def _append_exact_filters(
     conditions: list[str],
@@ -1189,19 +1281,49 @@ def _append_exact_filters(
     category: str | None,
     tag: str | None,
     studio: str | None,
+    tables: set[str],
     columns: set[str],
     has_overrides: bool,
+    conn: Any,
 ) -> None:
-    """Append the exact-match category, tag and studio filters."""
+    """Append the exact-match category, tag and studio filters (case-insensitive)."""
     if category and str(category).strip():
         cat_val = str(category).strip()
-        conditions.append("v.categories ? %s")
-        params.append(cat_val)
+        cat_expr = _effective_value("categories", columns, has_overrides)
+        json_match = (
+            "EXISTS (SELECT 1 FROM jsonb_array_elements_text("
+            f"CASE WHEN jsonb_typeof({cat_expr}) = 'array' THEN {cat_expr} ELSE '[]'::jsonb END"
+            ") elem WHERE lower(trim(elem)) = lower(%s))"
+        )
+        if "video_categories" in tables and _categories_mirror_complete(conn):
+            # The sync keeps this table in step with videos.categories and the
+            # lower() index answers "G" and "g" alike. Only when the mirror is
+            # incomplete (fresh test fixtures, a partially rebuilt catalog) does
+            # the filter fall back to the JSON column for every row.
+            fast = (
+                "v.id IN (SELECT vc.video_id FROM video_categories vc "
+                "WHERE lower(vc.category) = lower(%s))"
+            )
+            if has_overrides:
+                conditions.append(
+                    f"(CASE WHEN mo.fields ? 'categories' THEN {json_match} ELSE {fast} END)"
+                )
+                params.extend([cat_val, cat_val])
+            else:
+                conditions.append(fast)
+                params.append(cat_val)
+        else:
+            conditions.append(json_match)
+            params.append(cat_val)
 
     if tag and str(tag).strip():
         tag_val = str(tag).strip()
         tag_expr = _effective_value("tags", columns, has_overrides)
-        conditions.append(f"{tag_expr} ? %s")
+        conditions.append(
+            "EXISTS (SELECT 1 FROM jsonb_array_elements_text("
+            f"CASE WHEN jsonb_typeof({tag_expr}) = 'array' THEN {tag_expr} ELSE '[]'::jsonb END"
+            ") elem WHERE lower(trim(elem)) = lower(%s))"
+        )
         params.append(tag_val)
 
     if studio and str(studio).strip():
@@ -1249,11 +1371,11 @@ def _append_performer_filter(
     if performer_id and str(performer_id).strip():
         clean_pid = str(performer_id).strip()
         perf_expr = _effective_value("performers", columns, has_overrides)
+        has_performers_table = "video_performers" in tables
         if clean_pid.startswith("name:"):
             target_name = clean_pid[5:].strip()
-            # Explicit name filter: match string or ID-less object by name
-            conditions.append(
-                f"""EXISTS (
+            # Explicit name filter: match string or ID-less object by name.
+            json_match = f"""EXISTS (
                     SELECT 1 FROM jsonb_array_elements(
                         CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
                     ) elem
@@ -1262,8 +1384,22 @@ def _append_performer_filter(
                         OR (jsonb_typeof(elem) = 'object' AND (elem ->> 'id' IS NULL OR elem ->> 'id' = '') AND lower(elem ->> 'name') = lower(%s))
                     )
                 )"""
-            )
-            params.extend([target_name, target_name])
+            if has_performers_table:
+                fast = (
+                    "v.id IN (SELECT vp.video_id FROM video_performers vp "
+                    "WHERE lower(vp.performer_name) = lower(%s))"
+                )
+                if has_overrides:
+                    conditions.append(
+                        f"(CASE WHEN mo.fields ? 'performers' THEN {json_match} ELSE {fast} END)"
+                    )
+                    params.extend([target_name, target_name, target_name])
+                else:
+                    conditions.append(fast)
+                    params.append(target_name)
+            else:
+                conditions.append(json_match)
+                params.extend([target_name, target_name])
         else:
             # ID-only lookup: find vetted catalog matches by ID (or vetted alias by ID)
             matching_ids, matching_names = _performer_id_matches(conn, tables, clean_pid)
@@ -1271,8 +1407,7 @@ def _append_performer_filter(
             if matching_names:
                 id_placeholders = ", ".join(["%s"] * len(matching_ids))
                 name_placeholders = ", ".join(["%s"] * len(matching_names))
-                conditions.append(
-                    f"""EXISTS (
+                json_match = f"""EXISTS (
                         SELECT 1 FROM jsonb_array_elements(
                             CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
                         ) elem
@@ -1281,9 +1416,28 @@ def _append_performer_filter(
                             OR ((jsonb_typeof(elem) = 'string' OR elem ->> 'id' IS NULL OR elem ->> 'id' = '') AND lower(COALESCE(elem ->> 'name', elem #>> '{{}}')) IN ({name_placeholders}))
                         )
                     )"""
-                )
-                params.extend(matching_ids)
-                params.extend([n.lower() for n in matching_names])
+                if has_performers_table:
+                    # The name mapping mirrors the JSON array (trigger-maintained);
+                    # the JSON path only runs for overridden rows.
+                    fast = (
+                        "v.id IN (SELECT vp.video_id FROM video_performers vp "
+                        "WHERE lower(vp.performer_name) = ANY(%s))"
+                    )
+                    lowered_names = [n.lower() for n in matching_names]
+                    if has_overrides:
+                        conditions.append(
+                            f"(CASE WHEN mo.fields ? 'performers' THEN {json_match} ELSE {fast} END)"
+                        )
+                        params.extend(matching_ids)
+                        params.extend(lowered_names)
+                        params.append(lowered_names)
+                    else:
+                        conditions.append(fast)
+                        params.append(lowered_names)
+                else:
+                    conditions.append(json_match)
+                    params.extend(matching_ids)
+                    params.extend([n.lower() for n in matching_names])
             else:
                 # Unresolved raw ID: ONLY match elem ->> 'id' = %s, never match by name!
                 conditions.append(
@@ -1305,28 +1459,37 @@ def _append_favorite_filter(
     user_id: str | None,
     is_favorite: bool | None,
 ) -> None:
-    """Append the favorite or not-favorite filter scoped to the signed-in user."""
-    if is_favorite is not None:
-        if not user_id or "client_user_favorites" not in tables:
-            if is_favorite:
-                conditions.append("FALSE")
-        else:
-            fav_parts = ["cuf.video_id = v.id"]
-            if has_sources:
-                fav_parts.append(
-                    "EXISTS (SELECT 1 FROM video_sources vs WHERE vs.video_id = v.id AND vs.source_id = cuf.video_id AND vs.is_active = 1)"
-                )
-            if "video_duplicate_decisions" in tables:
-                fav_parts.append(
-                    "EXISTS (SELECT 1 FROM video_duplicate_decisions vdd WHERE vdd.keeper_id = v.id AND vdd.loser_id = cuf.video_id AND vdd.state = 'active')"
-                )
-            fav_condition = f"EXISTS (SELECT 1 FROM client_user_favorites cuf WHERE cuf.user_id = %s AND ({' OR '.join(fav_parts)}))"
-            if is_favorite:
-                conditions.append(fav_condition)
-                params.append(str(user_id).strip())
-            else:
-                conditions.append(f"NOT {fav_condition}")
-                params.append(str(user_id).strip())
+    """Append the favorite or not-favorite filter scoped to the signed-in user.
+
+    Each branch is a set-based ``IN`` over the user's own rows instead of a
+    correlated ``EXISTS`` per catalog row: with a few favorites the optimizer
+    resolves the sets once, while the per-row probe used to cost ~40 ms even
+    when the user had none.
+    """
+    if is_favorite is None:
+        return
+    if not user_id or "client_user_favorites" not in tables:
+        if is_favorite:
+            conditions.append("FALSE")
+        return
+    branches = [
+        "v.id IN (SELECT video_id FROM client_user_favorites WHERE user_id = %s)"
+    ]
+    if has_sources:
+        branches.append(
+            "v.id IN (SELECT vs.video_id FROM video_sources vs "
+            "JOIN client_user_favorites cuf ON cuf.video_id = vs.source_id "
+            "WHERE cuf.user_id = %s AND vs.is_active = 1)"
+        )
+    if "video_duplicate_decisions" in tables:
+        branches.append(
+            "v.id IN (SELECT vdd.keeper_id FROM video_duplicate_decisions vdd "
+            "JOIN client_user_favorites cuf ON cuf.video_id = vdd.loser_id "
+            "WHERE cuf.user_id = %s AND vdd.state = 'active')"
+        )
+    favorite_condition = "(" + " OR ".join(branches) + ")"
+    params.extend([str(user_id).strip()] * len(branches))
+    conditions.append(favorite_condition if is_favorite else f"NOT {favorite_condition}")
 
 
 def _video_projection_sql(columns: set[str], has_overrides: bool) -> str:
@@ -1479,6 +1642,8 @@ def clear_catalog_count_cache() -> None:
         _CATALOG_RESULT_CACHE.clear()
     with _SCHEMA_CACHE_LOCK:
         _SCHEMA_CACHE.clear()
+    with _MIRROR_CACHE_LOCK:
+        _MIRROR_CACHE.clear()
 
 
 def query_catalog_videos(
@@ -1530,10 +1695,12 @@ def query_catalog_videos(
     _append_channel_name_filter(conditions, params, channel, columns, conn, has_sources)
 
     # 3. Search Query (q) with literal LIKE wildcard escaping
-    _append_search_filter(conditions, params, q, columns, has_overrides)
+    _append_search_filter(conditions, params, q, columns, has_overrides, conn)
 
     # 4. Exact Filter Semantics
-    _append_exact_filters(conditions, params, category, tag, studio, columns, has_overrides)
+    _append_exact_filters(
+        conditions, params, category, tag, studio, tables, columns, has_overrides, conn
+    )
     _append_performer_filter(conditions, params, conn, tables, columns, has_overrides, performer_id)
 
     if min_duration is not None and int(min_duration) > 0:
@@ -3028,10 +3195,13 @@ def _performer_video_match(
     canonical_id: str | None,
     canonical_name: str | None,
     is_vetted: bool,
+    *,
+    has_performers_table: bool = False,
+    has_overrides: bool = False,
 ) -> tuple[list[str], list[Any]]:
     """Return the extra WHERE clause and params that select videos featuring this performer."""
     if canonical_id and canonical_id.startswith("name:"):
-        clause = f"""EXISTS (
+        json_match = f"""EXISTS (
                 SELECT 1 FROM jsonb_array_elements(
                     CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
                 ) elem
@@ -3040,9 +3210,19 @@ def _performer_video_match(
                     OR (jsonb_typeof(elem) = 'object' AND (elem ->> 'id' IS NULL OR elem ->> 'id' = '') AND lower(elem ->> 'name') = lower(%s))
                 )
             )"""
-        return [clause], [canonical_name, canonical_name]
+        if has_performers_table:
+            fast = (
+                "v.id IN (SELECT vp.video_id FROM video_performers vp "
+                "WHERE lower(vp.performer_name) = lower(%s))"
+            )
+            if has_overrides:
+                return [
+                    f"(CASE WHEN mo.fields ? 'performers' THEN {json_match} ELSE {fast} END)"
+                ], [canonical_name, canonical_name, canonical_name]
+            return [fast], [canonical_name]
+        return [json_match], [canonical_name, canonical_name]
     if is_vetted and canonical_id:
-        clause = f"""EXISTS (
+        json_match = f"""EXISTS (
                 SELECT 1 FROM jsonb_array_elements(
                     CASE WHEN jsonb_typeof({perf_expr}) = 'array' THEN {perf_expr} ELSE '[]'::jsonb END
                 ) elem
@@ -3051,7 +3231,17 @@ def _performer_video_match(
                     OR ((jsonb_typeof(elem) = 'string' OR elem ->> 'id' IS NULL OR elem ->> 'id' = '') AND lower(COALESCE(elem ->> 'name', elem #>> '{{}}')) = lower(%s))
                 )
             )"""
-        return [clause], [canonical_id, canonical_name]
+        if has_performers_table and canonical_name:
+            fast = (
+                "v.id IN (SELECT vp.video_id FROM video_performers vp "
+                "WHERE lower(vp.performer_name) = lower(%s))"
+            )
+            if has_overrides:
+                return [
+                    f"(CASE WHEN mo.fields ? 'performers' THEN {json_match} ELSE {fast} END)"
+                ], [canonical_id, canonical_name, canonical_name]
+            return [fast], [canonical_name]
+        return [json_match], [canonical_id, canonical_name]
     if canonical_id:
         # Unresolved raw ID: ONLY match elem ->> 'id' = %s without mapping to different same-name performer!
         clause = f"""EXISTS (
@@ -3141,7 +3331,14 @@ def query_catalog_performer_detail(
     conditions, params = _build_visibility_conditions(
         tables, columns, disabled_channel_ids=disabled_set or None, table_alias="v"
     )
-    match_conditions, match_params = _performer_video_match(perf_expr, canonical_id, canonical_name, is_vetted)
+    match_conditions, match_params = _performer_video_match(
+        perf_expr,
+        canonical_id,
+        canonical_name,
+        is_vetted,
+        has_performers_table="video_performers" in tables,
+        has_overrides=has_overrides,
+    )
     conditions.extend(match_conditions)
     params.extend(match_params)
     video_count = _count_performer_videos(conn, join_overrides, conditions, params)

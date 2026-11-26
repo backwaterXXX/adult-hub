@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Iterable, Iterator, Sequence
@@ -501,6 +502,111 @@ def connection(url: str | None = None, *, connect_timeout: int = 10) -> Iterator
         yield conn
     finally:
         conn.close()
+
+
+class PooledConnection(Connection):
+    """A catalog connection whose ``close()`` returns it to the shared pool.
+
+    The API process opens one connection per request today; at ~6 ms per connect
+    (plus a backend process) that is pure overhead. Callers keep the same
+    ``connect``/``close`` shape, and a dropped session still reopens through
+    ``Connection._ensure_open``.
+    """
+
+    def __init__(self, raw: psycopg.Connection, url: str, pool: "_ConnectionPool",
+                 connect_timeout: int = 10):
+        super().__init__(raw, url=url, connect_timeout=connect_timeout)
+        self._pool = pool
+        self._released = False
+
+    def close(self) -> None:
+        # A second close (endpoint ``finally`` twice, a context manager plus an
+        # explicit call) must not put the same raw session in the pool twice.
+        if self._released:
+            return
+        self._released = True
+        self._pool.release(self)
+
+
+class _ConnectionPool:
+    """Keep a handful of idle sessions for the long-running API process."""
+
+    def __init__(self, url: str, *, max_idle: int = 8, connect_timeout: int = 10):
+        self._url = url
+        self._max_idle = max(1, int(max_idle))
+        self._connect_timeout = connect_timeout
+        self._idle: list[psycopg.Connection] = []
+        self._lock = threading.Lock()
+
+    def acquire(self) -> PooledConnection:
+        raw = None
+        with self._lock:
+            while self._idle:
+                candidate = self._idle.pop()
+                if not candidate.closed:
+                    raw = candidate
+                    break
+        if raw is None:
+            raw = _open_raw(self._url, self._connect_timeout)
+        return PooledConnection(raw, self._url, self, self._connect_timeout)
+
+    def release(self, conn: PooledConnection) -> None:
+        raw = conn._raw
+        try:
+            # A request that raised halfway through must not hand a transaction
+            # (or a session setting) to the next caller.
+            if not raw.closed:
+                if raw.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+                    raw.rollback()
+                raw.autocommit = False
+        except Exception:
+            _close_quietly(raw)
+            return
+        if raw.closed:
+            return
+        conn._row_factory = None
+        with self._lock:
+            if len(self._idle) >= self._max_idle:
+                _close_quietly(raw)
+                return
+            self._idle.append(raw)
+
+
+def _close_quietly(raw: psycopg.Connection) -> None:
+    try:
+        raw.close()
+    except Exception:
+        pass
+
+
+_POOLS: dict[str, _ConnectionPool] = {}
+_POOLS_LOCK = threading.Lock()
+
+
+def pooled_connect(url: str | None = None, *, max_idle: int = 8,
+                   connect_timeout: int = 10) -> Connection:
+    """Return a pooled connection; ``close()`` releases it instead of closing."""
+    conninfo = (url or "").strip() or database_url()
+    if not conninfo.startswith(("postgresql://", "postgres://")):
+        raise ValueError("A PostgreSQL connection URL is required")
+    with _POOLS_LOCK:
+        pool = _POOLS.get(conninfo)
+        if pool is None:
+            pool = _ConnectionPool(conninfo, max_idle=max_idle, connect_timeout=connect_timeout)
+            _POOLS[conninfo] = pool
+    return pool.acquire()
+
+
+def close_pools() -> None:
+    """Close every idle pooled session (shutdown and tests)."""
+    with _POOLS_LOCK:
+        pools = list(_POOLS.values())
+        _POOLS.clear()
+    for pool in pools:
+        with pool._lock:
+            idle, pool._idle = pool._idle, []
+        for raw in idle:
+            _close_quietly(raw)
 
 
 def table_names(conn: Connection) -> set[str]:

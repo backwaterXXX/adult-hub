@@ -1185,6 +1185,41 @@ class TestClientCatalogPostgresIntegration(PgTestCase):
         self.assertEqual(res_lower.total_count, 1)
         self.assertEqual(res_lower.items[0].id, "telegram:-100123:1:100")
 
+    def test_category_and_tag_filters_are_case_insensitive(self):
+        """``G`` and ``g`` select the same videos, on both category paths."""
+        with self.conn:
+            self.conn.execute("""
+                INSERT INTO videos (id, provider, title, categories, tags, duration, playable)
+                VALUES (
+                    'telegram:-100123:20:200',
+                    'telegram',
+                    'Case Video',
+                    '["G", "Anal"]'::jsonb,
+                    '["TagOne"]'::jsonb,
+                    600,
+                    1
+                )
+            """)
+
+        # No mirror rows yet: the filter falls back to videos.categories.
+        for value in ("G", "g"):
+            res = query_catalog_videos(self.conn, category=value)
+            self.assertEqual(res.total_count, 1, value)
+        for value in ("TagOne", "tagone"):
+            res = query_catalog_videos(self.conn, tag=value)
+            self.assertEqual(res.total_count, 1, value)
+
+        # With a complete mirror the indexed path must answer identically.
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO video_categories (video_id, category) VALUES (%s, %s), (%s, %s)",
+                ("telegram:-100123:20:200", "G", "telegram:-100123:20:200", "Anal"),
+            )
+        clear_catalog_count_cache()
+        for value in ("G", "g"):
+            res = query_catalog_videos(self.conn, category=value)
+            self.assertEqual(res.total_count, 1, value)
+
     def test_regression_search_does_not_match_raw_performer_or_tag_json(self):
         """Regression: Search q operates only on public text fields, never matching raw performer or tag JSON."""
         with self.conn:

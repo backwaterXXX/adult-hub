@@ -257,13 +257,24 @@ def _db_connection(request: Request) -> db.Connection:
 
     url = _canonical_production_db_url()
     if url:
-        return db.connect(url)
+        # The long-running API reuses sessions; explicit test URLs above keep a
+        # plain connection so a test database can be dropped between cases.
+        return db.pooled_connect(url)
     raise RuntimeError("Canonical database URL is not configured")
 
 
 async def _run_in_thread(func, *args, **kwargs):
     """Run synchronous blocking DB queries and CPU-bound scrypt hashing off the asyncio event loop."""
-    return await asyncio.to_thread(func, *args, **kwargs)
+    started = time.perf_counter()
+    result = await asyncio.to_thread(func, *args, **kwargs)
+    elapsed = time.perf_counter() - started
+    if elapsed >= 0.3:
+        logger.warning(
+            "slow API task %s took %.0f ms",
+            getattr(func, "__name__", "callable"),
+            elapsed * 1000.0,
+        )
+    return result
 
 
 def _extract_client_ip(request: Request) -> str:
