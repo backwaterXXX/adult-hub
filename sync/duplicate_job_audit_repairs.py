@@ -136,6 +136,12 @@ def _restore_artwork(target: _RepairTarget, services) -> int:
     for _stream_path, _existed, artwork_path in target.streams:
         if not services.download_image_if_missing(download_url, artwork_path):
             raise RuntimeError("Artwork could not be restored without replacing an existing file.")
+        try:
+            from resolver.artwork_derivatives import prewarm_file
+
+            prewarm_file(artwork_path)
+        except Exception:
+            pass
         written += 1
     return written
 

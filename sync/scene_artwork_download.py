@@ -8,6 +8,16 @@ from types import SimpleNamespace
 logger = logging.getLogger("sync.scene_artwork_download")
 
 
+def _prewarm_artwork_derivatives(path: Path) -> None:
+    """Generate client artwork variants for a freshly written poster."""
+    try:
+        from resolver.artwork_derivatives import prewarm_file
+
+        prewarm_file(path)
+    except Exception:
+        logger.debug("artwork derivative prewarm failed for %s", path, exc_info=True)
+
+
 def _import_scene_sources():
     """Load provider lookups and the poster downloader at call time."""
     from sync.scene_scraper_fingerprint_sources import (
@@ -170,15 +180,18 @@ def download_artwork_for_video(conn, media_dir: Path, video_id: str) -> dict:
     search.add_linked_matches(str(external_id or "").strip(), str(match_source or "").casefold())
     saved_provider = search.save_from()
     if saved_provider:
+        _prewarm_artwork_derivatives(artwork_path)
         return {"downloaded": True, "provider": saved_provider}
 
     oshash = _oshash_for_video(conn, video_id)
     if oshash:
         saved_provider = search.try_oshash(oshash)
         if saved_provider:
+            _prewarm_artwork_derivatives(artwork_path)
             return {"downloaded": True, "provider": saved_provider}
 
     saved_provider = search.try_title(title, duration)
     if saved_provider:
+        _prewarm_artwork_derivatives(artwork_path)
         return {"downloaded": True, "provider": saved_provider}
     return search.outcome()

@@ -30,6 +30,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import threading
 import time
 from typing import Any
 
@@ -57,6 +58,7 @@ from common.client_auth.service import (
     revoke_session_token,
     verify_access_token,
 )
+from resolver import artwork_derivatives
 from resolver.client_catalog import (
     query_catalog_categories,
     query_catalog_channel_detail,
@@ -1383,17 +1385,56 @@ def _detect_image_media_type(data: bytes) -> str:
     return "image/jpeg"
 
 
+def _validate_artwork_width(width: int | None) -> int | None:
+    """Reject widths outside the published derivative ladder."""
+    if width is None:
+        return None
+    if width not in artwork_derivatives.ALLOWED_DERIVATIVE_WIDTHS:
+        allowed = ", ".join(str(value) for value in artwork_derivatives.ALLOWED_DERIVATIVE_WIDTHS)
+        raise BoundedValidationError(f"Invalid artwork width. Allowed widths: {allowed}.")
+    return width
+
+
+_BLACK_CHECK_CACHE: dict[tuple[str, int, int], bool] = {}
+_BLACK_CHECK_LOCK = threading.Lock()
+
+
+def _is_black_artwork_cached(path: Path) -> bool:
+    """Black-frame check memoised by file identity.
+
+    The check decodes the whole image with Pillow; doing that on every artwork
+    request was pure overhead because the file changes far less often than the
+    client asks for it.
+    """
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return False
+    key = (str(path), stat_result.st_mtime_ns, stat_result.st_size)
+    with _BLACK_CHECK_LOCK:
+        cached = _BLACK_CHECK_CACHE.get(key)
+    if cached is not None:
+        return cached
+    from common.image_utils import is_black_image
+
+    result = bool(is_black_image(path))
+    with _BLACK_CHECK_LOCK:
+        if len(_BLACK_CHECK_CACHE) > 4096:
+            _BLACK_CHECK_CACHE.clear()
+        _BLACK_CHECK_CACHE[key] = result
+    return result
+
+
 def _local_video_artwork(db_url: str | None, cand: str, media_root: Path) -> bytes | None:
     """Read artwork stored next to a video's .strm file when it is a regular file inside the media root."""
     from resolver.admin_catalog_queries import _get_video_artwork_path
-    from common.image_utils import is_black_image
 
     art_path = _get_video_artwork_path(db_url, cand, media_root)
     if art_path is not None and art_path.is_file():
         res_path = art_path.resolve()
         if res_path.is_relative_to(media_root) and not stat.S_ISLNK(art_path.lstat().st_mode):
             content = res_path.read_bytes()
-            if content and not is_black_image(res_path):
+            if content and not _is_black_artwork_cached(res_path):
                 return content
     return None
 
@@ -1641,6 +1682,7 @@ async def _handle_artwork_request(
     entity_type: str,
     raw_id: str,
     kind: str | None,
+    width: int | None = None,
 ) -> Response:
     # 1. Bearer token extraction and authentication ALWAYS FIRST
     try:
@@ -1655,6 +1697,7 @@ async def _handle_artwork_request(
 
     # 2. Database session verification and asset resolution
     try:
+        width = _validate_artwork_width(width)
         err, raw_bytes, clean_id = await _run_in_thread(_lookup_artwork_asset, request, token, entity_type, raw_id, kind)
         if err == "ENTITY_NOT_FOUND":
             return _artwork_error_response(
@@ -1677,6 +1720,15 @@ async def _handle_artwork_request(
                 f"Artwork not found for {entity_type}",
                 "ARTWORK_NOT_FOUND",
             )
+
+        if width is not None:
+            # Derivative generation is CPU-bound and cached on disk; it runs off
+            # the event loop and falls back to the original on any failure.
+            derivative = await _run_in_thread(
+                artwork_derivatives.get_derivative, raw_bytes, width
+            )
+            if derivative:
+                raw_bytes = derivative
 
         return _artwork_success_response(request, raw_bytes)
 
@@ -1713,8 +1765,9 @@ async def get_video_artwork(
     request: Request,
     video_id: str,
     kind: str,
+    w: int | None = Query(None),
 ) -> Response:
-    return await _handle_artwork_request(request, "video", video_id, kind)
+    return await _handle_artwork_request(request, "video", video_id, kind, width=w)
 
 
 @router.api_route(
@@ -1725,8 +1778,9 @@ async def get_performer_artwork_with_kind(
     request: Request,
     performer_id: str,
     kind: str,
+    w: int | None = Query(None),
 ) -> Response:
-    return await _handle_artwork_request(request, "performer", performer_id, kind)
+    return await _handle_artwork_request(request, "performer", performer_id, kind, width=w)
 
 
 @router.api_route(
@@ -1736,8 +1790,9 @@ async def get_performer_artwork_with_kind(
 async def get_performer_artwork(
     request: Request,
     performer_id: str,
+    w: int | None = Query(None),
 ) -> Response:
-    return await _handle_artwork_request(request, "performer", performer_id, None)
+    return await _handle_artwork_request(request, "performer", performer_id, None, width=w)
 
 
 @router.api_route(
@@ -1748,8 +1803,9 @@ async def get_channel_artwork_with_kind(
     request: Request,
     channel_id: str,
     kind: str,
+    w: int | None = Query(None),
 ) -> Response:
-    return await _handle_artwork_request(request, "channel", channel_id, kind)
+    return await _handle_artwork_request(request, "channel", channel_id, kind, width=w)
 
 
 @router.api_route(
@@ -1759,8 +1815,9 @@ async def get_channel_artwork_with_kind(
 async def get_channel_artwork(
     request: Request,
     channel_id: str,
+    w: int | None = Query(None),
 ) -> Response:
-    return await _handle_artwork_request(request, "channel", channel_id, None)
+    return await _handle_artwork_request(request, "channel", channel_id, None, width=w)
 
 
 @router.api_route(
@@ -1772,8 +1829,9 @@ async def get_generic_artwork_with_kind(
     entity_type: str,
     id: str,
     kind: str,
+    w: int | None = Query(None),
 ) -> Response:
-    return await _handle_artwork_request(request, entity_type, id, kind)
+    return await _handle_artwork_request(request, entity_type, id, kind, width=w)
 
 
 @router.api_route(
@@ -1784,8 +1842,9 @@ async def get_generic_artwork(
     request: Request,
     entity_type: str,
     id: str,
+    w: int | None = Query(None),
 ) -> Response:
-    return await _handle_artwork_request(request, entity_type, id, None)
+    return await _handle_artwork_request(request, entity_type, id, None, width=w)
 
 
 # ---------------------------------------------------------------------------

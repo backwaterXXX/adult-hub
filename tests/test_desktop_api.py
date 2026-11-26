@@ -26,12 +26,16 @@ Covers:
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
+
+from PIL import Image
 
 from starlette.testclient import TestClient
 
@@ -1309,6 +1313,35 @@ print("__PAYLOAD_START__" + json.dumps(out) + "__PAYLOAD_END__")
         res_loose = client.get("/api/v1fake_route")
         # Should be 404 and not touched by /api/v1/ cache policy enforcement
         self.assertEqual(res_loose.status_code, 404)
+
+    def test_artwork_width_returns_derivative_and_rejects_unknown_widths(self):
+        """A supported width returns a JPEG derivative; anything else is a 400."""
+        client = TestClient(desktop_test_app)
+        auth_header = {"Authorization": "Bearer ah_tok_test_dummy"}
+        source = io.BytesIO()
+        Image.new("RGB", (800, 1200), (120, 40, 200)).save(source, "PNG")
+        png = source.getvalue()
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.dict(os.environ, {"ARTWORK_DERIVATIVE_DIR": tmp}), \
+             patch("resolver.desktop_api._db_connection"), \
+             patch("resolver.desktop_api._verify_client_session", return_value={"user_id": "usr_1"}), \
+             patch("resolver.desktop_api._resolve_artwork_asset", return_value=png):
+            res = client.get(
+                "/api/v1/artwork/video/vid-1/primary?w=240",
+                headers=auth_header,
+            )
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.headers.get("Content-Type"), "image/jpeg")
+            with Image.open(io.BytesIO(res.content)) as image:
+                self.assertEqual(image.size, (240, 360))
+
+            bad = client.get(
+                "/api/v1/artwork/video/vid-1/primary?w=999",
+                headers=auth_header,
+            )
+            self.assertEqual(bad.status_code, 400)
+            self.assertIn("Invalid artwork width", bad.text)
 
     def test_artwork_endpoints_require_bearer_authorization(self):
         """Artwork endpoints strictly require Bearer authorization before parameter or filesystem access."""

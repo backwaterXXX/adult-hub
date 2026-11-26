@@ -326,6 +326,21 @@ def _dispatch_artwork_batch() -> tuple[bool, int]:
             "%s stale artwork finding(s) resolved.",
             queued, result.get("candidates", 0), result.get("artwork_findings_resolved", 0),
         )
+        try:
+            from resolver.artwork_derivatives import prewarm_directory
+
+            limit = int(os.getenv("ARTWORK_DERIVATIVE_PREWARM_LIMIT", "200") or "200")
+            prewarm = prewarm_directory(
+                Path(os.getenv("MEDIA_DIR", "/media/adult")), limit=limit
+            )
+            LOGGER.info(
+                "[sync-daemon] Artwork derivative prewarm generated %s file(s) / %s variant(s) "
+                "(%s artwork file(s) scanned, %s unchanged skipped).",
+                prewarm["generated_files"], prewarm["generated_variants"],
+                prewarm["scanned"], prewarm["skipped"],
+            )
+        except Exception as e:
+            LOGGER.warning("[sync-daemon] Artwork derivative prewarm failed: %s", e)
         return True, queued
     except Exception as e:
         LOGGER.warning("[sync-daemon] Daily artwork generation batch failed: %s", e)

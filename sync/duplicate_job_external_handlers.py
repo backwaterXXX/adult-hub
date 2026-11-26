@@ -392,6 +392,16 @@ def _is_missing_preview_error(exc: Exception) -> bool:
     return status in (404, 410)
 
 
+def _prewarm_artwork_derivatives(dest) -> None:
+    """Generate the client variants of a poster this job just produced."""
+    try:
+        from resolver.artwork_derivatives import prewarm_file
+
+        prewarm_file(dest)
+    except Exception:
+        logger.debug("artwork derivative prewarm failed for %s", dest, exc_info=True)
+
+
 def _action_artwork_generate(conn, job_id, payload, media_dir, services):
     from urllib.parse import quote
     from common.image_utils import (
@@ -416,6 +426,7 @@ def _action_artwork_generate(conn, job_id, payload, media_dir, services):
     if not success:
         preview = _artwork_thumbnail_fallback(conn, video_id, dest)
         if preview == "stored":
+            _prewarm_artwork_derivatives(dest)
             return {"local_state": "artwork_from_thumbnail", "variant": "thumbnail"}, True
         if preview == "missing":
             from common.artwork_placeholder import write_placeholder_artwork
@@ -424,6 +435,7 @@ def _action_artwork_generate(conn, job_id, payload, media_dir, services):
             title = str(source[0] or "") if source else ""
             studio = str(source[1] or "") if source else ""
             if write_placeholder_artwork(dest, title=title, studio=studio):
+                _prewarm_artwork_derivatives(dest)
                 return {"local_state": "artwork_placeholder"}, True
         try:
             import httpx
@@ -441,6 +453,7 @@ def _action_artwork_generate(conn, job_id, payload, media_dir, services):
         except Exception:
             pass
         raise RuntimeError(f"Failed to generate artwork: {error}")
+    _prewarm_artwork_derivatives(dest)
     return {"local_state": "artwork_generated",
             "variant": str(variant or "original")}, True
 
