@@ -189,12 +189,36 @@ def db_stats(db_url: str | None, config_path: Path | str,
     return out
 
 
+_DB_SIZE_CACHE: dict[str, tuple[float, object]] = {}
+_DB_SIZE_TTL_SECONDS = 60.0
+
+
+def _database_size_mb(conn) -> object:
+    """Return the database size in MB, reusing one measurement per minute.
+
+    ``pg_database_size`` walks every relation (457 ms measured on 27k videos)
+    while the admin status page polls it far more often than the number can
+    change, so one minute of staleness is a good trade.
+    """
+    try:
+        database = str(conn.info.dbname or "")
+    except Exception:
+        database = ""
+    cached = _DB_SIZE_CACHE.get(database)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < _DB_SIZE_TTL_SECONDS:
+        return cached[1]
+    size = conn.execute(
+        "SELECT round(pg_database_size(current_database()) / 1024.0 / 1024.0, 2)"
+    ).fetchone()[0]
+    _DB_SIZE_CACHE[database] = (now, size)
+    return size
+
+
 def _collect_db_stats(conn, out: dict, config_path, media_dir) -> None:
     """Fill ``out`` in place. Errors in the core counts propagate to the caller."""
     try:
-        out["db_size_mb"] = conn.execute(
-            "SELECT round(pg_database_size(current_database()) / 1024.0 / 1024.0, 2)"
-        ).fetchone()[0]
+        out["db_size_mb"] = _database_size_mb(conn)
     except Exception:
         logger.debug("Ignored exception in _collect_db_stats", exc_info=True)
     out["videos_total"] = conn.execute("SELECT count(*) FROM videos").fetchone()[0]

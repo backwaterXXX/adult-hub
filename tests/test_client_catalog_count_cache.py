@@ -6,6 +6,8 @@ import unittest
 from unittest import mock
 
 from resolver import client_catalog
+from resolver.client_catalog import query_catalog_performers
+from tests.pg_helper import PgTestCase
 
 
 class _CountingConnection:
@@ -111,6 +113,40 @@ class CatalogCountCacheTest(unittest.TestCase):
         client_catalog._catalog_total(conn, "SELECT count(*) FROM videos v", [])
 
         self.assertEqual(conn.executions, 2)
+
+
+class _PerformerCountRecorder:
+    """Connection double counting how often the performer total is computed."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.count_queries = 0
+
+    def execute(self, sql, params=None):
+        if "COUNT(DISTINCT perf" in sql:
+            self.count_queries += 1
+        return self._conn.execute(sql, params)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+class PerformerTotalCachePgTest(PgTestCase):
+    def test_performer_total_is_counted_once_per_ttl(self):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO videos (id,provider,title,duration,playable,performers) VALUES "
+                "('telegram:-100123:1:1','telegram','One',900,1,'[\"Anna\"]'::jsonb),"
+                "('telegram:-100123:2:2','telegram','Two',900,1,'[\"Bella\"]'::jsonb)"
+            )
+
+        recorded = _PerformerCountRecorder(self.conn)
+        first = query_catalog_performers(recorded, limit=10)
+        second = query_catalog_performers(recorded, limit=10)
+
+        self.assertEqual(first.total_count, 2)
+        self.assertEqual(second.total_count, 2)
+        self.assertEqual(recorded.count_queries, 1)
 
 
 if __name__ == "__main__":

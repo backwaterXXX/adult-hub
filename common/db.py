@@ -477,6 +477,11 @@ def _open_raw(conninfo: str, connect_timeout: int) -> psycopg.Connection:
     # JSON/JSONB columns are introduced. Callers can continue using json.loads.
     set_json_loads(lambda value: value.decode("utf-8") if isinstance(value, bytes) else value, raw)
     raw.execute("SET TIME ZONE 'UTC'")
+    # PostgreSQL plans JIT compilation for any query above jit_above_cost (100k),
+    # and these list queries run once per request. Measured on the performer
+    # catalog list: 838 ms with JIT against 341 ms without it, all of it
+    # compilation. Nothing here is an analytical scan, so turn it off per session.
+    raw.execute("SET jit = off")
     raw.commit()
     return raw
 

@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from pg_helper import PgTestCase, TEST_URL
 
@@ -400,3 +400,37 @@ class TestBackupStatus(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDatabaseSizeCache(unittest.TestCase):
+    """pg_database_size walks every relation, so one measurement serves a minute."""
+
+    def setUp(self):
+        admin_data._DB_SIZE_CACHE.clear()
+        self.addCleanup(admin_data._DB_SIZE_CACHE.clear)
+
+    def _conn(self, dbname="adulthub", size=144.65):
+        conn = MagicMock()
+        conn.info.dbname = dbname
+        conn.execute.return_value.fetchone.return_value = (size,)
+        return conn
+
+    def test_reuses_one_measurement_per_minute(self):
+        conn = self._conn()
+
+        self.assertEqual(admin_data._database_size_mb(conn), 144.65)
+        self.assertEqual(admin_data._database_size_mb(conn), 144.65)
+
+        self.assertEqual(conn.execute.call_count, 1)
+
+    def test_measures_again_after_the_ttl_and_per_database(self):
+        conn = self._conn()
+        admin_data._database_size_mb(conn)
+
+        with patch.object(admin_data, "_DB_SIZE_TTL_SECONDS", 0.0):
+            admin_data._database_size_mb(conn)
+        other_database = self._conn(dbname="adult_hub_test", size=1.5)
+        admin_data._database_size_mb(other_database)
+
+        self.assertEqual(conn.execute.call_count, 2)
+        self.assertEqual(other_database.execute.call_count, 1)

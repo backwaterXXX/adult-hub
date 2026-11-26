@@ -2073,8 +2073,7 @@ def query_catalog_performers(
         ) perf
         {where_sql}
     """
-    total_row = conn.execute(count_sql, all_params).fetchone()
-    total_count = int(total_row[0] if total_row else 0)
+    total_count = _catalog_total(conn, count_sql, all_params)
 
     # 2. Sort order
     if sort in ("video_count", "count"):
