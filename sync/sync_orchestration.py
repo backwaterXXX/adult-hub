@@ -492,6 +492,14 @@ def _library_maintenance_pass(sp: _SyncPass) -> None:
     except Exception as e:
         _core.logger.warning("Orphaned-record cleanup failed: %s", e)
     _core.cleanup_retention(sp.conn, _core.MEDIA_DIR, _core.RETENTION_DAYS, sp.providers_succeeded)
+    try:
+        from sync.studio_backfill import backfill_channel_studio
+
+        filled = backfill_channel_studio(sp.conn, _core.CONFIG)
+        if filled:
+            _core.logger.info("Filled %s studio label(s) from channel configuration", filled)
+    except Exception as e:
+        _core.logger.warning("Studio backfill failed: %s", e)
 
 
 def _run_duplicate_upkeep(sp: _SyncPass) -> None:
