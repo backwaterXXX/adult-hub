@@ -330,6 +330,44 @@ def _extract_artwork_frame(extract, stream_url, dest, *, offset, timeout):
     return False, error
 
 
+def _artwork_thumbnail_fallback(conn, video_id: str, dest) -> bool:
+    """Store the provider preview when ffmpeg cannot decode the stream.
+
+    Telegram keeps some files as undecodable previews, so frame extraction fails
+    forever and those items stay without a poster. The catalog already holds a
+    thumbnail URL for them (usually our own ``/admin/api/thumb`` preview proxy),
+    and downloading that image needs no decoder at all.
+    """
+    row = conn.execute("SELECT thumbnail FROM videos WHERE id=%s", (video_id,)).fetchone()
+    raw_url = str(row[0] or "").strip() if row else ""
+    if not raw_url:
+        return False
+    try:
+        from sync.http_client import http_get
+        from sync.thumbnails import (
+            ThumbnailServices,
+            download_image_if_missing,
+            thumbnail_urls,
+        )
+
+        _public_url, fetch_url = thumbnail_urls(
+            raw_url,
+            resolver_public_url=_core.os.getenv("RESOLVER_PUBLIC_URL", ""),
+            resolver_api_url=_core.os.getenv("RESOLVER_API_URL", "http://resolver:8090"),
+        )
+        services = ThumbnailServices(
+            http_get=http_get,
+            logger=logger,
+            time=_core.time,
+            # The preview is a retry path, not a cache: never skip it on a marker.
+            fail_ttl_seconds=0,
+        )
+        return download_image_if_missing(fetch_url, dest, services=services)
+    except Exception:
+        logger.debug("Artwork thumbnail fallback failed for %s", video_id, exc_info=True)
+        return False
+
+
 def _action_artwork_generate(conn, job_id, payload, media_dir, services):
     from urllib.parse import quote
     from common.image_utils import (
@@ -352,6 +390,8 @@ def _action_artwork_generate(conn, job_id, payload, media_dir, services):
         extract_video_frame, stream_url, dest, offset=offset, timeout=timeout,
     )
     if not success:
+        if _artwork_thumbnail_fallback(conn, video_id, dest):
+            return {"local_state": "artwork_from_thumbnail", "variant": "thumbnail"}, True
         try:
             import httpx
             probe = httpx.get(f"{api_base}/play/{quote(video_id, safe='')}/variants", timeout=3.0)

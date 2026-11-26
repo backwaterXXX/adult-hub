@@ -1,0 +1,107 @@
+"""Artwork for streams ffmpeg cannot decode: fall back to the stored preview."""
+
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from sync import duplicate_job_external_handlers as handlers
+
+
+class _RowConnection:
+    def __init__(self, thumbnail):
+        self.thumbnail = thumbnail
+        self.executed: list[tuple[str, tuple]] = []
+
+    def execute(self, sql, params=()):
+        self.executed.append((sql, tuple(params)))
+        return self
+
+    def fetchone(self):
+        return (self.thumbnail,)
+
+
+class ThumbnailFallbackTests(unittest.TestCase):
+    def test_preview_proxy_url_is_downloaded_over_the_internal_api(self):
+        conn = _RowConnection("/admin/api/thumb?provider=telegram&ref=-100%3A1%3A2")
+        dest = Path("/media/adult/some-item.jpg")
+        captured = {}
+
+        def fake_download(url, target, *, services=None):
+            captured["url"] = url
+            captured["dest"] = target
+            captured["fail_ttl"] = services.fail_ttl_seconds
+            return True
+
+        with mock.patch.object(handlers, "_core", SimpleNamespace(
+                os=mock.Mock(getenv=lambda key, default=None: {
+                    "RESOLVER_PUBLIC_URL": "https://adult.example.test",
+                    "RESOLVER_API_URL": "http://resolver:8090",
+                }.get(key, default)),
+                time=mock.Mock())), \
+                mock.patch("sync.thumbnails.download_image_if_missing", fake_download):
+            self.assertTrue(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", dest))
+
+        self.assertEqual(captured["url"], "http://resolver:8090/admin/api/thumb"
+                                          "?provider=telegram&ref=-100%3A1%3A2")
+        self.assertEqual(captured["dest"], dest)
+        # A retry path must not be skipped because of a download failure marker.
+        self.assertEqual(captured["fail_ttl"], 0)
+
+    def test_missing_thumbnail_is_not_a_fallback(self):
+        conn = _RowConnection("")
+        with mock.patch("sync.thumbnails.download_image_if_missing") as download:
+            self.assertFalse(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", Path("/x.jpg")))
+        download.assert_not_called()
+
+    def test_unusable_preview_reports_failure(self):
+        conn = _RowConnection("https://cdn.example.test/poster.jpg")
+        with mock.patch.object(handlers, "_core", SimpleNamespace(
+                os=mock.Mock(getenv=lambda key, default=None: default),
+                time=mock.Mock())), \
+                mock.patch("sync.thumbnails.download_image_if_missing", return_value=False):
+            self.assertFalse(handlers._artwork_thumbnail_fallback(conn, "telegram:1:2", Path("/x.jpg")))
+
+
+class ArtworkGenerateFallbackTests(unittest.TestCase):
+    """The generate action stores the preview instead of failing the job."""
+
+    def _run(self, extract_result, fallback_result):
+        conn = mock.Mock()
+        progress = mock.Mock()
+        core = SimpleNamespace(os=mock.Mock(), time=mock.Mock(), _record_job_progress=progress)
+        dest = Path("/media/adult/item.jpg")
+        with mock.patch.object(handlers, "_core", core), \
+                mock.patch.object(handlers, "_artwork_destination", return_value=dest), \
+                mock.patch.object(handlers, "_artwork_api_base", return_value="http://resolver:8090/admin"), \
+                mock.patch.object(handlers, "_artwork_variant", return_value=None), \
+                mock.patch.object(handlers, "_artwork_already_valid", return_value=False), \
+                mock.patch.object(handlers, "_extract_artwork_frame", return_value=extract_result), \
+                mock.patch.object(handlers, "_artwork_thumbnail_fallback",
+                                  return_value=fallback_result) as fallback:
+            result, success = handlers._action_artwork_generate(
+                conn, "job-1", {"video_id": "telegram:1:2"}, Path("/media/adult"), None
+            )
+        return result, success, fallback
+
+    def test_undecodable_stream_still_gets_a_poster(self):
+        result, success, fallback = self._run((False, "ffmpeg failed"), True)
+
+        self.assertTrue(success)
+        self.assertEqual(result["local_state"], "artwork_from_thumbnail")
+        fallback.assert_called_once()
+
+    def test_without_a_usable_preview_the_job_still_fails(self):
+        import httpx
+
+        with mock.patch.object(httpx, "get", side_effect=httpx.ConnectError("no resolver")):
+            with self.assertRaises(RuntimeError) as raised:
+                self._run((False, "ffmpeg failed"), False)
+
+        self.assertIn("Failed to generate artwork", str(raised.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()
