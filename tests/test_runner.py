@@ -425,7 +425,10 @@ class TestSyncRunnerProcess(PgTestCase):
                     if scenario != "worker_restart":
                         # Enqueue during a long idle interval, after startup.
                         time.sleep(0.4)
-                        self.assertFalse(marker.exists())
+                        # A startup jobs pass may drain leftovers from other tests;
+                        # what must not happen is a sync run before we enqueue one.
+                        started = marker.read_text() if marker.exists() else ""
+                        self.assertNotIn("--sync-mode", started)
                         job_id = enqueue_job(db_url, "sync", {"source": "Chan"})
                         if scenario == "overwritten_sync_wake":
                             trigger.write_text(json.dumps({"action": "sync"}))
