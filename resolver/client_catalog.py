@@ -376,7 +376,7 @@ def quality_tier_sql(columns: set[str]) -> str:
     height = "v.height" if "height" in columns else "NULL"
     return (
         f"CASE WHEN {height} >= 2000 OR {bitrate} >= {QUALITY_HIGH_MIN_KBPS} THEN 'high' "
-        f"WHEN {height} >= 1000 OR {bitrate} >= {QUALITY_LOW_MAX_KBPS} THEN 'medium' "
+        f"WHEN {height} >= 700 OR {bitrate} >= {QUALITY_LOW_MAX_KBPS} THEN 'medium' "
         f"WHEN {height} IS NOT NULL OR {bitrate} IS NOT NULL THEN 'low' "
         "ELSE NULL END"
     )

@@ -872,7 +872,7 @@ CREATE TABLE public.videos (
     quality_tier text GENERATED ALWAYS AS (
         CASE
             WHEN ((height >= 2000) OR ((duration > 0) AND (file_size_bytes > 0) AND (round((((file_size_bytes)::numeric * 8.0) / (duration)::numeric) / 1000.0)::integer >= 10000))) THEN 'high'::text
-            WHEN ((height >= 1000) OR ((duration > 0) AND (file_size_bytes > 0) AND (round((((file_size_bytes)::numeric * 8.0) / (duration)::numeric) / 1000.0)::integer >= 2500))) THEN 'medium'::text
+            WHEN ((height >= 700) OR ((duration > 0) AND (file_size_bytes > 0) AND (round((((file_size_bytes)::numeric * 8.0) / (duration)::numeric) / 1000.0)::integer >= 2500))) THEN 'medium'::text
             WHEN ((height IS NOT NULL) OR ((duration > 0) AND (file_size_bytes > 0))) THEN 'low'::text
             ELSE NULL::text
         END) STORED,

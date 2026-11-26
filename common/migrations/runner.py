@@ -25,6 +25,7 @@ from common.migrations.m0004_admin_audit_open_findings import migration as audit
 from common.migrations.m0005_video_channel_name import migration as video_channel_name
 from common.migrations.m0006_video_bitrate_quality import migration as video_bitrate_quality
 from common.migrations.m0007_video_resolution_quality_tier import migration as video_resolution_quality_tier
+from common.migrations.m0008_quality_tier_hd_cut import migration as quality_tier_hd_cut
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     video_channel_name,
     video_bitrate_quality,
     video_resolution_quality_tier,
+    quality_tier_hd_cut,
 )
 
 

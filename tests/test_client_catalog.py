@@ -142,7 +142,7 @@ class TestClientCatalogUnit(unittest.TestCase):
         # is then derived from the resolution and the file size.
         derived = quality_tier_sql({"duration", "file_size_bytes", "height"})
         self.assertIn("v.height >= 2000", derived)
-        self.assertIn("v.height >= 1000", derived)
+        self.assertIn("v.height >= 700", derived)
         self.assertIn("v.file_size_bytes * 8.0 / v.duration", derived)
         self.assertIn("'low'", derived)
         self.assertIn("'medium'", derived)
