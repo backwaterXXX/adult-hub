@@ -60,6 +60,7 @@ class TestClientCatalogUnit(unittest.TestCase):
             release_date="2026-05-01",
             date_added="2026-10-01T12:00:00Z",
             studio="Alpha Studio",
+            channel_name="Lukayan SHOW",
             plot="A test video plot summary.",
             categories=["Action", "Drama"],
             tags=["4k", "HD"],
@@ -84,10 +85,11 @@ class TestClientCatalogUnit(unittest.TestCase):
         # Required & expected allowlisted fields
         expected_keys = {
             "id", "title", "duration_seconds", "release_date", "date_added",
-            "studio", "plot", "categories", "tags", "performers",
+            "studio", "channel_name", "plot", "categories", "tags", "performers",
             "poster_url", "backdrop_url", "file_size_bytes", "width", "height", "is_hd",
         }
         self.assertEqual(set(serialized.keys()), expected_keys)
+        self.assertEqual(serialized["channel_name"], "Lukayan SHOW")
 
         # Explicitly verify absence of forbidden admin, filesystem, and private upstream fields
         forbidden_fields = [
@@ -315,7 +317,7 @@ class TestClientCatalogUnit(unittest.TestCase):
         from common.db import Record
         columns = [
             "id", "title", "duration", "date_released", "first_seen",
-            "studio", "plot", "categories", "tags", "performers", "file_size_bytes",
+            "studio", "channel_name", "plot", "categories", "tags", "performers", "file_size_bytes",
         ]
         values = [
             "telegram:-100123:1:100",
@@ -324,6 +326,7 @@ class TestClientCatalogUnit(unittest.TestCase):
             "2026-06-01",
             1760000000,
             "Studio Name",
+            "Channel Label",
             "Some plot summary",
             '["Category X", "Category Y"]',
             '["Tag A", "Tag B"]',
@@ -341,6 +344,7 @@ class TestClientCatalogUnit(unittest.TestCase):
         self.assertEqual(item.duration_seconds, 1200)
         self.assertEqual(item.release_date, "2026-06-01")
         self.assertEqual(item.studio, "Studio Name")
+        self.assertEqual(item.channel_name, "Channel Label")
         self.assertEqual(item.plot, "Some plot summary")
         self.assertEqual(item.categories, ["Category X", "Category Y"])
         self.assertEqual(item.tags, ["Tag A", "Tag B"])

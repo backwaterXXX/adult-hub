@@ -194,6 +194,7 @@ class VideoItem:
     release_date: str | None = None
     date_added: str | None = None
     studio: str | None = None
+    channel_name: str | None = None
     plot: str | None = None
     categories: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
@@ -215,6 +216,7 @@ class VideoItem:
             "release_date": self.release_date,
             "date_added": self.date_added,
             "studio": self.studio,
+            "channel_name": self.channel_name,
             "plot": self.plot,
             "categories": list(self.categories),
             "tags": list(self.tags),
@@ -476,6 +478,9 @@ def serialize_client_video(
     studio = _row_val(row, "studio")
     if studio is not None:
         studio = str(studio)
+    channel_name = _row_val(row, "channel_name")
+    if channel_name is not None:
+        channel_name = str(channel_name).strip() or None
     plot = _row_val(row, "plot")
     if plot is not None:
         plot = str(plot)
@@ -487,6 +492,7 @@ def serialize_client_video(
         release_date=release_date,
         date_added=date_added,
         studio=studio,
+        channel_name=channel_name,
         plot=plot,
         categories=categories,
         tags=tags,
@@ -1167,6 +1173,8 @@ def _video_projection_sql(columns: set[str], has_overrides: bool) -> str:
         select_fields.append("v.width")
     if "height" in columns:
         select_fields.append("v.height")
+    if "channel_name" in columns:
+        select_fields.append("v.channel_name")
 
     return ", ".join(select_fields)
 
@@ -1483,6 +1491,8 @@ def _fetch_video_detail_row(
         select_fields.append("v.width")
     if "height" in columns:
         select_fields.append("v.height")
+    if "channel_name" in columns:
+        select_fields.append("v.channel_name")
 
     projection_sql = ", ".join(select_fields)
 
