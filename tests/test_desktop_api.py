@@ -1652,6 +1652,51 @@ class TestDesktopApiPostgresLive(PgTestCase):
         self.assertEqual(res_post_replay.status_code, 401)
         self.assertEqual(res_post_replay.headers.get("cache-control"), "private, no-store")
 
+    def test_catalog_videos_quality_filter_is_served_by_the_api(self):
+        """The quality filter and the tier fields come from the API, not the client."""
+        access_tok, _, _ = self._bootstrap_and_login("dana", "DanaPassword999!")
+        auth_header = {"Authorization": f"Bearer {access_tok}"}
+
+        # 1800 seconds each, so the file size fixes the average bitrate:
+        # 300 MB -> 1 333 kb/s (low), 900 MB -> 4 000 kb/s (medium),
+        # 2 700 MB -> 12 000 kb/s (high).
+        with db.connect(self.db_url) as conn:
+            for name, size in (("sd", 300_000_000), ("hd", 900_000_000), ("hq", 2_700_000_000)):
+                conn.execute(
+                    "INSERT INTO videos (id, provider, title, duration, first_seen, playable, file_size_bytes) "
+                    "VALUES (%s, 'telegram', %s, 1800, '2026-01-02 00:00:00+00', 1, %s)",
+                    (f"quality-{name}", f"Quality {name}", size),
+                )
+            conn.commit()
+
+        res = self.client.get("/api/v1/catalog/videos?quality=high", headers=auth_header)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["total_count"], 1)
+        self.assertEqual(data["items"][0]["id"], "quality-hq")
+        self.assertEqual(data["items"][0]["quality"], "high")
+        self.assertEqual(data["items"][0]["bitrate_kbps"], 12000)
+        self.assertIs(data["items"][0]["is_hd"], True)
+
+        res = self.client.get("/api/v1/catalog/videos?quality=medium,high", headers=auth_header)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["total_count"], 2)
+
+        res = self.client.get("/api/v1/catalog/videos?quality=low", headers=auth_header)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["items"][0]["quality"], "low")
+        self.assertIs(res.json()["items"][0]["is_hd"], False)
+
+        res = self.client.get("/api/v1/catalog/videos?quality=ultra", headers=auth_header)
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.headers.get("cache-control"), "private, no-store")
+        self.assertIn("Invalid quality parameter", res.json()["error"])
+
+        res = self.client.get("/api/v1/catalog/videos/quality-hq", headers=auth_header)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["quality"], "high")
+        self.assertEqual(res.json()["bitrate_kbps"], 12000)
+
     def test_authenticated_catalog_videos_browse_and_detail(self):
         """Authenticated catalog browse and detail queries return allowlisted fields without leaks."""
         access_tok, _, _ = self._bootstrap_and_login("carol", "CarolPassword999!")

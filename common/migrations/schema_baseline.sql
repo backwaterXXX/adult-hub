@@ -862,6 +862,11 @@ CREATE TABLE public.videos (
     scene_match_confidence double precision,
     performer_resolution jsonb,
     file_size_bytes bigint,
+    bitrate_kbps integer GENERATED ALWAYS AS (
+        CASE
+            WHEN ((duration > 0) AND (file_size_bytes > 0)) THEN (round((((file_size_bytes)::numeric * 8.0) / (duration)::numeric) / 1000.0))::integer
+            ELSE NULL::integer
+        END) STORED,
     CONSTRAINT videos_categories_array_ck CHECK (((categories IS NULL) OR public.adult_hub_is_text_array(categories))),
     CONSTRAINT videos_file_size_bytes_check CHECK (((file_size_bytes IS NULL) OR (file_size_bytes >= 0))),
     CONSTRAINT videos_minimum_duration_seconds CHECK (((duration IS NULL) OR (duration <= 0) OR (duration >= 420))),
@@ -1195,6 +1200,12 @@ CREATE INDEX idx_videos_client_latest ON public.videos USING btree (first_seen D
 --
 
 CREATE INDEX idx_videos_client_duration ON public.videos USING btree (duration DESC NULLS LAST, id);
+
+--
+-- Name: idx_videos_bitrate; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_videos_bitrate ON public.videos USING btree (bitrate_kbps) WHERE (bitrate_kbps IS NOT NULL);
 
 CREATE INDEX idx_vs_source_id ON public.video_sources USING btree (source_id);
 

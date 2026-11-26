@@ -23,6 +23,7 @@ from common.migrations.m0002_catalog_sort_indexes import migration as catalog_so
 from common.migrations.m0003_performer_stats import migration as performer_stats
 from common.migrations.m0004_admin_audit_open_findings import migration as audit_open_findings
 from common.migrations.m0005_video_channel_name import migration as video_channel_name
+from common.migrations.m0006_video_bitrate_quality import migration as video_bitrate_quality
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,12 @@ SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
 MIGRATION_LOCK_ID = 0xAD01780B
 
 MIGRATIONS: tuple[Migration, ...] = (
-    baseline, catalog_sort_indexes, performer_stats, audit_open_findings, video_channel_name,
+    baseline,
+    catalog_sort_indexes,
+    performer_stats,
+    audit_open_findings,
+    video_channel_name,
+    video_bitrate_quality,
 )
 
 

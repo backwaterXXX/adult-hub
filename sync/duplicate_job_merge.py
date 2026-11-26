@@ -60,7 +60,8 @@ class _KeeperMerge:
     def __init__(self, conn, keeper: str) -> None:
         self.k_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper,)).fetchone()
         self.k_cols = _core.db.table_columns(conn, 'videos')
-        self.k_vid = dict(zip(self.k_cols, self.k_row)) if self.k_row else {}
+        self.k_vid = (_core.db.writable_row_dict(conn, 'videos', self.k_row, self.k_cols)
+                       if self.k_row else {})
         self.override_row = conn.execute(
             'SELECT fields,updated_at FROM video_metadata_overrides WHERE video_id=%s',
             (keeper,),
@@ -305,7 +306,8 @@ def _finalize_keeper_row(conn, merge: _KeeperMerge, keeper: str, job_id, snapsho
         conn.execute('INSERT INTO video_metadata_overrides (video_id,fields,revision,updated_at) VALUES (%s,%s,1,CURRENT_TIMESTAMP) ON CONFLICT (video_id) DO UPDATE SET fields=EXCLUDED.fields,revision=video_metadata_overrides.revision+1,updated_at=CURRENT_TIMESTAMP',
                      (keeper, _core.json.dumps(merge.merged_override_fields, ensure_ascii=False)))
     keeper_after_row = conn.execute('SELECT * FROM videos WHERE id=%s', (keeper,)).fetchone()
-    keeper_after = dict(zip(merge.k_cols, keeper_after_row)) if keeper_after_row else {}
+    keeper_after = (_core.db.writable_row_dict(conn, 'videos', keeper_after_row, merge.k_cols)
+                    if keeper_after_row else {})
     after_override = conn.execute(
         'SELECT fields FROM video_metadata_overrides WHERE video_id=%s', (keeper,),
     ).fetchone()

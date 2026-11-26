@@ -26,6 +26,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
+from common.client_auth.service import BoundedValidationError
 from common.managed_sources import canonical_channel_id, channel_aliases
 from resolver.client_catalog import (
     PaginatedPerformers,
@@ -37,7 +38,12 @@ from resolver.client_catalog import (
     VideoItem,
     _CLIENT_SORT_CLAUSES,
     _extract_disabled_channel_ids,
+    bitrate_kbps_sql,
+    clear_catalog_count_cache,
     client_sort_clause,
+    normalize_quality_filter,
+    quality_tier_for,
+    quality_tier_sql,
     query_catalog_channel_detail,
     query_catalog_channels,
     query_catalog_performers,
@@ -76,6 +82,8 @@ class TestClientCatalogUnit(unittest.TestCase):
             file_size_bytes=104857600,
             width=1920,
             height=1080,
+            bitrate_kbps=12034,
+            quality="high",
             is_hd=True,
             user_state=None,
         )
@@ -86,7 +94,8 @@ class TestClientCatalogUnit(unittest.TestCase):
         expected_keys = {
             "id", "title", "duration_seconds", "release_date", "date_added",
             "studio", "channel_name", "plot", "categories", "tags", "performers",
-            "poster_url", "backdrop_url", "file_size_bytes", "width", "height", "is_hd",
+            "poster_url", "backdrop_url", "file_size_bytes", "width", "height",
+            "bitrate_kbps", "quality", "is_hd",
         }
         self.assertEqual(set(serialized.keys()), expected_keys)
         self.assertEqual(serialized["channel_name"], "Lukayan SHOW")
@@ -101,6 +110,44 @@ class TestClientCatalogUnit(unittest.TestCase):
         ]
         for forbidden in forbidden_fields:
             self.assertNotIn(forbidden, serialized, f"Forbidden field '{forbidden}' must not leak in client DTO")
+
+    def test_quality_tier_boundaries(self):
+        """The tier cuts sit exactly on 2.5 and 10 Mbit/s and unknown stays unknown."""
+        self.assertIsNone(quality_tier_for(None))
+        self.assertEqual(quality_tier_for(0), "low")
+        self.assertEqual(quality_tier_for(2499), "low")
+        self.assertEqual(quality_tier_for(2500), "medium")
+        self.assertEqual(quality_tier_for(9999), "medium")
+        self.assertEqual(quality_tier_for(10000), "high")
+        self.assertEqual(quality_tier_for(64814), "high")
+
+    def test_quality_filter_parameter_parsing(self):
+        """The quality parameter accepts one tier, a list, duplicates and padding."""
+        self.assertEqual(normalize_quality_filter(None), [])
+        self.assertEqual(normalize_quality_filter(""), [])
+        self.assertEqual(normalize_quality_filter("high"), ["high"])
+        self.assertEqual(normalize_quality_filter(" Medium , HIGH "), ["medium", "high"])
+        self.assertEqual(normalize_quality_filter("low,low"), ["low"])
+        self.assertEqual(normalize_quality_filter(["low", "high"]), ["low", "high"])
+        with self.assertRaises(BoundedValidationError):
+            normalize_quality_filter("ultra")
+        with self.assertRaises(BoundedValidationError):
+            normalize_quality_filter("high,1080p")
+
+    def test_quality_sql_prefers_the_stored_column(self):
+        """The tier expression reads the generated column and keeps the tier bounds."""
+        stored = quality_tier_sql({"bitrate_kbps"})
+        self.assertIn("v.bitrate_kbps", stored)
+        self.assertIn("< 2500", stored)
+        self.assertIn("< 10000", stored)
+        self.assertIn("'low'", stored)
+        self.assertIn("'medium'", stored)
+        self.assertIn("'high'", stored)
+
+        # A database that predates migration 0006 still answers: the bitrate is
+        # then derived from the file size and the duration.
+        derived = bitrate_kbps_sql({"duration", "file_size_bytes"})
+        self.assertIn("v.file_size_bytes * 8.0 / v.duration", derived)
 
     def test_taxonomy_dtos_serialization(self):
         """Taxonomy DTOs serialize strictly allowlisted fields with deterministic structure."""
@@ -380,6 +427,91 @@ class TestClientCatalogUnit(unittest.TestCase):
 
 class TestClientCatalogPostgresIntegration(PgTestCase):
     """PostgreSQL integration tests against disposable database using repo wrapper and fixture conventions."""
+
+    def test_quality_tiers_split_the_catalogue_by_bitrate(self):
+        """The quality filter is server side: tiers come from the stored bitrate."""
+        # 1800 seconds, so the file size alone fixes the average bitrate:
+        # 300 MB -> 1 333 kb/s (low), 900 MB -> 4 000 kb/s (medium),
+        # 2 700 MB -> 12 000 kb/s (high); one row carries no size at all.
+        seeds = (
+            ("low_item", 1_800, 300_000_000),
+            ("medium_item", 1_800, 900_000_000),
+            ("high_item", 1_800, 2_700_000_000),
+            ("unknown_item", 1_800, None),
+        )
+        with self.conn:
+            for name, duration, size in seeds:
+                self.conn.execute(
+                    "INSERT INTO videos (id, provider, title, duration, first_seen, playable, file_size_bytes) "
+                    "VALUES (%s, 'telegram', %s, %s, '2026-10-01 12:00:00+00', 1, %s)",
+                    (f"telegram:-100777:{name}:1", name, duration, size),
+                )
+
+        stored = self.conn.execute(
+            "SELECT id, bitrate_kbps FROM videos ORDER BY id"
+        ).fetchall()
+        bitrates = {row[0].split(":")[2]: row[1] for row in stored}
+        self.assertEqual(bitrates, {
+            "low_item": 1333, "medium_item": 4000, "high_item": 12000, "unknown_item": None,
+        })
+
+        low = query_catalog_videos(self.conn, quality="low")
+        self.assertEqual(low.total_count, 1)
+        self.assertEqual(low.items[0].title, "low_item")
+        self.assertEqual(low.items[0].bitrate_kbps, 1333)
+        self.assertEqual(low.items[0].quality, "low")
+        self.assertIs(low.items[0].is_hd, False)
+
+        medium = query_catalog_videos(self.conn, quality="medium")
+        self.assertEqual(medium.total_count, 1)
+        self.assertEqual(medium.items[0].quality, "medium")
+        self.assertIs(medium.items[0].is_hd, True)
+
+        high = query_catalog_videos(self.conn, quality="high")
+        self.assertEqual(high.total_count, 1)
+        self.assertEqual(high.items[0].bitrate_kbps, 12000)
+        self.assertEqual(high.items[0].quality, "high")
+
+        # "HD and better" is one request, and the unknown row never matches a tier.
+        better = query_catalog_videos(self.conn, quality="medium,high")
+        self.assertEqual(better.total_count, 2)
+        self.assertEqual({item.quality for item in better.items}, {"medium", "high"})
+
+        everything = query_catalog_videos(self.conn)
+        self.assertEqual(everything.total_count, 4)
+        unknown = next(item for item in everything.items if item.title == "unknown_item")
+        self.assertIsNone(unknown.bitrate_kbps)
+        self.assertIsNone(unknown.quality)
+        self.assertIsNone(unknown.is_hd)
+
+        # The filter is applied to the count as well, so paging stays exact:
+        # two high items read one per page still report a total of two.
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration, first_seen, playable, file_size_bytes) "
+                "VALUES ('telegram:-100777:high_item_two:1', 'telegram', 'high_item_two', 1800, "
+                "'2026-10-01 12:00:00+00', 1, 2700000000)"
+            )
+        # The totals are cached for 30 seconds; the new row has to invalidate them.
+        clear_catalog_count_cache()
+        first_page = query_catalog_videos(self.conn, quality="high", limit=1)
+        self.assertEqual(first_page.total_count, 2)
+        self.assertEqual(len(first_page.items), 1)
+        second_page = query_catalog_videos(self.conn, quality="high", limit=1, offset=1)
+        self.assertEqual(second_page.total_count, 2)
+        self.assertNotEqual(first_page.items[0].id, second_page.items[0].id)
+        self.assertFalse(second_page.has_more)
+
+        detail = query_catalog_video_detail(self.conn, "telegram:-100777:high_item:1")
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail.bitrate_kbps, 12000)
+        self.assertEqual(detail.quality, "high")
+        self.assertIs(detail.is_hd, True)
+
+    def test_quality_filter_rejects_unknown_tiers(self):
+        """A typo in the quality parameter fails validation instead of silently filtering."""
+        with self.assertRaises(BoundedValidationError):
+            query_catalog_videos(self.conn, quality="4k")
 
     def test_one_visible_canonical_item_safe_fields(self):
         """Focused test for one visible canonical item returning allowlisted safe fields."""

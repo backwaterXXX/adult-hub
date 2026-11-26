@@ -37,7 +37,7 @@ def _build_quarantine_snapshot(conn, loser: str, media_dir, services, op_dir, pa
             raise ValueError('File is shared by another entry; aborting quarantine.')
         _append_sidecar_moves(services, relative, media_dir, op_dir, file_snapshots)
     snapshot = {
-        'video': dict(zip(video_cols, video_row)),
+        'video': _core.db.writable_row_dict(conn, 'videos', video_row, video_cols),
         'synced_files': [dict(zip(sf_cols, r)) for r in files],
         'categories': [dict(zip(vc_cols, r)) for r in cats],
         'files': file_snapshots,

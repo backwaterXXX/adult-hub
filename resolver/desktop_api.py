@@ -60,6 +60,7 @@ from common.client_auth.service import (
 )
 from resolver import artwork_derivatives
 from resolver.client_catalog import (
+    normalize_quality_filter,
     query_catalog_categories,
     query_catalog_channel_detail,
     query_catalog_channels,
@@ -756,6 +757,10 @@ async def get_catalog_videos(
     performer_id: str | None = None,
     min_duration: int | None = Query(None, ge=0),
     max_duration: int | None = Query(None, ge=0),
+    quality: str | None = Query(
+        None,
+        description="Quality tier filter: low, medium or high, comma separated for several.",
+    ),
     is_favorite: bool | None = Query(None),
 ) -> JSONResponse:
     """Browse and search canonical catalog videos with deterministic sorting and filtering."""
@@ -780,6 +785,10 @@ async def get_catalog_videos(
             clean_direction = direction.lower().strip() if direction is not None else None
             if clean_direction is not None and clean_direction not in {"asc", "desc"}:
                 raise BoundedValidationError("Invalid direction parameter. Must be 'asc' or 'desc'.")
+
+            # Validate the tiers before touching the catalog, so a typo comes
+            # back as 400 instead of an empty page.
+            normalize_quality_filter(quality)
 
             clean_channel_id = _clean_str_filter(channel_id, "channel_id")
             clean_channel = _clean_str_filter(channel, "channel")
@@ -806,6 +815,7 @@ async def get_catalog_videos(
                 performer_id=clean_performer,
                 min_duration=min_duration,
                 max_duration=max_duration,
+                quality=quality,
                 sort=sort,
                 direction=clean_direction,
                 offset=offset,

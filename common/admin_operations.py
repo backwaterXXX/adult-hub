@@ -36,7 +36,13 @@ def _video_snapshots(conn, video_ids: list[str], config=None) -> dict[str, tuple
         return {}
     columns = db.table_columns(conn, "videos")
     video_rows = conn.execute("SELECT * FROM videos WHERE id = ANY(%s)", (ids,)).fetchall()
-    videos = {str(row[columns.index("id")]): dict(zip(columns, row)) for row in video_rows}
+    generated = db.generated_table_columns(conn, "videos")
+    videos = {}
+    for row in video_rows:
+        record = dict(zip(columns, row))
+        for name in generated:
+            record.pop(name, None)
+        videos[str(record["id"])] = record
 
     grouped: dict[str, dict[str, list[dict]]] = {
         table: {} for table in ("synced_files", "video_categories", "video_sources")

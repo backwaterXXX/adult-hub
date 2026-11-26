@@ -529,6 +529,30 @@ def table_columns(conn: Connection, table: str) -> list[str]:
     return [row[0] for row in rows]
 
 
+def generated_table_columns(conn: Connection, table: str) -> set[str]:
+    """Return the generated columns of one table, which an INSERT may not set."""
+    rows = conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = %s "
+        "AND is_generated = 'ALWAYS'",
+        (table,),
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def writable_row_dict(conn: Connection, table: str, row, columns: Sequence[str]) -> dict:
+    """Map a ``SELECT *`` row onto a dict ready to be written back.
+
+    Duplicate operations snapshot whole rows and later replay them as an INSERT;
+    a generated column such as ``videos.bitrate_kbps`` cannot be part of that
+    INSERT, so it is dropped here instead of every caller remembering to.
+    """
+    record = dict(zip(columns, row))
+    for name in generated_table_columns(conn, table):
+        record.pop(name, None)
+    return record
+
+
 def pg_backup(db_url: str | None = None, backup_dir=None, prefix: str = "adulthub", *, job_id: str | None = None) -> "object":
     """Compatibility wrapper; implementation lives in ``common.backup``."""
     from common.backup import pg_backup as backup

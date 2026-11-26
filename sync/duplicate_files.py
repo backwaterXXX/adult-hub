@@ -32,7 +32,7 @@ def _write_catalog_backup(conn: db.Connection, op_dir: Path, loser_ids: list) ->
                 d["created_at"] = d["created_at"].isoformat()
             clean_sources.append(d)
         payload.append({
-            "video": dict(zip(video_cols, video_row)) if video_row else None,
+            "video": db.writable_row_dict(conn, "videos", video_row, video_cols) if video_row else None,
             "synced_files": [dict(zip(sf_cols, r)) for r in files],
             "categories": [dict(zip(vc_cols, r)) for r in cats],
             "sources": clean_sources,
