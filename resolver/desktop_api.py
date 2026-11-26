@@ -745,6 +745,7 @@ async def get_catalog_videos(
     sort: str = Query("latest"),
     direction: str | None = Query(None),
     channel_id: str | None = None,
+    channel: str | None = None,
     q: str | None = None,
     category: str | None = None,
     tag: str | None = None,
@@ -779,6 +780,7 @@ async def get_catalog_videos(
                 raise BoundedValidationError("Invalid direction parameter. Must be 'asc' or 'desc'.")
 
             clean_channel_id = _clean_str_filter(channel_id, "channel_id")
+            clean_channel = _clean_str_filter(channel, "channel")
             clean_q = _clean_str_filter(q, "q")
             clean_category = _clean_str_filter(category, "category")
             clean_tag = _clean_str_filter(tag, "tag")
@@ -795,6 +797,7 @@ async def get_catalog_videos(
                 conn,
                 q=clean_q,
                 channel_id=clean_channel_id,
+                channel=clean_channel,
                 category=clean_category,
                 tag=clean_tag,
                 studio=clean_studio,

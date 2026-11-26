@@ -433,6 +433,28 @@ class TestClientCatalogPostgresIntegration(PgTestCase):
         self.assertNotIn("local_files", serialized)
         self.assertNotIn("playable", serialized)
 
+    def test_channel_label_filter_matches_channel_name(self):
+        """The channel filter matches the stored label, not the studio."""
+        with self.conn:
+            self.conn.execute("""
+                INSERT INTO videos (
+                    id, provider, title, duration, first_seen, studio, channel_name, playable
+                ) VALUES
+                    ('telegram:-100111:1:1', 'telegram', 'Lukayan One', 600,
+                     '2026-10-01 10:00:00+00', 'BelAmi', 'Lukayan SHOW', 1),
+                    ('telegram:-100222:2:2', 'telegram', 'Other One', 600,
+                     '2026-10-01 11:00:00+00', '', 'Other Channel', 1)
+            """)
+
+        matched = query_catalog_videos(self.conn, channel=" lukayan show ")
+        self.assertEqual([item.title for item in matched.items], ["Lukayan One"])
+        self.assertEqual(matched.items[0].channel_name, "Lukayan SHOW")
+        self.assertEqual(matched.items[0].studio, "BelAmi")
+
+        # A studio name is not a channel label.
+        self.assertEqual(query_catalog_videos(self.conn, channel="BelAmi").total_count, 0)
+        self.assertEqual(query_catalog_videos(self.conn).total_count, 2)
+
     def test_multiple_sources_and_source_aware_channel_membership(self):
         """Test canonical videos with multiple sources and source-aware channel membership."""
         with self.conn:

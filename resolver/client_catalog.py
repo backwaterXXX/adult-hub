@@ -1008,6 +1008,24 @@ def _append_search_filter(
         params.extend(search_params)
 
 
+def _append_channel_name_filter(conditions: list[str], params: list[Any], channel: str | None,
+                                columns: set[str]) -> None:
+    """Filter by the display label of the source channel.
+
+    The label lives in ``videos.channel_name``; a database synced before that
+    column existed keeps the channel inside the id, so the fallback matches the id
+    part instead of returning nothing.
+    """
+    if not channel or not str(channel).strip():
+        return
+    label = str(channel).strip()
+    if "channel_name" in columns:
+        conditions.append("lower(btrim(COALESCE(v.channel_name, ''))) = lower(%s)")
+    else:
+        conditions.append("lower(btrim(split_part(v.id, ':', 2))) = lower(%s)")
+    params.append(label)
+
+
 def _append_exact_filters(
     conditions: list[str],
     params: list[Any],
@@ -1309,6 +1327,7 @@ def query_catalog_videos(
     *,
     q: str | None = None,
     channel_id: str | None = None,
+    channel: str | None = None,
     category: str | None = None,
     performer_id: str | None = None,
     studio: str | None = None,
@@ -1348,6 +1367,7 @@ def query_catalog_videos(
     # 2. Source-Aware Channel Filter (explicit Telegram provider only)
     if channel_id:
         _append_channel_filter(conditions, params, channel_id, disabled_set, has_sources)
+    _append_channel_name_filter(conditions, params, channel, columns)
 
     # 3. Search Query (q) with literal LIKE wildcard escaping
     _append_search_filter(conditions, params, q, columns, has_overrides)
