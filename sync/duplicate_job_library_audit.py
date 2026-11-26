@@ -55,7 +55,10 @@ def _record_missing_metadata(conn, job_id: str, video_id, missing_fields: list) 
     with conn:
         conn.execute(
             "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence,details,checked_at) "
-            "VALUES (%s,%s,'missing_metadata','open',%s,%s,to_timestamp(%s))",
+            "VALUES (%s,%s,'missing_metadata','open',%s,%s,to_timestamp(%s)) "
+            "ON CONFLICT (kind, video_id) WHERE status = 'open' AND video_id IS NOT NULL "
+            "DO UPDATE SET job_id=EXCLUDED.job_id,evidence=EXCLUDED.evidence,"
+            "details=EXCLUDED.details,checked_at=EXCLUDED.checked_at",
             (job_id, video_id, "Effective catalog metadata is missing one or more fields.",
              Jsonb({"fields": missing_fields}), int(time.time())),
         )
@@ -149,7 +152,10 @@ def _record_missing_artwork_if_needed(ctx: _AuditContext, video_id, thumbnail_ur
         with ctx.conn:
             ctx.conn.execute(
                 "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence,details,checked_at) "
-                "VALUES (%s,%s,'missing_artwork','open',%s,%s,to_timestamp(%s))",
+                "VALUES (%s,%s,'missing_artwork','open',%s,%s,to_timestamp(%s)) "
+                "ON CONFLICT (kind, video_id) WHERE status = 'open' AND video_id IS NOT NULL "
+                "DO UPDATE SET job_id=EXCLUDED.job_id,evidence=EXCLUDED.evidence,"
+                "details=EXCLUDED.details,checked_at=EXCLUDED.checked_at",
                 (ctx.job_id, video_id, "The catalog has a thumbnail source, but its local artwork file is missing.",
                  Jsonb({"fields": ["thumbnail"]}), int(time.time())),
             )
@@ -200,7 +206,10 @@ def _audit_registered_row(ctx: _AuditContext, index: int, row, total: int) -> No
         with ctx.conn:
             ctx.conn.execute(
                 "INSERT INTO admin_audit_items (job_id,video_id,kind,status,evidence,details,checked_at) "
-                "VALUES (%s,%s,%s,'open',%s,%s,to_timestamp(%s))",
+                "VALUES (%s,%s,%s,'open',%s,%s,to_timestamp(%s)) "
+                "ON CONFLICT (kind, video_id) WHERE status = 'open' AND video_id IS NOT NULL "
+                "DO UPDATE SET job_id=EXCLUDED.job_id,evidence=EXCLUDED.evidence,"
+                "details=EXCLUDED.details,checked_at=EXCLUDED.checked_at",
                 (ctx.job_id, video_id, kind, evidence, Jsonb(details), int(time.time())),
             )
         ctx.findings += 1

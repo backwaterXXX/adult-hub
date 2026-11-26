@@ -1336,3 +1336,7 @@ ALTER TABLE ONLY public.performer_stats_meta
 CREATE INDEX IF NOT EXISTS idx_performer_stats_name ON public.performer_stats USING btree (canonical_name);
 
 CREATE INDEX IF NOT EXISTS idx_performer_stats_video_count ON public.performer_stats USING btree (video_count DESC, canonical_name, canonical_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_audit_items_open_video
+    ON public.admin_audit_items USING btree (kind, video_id)
+    WHERE ((status = 'open'::text) AND (video_id IS NOT NULL));

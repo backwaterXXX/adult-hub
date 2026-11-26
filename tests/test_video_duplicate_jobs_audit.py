@@ -493,5 +493,47 @@ class TestVideoDuplicateJobsAudit(BaseVideoDuplicateJobsTestCase):
 
 
 
+    def _audit_job(self, job_id: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO video_duplicate_jobs (id,action,state,payload,result,created_at,updated_at) "
+                "VALUES (%s,'metadata_quality_audit','done','{}','{}',1,1)", (job_id,)
+            )
+
+    def test_a_repeated_audit_refreshes_one_open_finding_per_video(self):
+        from sync.duplicate_job_library_audit import _record_missing_metadata
+
+        self._audit_job("audit-one")
+        self._audit_job("audit-two")
+        _record_missing_metadata(self.conn, "audit-one", self.keeper, ["plot"])
+        _record_missing_metadata(self.conn, "audit-two", self.keeper, ["plot", "studio"])
+
+        rows = self.conn.execute(
+            "SELECT job_id,details FROM admin_audit_items "
+            "WHERE video_id=%s AND kind='missing_metadata' AND status='open'",
+            (self.keeper,),
+        ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "audit-two")
+        self.assertEqual(sorted(json.loads(rows[0][1])["fields"]), ["plot", "studio"])
+
+    def test_a_resolved_finding_does_not_block_a_new_open_one(self):
+        from sync.duplicate_job_library_audit import _record_missing_metadata
+
+        self._audit_job("audit-one")
+        self._audit_job("audit-two")
+        _record_missing_metadata(self.conn, "audit-one", self.loser, ["plot"])
+        with self.conn:
+            self.conn.execute(
+                "UPDATE admin_audit_items SET status='resolved' "
+                "WHERE video_id=%s AND kind='missing_metadata'", (self.loser,))
+        _record_missing_metadata(self.conn, "audit-two", self.loser, ["plot"])
+
+        open_rows = self.conn.execute(
+            "SELECT count(*) FROM admin_audit_items "
+            "WHERE video_id=%s AND kind='missing_metadata' AND status='open'", (self.loser,)
+        ).fetchone()[0]
+        self.assertEqual(open_rows, 1)
+
 if __name__ == "__main__":
     unittest.main()

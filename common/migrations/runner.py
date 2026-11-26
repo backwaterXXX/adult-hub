@@ -21,13 +21,16 @@ from common.migrations.base import Migration, MigrationRecord, MigrationStatus
 from common.migrations.m0001_baseline import migration as baseline
 from common.migrations.m0002_catalog_sort_indexes import migration as catalog_sort_indexes
 from common.migrations.m0003_performer_stats import migration as performer_stats
+from common.migrations.m0004_admin_audit_open_findings import migration as audit_open_findings
 
 logger = logging.getLogger(__name__)
 
 SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
 MIGRATION_LOCK_ID = 0xAD01780B
 
-MIGRATIONS: tuple[Migration, ...] = (baseline, catalog_sort_indexes, performer_stats)
+MIGRATIONS: tuple[Migration, ...] = (
+    baseline, catalog_sort_indexes, performer_stats, audit_open_findings,
+)
 
 
 def _validate_active_migrations(migrations: tuple[Migration, ...]) -> None:
