@@ -25,7 +25,19 @@ class BackfillTelegramFileSizesTest(unittest.TestCase):
         ids = bfs._fetch_missing_size_video_ids(mock_conn, limit=10)
         self.assertEqual(ids, ["telegram:1", "telegram:2"])
         mock_conn.execute.assert_called_once()
-        self.assertIn("LIMIT 10", mock_conn.execute.call_args[0][0])
+        sql = mock_conn.execute.call_args[0][0]
+        self.assertIn("LIMIT 10", sql)
+        self.assertIn("width IS NULL", sql)
+        self.assertIn("height IS NULL", sql)
+
+    def test_save_db_media_facts_skips_rows_that_have_everything(self):
+        """A second poll never overwrites a known value with nothing."""
+        with patch.object(bfs.db, "connection") as mock_connection:
+            self.assertFalse(bfs.save_db_media_facts("chan:1:100"))
+            mock_connection.assert_not_called()
+        with patch.object(bfs.db, "connection") as mock_connection:
+            self.assertFalse(bfs.save_db_media_facts("chan:1:100:variant:2", size=10))
+            mock_connection.assert_not_called()
 
     def test_backfill_empty(self):
         mock_conn = MagicMock()
@@ -39,12 +51,12 @@ class BackfillTelegramFileSizesTest(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json.return_value = {
-            "variants": [{"is_original": True, "file_size": 12345678}],
+            "variants": [{"is_original": True, "file_size": 12345678, "width": 3840, "height": 2160}],
         }
         mock_client.get.return_value = mock_resp
 
         with patch.object(bfs, "_fetch_missing_size_video_ids", return_value=["telegram:chan:1:100"]), \
-             patch("tools.backfill_telegram_file_sizes.save_db_file_size", return_value=True) as mock_save:
+             patch("tools.backfill_telegram_file_sizes.save_db_media_facts", return_value=True) as mock_save:
             checked, updated, failed = bfs.backfill_telegram_file_sizes(
                 mock_conn,
                 limit=1,
@@ -53,7 +65,8 @@ class BackfillTelegramFileSizesTest(unittest.TestCase):
             )
 
         self.assertEqual((checked, updated, failed), (1, 1, 0))
-        mock_save.assert_called_once_with("chan:1:100", 12345678)
+        # One request fills the size and the resolution the quality tier needs.
+        mock_save.assert_called_once_with("chan:1:100", size=12345678, width=3840, height=2160)
 
     def test_backfill_unavailable_variant_is_not_a_failure(self):
         mock_conn = MagicMock()
@@ -63,7 +76,7 @@ class BackfillTelegramFileSizesTest(unittest.TestCase):
         mock_client.get.return_value = mock_resp
 
         with patch.object(bfs, "_fetch_missing_size_video_ids", return_value=["telegram:chan:1:100"]), \
-             patch("tools.backfill_telegram_file_sizes.save_db_file_size") as mock_save:
+             patch("tools.backfill_telegram_file_sizes.save_db_media_facts") as mock_save:
             checked, updated, failed = bfs.backfill_telegram_file_sizes(
                 mock_conn,
                 limit=1,
@@ -82,7 +95,7 @@ class BackfillTelegramFileSizesTest(unittest.TestCase):
         mock_client.get.return_value = mock_resp
 
         with patch.object(bfs, "_fetch_missing_size_video_ids", return_value=["telegram:chan:1:100"]), \
-             patch("tools.backfill_telegram_file_sizes.save_db_file_size") as mock_save:
+             patch("tools.backfill_telegram_file_sizes.save_db_media_facts") as mock_save:
             checked, updated, failed = bfs.backfill_telegram_file_sizes(
                 mock_conn,
                 limit=1,

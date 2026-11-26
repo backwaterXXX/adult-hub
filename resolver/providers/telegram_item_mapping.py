@@ -13,6 +13,7 @@ from common.telegram_metadata import (
 from common.title_cleaning import clean_title_text
 from resolver.providers.base import VideoItem
 from resolver.providers.telegram_messages import (
+    _dimension_of,
     _caption_of,
     _duration_of,
     _filter_caption_for_title,
@@ -236,6 +237,8 @@ def message_to_video_impl(
         url=url,
         thumbnail=thumb_api_path(ref),
         duration=_duration_of(msg),
+        width=_dimension_of(msg, "width"),
+        height=_dimension_of(msg, "height"),
         performers=performers,
         categories=categories,
         description=caption or None,

@@ -135,19 +135,21 @@ class TestClientCatalogUnit(unittest.TestCase):
             normalize_quality_filter("high,1080p")
 
     def test_quality_sql_prefers_the_stored_column(self):
-        """The tier expression reads the generated column and keeps the tier bounds."""
-        stored = quality_tier_sql({"bitrate_kbps"})
-        self.assertIn("v.bitrate_kbps", stored)
-        self.assertIn("< 2500", stored)
-        self.assertIn("< 10000", stored)
-        self.assertIn("'low'", stored)
-        self.assertIn("'medium'", stored)
-        self.assertIn("'high'", stored)
+        """The tier reads the generated column, and older schemas get the same rule."""
+        self.assertEqual(quality_tier_sql({"quality_tier", "bitrate_kbps"}), "v.quality_tier")
 
-        # A database that predates migration 0006 still answers: the bitrate is
-        # then derived from the file size and the duration.
-        derived = bitrate_kbps_sql({"duration", "file_size_bytes"})
+        # A database that predates migrations 0006/0007 still answers: the tier
+        # is then derived from the resolution and the file size.
+        derived = quality_tier_sql({"duration", "file_size_bytes", "height"})
+        self.assertIn("v.height >= 2000", derived)
+        self.assertIn("v.height >= 1000", derived)
         self.assertIn("v.file_size_bytes * 8.0 / v.duration", derived)
+        self.assertIn("'low'", derived)
+        self.assertIn("'medium'", derived)
+        self.assertIn("'high'", derived)
+
+        bitrate = bitrate_kbps_sql({"duration", "file_size_bytes"})
+        self.assertIn("v.file_size_bytes * 8.0 / v.duration", bitrate)
 
     def test_taxonomy_dtos_serialization(self):
         """Taxonomy DTOs serialize strictly allowlisted fields with deterministic structure."""
@@ -507,6 +509,28 @@ class TestClientCatalogPostgresIntegration(PgTestCase):
         self.assertEqual(detail.bitrate_kbps, 12000)
         self.assertEqual(detail.quality, "high")
         self.assertIs(detail.is_hd, True)
+
+    def test_quality_tier_follows_the_resolution_when_it_is_known(self):
+        """A 4K file with a low average bitrate is still HQ, and the filter agrees."""
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration, first_seen, playable, "
+                "file_size_bytes, width, height) VALUES "
+                "('uhd_item', 'telegram', 'uhd_item', 1800, '2026-10-01 12:00:00+00', 1, "
+                "300000000, 3840, 2160)"
+            )
+        page = query_catalog_videos(self.conn, quality="high")
+        self.assertEqual(page.total_count, 1)
+        item = page.items[0]
+        self.assertEqual((item.width, item.height), (3840, 2160))
+        # 300 MB over 1 800 seconds is only 1 333 kbit/s, so the resolution is
+        # what makes this row HQ — the label and the filter read the same value.
+        self.assertEqual((item.bitrate_kbps, item.quality), (1333, "high"))
+
+        self.assertEqual(query_catalog_videos(self.conn, quality="low").total_count, 0)
+        unfiltered = query_catalog_videos(self.conn)
+        self.assertEqual(unfiltered.items[0].quality, "high")
+        self.assertIs(unfiltered.items[0].is_hd, True)
 
     def test_quality_filter_rejects_unknown_tiers(self):
         """A typo in the quality parameter fails validation instead of silently filtering."""

@@ -81,6 +81,15 @@ def _merge_video_fields(existing: Dict[str, Any], new: Dict[str, Any]) -> None:
     _merge_performer_resolution(existing, new)
 
 
+def _positive_dimension(value: Any) -> int | None:
+    """Return a usable pixel dimension, or None when the provider reported nothing."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def persist_prepared_video(
     conn: db.Connection,
     prepared: Dict[str, Any],
@@ -103,8 +112,8 @@ def persist_prepared_video(
     tags_json = json.dumps(sorted(set(clean_tags)))
 
     conn.execute("""
-        INSERT INTO videos (id, provider, title, slug, duration, thumbnail, performers, categories, tags, embed_host, playable, studio, first_seen, last_seen, source_text, source_filename, performer_resolution)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+        INSERT INTO videos (id, provider, title, slug, duration, thumbnail, performers, categories, tags, embed_host, playable, studio, first_seen, last_seen, source_text, source_filename, performer_resolution, width, height)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
         ON CONFLICT(id) DO UPDATE SET
             title=excluded.title, duration=excluded.duration,
             thumbnail=excluded.thumbnail,
@@ -132,7 +141,11 @@ def persist_prepared_video(
             studio=COALESCE(NULLIF(excluded.studio, ''), videos.studio),
             last_seen=excluded.last_seen,
             source_text=CASE WHEN excluded.source_text <> '' THEN excluded.source_text ELSE videos.source_text END,
-            source_filename=CASE WHEN excluded.source_filename <> '' THEN excluded.source_filename ELSE videos.source_filename END
+            source_filename=CASE WHEN excluded.source_filename <> '' THEN excluded.source_filename ELSE videos.source_filename END,
+            -- Telegram reports the encoded resolution with every document; keep
+            -- the last known value when a message no longer carries one.
+            width=COALESCE(excluded.width, videos.width),
+            height=COALESCE(excluded.height, videos.height)
     """, (comp_id, provider, prepared["title"], video.get("slug", ""),
           video.get("duration", 0), video.get("thumbnail"),
           json.dumps(video.get("performers", [])),
@@ -142,7 +155,9 @@ def persist_prepared_video(
           video.get("source_text") or video.get("description") or "",
           video.get("source_filename") or "",
           json.dumps(video.get("performer_resolution"), ensure_ascii=False)
-          if video.get("performer_resolution") is not None else None))
+          if video.get("performer_resolution") is not None else None,
+          _positive_dimension(video.get("width")),
+          _positive_dimension(video.get("height"))))
     for proposal in video.get("performer_proposals") or []:
         candidate = str(proposal.get("candidate") or "").strip()
         normalized = normalize_name(candidate)

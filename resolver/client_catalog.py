@@ -364,13 +364,21 @@ def bitrate_kbps_sql(columns: set[str]) -> str:
 
 
 def quality_tier_sql(columns: set[str]) -> str:
-    """Return the SQL that maps the average bitrate onto the quality tiers."""
+    """Return the SQL that maps resolution and bitrate onto the quality tiers.
+
+    The stored ``quality_tier`` column is authoritative when it exists (it is
+    what the filter reads); the expression below reproduces it for databases
+    that still run an older schema.
+    """
+    if "quality_tier" in columns:
+        return "v.quality_tier"
     bitrate = bitrate_kbps_sql(columns)
+    height = "v.height" if "height" in columns else "NULL"
     return (
-        f"CASE WHEN {bitrate} IS NULL THEN NULL "
-        f"WHEN {bitrate} < {QUALITY_LOW_MAX_KBPS} THEN 'low' "
-        f"WHEN {bitrate} < {QUALITY_HIGH_MIN_KBPS} THEN 'medium' "
-        "ELSE 'high' END"
+        f"CASE WHEN {height} >= 2000 OR {bitrate} >= {QUALITY_HIGH_MIN_KBPS} THEN 'high' "
+        f"WHEN {height} >= 1000 OR {bitrate} >= {QUALITY_LOW_MAX_KBPS} THEN 'medium' "
+        f"WHEN {height} IS NOT NULL OR {bitrate} IS NOT NULL THEN 'low' "
+        "ELSE NULL END"
     )
 
 
@@ -418,6 +426,12 @@ def _append_quality_filter(
     """Restrict the page to the requested quality tiers; unknown bitrate never matches."""
     tiers = normalize_quality_filter(quality)
     if not tiers:
+        return
+    if "quality_tier" in columns:
+        # The generated column holds the label the clients display, so filtering
+        # on it can never disagree with what a card says.
+        conditions.append(f"v.quality_tier IN ({', '.join(['%s'] * len(tiers))})")
+        params.extend(tiers)
         return
     bitrate = bitrate_kbps_sql(columns)
     ranges: list[str] = []

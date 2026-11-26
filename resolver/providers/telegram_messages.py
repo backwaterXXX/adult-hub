@@ -177,6 +177,20 @@ def _duration_of(msg: dict) -> int:
                 continue
     return 0
 
+def _dimension_of(msg: dict, key: str) -> Optional[int]:
+    """Read a positive pixel dimension from the message or its nested media dicts."""
+    for holder in (msg, msg.get("video"), msg.get("document"), msg.get("file")):
+        if not isinstance(holder, dict):
+            continue
+        try:
+            value = int(holder.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
 def _size_of(msg: dict) -> Optional[int]:
     if msg.get("size") is not None:
         try:
@@ -228,9 +242,11 @@ def _resolve_message_document(msg: Any, media: Any) -> Any:
     return document
 
 
-def _scan_video_attribute(document: Any, is_video: bool) -> Tuple[bool, int]:
-    """Return (is_video, duration) after scanning document attributes for a Video attribute."""
+def _scan_video_attribute(document: Any, is_video: bool) -> Tuple[bool, int, Optional[int], Optional[int]]:
+    """Return (is_video, duration, width, height) from the document's Video attribute."""
     duration = 0
+    width: Optional[int] = None
+    height: Optional[int] = None
     try:
         for attr in (getattr(document, "attributes", None) or []):
             if "Video" in type(attr).__name__:
@@ -238,10 +254,23 @@ def _scan_video_attribute(document: Any, is_video: bool) -> Tuple[bool, int]:
                 dur = getattr(attr, "duration", None)
                 if dur:
                     duration = int(dur)
+                # Telegram reports the encoded resolution here; the catalogue
+                # stores it so the quality tier can rely on it instead of
+                # guessing from the file size.
+                for value, target in ((getattr(attr, "w", None), "width"), (getattr(attr, "h", None), "height")):
+                    try:
+                        parsed = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if parsed > 0:
+                        if target == "width":
+                            width = parsed
+                        else:
+                            height = parsed
                 break
     except (TypeError, ValueError):
         pass
-    return is_video, duration
+    return is_video, duration, width, height
 
 
 def _document_filename(document: Any) -> str:
@@ -263,6 +292,8 @@ def message_object_to_dict(msg: Any, channel_ref: Any) -> dict:
     message_id = getattr(msg, "id", None)
     caption = _msg_caption_text(msg)
     duration = 0
+    width: Optional[int] = None
+    height: Optional[int] = None
     mime_type = ""
     size = getattr(getattr(msg, "file", None), "size", None)
     unique_id: Optional[str] = None
@@ -277,7 +308,7 @@ def message_object_to_dict(msg: Any, channel_ref: Any) -> dict:
         doc_id = getattr(document, "id", None)
         if doc_id is not None:
             unique_id = str(doc_id)
-        is_video, duration = _scan_video_attribute(document, mime_type.startswith("video"))
+        is_video, duration, width, height = _scan_video_attribute(document, mime_type.startswith("video"))
         filename = _document_filename(document)
         kind = "video" if is_video else "other"
     out = {
@@ -290,6 +321,8 @@ def message_object_to_dict(msg: Any, channel_ref: Any) -> dict:
         "duration": duration,
         "mime_type": mime_type,
         "size": size,
+        "width": width,
+        "height": height,
         "filename": filename,
     }
     if unique_id:
@@ -299,5 +332,7 @@ def message_object_to_dict(msg: Any, channel_ref: Any) -> dict:
             "duration": duration,
             "mime_type": mime_type,
             "size": size,
+            "width": width,
+            "height": height,
         }
     return out

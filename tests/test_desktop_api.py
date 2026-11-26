@@ -1697,6 +1697,29 @@ class TestDesktopApiPostgresLive(PgTestCase):
         self.assertEqual(res.json()["quality"], "high")
         self.assertEqual(res.json()["bitrate_kbps"], 12000)
 
+        # Resolution outranks the bitrate: the low bitrate row becomes HQ as soon
+        # as Telegram reports 2160p, and the filter follows the same value.
+        with db.connect(self.db_url) as conn:
+            conn.execute(
+                "UPDATE videos SET width = 3840, height = 2160 WHERE id = 'quality-sd'"
+            )
+            conn.commit()
+        # The page totals are cached for 30 seconds against the request shape.
+        from resolver.client_catalog import clear_catalog_count_cache
+
+        clear_catalog_count_cache()
+        res = self.client.get("/api/v1/catalog/videos?quality=high", headers=auth_header)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["total_count"], 2)
+        promoted = next(item for item in res.json()["items"] if item["id"] == "quality-sd")
+        self.assertEqual((promoted["width"], promoted["height"]), (3840, 2160))
+        self.assertEqual(promoted["quality"], "high")
+        self.assertEqual(promoted["bitrate_kbps"], 1333)
+
+        res = self.client.get("/api/v1/catalog/videos?quality=low", headers=auth_header)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["total_count"], 0)
+
     def test_authenticated_catalog_videos_browse_and_detail(self):
         """Authenticated catalog browse and detail queries return allowlisted fields without leaks."""
         access_tok, _, _ = self._bootstrap_and_login("carol", "CarolPassword999!")

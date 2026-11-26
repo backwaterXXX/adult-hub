@@ -121,6 +121,8 @@ class VideoItem:
     description: Optional[str] = None
     source_text: str = ""
     source_filename: str = ""
+    width: Optional[int] = None       # encoded width from the provider, when reported
+    height: Optional[int] = None      # encoded height from the provider, when reported
     performer_proposals: List[Dict[str, str]] = field(default_factory=list)
     performer_resolution: Optional[Dict[str, object]] = None
 

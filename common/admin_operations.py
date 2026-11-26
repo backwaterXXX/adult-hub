@@ -29,6 +29,14 @@ def _video_snapshot(conn, video_id: str, config=None) -> tuple[str | None, dict 
     return snapshots.get(str(video_id), (None, None))
 
 
+def _writable_video_row(row, columns, generated: set[str]) -> tuple[str, dict]:
+    """Return (id, row dict) without the columns an INSERT cannot set."""
+    record = dict(zip(columns, row))
+    for name in generated:
+        record.pop(name, None)
+    return str(record["id"]), record
+
+
 def _video_snapshots(conn, video_ids: list[str], config=None) -> dict[str, tuple[str, dict]]:
     """Build the same revision snapshots with bounded queries for a whole batch."""
     ids = list(dict.fromkeys(str(video_id) for video_id in video_ids))
@@ -37,12 +45,7 @@ def _video_snapshots(conn, video_ids: list[str], config=None) -> dict[str, tuple
     columns = db.table_columns(conn, "videos")
     video_rows = conn.execute("SELECT * FROM videos WHERE id = ANY(%s)", (ids,)).fetchall()
     generated = db.generated_table_columns(conn, "videos")
-    videos = {}
-    for row in video_rows:
-        record = dict(zip(columns, row))
-        for name in generated:
-            record.pop(name, None)
-        videos[str(record["id"])] = record
+    videos = dict(_writable_video_row(row, columns, generated) for row in video_rows)
 
     grouped: dict[str, dict[str, list[dict]]] = {
         table: {} for table in ("synced_files", "video_categories", "video_sources")

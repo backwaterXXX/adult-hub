@@ -128,6 +128,57 @@ class TestVideoPersistence(PgTestCase):
         ).fetchone()
         self.assertEqual(saved, (performer_id,))
 
+    def test_resolution_is_stored_and_never_cleared(self):
+        """Telegram reports the encoded size with every document; keep the last one."""
+        video = {
+            "provider": "telegram",
+            "provider_video_id": "chan:1:100",
+            "title": "Resolved Scene",
+            "duration": 600,
+            "performers": [],
+            "thumbnail": "http://img/thumb.jpg",
+            "width": 3840,
+            "height": 2160,
+        }
+        prepared = {"comp_id": "telegram:chan:1:100", "provider": "telegram",
+                    "title": "Resolved Scene", "video": video,
+                    "genres": set(), "tags": set(), "studio": None}
+        with self.conn:
+            persist_prepared_video(self.conn, prepared, time_fn=lambda: 1700000000.0)
+        row = self.conn.execute(
+            "SELECT width, height, quality_tier FROM videos WHERE id = %s",
+            ("telegram:chan:1:100",),
+        ).fetchone()
+        self.assertEqual(row, (3840, 2160, "high"))
+
+        # A later message without the attribute must not wipe the resolution.
+        prepared["video"] = {**video, "width": None, "height": None}
+        with self.conn:
+            persist_prepared_video(self.conn, prepared, time_fn=lambda: 1700000100.0)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT width, height, quality_tier FROM videos WHERE id = %s",
+                ("telegram:chan:1:100",),
+            ).fetchone(),
+            (3840, 2160, "high"),
+        )
+
+        # The resolution beats the bitrate: 1080p at a low bitrate is HD, not SD.
+        prepared["video"] = {**video, "width": 1920, "height": 1080}
+        with self.conn:
+            persist_prepared_video(self.conn, prepared, time_fn=lambda: 1700000200.0)
+            self.conn.execute(
+                "UPDATE videos SET file_size_bytes = 200000000 WHERE id = %s",
+                ("telegram:chan:1:100",),
+            )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT bitrate_kbps, quality_tier FROM videos WHERE id = %s",
+                ("telegram:chan:1:100",),
+            ).fetchone(),
+            (2667, "medium"),
+        )
+
     def test_merge_video_fields(self):
         existing = {"performers": ["Alice"], "categories": ["Cat1"]}
         new = {"performers": ["Alice", "Bob"], "categories": ["Cat2"]}

@@ -867,6 +867,15 @@ CREATE TABLE public.videos (
             WHEN ((duration > 0) AND (file_size_bytes > 0)) THEN (round((((file_size_bytes)::numeric * 8.0) / (duration)::numeric) / 1000.0))::integer
             ELSE NULL::integer
         END) STORED,
+    width integer,
+    height integer,
+    quality_tier text GENERATED ALWAYS AS (
+        CASE
+            WHEN ((height >= 2000) OR ((duration > 0) AND (file_size_bytes > 0) AND (round((((file_size_bytes)::numeric * 8.0) / (duration)::numeric) / 1000.0)::integer >= 10000))) THEN 'high'::text
+            WHEN ((height >= 1000) OR ((duration > 0) AND (file_size_bytes > 0) AND (round((((file_size_bytes)::numeric * 8.0) / (duration)::numeric) / 1000.0)::integer >= 2500))) THEN 'medium'::text
+            WHEN ((height IS NOT NULL) OR ((duration > 0) AND (file_size_bytes > 0))) THEN 'low'::text
+            ELSE NULL::text
+        END) STORED,
     CONSTRAINT videos_categories_array_ck CHECK (((categories IS NULL) OR public.adult_hub_is_text_array(categories))),
     CONSTRAINT videos_file_size_bytes_check CHECK (((file_size_bytes IS NULL) OR (file_size_bytes >= 0))),
     CONSTRAINT videos_minimum_duration_seconds CHECK (((duration IS NULL) OR (duration <= 0) OR (duration >= 420))),
@@ -1206,6 +1215,12 @@ CREATE INDEX idx_videos_client_duration ON public.videos USING btree (duration D
 --
 
 CREATE INDEX idx_videos_bitrate ON public.videos USING btree (bitrate_kbps) WHERE (bitrate_kbps IS NOT NULL);
+
+--
+-- Name: idx_videos_quality_tier; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_videos_quality_tier ON public.videos USING btree (quality_tier) WHERE (quality_tier IS NOT NULL);
 
 CREATE INDEX idx_vs_source_id ON public.video_sources USING btree (source_id);
 

@@ -79,7 +79,7 @@ class TestActiveMigrationValidation(unittest.TestCase):
             _validate_active_migrations((self._migration(2), self._migration(1)))
 
     def test_chain_is_the_baseline_plus_appended_migrations(self):
-        self.assertEqual([migration.version for migration in MIGRATIONS], [1, 2, 3, 4, 5, 6])
+        self.assertEqual([migration.version for migration in MIGRATIONS], [1, 2, 3, 4, 5, 6, 7])
         self.assertEqual(MIGRATIONS[0].name, "0001_baseline")
         self.assertIs(MIGRATIONS[0], baseline)
         self.assertEqual(MIGRATIONS[1].name, "0002_catalog_sort_indexes")
@@ -99,7 +99,10 @@ class TestBitrateGeneratedColumn(PgTestCase):
         stored = dict(zip(columns, row))
         # 2 700 000 000 bytes over 1 800 seconds is 12 000 kbit/s.
         self.assertEqual(stored["bitrate_kbps"], 12000)
-        self.assertEqual(db.generated_table_columns(self.conn, "videos"), {"bitrate_kbps"})
+        self.assertEqual(
+            db.generated_table_columns(self.conn, "videos"),
+            {"bitrate_kbps", "quality_tier"},
+        )
 
         writable = db.writable_row_dict(self.conn, "videos", row, columns)
         self.assertNotIn("bitrate_kbps", writable)
@@ -113,20 +116,41 @@ class TestBitrateGeneratedColumn(PgTestCase):
                 [writable[name] for name in names],
             )
         self.assertEqual(
-            self.conn.execute("SELECT title, bitrate_kbps FROM videos WHERE id = 'generated-1'").fetchone(),
-            ("Generated", 12000),
+            self.conn.execute(
+                "SELECT title, bitrate_kbps, quality_tier FROM videos WHERE id = 'generated-1'"
+            ).fetchone(),
+            ("Generated", 12000, "high"),
+        )
+
+        # A low bitrate file becomes high as soon as Telegram reports 2160p: the
+        # tier sums the two signals with OR, so nothing that was HQ drops back.
+        with self.conn:
+            self.conn.execute(
+                "UPDATE videos SET file_size_bytes = 300000000, height = 2160 WHERE id = 'generated-1'"
+            )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT bitrate_kbps, quality_tier FROM videos WHERE id = 'generated-1'"
+            ).fetchone(),
+            (1333, "high"),
+        )
+        with self.conn:
+            self.conn.execute("UPDATE videos SET height = 480 WHERE id = 'generated-1'")
+        self.assertEqual(
+            self.conn.execute("SELECT quality_tier FROM videos WHERE id = 'generated-1'").fetchone()[0],
+            "low",
         )
 
 
 class TestMigrationsEngine(PgTestCase):
     def test_fresh_database_applies_the_chain_and_is_then_up_to_date(self):
         applied = recreate_database(self.conn)
-        self.assertEqual([m.version for m in applied], [1, 2, 3, 4, 5, 6])
+        self.assertEqual([m.version for m in applied], [1, 2, 3, 4, 5, 6, 7])
         self.assertEqual(applied[0].name, "0001_baseline")
 
         status = get_migration_status(self.conn)
         self.assertTrue(status.is_up_to_date)
-        self.assertEqual(status.current_version, 6)
+        self.assertEqual(status.current_version, 7)
         self.assertEqual(status.pending, [])
 
         records = get_applied_migrations(self.conn)
@@ -134,7 +158,8 @@ class TestMigrationsEngine(PgTestCase):
                          [(1, "0001_baseline"), (2, "0002_catalog_sort_indexes"),
                       (3, "0003_performer_stats"), (4, "0004_admin_audit_open_findings"),
                       (5, "0005_video_channel_name"),
-                      (6, "0006_video_bitrate_quality")])
+                      (6, "0006_video_bitrate_quality"),
+                      (7, "0007_video_resolution_quality_tier")])
 
         existing_tables = db.table_names(self.conn)
         for table in APPLICATION_TABLES:
@@ -169,7 +194,7 @@ class TestMigrationsEngine(PgTestCase):
         _drop_everything(self.conn)
         self.addCleanup(recreate_database, self.conn)
         applied = apply_migrations(self.conn)
-        self.assertEqual([m.version for m in applied], [1, 2, 3, 4, 5, 6])
+        self.assertEqual([m.version for m in applied], [1, 2, 3, 4, 5, 6, 7])
 
     def test_concurrent_apply_migrations_is_serialized(self):
         # Containers starting together may both call apply_migrations on an
@@ -210,7 +235,7 @@ class TestMigrationsEngine(PgTestCase):
             self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone())
 
         applied = recreate_database(self.conn)
-        self.assertEqual([m.version for m in applied], [1, 2, 3, 4, 5, 6])
+        self.assertEqual([m.version for m in applied], [1, 2, 3, 4, 5, 6, 7])
         self.assertIsNone(
             self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone())
 

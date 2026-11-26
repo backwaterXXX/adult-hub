@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI utility to progressively backfill missing video file sizes from Telegram metadata."""
+"""CLI utility to progressively backfill missing size and resolution from Telegram metadata."""
 
 from __future__ import annotations
 
@@ -25,10 +25,25 @@ logger = logging.getLogger("backfill_file_sizes")
 _STOP_REQUESTED = False
 
 
-def save_db_file_size(ref: str, size: int, db_url: Optional[str] = None) -> bool:
-    """Save file_size_bytes to PostgreSQL videos table if currently NULL."""
+def save_db_media_facts(
+    ref: str,
+    *,
+    size: Optional[int] = None,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    db_url: Optional[str] = None,
+) -> bool:
+    """Fill the empty media facts of one video row.
+
+    The same variants payload the size comes from also carries the encoded
+    resolution, and the quality tier needs both, so one request fills both. A
+    known value is never overwritten by a missing or stale one.
+    """
     clean_ref = str(ref or "").strip()
-    if not clean_ref or not isinstance(size, int) or size <= 0 or ":variant:" in clean_ref:
+    size = size if isinstance(size, int) and size > 0 else None
+    width = width if isinstance(width, int) and width > 0 else None
+    height = height if isinstance(height, int) and height > 0 else None
+    if not clean_ref or ":variant:" in clean_ref or not any((size, width, height)):
         return False
     unique_id = clean_ref.rsplit(":", 1)[-1].strip()
     candidate_ids = [
@@ -42,9 +57,13 @@ def save_db_file_size(ref: str, size: int, db_url: Optional[str] = None) -> bool
             with conn:
                 for candidate_id in candidate_ids:
                     cur = conn.execute(
-                        "UPDATE videos SET file_size_bytes = %s "
-                        "WHERE id = %s AND file_size_bytes IS NULL",
-                        (int(size), candidate_id),
+                        "UPDATE videos SET "
+                        "file_size_bytes = COALESCE(file_size_bytes, %s), "
+                        "width = COALESCE(width, %s), "
+                        "height = COALESCE(height, %s) "
+                        "WHERE id = %s "
+                        "AND (file_size_bytes IS NULL OR width IS NULL OR height IS NULL)",
+                        (size, width, height, candidate_id),
                     )
                     if getattr(cur, "rowcount", 0) > 0:
                         return True
@@ -72,9 +91,11 @@ def _default_resolver_url() -> str:
 
 
 def _fetch_missing_size_video_ids(conn: Any, limit: Optional[int]) -> list[str]:
+    """Rows that still miss the size or the resolution the tier needs."""
     sql = (
         "SELECT id FROM videos "
-        "WHERE provider = 'telegram' AND file_size_bytes IS NULL "
+        "WHERE provider = 'telegram' "
+        "AND (file_size_bytes IS NULL OR width IS NULL OR height IS NULL) "
         "ORDER BY first_seen DESC"
     )
     if limit and limit > 0:
@@ -83,11 +104,11 @@ def _fetch_missing_size_video_ids(conn: Any, limit: Optional[int]) -> list[str]:
 
 
 def _process_single_video(http_client: Any, base_url: str, vid: str) -> Optional[bool]:
-    """Fetch variants for one video and save its file size.
+    """Fetch variants for one video and save its size and resolution.
 
-    Returns True when a size was saved, None when the resolver has no size for the
-    video (not an error: the video simply has no reachable variant), and False when
-    the request itself failed.
+    Returns True when a fact was saved, None when the resolver has nothing for the
+    video (not an error: the video simply has no reachable variant), and False
+    when the request itself failed.
     """
     raw_ref = vid[len("telegram:") :] if vid.startswith("telegram:") else vid
     url = f"{base_url}/admin/play/{quote(vid, safe=':-_')}/variants"
@@ -98,9 +119,13 @@ def _process_single_video(http_client: Any, base_url: str, vid: str) -> Optional
             payload = resp.json()
             variants = payload.get("variants") or []
             orig = next((v for v in variants if v.get("is_original")), None)
-            size = orig.get("file_size") if orig else None
-            if isinstance(size, int) and size > 0:
-                save_db_file_size(raw_ref, size)
+            if not orig:
+                return None
+            size = orig.get("file_size")
+            width = orig.get("width")
+            height = orig.get("height")
+            if any(isinstance(value, int) and value > 0 for value in (size, width, height)):
+                save_db_media_facts(raw_ref, size=size, width=width, height=height)
                 return True
             return None
         if resp.status_code in (404, 403):
@@ -121,7 +146,7 @@ def backfill_telegram_file_sizes(
     delay_sec: float = 0.8,
     client: Optional[httpx.Client] = None,
 ) -> Tuple[int, int, int]:
-    """Progressively query resolver variants to populate missing videos.file_size_bytes."""
+    """Progressively query resolver variants to populate the missing size and resolution."""
     base_url = (resolver_url or _default_resolver_url()).rstrip("/")
     video_ids = _fetch_missing_size_video_ids(conn, limit)
     total_target = len(video_ids)
@@ -187,7 +212,7 @@ def main() -> int:
     signal.signal(signal.SIGINT, _sig_handler)
     signal.signal(signal.SIGTERM, _sig_handler)
 
-    parser = argparse.ArgumentParser(description="Backfill missing Telegram video file sizes")
+    parser = argparse.ArgumentParser(description="Backfill missing Telegram video sizes and resolutions")
     parser.add_argument("--limit", type=int, default=500, help="Max videos to process (0 for unlimited)")
     parser.add_argument("--delay", type=float, default=0.8, help="Delay between requests in seconds")
     parser.add_argument("--resolver-url", type=str, default=None, help="Base resolver URL")
