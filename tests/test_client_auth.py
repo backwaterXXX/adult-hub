@@ -494,7 +494,7 @@ class TestClientAuthLive(PgTestCase):
         )
         self.assertTrue(resp["access_token"].startswith("ah_tok_"))
         self.assertTrue(resp["refresh_token"].startswith("ah_ref_"))
-        self.assertEqual(resp["expires_in"], 900)
+        self.assertEqual(resp["expires_in"], 3600)
         self.assertEqual(resp["user"]["username"], "alice")
         self.assertNotIn("is_admin", resp["user"])
 

@@ -80,7 +80,7 @@ class TestActiveMigrationValidation(unittest.TestCase):
             _validate_active_migrations((self._migration(2), self._migration(1)))
 
     def test_chain_is_the_baseline_plus_appended_migrations(self):
-        self.assertEqual([migration.version for migration in MIGRATIONS], [1, 2, 3, 4, 5, 6, 7, 8, 9])
+        self.assertEqual([migration.version for migration in MIGRATIONS], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
         self.assertEqual(MIGRATIONS[0].name, "0001_baseline")
         self.assertIs(MIGRATIONS[0], baseline)
         self.assertEqual(MIGRATIONS[1].name, "0002_catalog_sort_indexes")
@@ -153,12 +153,12 @@ class TestBitrateGeneratedColumn(PgTestCase):
 class TestMigrationsEngine(PgTestCase):
     def test_fresh_database_applies_the_chain_and_is_then_up_to_date(self):
         applied = recreate_database(self.conn)
-        self.assertEqual([m.version for m in applied], [1, 2, 3, 4, 5, 6, 7, 8, 9])
+        self.assertEqual([m.version for m in applied], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
         self.assertEqual(applied[0].name, "0001_baseline")
 
         status = get_migration_status(self.conn)
         self.assertTrue(status.is_up_to_date)
-        self.assertEqual(status.current_version, 9)
+        self.assertEqual(status.current_version, 10)
         self.assertEqual(status.pending, [])
 
         records = get_applied_migrations(self.conn)
@@ -169,7 +169,8 @@ class TestMigrationsEngine(PgTestCase):
                       (6, "0006_video_bitrate_quality"),
                       (7, "0007_video_resolution_quality_tier"),
                       (8, "0008_quality_tier_hd_cut"),
-                      (9, "0009_video_channel_name_index")])
+                      (9, "0009_video_channel_name_index"),
+                      (10, "0010_catalog_search_trigram_favorites_index")])
 
         existing_tables = db.table_names(self.conn)
         for table in APPLICATION_TABLES:
@@ -204,7 +205,7 @@ class TestMigrationsEngine(PgTestCase):
         _drop_everything(self.conn)
         self.addCleanup(recreate_database, self.conn)
         applied = apply_migrations(self.conn)
-        self.assertEqual([m.version for m in applied], [1, 2, 3, 4, 5, 6, 7, 8, 9])
+        self.assertEqual([m.version for m in applied], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 
     def test_concurrent_apply_migrations_is_serialized(self):
         # Containers starting together may both call apply_migrations on an
@@ -245,41 +246,41 @@ class TestMigrationsEngine(PgTestCase):
             self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone())
 
         applied = recreate_database(self.conn)
-        self.assertEqual([m.version for m in applied], [1, 2, 3, 4, 5, 6, 7, 8, 9])
+        self.assertEqual([m.version for m in applied], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
         self.assertIsNone(
             self.conn.execute("SELECT id FROM videos WHERE id='v-test-1'").fetchone())
 
     def test_stale_rows_of_the_removed_chain_are_dropped(self):
         recreate_database(self.conn)
         with self.conn:
-            _record(self.conn, 10, "0010_admin_operation_plans")
+            _record(self.conn, 11, "0011_admin_operation_plans")
             _record(self.conn, 77, "0077_remove_dangling_synced_files")
 
         self.assertEqual(apply_migrations(self.conn), [])
 
         versions = [record.version for record in get_applied_migrations(self.conn)]
-        self.assertNotIn(10, versions)
+        self.assertNotIn(11, versions)
         self.assertNotIn(77, versions)
         status = get_migration_status(self.conn)
-        self.assertEqual(status.current_version, 9)
+        self.assertEqual(status.current_version, 10)
         self.assertTrue(status.is_up_to_date)
 
     def test_a_new_migration_takes_over_a_number_the_removed_chain_held(self):
         recreate_database(self.conn)
         self.addCleanup(recreate_database, self.conn)
         with self.conn:
-            _record(self.conn, 10, "0010_admin_operation_plans")
+            _record(self.conn, 11, "0011_admin_operation_plans")
 
         def _add_marker(conn, **_kwargs):
             conn.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS test_marker integer")
 
-        fake = Migration(version=10, name="0010_test_marker", description="fixture",
+        fake = Migration(version=11, name="0011_test_marker", description="fixture",
                          apply_fn=_add_marker)
         with mock.patch("common.migrations.runner.MIGRATIONS", MIGRATIONS + (fake,)):
             applied = apply_migrations(self.conn)
 
-        self.assertEqual([record.version for record in applied], [10])
-        self.assertEqual(applied[0].name, "0010_test_marker")
+        self.assertEqual([record.version for record in applied], [11])
+        self.assertEqual(applied[0].name, "0011_test_marker")
         self.assertIn("test_marker", db.table_columns(self.conn, "videos"))
 
     def test_catalog_sort_indexes_exist_after_the_chain(self):
