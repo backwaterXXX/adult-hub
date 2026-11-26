@@ -82,7 +82,6 @@ The following table inventories every configuration parameter across the Adult H
 | `TELEGRAM_STREAM_CACHE_BYTES` | resolver | No | Code: `134217728` (128MB); Compose: `134217728` | No | Restart | Env | Demote to Advanced | Default 128MB |
 | `TELEGRAM_STREAM_CACHE_TTL_SECONDS` | resolver | No | Code: `120`; Compose: `120` | No | Restart | Env | Demote to Advanced | Default 120s |
 | `TELEGRAM_SIGNATURE_CHANNEL` | common, resolver, sync | No | Code: `None`; Compose: `""` | No | Restart | Env | Demote to Advanced | Channel signature cast detection |
-| `TELEGRAM_CHANNEL_NAME_HINTS` | sync | No | Code: `None`; Compose: `""` | No | Restart | Env | Demote to Advanced | Hints for channel titles |
 | `TELEGRAM_AVAILABILITY_CHECKS_PER_RUN` | sync | No | Code: `20`; Compose: `20` | No | Restart | Env | Demote to Advanced | Maximum availability probes |
 | `TELEGRAM_FINGERPRINTS_ENABLED` | sync | No | Code: `True`; Compose: `true` | No | Restart | Env | Demote to Advanced | Enables OSHASH / pHash backfill |
 | `TELEGRAM_OSHASH_BACKFILL_PER_RUN` | sync | No | Code: `200`; Compose: `200` | No | Restart | Env | Demote to Advanced | Max OSHASH backfills per sync |

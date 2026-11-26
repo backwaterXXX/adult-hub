@@ -1,10 +1,9 @@
 import json
 import logging
-import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 from pg_helper import PgTestCase
@@ -18,8 +17,6 @@ from sync.video_persistence import (
     sync_unique_video,
     flush_collected,
     write_media_files,
-    reset_channel_hints_warning,
-    warn_if_channel_hints_missing,
 )
 from common.performer_catalog import load_catalog, match_catalog
 
@@ -672,158 +669,85 @@ class TestVideoPersistenceChannelHints(unittest.TestCase):
         services_obj = VideoPersistenceServices(**defaults)
         return services_obj
 
-    def test_telegram_channel_name_hints_distinguishes_channel_from_studio(self):
+    def test_a_studio_equal_to_the_items_channel_is_a_channel_name(self):
         services = self._make_services()
-        video_with_hint = {
+        video = {
             "provider": "telegram",
             "provider_video_id": "-100123:42:1",
             "title": "Scene with channel title",
             "studio": "CustomChannel",
+            "channel_name": "CustomChannel",
             "duration": 600,
             "performers": [],
         }
-        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": "CustomChannel,OtherChannel"}):
-            prep_hint = sync_unique_video(
-                video=dict(video_with_hint),
-                genres=set(),
-                tags=set(),
-                target_dir=self.media_dir,
-                conn=self.conn,
-                commit=False,
-                _prepare_only=True,
-                services=services,
-            )
-            self.assertEqual(prep_hint["video"].get("channel"), "CustomChannel")
-            self.assertEqual(prep_hint["video"].get("studio"), "")
-            self.assertIsNone(prep_hint.get("studio"))
 
-        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": ""}):
-            prep_no_hint = sync_unique_video(
-                video=dict(video_with_hint),
-                genres=set(),
-                tags=set(),
-                target_dir=self.media_dir,
-                conn=self.conn,
-                commit=False,
-                _prepare_only=True,
-                services=services,
-            )
-            self.assertIsNone(prep_no_hint["video"].get("channel"))
-            self.assertEqual(prep_no_hint["video"].get("studio"), "CustomChannel")
-            self.assertEqual(prep_no_hint.get("studio"), "CustomChannel")
+        prepared = sync_unique_video(
+            video=dict(video),
+            genres=set(),
+            tags=set(),
+            target_dir=self.media_dir,
+            conn=self.conn,
+            commit=False,
+            _prepare_only=True,
+            services=services,
+        )
 
-    def test_telegram_channel_name_hints_shape_channel_and_studio(self):
+        self.assertEqual(prepared["video"].get("channel"), "CustomChannel")
+        self.assertEqual(prepared["video"].get("studio"), "")
+        self.assertIsNone(prepared.get("studio"))
+
+    def test_the_title_studio_wins_over_the_channel_label(self):
         services = self._make_services()
-        video_base = {
+        video = {
             "provider": "telegram",
             "provider_video_id": "-100123:42:2",
             "title": "[BelAmi] Scene Title",
             "studio": "MyTelegramSource",
+            "channel_name": "MyTelegramSource",
             "duration": 600,
             "performers": [],
         }
 
-        # With hints configured: channel is recognized as channel, and BelAmi as production studio
-        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": "MyTelegramSource"}):
-            prep_hint = sync_unique_video(
-                video=dict(video_base),
-                genres=set(),
-                tags=set(),
-                target_dir=self.media_dir,
-                conn=self.conn,
-                commit=False,
-                _prepare_only=True,
-                services=services,
-            )
-            self.assertEqual(prep_hint["video"].get("channel"), "MyTelegramSource")
-            self.assertEqual(prep_hint["video"].get("studio"), "BelAmi")
-            self.assertEqual(prep_hint.get("studio"), "BelAmi")
-        # Without hints the channel is not recognized, so the studio falls back to the provider.
-        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": ""}):
-            prep_no_hint = sync_unique_video(
-                video=dict(video_base),
-                genres=set(),
-                tags=set(),
-                target_dir=self.media_dir,
-                conn=self.conn,
-                commit=False,
-                _prepare_only=True,
-                services=services,
-            )
-            self.assertIsNone(prep_no_hint["video"].get("channel"))
-            self.assertEqual(prep_no_hint["video"].get("studio"), "BelAmi")
+        prepared = sync_unique_video(
+            video=dict(video),
+            genres=set(),
+            tags=set(),
+            target_dir=self.media_dir,
+            conn=self.conn,
+            commit=False,
+            _prepare_only=True,
+            services=services,
+        )
 
-    def test_startup_warning_when_telegram_configured_and_hints_empty(self):
-        reset_channel_hints_warning()
-        mock_logger = MagicMock()
-        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": "", "TELEGRAM_API_ID": "12345", "SYNC_TELEGRAM": "true"}):
-            warned = warn_if_channel_hints_missing(mock_logger)
-            self.assertTrue(warned)
-            mock_logger.warning.assert_called_once()
-            warning_text = mock_logger.warning.call_args[0][0]
-            self.assertIn("TELEGRAM_CHANNEL_NAME_HINTS is empty", warning_text)
-            # Ensure no private channel identifiers or secrets are logged
-            self.assertNotIn("12345", warning_text)
+        self.assertEqual(prepared["video"].get("channel"), "MyTelegramSource")
+        self.assertEqual(prepared["video"].get("studio"), "BelAmi")
+        self.assertEqual(prepared.get("studio"), "BelAmi")
 
-            # Subsequent call does NOT warn again (once-per-startup / not repeated per video)
-            mock_logger.reset_mock()
-            warned_second = warn_if_channel_hints_missing(mock_logger)
-            self.assertFalse(warned_second)
-            mock_logger.warning.assert_not_called()
-
-    def test_startup_warning_not_repeated_across_videos_in_sync_unique_video(self):
-        reset_channel_hints_warning()
-        mock_logger = MagicMock()
-        services = self._make_services(logger=mock_logger)
+    def test_a_custom_studio_without_a_channel_match_survives(self):
+        services = self._make_services()
         video = {
             "provider": "telegram",
-            "provider_video_id": "tg-vid-1",
-            "title": "Video 1",
-            "studio": "SomeChan",
+            "provider_video_id": "-100123:42:3",
+            "title": "Scene Title",
+            "studio": "CustomChannel",
             "duration": 600,
+            "performers": [],
         }
-        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": ""}):
-            # Processing first video triggers once-per-startup check
-            sync_unique_video(
-                video=dict(video),
-                genres=set(),
-                tags=set(),
-                target_dir=self.media_dir,
-                conn=self.conn,
-                services=services,
-                _prepare_only=True,
-            )
-            self.assertEqual(mock_logger.warning.call_count, 1)
 
-            # Processing second video must NOT repeat warning
-            video2 = dict(video, provider_video_id="tg-vid-2", title="Video 2")
-            sync_unique_video(
-                video=video2,
-                genres=set(),
-                tags=set(),
-                target_dir=self.media_dir,
-                conn=self.conn,
-                services=services,
-                _prepare_only=True,
-            )
-            self.assertEqual(mock_logger.warning.call_count, 1, "Warning must not be repeated per video")
+        prepared = sync_unique_video(
+            video=dict(video),
+            genres=set(),
+            tags=set(),
+            target_dir=self.media_dir,
+            conn=self.conn,
+            commit=False,
+            _prepare_only=True,
+            services=services,
+        )
 
-    def test_no_startup_warning_when_hints_are_set(self):
-        reset_channel_hints_warning()
-        mock_logger = MagicMock()
-        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": "ExplicitHint", "TELEGRAM_API_ID": "12345", "SYNC_TELEGRAM": "true"}):
-            warned = warn_if_channel_hints_missing(mock_logger)
-            self.assertFalse(warned)
-            mock_logger.warning.assert_not_called()
-
-    def test_no_startup_warning_when_telegram_not_configured(self):
-        reset_channel_hints_warning()
-        mock_logger = MagicMock()
-        with patch.dict(os.environ, {"TELEGRAM_CHANNEL_NAME_HINTS": "", "TELEGRAM_API_ID": "", "SYNC_TELEGRAM": "false", "TELEGRAM_CHANNELS": ""}, clear=True):
-            with patch("sync.video_persistence._is_telegram_configured", return_value=False):
-                warned = warn_if_channel_hints_missing(mock_logger)
-                self.assertFalse(warned)
-                mock_logger.warning.assert_not_called()
+        self.assertIsNone(prepared["video"].get("channel"))
+        self.assertEqual(prepared["video"].get("studio"), "CustomChannel")
+        self.assertEqual(prepared.get("studio"), "CustomChannel")
 
 
 class TestVideoSourcesPersistenceUnit(unittest.TestCase):

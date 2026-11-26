@@ -94,7 +94,7 @@ class TestDeploymentConfigContract(unittest.TestCase):
                 env_dict[key.strip()] = val.strip()
         return env_dict
 
-    def test_resolver_has_both_metadata_variables(self):
+    def test_resolver_receives_the_signature_channel(self):
         env = self._get_service_env_dict("resolver")
         self.assertIn("TELEGRAM_SIGNATURE_CHANNEL", env, "resolver must receive TELEGRAM_SIGNATURE_CHANNEL")
         self.assertEqual(
@@ -102,14 +102,10 @@ class TestDeploymentConfigContract(unittest.TestCase):
             "${TELEGRAM_SIGNATURE_CHANNEL:-}",
             "TELEGRAM_SIGNATURE_CHANNEL must use safe empty default interpolation",
         )
-        self.assertIn("TELEGRAM_CHANNEL_NAME_HINTS", env, "resolver must receive TELEGRAM_CHANNEL_NAME_HINTS")
-        self.assertEqual(
-            env["TELEGRAM_CHANNEL_NAME_HINTS"],
-            "${TELEGRAM_CHANNEL_NAME_HINTS:-}",
-            "TELEGRAM_CHANNEL_NAME_HINTS must use safe empty default interpolation",
-        )
+        # Channel titles live in videos.channel_name, so no hint variable remains.
+        self.assertNotIn("TELEGRAM_CHANNEL_NAME_HINTS", env)
 
-    def test_sync_has_both_metadata_variables(self):
+    def test_sync_receives_the_signature_channel(self):
         env = self._get_service_env_dict("sync")
         self.assertIn("TELEGRAM_SIGNATURE_CHANNEL", env, "sync must receive TELEGRAM_SIGNATURE_CHANNEL")
         self.assertEqual(
@@ -117,14 +113,9 @@ class TestDeploymentConfigContract(unittest.TestCase):
             "${TELEGRAM_SIGNATURE_CHANNEL:-}",
             "TELEGRAM_SIGNATURE_CHANNEL must use safe empty default interpolation",
         )
-        self.assertIn("TELEGRAM_CHANNEL_NAME_HINTS", env, "sync must receive TELEGRAM_CHANNEL_NAME_HINTS")
-        self.assertEqual(
-            env["TELEGRAM_CHANNEL_NAME_HINTS"],
-            "${TELEGRAM_CHANNEL_NAME_HINTS:-}",
-            "TELEGRAM_CHANNEL_NAME_HINTS must use safe empty default interpolation",
-        )
+        self.assertNotIn("TELEGRAM_CHANNEL_NAME_HINTS", env)
 
-    def test_env_example_documents_both_variables(self):
+    def test_env_example_documents_the_signature_channel(self):
         env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
         self.assertIn("TELEGRAM_SIGNATURE_CHANNEL=", env_example)
-        self.assertIn("TELEGRAM_CHANNEL_NAME_HINTS=", env_example)
+        self.assertNotIn("TELEGRAM_CHANNEL_NAME_HINTS", env_example)

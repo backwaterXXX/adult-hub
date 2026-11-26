@@ -58,7 +58,6 @@ Configure these settings in `.env` or Compose only when tuning specific performa
 | `TELEGRAM_STREAM_CACHE_TTL_SECONDS`| `120` | Cache lifetime for idle playback stream chunks (seconds). |
 | `TELEGRAM_SESSION_PATH` | `/data/telegram.session` | MTProto session database path. |
 | `TELEGRAM_SIGNATURE_CHANNEL` | `""` | Telegram handle used in video captions to detect cast lists. |
-| `TELEGRAM_CHANNEL_NAME_HINTS` | `""` | Comma-separated channel titles treated as source channels rather than studios. |
 
 ### 2.3 Fingerprinting & Video pHash Budgets
 

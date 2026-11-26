@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from common import db
 from common.duration import passes_minimum_video_duration
 from common.performer_catalog import normalize_name
@@ -13,68 +12,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
-
-
-_WARNED_MISSING_CHANNEL_HINTS: bool = False
-_WARNED_IS_TELEGRAM_CONFIGURED: bool = False
-
-
-def reset_channel_hints_warning() -> None:
-    """Reset the channel hints warning latch (primarily for test isolation)."""
-    global _WARNED_MISSING_CHANNEL_HINTS, _WARNED_IS_TELEGRAM_CONFIGURED
-    _WARNED_MISSING_CHANNEL_HINTS = False
-    _WARNED_IS_TELEGRAM_CONFIGURED = False
-
-
-def _is_telegram_configured() -> bool:
-    """Return True if Telegram is configured as an active or enabled source."""
-    try:
-        from common.config_loader import load_config
-        cfg = load_config()
-        if cfg:
-            tg = cfg.get_source("telegram")
-            if tg and getattr(tg, "enabled", True):
-                channels = getattr(tg, "channels", [])
-                if channels and any(getattr(ch, "enabled", True) for ch in channels):
-                    return True
-    except Exception as exc:
-        global _WARNED_IS_TELEGRAM_CONFIGURED
-        if not _WARNED_IS_TELEGRAM_CONFIGURED:
-            _WARNED_IS_TELEGRAM_CONFIGURED = True
-            logger.warning("Could not read configuration to determine Telegram status: %s", exc)
-        else:
-            logger.debug("Could not read configuration to determine Telegram status: %s", exc)
-    if os.getenv("TELEGRAM_API_ID") and (
-        os.getenv("TELEGRAM_CHANNELS") or os.getenv("SYNC_TELEGRAM", "").lower() in ("true", "1", "yes")
-    ):
-        return True
-    return False
-
-
-def warn_if_channel_hints_missing(
-    logger: Optional[logging.Logger] = None, *, is_configured: Optional[bool] = None
-) -> bool:
-    """Emit a once-per-startup warning if Telegram is configured but channel hints are empty.
-
-    Returns True if a warning was emitted, False otherwise.
-    Does not log private channel names or repeat per video.
-    """
-    global _WARNED_MISSING_CHANNEL_HINTS
-    if _WARNED_MISSING_CHANNEL_HINTS:
-        return False
-    hints = (os.getenv("TELEGRAM_CHANNEL_NAME_HINTS") or "").strip()
-    if hints:
-        return False
-    tg_configured = _is_telegram_configured() if is_configured is None else is_configured
-    if not tg_configured:
-        return False
-    _WARNED_MISSING_CHANNEL_HINTS = True
-    log = logger or logging.getLogger("sync.video_persistence")
-    log.warning(
-        "Telegram is configured but TELEGRAM_CHANNEL_NAME_HINTS is empty; "
-        "channel titles may be misclassified as production studios."
-    )
-    return True
 
 
 @dataclass
@@ -89,9 +26,6 @@ class VideoPersistenceServices:
     persist_prepared_video: Callable[[db.Connection, Dict[str, Any]], None]
     logger: logging.Logger
     time_fn: Callable[[], float] = time.time
-
-    def __post_init__(self) -> None:
-        warn_if_channel_hints_missing(self.logger)
 
 
 def _merge_list_field(existing: Dict[str, Any], new: Dict[str, Any], key: str) -> None:
@@ -450,19 +384,13 @@ def _detect_studio_names(video: Dict[str, Any], title: str, tags) -> Tuple[Any, 
 
 
 def _is_telegram_channel_studio(studio_val: str) -> bool:
-    # For Telegram, distinguish actual production studios from source channel names.
-    # Deployment-specific channel titles can be supplied through the environment
-    # instead of being hardcoded in the public repository.
-    extra_channel_hints = tuple(
-        hint.strip().casefold()
-        for hint in (os.getenv("TELEGRAM_CHANNEL_NAME_HINTS") or "").split(",")
-        if hint.strip()
-    )
+    # Telegram items used to carry the source channel in ``studio``. The channel
+    # has its own column now, so only the legacy markers are recognised here and
+    # every other value is a production studio.
     return bool(studio_val and (
         studio_val.lower() in ("telegram", "t.me", "telegram (t.me)")
         or studio_val.startswith("-100")
         or (studio_val.startswith("-") and studio_val[1:].isdigit())
-        or any(k in studio_val.lower() for k in extra_channel_hints)
     ))
 
 
@@ -480,12 +408,9 @@ def _is_own_channel_label(studio_val: str, video: Dict[str, Any]) -> bool:
     return looks_like_channel_label(studio_val)
 
 
-def _apply_studio_fields(video: Dict[str, Any], title: str, tags, provider: str, studio_val: str,
-                        services: VideoPersistenceServices):
+def _apply_studio_fields(video: Dict[str, Any], title: str, tags, provider: str, studio_val: str):
     """Set studio/channel on the video dict. Returns (tags, studio value stored in the DB)."""
     tags, prod_names = _detect_studio_names(video, title, tags)
-    if provider == "telegram":
-        warn_if_channel_hints_missing(services.logger if services else None, is_configured=True)
     is_tg_chan = _is_telegram_channel_studio(studio_val) or _is_own_channel_label(studio_val, video)
     if is_tg_chan:
         video["channel"] = studio_val
@@ -562,7 +487,7 @@ def sync_unique_video(
              "studio": studio_val, "performer_resolution": effective_resolution}
 
     # Detect production studios and add as tags and production_studios
-    tags, db_studio = _apply_studio_fields(video, title, tags, provider, studio_val, services)
+    tags, db_studio = _apply_studio_fields(video, title, tags, provider, studio_val)
     tags = _clean_sync_tags(tags)
 
     prepared = {

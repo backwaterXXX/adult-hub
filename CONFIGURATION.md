@@ -60,7 +60,6 @@ Configure these settings in `.env` or Compose only when tuning specific performa
 | `TELEGRAM_DOWNLOAD_BLOCK_TIMEOUT_SECONDS` | `45` | Per-block stall timeout; failed blocks retry immediately. |
 | `TELEGRAM_SESSION_PATH` | `/data/telegram.session` | MTProto session database path (falls back to legacy `/cache/telegram.session` if present). |
 | `TELEGRAM_SIGNATURE_CHANNEL` | `""` | Telegram handle used in video captions to detect cast lists. |
-| `TELEGRAM_CHANNEL_NAME_HINTS` | `""` | Comma-separated channel titles treated as source channels rather than studios. |
 
 ### 2.3 Fingerprinting & Video pHash Budgets
 
