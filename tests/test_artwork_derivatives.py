@@ -113,8 +113,11 @@ class ArtworkDerivativeTests(unittest.TestCase):
             self.assertTrue(derivatives.derivative_path(source, width).is_file())
 
     def test_prune_keeps_the_state_file_and_partial_writes(self) -> None:
-        derivatives._LAST_PRUNE = 0.0
-        self.addCleanup(setattr, derivatives, "_LAST_PRUNE", 0.0)
+        # _prune throttles itself; a fresh CI machine may have a monotonic clock
+        # below the interval, so the throttle is what the test switches off.
+        throttled = mock.patch.object(derivatives, "_PRUNE_INTERVAL_SECONDS", 0.0)
+        throttled.start()
+        self.addCleanup(throttled.stop)
 
         state = derivatives._state_path()
         state.write_text('{"files": {}}')
