@@ -51,6 +51,8 @@ class ChannelReconciliationTests(PgTestCase):
                 "('telegram:-1002:4:4','telegram','Four',900,1,'Beta',''),"
                 # another channel label
                 "('telegram:-1002:5:5','telegram','Five',900,1,'Beta',NULL),"
+                # a label from a channel this item does not belong to
+                "('telegram:-1002:7:7','telegram','Seven',900,1,'Alpha',''),"
                 "('other:6:6','other','Six',900,1,'Alpha','')"
             )
             self.conn.execute(
@@ -70,11 +72,12 @@ class ChannelReconciliationTests(PgTestCase):
     def test_channel_labels_move_out_of_studio(self):
         labelled, cleared = reconcile_channel_names(self.conn, self.config)
 
-        self.assertEqual(labelled, 5)
-        self.assertEqual(cleared, 2)
+        self.assertEqual(labelled, 6)
+        self.assertEqual(cleared, 3)
         self.assertEqual(self._row("telegram:-1001:1:1"), ("", "Alpha"))
         self.assertEqual(self._row("telegram:-1002:5:5"), ("", "Beta"))
         self.assertEqual(self._row("telegram:-1001:3:3"), ("BelAmi", "Alpha"))
+        self.assertEqual(self._row("telegram:-1002:7:7"), ("", "Beta"))
 
     def test_an_override_protects_the_studio_value(self):
         reconcile_channel_names(self.conn, self.config)

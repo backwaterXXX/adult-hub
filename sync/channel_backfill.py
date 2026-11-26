@@ -86,4 +86,17 @@ def reconcile_channel_names(conn, config) -> tuple[int, int]:
                 (channel_id, label),
             ).fetchall()
         cleared += len(rows)
+    # A renamed or reused channel leaves labels from the other channel behind;
+    # any remaining configured label is still a channel name, never a studio.
+    labels = sorted(set(mapping.values()))
+    with conn:
+        rows = conn.execute(
+            "UPDATE videos v SET studio = '' "
+            "WHERE v.provider = 'telegram' "
+            "AND coalesce(v.studio, '') = ANY(%s)"
+            f"{override_guard} "
+            "RETURNING 1",
+            (labels,),
+        ).fetchall()
+    cleared += len(rows)
     return labelled, cleared
