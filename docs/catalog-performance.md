@@ -86,6 +86,30 @@ be dropped between cases. `close_pools()` closes the idle sessions.
 `slow API task <name> took <n> ms` for any task at or above 300 ms. That is the
 first place to look when a client reports a slow page.
 
+## Production after 0.6.12 (2026-11-27)
+
+Deployed at 08:26 local; the sync applied migrations 0010 and 0011 at startup and
+the resolver logged no errors.
+
+| Path | Production |
+|---|---|
+| Catalog latest (50) | 10.2 ms |
+| Search `anal` | 25.2 ms |
+| Search `flooded` | 13.8 ms |
+| Title sort | 9.0 ms |
+| Performer page (50) | 36.8 ms |
+| Performer detail | 30.9 ms |
+| Favorites page | 28.5 ms |
+| Quality `high` | 8.0 ms |
+| Category `Anal` / `anal` | 11.2 / 11.5 ms |
+| Taxonomy lists | 0.1–0.4 ms |
+
+`EXPLAIN` on the title sort shows `Index Only Scan using idx_videos_title_sort`
+(0.1 ms for the first 50 ids). `GET /api/v1/version` reports `0.6.12` with
+`desktop_api`, `tv_pairing` and `user_state` enabled. Both spellings of the
+category return the same total (4 924 for `Anal`/`anal`) and the category mirror
+has no gaps.
+
 ## Known gaps
 
 - **75 videos have no quality tier.** They all come from one channel whose
