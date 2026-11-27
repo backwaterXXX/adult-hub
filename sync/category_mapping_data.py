@@ -10,7 +10,7 @@ EXCLUDED_TAGS: Set[str] = {
     "browse",
 }
 
-# The 24 canonical target categories
+# The 23 canonical target categories
 ALL_TARGET_CATEGORIES: List[str] = [
     "Amateur & OnlyFans",
     "Anal",
@@ -33,7 +33,6 @@ ALL_TARGET_CATEGORIES: List[str] = [
     "Public & Cruising",
     "Solo & Masturbation",
     "Straight & Bisexual",
-    "Threesome",
     "Trans & Femboy",
     "Twink & Young",
 ]
@@ -135,12 +134,10 @@ RAW_TO_MAPPED_CATEGORY: Dict[str, Optional[str]] = {
     "gangbang": "Group",
     "orgy": "Group",
     "orgies": "Group",
-
-    # 14. Threesome
-    "threesome": "Threesome",
-    "trio": "Threesome",
-    "3way": "Threesome",
-    "3-way": "Threesome",
+    "threesome": "Group",
+    "trio": "Group",
+    "3way": "Group",
+    "3-way": "Group",
 
     # 14. Latino
     "latin": "Latino",

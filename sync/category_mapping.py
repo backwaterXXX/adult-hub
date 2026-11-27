@@ -30,8 +30,7 @@ _CATEGORY_KEYWORD_RULES = (
     (("bareback", "breeding", "creampie"), "Bareback & Breeding"),
     (("cumshot", "facial"), "Cumshots"),
     (("anal", "double penetration", "flip fuck"), "Anal"),
-    (("threesome", "trio", "3way", "3-way"), "Threesome"),
-    (("foursome", "gangbang", "group", "orgy", "orgies"), "Group"),
+    (("threesome", "trio", "3way", "3-way", "foursome", "gangbang", "group", "orgy", "orgies"), "Group"),
     (("muscle", "hunk", "jock", "workout"), "Muscle & Jocks"),
     (("bear", "chubby", "hairy"), "Bear & Chubby"),
     (("daddy", "mature", "dadson"), "Daddy & Mature"),
@@ -118,8 +117,7 @@ _TITLE_CATEGORY_RULES = (
     (r'\b(blowjob|deepthroat|bj|oral|sucking|sucks|suck|rim|rimming|lick|licking)\b', 'Oral & Rimming'),
     (r'\b(cum|cums|cumming|cumshot|load|facial|swallow)\b', 'Cumshots'),
     (r'\b(jerk|jerks|jerking|jerkoff|handjob|stroke|stroking|solo|masturbat|edge|edging)\b', 'Solo & Masturbation'),
-    (r'\b(threesome|trio|3way|3-way)\b', 'Threesome'),
-    (r'\b(foursome|gangbang|group|orgy|double dipping|dped)\b', 'Group'),
+    (r'\b(threesome|trio|3way|3-way|foursome|gangbang|group|orgy|double dipping|dped)\b', 'Group'),
     (r'\b(muscle|muscular|jock|hunk|gym|workout|bicep|bodybuilder)\b', 'Muscle & Jocks'),
     (r'\b(bear|chubby|hairy|otter|beard|chub)\b', 'Bear & Chubby'),
     (r'\b(daddy|mature|older|dilf|gramps|silver|father)\b', 'Daddy & Mature'),
@@ -162,20 +160,15 @@ def map_categories(categories: Iterable[str], title: Optional[str] = None) -> Se
             continue
         c_low = cat.strip().lower()
         if c_low in ("group & threesome", "group and threesome"):
-            if title and re.search(r'\b(threesome|trio|3way|3-way)\b', title.lower()):
-                mapped.add("Threesome")
-            else:
-                mapped.add("Group")
+            mapped.add("Group")
             continue
         m = map_category(cat)
         if m:
             mapped.add(m)
     if title:
         t_low = title.lower()
-        if re.search(r'\b(foursome|gangbang|group|orgy|orgies)\b', t_low):
+        if re.search(r'\b(foursome|gangbang|group|orgy|orgies|threesome|3way|3-way)\b', t_low):
             mapped.add("Group")
-        if re.search(r'\b(threesome|3way|3-way)\b', t_low):
-            mapped.add("Threesome")
     if not mapped and title:
         mapped = guess_categories_from_title(title)
     return mapped

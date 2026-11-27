@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 from sync.performer_data_migrations import REDUNDANT_PERFORMERS_VERSION  # noqa: E402
 
 
-CATEGORY_MAPPING_VERSION = 3
+CATEGORY_MAPPING_VERSION = 4
 
 _STABLE_STRM_RE = re.compile(r"^[A-Za-z0-9]+ \[[A-Za-z0-9_-]{1,40}-[0-9a-f]{12}\]\.strm$")
 

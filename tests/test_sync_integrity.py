@@ -265,7 +265,7 @@ class SyncIntegrityTests(PgTestCase):
 
     def test_category_mapping_and_provider_exclusion(self):
         from sync.category_mapping import map_category, map_categories, ALL_TARGET_CATEGORIES
-        self.assertEqual(len(ALL_TARGET_CATEGORIES), 24)
+        self.assertEqual(len(ALL_TARGET_CATEGORIES), 23)
         self.assertIsNone(map_category("Secondweb"))
         self.assertIsNone(map_category("Exampleweb"))
         self.assertIsNone(map_category("Fourthweb"))
@@ -281,14 +281,14 @@ class SyncIntegrityTests(PgTestCase):
         self.assertEqual(map_category("rimming"), "Oral & Rimming")
         self.assertEqual(map_category("jock"), "Muscle & Jocks")
         self.assertEqual(map_category("twink"), "Twink & Young")
-        self.assertEqual(map_category("threesome"), "Threesome")
+        self.assertEqual(map_category("threesome"), "Group")
         self.assertEqual(map_category("group"), "Group")
         self.assertEqual(map_category("orgy"), "Group")
         self.assertEqual(map_category("#orgy"), "Group")
         self.assertEqual(map_category("orgies"), "Group")
 
         mapped = map_categories(["Secondweb", "anal", "bareback", "creampie", "blowjob", "threesome", "Promotion"])
-        self.assertEqual(mapped, {"Anal", "Bareback & Breeding", "Oral & Rimming", "Threesome"})
+        self.assertEqual(mapped, {"Anal", "Bareback & Breeding", "Oral & Rimming", "Group"})
         self.assertIn("Group", map_categories(["Amateur & OnlyFans"], title="Orgy"))
         self.assertIn("Group", map_categories(["Bareback & Breeding"], title="[Lucas Raunch] - Orgy"))
 
