@@ -876,6 +876,7 @@ CREATE TABLE public.videos (
             WHEN ((height IS NOT NULL) OR ((duration > 0) AND (file_size_bytes > 0))) THEN 'low'::text
             ELSE NULL::text
         END) STORED,
+    title_sort text,
     CONSTRAINT videos_categories_array_ck CHECK (((categories IS NULL) OR public.adult_hub_is_text_array(categories))),
     CONSTRAINT videos_file_size_bytes_check CHECK (((file_size_bytes IS NULL) OR (file_size_bytes >= 0))),
     CONSTRAINT videos_minimum_duration_seconds CHECK (((duration IS NULL) OR (duration <= 0) OR (duration >= 420))),
@@ -1373,3 +1374,51 @@ CREATE INDEX IF NOT EXISTS idx_performer_stats_video_count ON public.performer_s
 CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_audit_items_open_video
     ON public.admin_audit_items USING btree (kind, video_id)
     WHERE ((status = 'open'::text) AND (video_id IS NOT NULL));
+
+--
+-- Catalog read path (migrations 0010 and 0011)
+--
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS idx_videos_title_trgm ON public.videos USING gin (title gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_videos_studio_trgm ON public.videos USING gin (studio gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_videos_plot_trgm ON public.videos USING gin (plot gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_client_user_favorites_user_video ON public.client_user_favorites USING btree (user_id, video_id);
+CREATE INDEX IF NOT EXISTS idx_video_performers_name_lower ON public.video_performers (lower(performer_name), video_id);
+CREATE INDEX IF NOT EXISTS idx_video_categories_category_lower ON public.video_categories (lower(category), video_id);
+CREATE INDEX IF NOT EXISTS idx_videos_title_sort ON public.videos (title_sort, id);
+CREATE INDEX IF NOT EXISTS idx_videos_title_sort_desc ON public.videos (title_sort DESC, id ASC);
+
+CREATE OR REPLACE FUNCTION public.set_video_title_sort() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+        BEGIN
+            NEW.title_sort := lower(COALESCE(
+                (SELECT o.fields ->> 'title' FROM public.video_metadata_overrides o
+                 WHERE o.video_id = NEW.id AND o.fields ? 'title'),
+                NEW.title,
+                ''));
+            RETURN NEW;
+        END;
+    $$;
+
+CREATE OR REPLACE FUNCTION public.refresh_video_title_sort() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+        BEGIN
+            IF TG_OP = 'DELETE' THEN
+                UPDATE public.videos SET title_sort = lower(COALESCE(title, ''))
+                WHERE id = OLD.video_id;
+                RETURN OLD;
+            END IF;
+            UPDATE public.videos
+            SET title_sort = lower(COALESCE(NEW.fields ->> 'title', title, ''))
+            WHERE id = NEW.video_id;
+            RETURN NEW;
+        END;
+    $$;
+
+CREATE TRIGGER videos_refresh_title_sort BEFORE INSERT OR UPDATE OF title
+    ON public.videos FOR EACH ROW EXECUTE FUNCTION public.set_video_title_sort();
+CREATE TRIGGER video_metadata_overrides_refresh_title_sort
+    AFTER INSERT OR UPDATE OF fields OR DELETE ON public.video_metadata_overrides
+    FOR EACH ROW EXECUTE FUNCTION public.refresh_video_title_sort();
