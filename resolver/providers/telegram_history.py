@@ -19,8 +19,11 @@ async def channel_title(client, channel_ref, entity=None, *, config_fn, entity_r
     config = config_fn()
     if config:
         channel_config = config.get_telegram_channel(channel_ref)
-        if channel_config and channel_config.studio:
-            return channel_config.studio
+        if channel_config:
+            if getattr(channel_config, "studio", None):
+                return str(channel_config.studio)
+            if getattr(channel_config, "title", None):
+                return str(channel_config.title)
     try:
         resolved = entity if entity is not None else await client.get_entity(entity_ref_fn(channel_ref))
         name = getattr(resolved, "title", None) or getattr(resolved, "username", None)

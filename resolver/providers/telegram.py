@@ -148,6 +148,16 @@ THUMB_CACHE_TTL_SECONDS = 3600.0
 THUMB_FAILURE_TTL_SECONDS = 30.0
 THUMB_CACHE_MAX_ENTRIES = 256
 THUMB_CACHE_MAX_BYTES = 32 * 1024 * 1024
+CATEGORIES_CACHE_TTL_SECONDS = 600.0
+CHANNEL_TITLE_CACHE_TTL_SECONDS = 3600.0
+CATEGORY_TITLE_TIMEOUT_SECONDS = 8.0
+CATEGORIES_FETCH_CONCURRENCY = 4
+HISTORY_CACHE_TTL_SECONDS = 90.0
+HISTORY_CACHE_MAX_ENTRIES = 64
+
+
+def _monotonic() -> float:
+    return time.monotonic()
 
 _client = None
 _client_lock = None
@@ -381,6 +391,77 @@ class TelegramProvider(BaseProvider):
         self._thumb_cache_bytes = 0
         self._thumb_tasks = {}
         self._thumb_slots = asyncio.Semaphore(4)
+        self._categories_cache = None
+        self._categories_lock: Optional[asyncio.Lock] = None
+        self._channel_title_cache = {}
+        self._history_cache = OrderedDict()
+        self._history_inflight = {}
+
+    def invalidate_categories_cache(self) -> None:
+        """Clear the cached category listing so the next request re-evaluates config."""
+        self._categories_cache = None
+
+    def invalidate_caches(self) -> None:
+        """Clear all in-memory category, channel-title, and history-batch caches."""
+        self._categories_cache = None
+        self._channel_title_cache.clear()
+        self._history_cache.clear()
+
+    def _get_categories_lock(self) -> asyncio.Lock:
+        if self._categories_lock is None:
+            self._categories_lock = asyncio.Lock()
+        return self._categories_lock
+
+    @staticmethod
+    def _channel_config_signature(ch_cfg: Any) -> Tuple[Any, ...]:
+        if ch_cfg is None:
+            return ()
+        return (
+            getattr(ch_cfg, "studio", None),
+            getattr(ch_cfg, "title", None),
+            getattr(ch_cfg, "min_duration_seconds", None),
+            tuple(getattr(ch_cfg, "tags_whitelist", ()) or ()),
+            tuple(getattr(ch_cfg, "tags_blacklist", ()) or ()),
+        )
+
+    def _categories_config_signature(self, channels: List[str], cfg: Any) -> Tuple[Any, ...]:
+        channel_sigs = []
+        for ch_ref in channels:
+            ch_cfg = cfg.get_telegram_channel(ch_ref) if cfg else None
+            channel_sigs.append((str(ch_ref), self._channel_config_signature(ch_cfg)))
+        return (getattr(cfg, "managed_revision", None) if cfg else None, tuple(channel_sigs))
+
+    def _get_cached_channel_title(self, channel_ref: Any, cfg: Any = None) -> Optional[str]:
+        key = str(channel_ref)
+        entry = self._channel_title_cache.get(key)
+        if entry is None:
+            return None
+        title, cached_sig, expires_at = entry
+        if _monotonic() >= expires_at:
+            self._channel_title_cache.pop(key, None)
+            return None
+        ch_cfg = cfg.get_telegram_channel(channel_ref) if cfg else None
+        if cached_sig != self._channel_config_signature(ch_cfg):
+            self._channel_title_cache.pop(key, None)
+            return None
+        return title
+
+    def _set_cached_channel_title(self, channel_ref: Any, title: str, cfg: Any = None) -> None:
+        ch_cfg = cfg.get_telegram_channel(channel_ref) if cfg else None
+        sig = self._channel_config_signature(ch_cfg)
+        self._channel_title_cache[str(channel_ref)] = (
+            title,
+            sig,
+            _monotonic() + CHANNEL_TITLE_CACHE_TTL_SECONDS,
+        )
+
+    async def _resolve_channel_title(self, client, channel_ref: Any, entity=None, cfg: Any = None) -> str:
+        cached = self._get_cached_channel_title(channel_ref, cfg=cfg)
+        if cached is not None:
+            return cached
+        title = await _channel_title(client, channel_ref, entity)
+        self._set_cached_channel_title(channel_ref, title, cfg=cfg)
+        return title
 
     def is_channel_authorized(self, channel_ref: Any) -> bool:
         return is_channel_authorized(channel_ref)
@@ -410,20 +491,22 @@ class TelegramProvider(BaseProvider):
             target_doc = find_variant_document(media, str(unique_id))
             return "available" if target_doc is not None else "mismatch"
 
-    async def get_categories(self) -> List[CategoryItem]:
-        channels = _get_channels()
-        if not channels:
-            return []
-        categories: List[CategoryItem] = []
-        cfg = _get_config()
-        for channel_ref in channels:
-            if not is_channel_authorized(channel_ref):
-                logger.debug("Skipping unauthorized channel %s in get_categories", channel_ref)
-                continue
+    async def _fetch_category_item(self, sem: asyncio.Semaphore, channel_ref: str, cfg: Any) -> CategoryItem:
+        cached_title = self._get_cached_channel_title(channel_ref, cfg=cfg)
+        if cached_title is not None:
+            return channel_to_category(channel_ref, cached_title)
+        async with sem:
             try:
-                async with _acquire_client_lease(channel_ref) as (_account_id, client):
-                    title = await _channel_title(client, channel_ref)
-                    categories.append(channel_to_category(channel_ref, title))
+                async def _resolve_with_lease() -> str:
+                    async with _acquire_client_lease(channel_ref) as (_account_id, client):
+                        return await _channel_title(client, channel_ref)
+
+                title = await asyncio.wait_for(
+                    _resolve_with_lease(),
+                    timeout=CATEGORY_TITLE_TIMEOUT_SECONDS,
+                )
+                self._set_cached_channel_title(channel_ref, title, cfg=cfg)
+                return channel_to_category(channel_ref, title)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -435,9 +518,65 @@ class TelegramProvider(BaseProvider):
                     exc,
                 )
                 ch_cfg = cfg.get_telegram_channel(channel_ref) if cfg else None
-                fallback_title = ch_cfg.title if (ch_cfg and ch_cfg.title) else (ch_cfg.studio if (ch_cfg and hasattr(ch_cfg, "studio") and ch_cfg.studio) else str(channel_ref))
-                categories.append(channel_to_category(channel_ref, fallback_title))
-        return categories
+                fallback_title = (
+                    ch_cfg.title
+                    if (ch_cfg and getattr(ch_cfg, "title", None))
+                    else (
+                        ch_cfg.studio
+                        if (ch_cfg and getattr(ch_cfg, "studio", None))
+                        else str(channel_ref)
+                    )
+                )
+                return channel_to_category(channel_ref, fallback_title)
+
+    async def get_categories(self) -> List[CategoryItem]:
+        channels = _get_channels()
+        if not channels:
+            self._categories_cache = None
+            return []
+        cfg = _get_config()
+        config_sig = self._categories_config_signature(channels, cfg)
+
+        now = _monotonic()
+        cached = self._categories_cache
+        if cached is not None and cached[0] == config_sig and now < cached[2]:
+            return list(cached[1])
+
+        async with self._get_categories_lock():
+            channels = _get_channels()
+            if not channels:
+                self._categories_cache = None
+                return []
+            cfg = _get_config()
+            config_sig = self._categories_config_signature(channels, cfg)
+            now = _monotonic()
+            cached = self._categories_cache
+            if cached is not None and cached[0] == config_sig and now < cached[2]:
+                return list(cached[1])
+
+            authorized_channels = []
+            for channel_ref in channels:
+                if not is_channel_authorized(channel_ref):
+                    logger.debug("Skipping unauthorized channel %s in get_categories", channel_ref)
+                    continue
+                authorized_channels.append(channel_ref)
+
+            if not authorized_channels:
+                categories: List[CategoryItem] = []
+            else:
+                sem = asyncio.Semaphore(CATEGORIES_FETCH_CONCURRENCY)
+                categories = list(
+                    await asyncio.gather(
+                        *(self._fetch_category_item(sem, ch, cfg) for ch in authorized_channels)
+                    )
+                )
+
+            self._categories_cache = (
+                config_sig,
+                list(categories),
+                _monotonic() + CATEGORIES_CACHE_TTL_SECONDS,
+            )
+            return list(categories)
 
     async def get_browse_videos(self, section: str = "latest",
                                 page: int = 1) -> List[VideoItem]:
@@ -478,16 +617,43 @@ class TelegramProvider(BaseProvider):
                 prepared_catalog, ch_cfg, effective_min_dur,
             )
 
-    async def get_history_batch(self, category_id: str, *, offset_id: Optional[int] = None,
-                                limit: int = 100) -> dict:
-        """Return an unfiltered message cursor alongside videos passing channel filters."""
-        if not is_channel_authorized(category_id):
-            raise ValueError(f"Channel not authorized: {category_id!r}")
+    @staticmethod
+    def _copy_history_batch(batch: dict) -> dict:
+        return {**batch, "videos": list(batch.get("videos") or [])}
+
+    def _get_cached_history_batch(self, cache_key: Tuple[str, Optional[int], int], config_sig: Tuple[Any, ...]) -> Optional[dict]:
+        entry = self._history_cache.get(cache_key)
+        if entry is None:
+            return None
+        cached_sig, batch, expires_at = entry
+        if _monotonic() >= expires_at or cached_sig != config_sig:
+            self._history_cache.pop(cache_key, None)
+            return None
+        self._history_cache.move_to_end(cache_key)
+        return self._copy_history_batch(batch)
+
+    def _set_cached_history_batch(self, cache_key: Tuple[str, Optional[int], int], config_sig: Tuple[Any, ...], batch: dict) -> None:
+        self._history_cache[cache_key] = (
+            config_sig,
+            self._copy_history_batch(batch),
+            _monotonic() + HISTORY_CACHE_TTL_SECONDS,
+        )
+        self._history_cache.move_to_end(cache_key)
+        while len(self._history_cache) > HISTORY_CACHE_MAX_ENTRIES:
+            self._history_cache.popitem(last=False)
+
+    async def _fetch_history_batch_uncached(
+        self,
+        category_id: str,
+        *,
+        offset_id: Optional[int],
+        limit: int,
+        cfg: Any,
+    ) -> dict:
         async with _acquire_client_lease(category_id) as (_account_id, client):
             entity = await client.get_entity(_entity_ref(category_id))
-            title = await _channel_title(client, category_id, entity)
-            cfg = _get_config()
             ch_cfg = cfg.get_telegram_channel(category_id) if cfg else None
+            title = await self._resolve_channel_title(client, category_id, entity=entity, cfg=cfg)
             messages = await _fetch_history(client, entity, offset_id=offset_id, limit=limit)
             kp, am, prepared_catalog = await asyncio.to_thread(_load_performer_snapshot)
             videos = await asyncio.to_thread(
@@ -500,6 +666,49 @@ class TelegramProvider(BaseProvider):
             head = max((int(msg.id) for msg in messages), default=None)
             return {"videos": videos, "next_offset_id": cursor, "highest_id": head,
                     "message_count": len(messages), "has_more": len(messages) >= limit}
+
+    async def get_history_batch(self, category_id: str, *, offset_id: Optional[int] = None,
+                                limit: int = 100) -> dict:
+        """Return an unfiltered message cursor alongside videos passing channel filters."""
+        if not is_channel_authorized(category_id):
+            raise ValueError(f"Channel not authorized: {category_id!r}")
+
+        cache_key = (str(category_id), offset_id, int(limit))
+        cfg = _get_config()
+        ch_cfg = cfg.get_telegram_channel(category_id) if cfg else None
+        config_sig = (
+            getattr(cfg, "managed_revision", None) if cfg else None,
+            self._channel_config_signature(ch_cfg),
+            _get_min_duration(),
+        )
+
+        cached = self._get_cached_history_batch(cache_key, config_sig)
+        if cached is not None:
+            return cached
+
+        inflight = self._history_inflight.get(cache_key)
+        if inflight is not None:
+            result = await asyncio.shield(inflight)
+            return self._copy_history_batch(result)
+
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
+        self._history_inflight[cache_key] = fut
+        try:
+            result = await self._fetch_history_batch_uncached(
+                category_id, offset_id=offset_id, limit=limit, cfg=cfg
+            )
+            self._set_cached_history_batch(cache_key, config_sig, result)
+            if not fut.done():
+                fut.set_result(result)
+            return self._copy_history_batch(result)
+        except BaseException as exc:
+            if not fut.done():
+                fut.set_exception(exc)
+            raise
+        finally:
+            self._history_inflight.pop(cache_key, None)
 
     async def search(self, query: str, page: int = 1) -> List[VideoItem]:
         needle = (query or "").strip().lower()
