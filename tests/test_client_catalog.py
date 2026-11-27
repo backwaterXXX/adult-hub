@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from common.client_auth.service import BoundedValidationError
 from common.managed_sources import canonical_channel_id, channel_aliases
@@ -38,6 +39,8 @@ from resolver.client_catalog import (
     VideoItem,
     _CLIENT_SORT_CLAUSES,
     _extract_disabled_channel_ids,
+    _recommendation_features,
+    _recommendation_score,
     bitrate_kbps_sql,
     clear_catalog_count_cache,
     client_sort_clause,
@@ -49,6 +52,7 @@ from resolver.client_catalog import (
     query_catalog_performers,
     query_catalog_video_detail,
     query_catalog_videos,
+    query_similar_videos,
     serialize_client_video,
 )
 from tests.pg_helper import PgTestCase
@@ -56,6 +60,39 @@ from tests.pg_helper import PgTestCase
 
 class TestClientCatalogUnit(unittest.TestCase):
     """Offline unit tests verifying contracts, DTO allowlists, and helpers."""
+
+    def test_recommendation_score_uses_case_insensitive_shared_features_and_caps(self):
+        left = VideoItem(id="one", title="One", duration_seconds=0,
+                         performers=[PerformerRef(id="p", name="Alice")],
+                         categories=["A", "B", "C"], tags=["1", "2", "3", "4"], studio="Studio")
+        right = VideoItem(id="two", title="Two", duration_seconds=0,
+                          performers=[PerformerRef(id="p", name="alice")],
+                          categories=["a", "b", "c"], tags=["1", "2", "3", "4"], studio="studio")
+        self.assertEqual(_recommendation_score(_recommendation_features(left), _recommendation_features(right)), 28)
+
+    def test_recommendations_rank_matching_items_and_resolve_duplicate_target(self):
+        rows = [
+            {"id": "one", "title": "One", "duration": 100, "studio": "A", "categories": ["X"]},
+            {"id": "two", "title": "Two", "duration": 100, "studio": "A", "categories": ["X"]},
+            {"id": "three", "title": "Three", "duration": 100, "studio": "A", "categories": []},
+            {"id": "other", "title": "Other", "duration": 100, "studio": "B", "categories": []},
+        ]
+        class Result:
+            def fetchall(self):
+                return rows
+        class Connection:
+            def execute(self, sql, params):
+                return Result()
+        with patch("resolver.client_catalog._tables_and_columns", return_value=({"videos"}, set())), \
+             patch("resolver.client_catalog._resolve_video_detail_target", return_value="one"), \
+             patch("resolver.client_catalog._fetch_video_detail_row", return_value=rows[0]), \
+             patch("resolver.client_catalog._extract_disabled_channel_ids", return_value=set()), \
+             patch("resolver.client_catalog._build_visibility_conditions", return_value=([], [])), \
+             patch("resolver.client_catalog._video_projection_sql", return_value="v.id"), \
+             patch("resolver.client_catalog._lookup_performers_catalog", return_value={}), \
+             patch("resolver.client_catalog._lookup_user_states", return_value={}):
+            result = query_similar_videos(Connection(), "old-one", user_id="user", limit=2)
+        self.assertEqual([item.id for item in result], ["two", "three"])
 
     def test_dto_serialization_strict_allowlist(self):
         """Assert allowlisted fields are present and strictly no admin/filesystem/upstream fields leak."""

@@ -86,6 +86,7 @@ class TestDesktopApiOffline(unittest.TestCase):
         self.assertTrue(caps.get("tv_pairing"))
         self.assertTrue(caps.get("direct_play"))
         self.assertTrue(caps.get("user_state"))
+        self.assertTrue(caps.get("similar_videos"))
         self.assertFalse(caps.get("transcoding"))
 
         endpoints = data.get("endpoints", {})
@@ -95,6 +96,28 @@ class TestDesktopApiOffline(unittest.TestCase):
         self.assertEqual(endpoints.get("playback"), "/api/v1/playback")
         self.assertEqual(endpoints.get("artwork"), "/api/v1/artwork")
         self.assertNotIn("pair", endpoints)
+
+    def test_similar_videos_requires_authentication_and_is_private(self):
+        response = TestClient(desktop_test_app).get("/api/v1/catalog/videos/video-1/similar")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.headers.get("cache-control"), "private, no-store")
+
+    def test_similar_videos_returns_authenticated_results(self):
+        from unittest.mock import Mock
+        from resolver.client_catalog import VideoItem
+
+        conn = Mock()
+        with patch("resolver.desktop_api._db_connection", return_value=conn), \
+             patch("resolver.desktop_api._verify_client_session", return_value={"user_id": "owner"}), \
+             patch("resolver.desktop_api.query_similar_videos", return_value=[VideoItem(id="v2", title="Two", duration_seconds=10)]) as query:
+            response = TestClient(desktop_test_app).get(
+                "/api/v1/catalog/videos/v1/similar?limit=8", headers={"Authorization": "Bearer token"}
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["items"][0]["id"], "v2")
+        self.assertEqual(response.headers["cache-control"], "private, no-store")
+        query.assert_called_once_with(conn, "v1", user_id="owner", limit=8)
+        conn.close.assert_called_once()
 
     def test_pairing_routes_mounted_and_guarded_on_desktop_app(self):
         """Desktop app mounts TV pairing endpoints and Admin V2 approval with strict guards."""

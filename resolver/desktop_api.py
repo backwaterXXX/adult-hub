@@ -70,6 +70,7 @@ from resolver.client_catalog import (
     query_catalog_tags,
     query_catalog_video_detail,
     query_catalog_videos,
+    query_similar_videos,
 )
 
 logger = logging.getLogger("adult_hub.desktop_api")
@@ -447,6 +448,7 @@ async def get_version_discovery() -> JSONResponse:
             "tv_pairing": True,
             "direct_play": True,
             "user_state": True,
+            "similar_videos": True,
             "transcoding": False,
         },
         "endpoints": {
@@ -875,6 +877,35 @@ def _fetch_video_detail(request: Request, token: str, clean_vid: str) -> dict[st
         return item.to_dict()
     finally:
         conn.close()
+
+
+@router.get("/api/v1/catalog/videos/{video_id}/similar")
+async def get_similar_videos(request: Request, video_id: str, limit: int = Query(12, ge=1, le=24)) -> JSONResponse:
+    try:
+        token = _extract_bearer_token(request)
+        clean_vid = _clean_str_filter(video_id, "video_id")
+    except (AuthenticationFailed, BoundedValidationError, HTTPException) as exc:
+        return _auth_validation_error_response(exc)
+
+    def _execute():
+        conn = _db_connection(request)
+        try:
+            session = _verify_client_session(conn, token)
+            items = query_similar_videos(conn, clean_vid, user_id=session["user_id"], limit=limit)
+            return None if items is None else {"items": [item.to_dict() for item in items]}
+        finally:
+            conn.close()
+
+    try:
+        data = await _run_in_thread(_execute)
+        if data is None:
+            return _api_response({"error": "Video not found"}, status_code=404, cache_control="private, no-store")
+        return _api_response(data, status_code=200, cache_control="private, no-store")
+    except (AuthenticationFailed, BoundedValidationError, HTTPException) as exc:
+        return _auth_validation_error_response(exc)
+    except Exception:
+        logger.exception("Unexpected error querying similar videos")
+        return _api_response({"error": "Failed to query similar videos"}, status_code=500, cache_control="private, no-store")
 
 
 @router.get("/api/v1/catalog/videos/{video_id}")
