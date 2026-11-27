@@ -94,6 +94,19 @@ class TestClientCatalogUnit(unittest.TestCase):
             result = query_similar_videos(Connection(), "old-one", user_id="user", limit=2)
         self.assertEqual([item.id for item in result], ["two", "three"])
 
+    def test_recommendations_distinguish_missing_target_from_no_features(self):
+        row = {"id": "one", "title": "One", "duration": 100}
+        with patch("resolver.client_catalog._tables_and_columns", return_value=({"videos"}, set())), \
+             patch("resolver.client_catalog._resolve_video_detail_target", return_value="one"), \
+             patch("resolver.client_catalog._fetch_video_detail_row", return_value=row), \
+             patch("resolver.client_catalog._lookup_video_performers_catalog", return_value={}), \
+             patch("resolver.client_catalog._recent_recommendation_ids", return_value=[]), \
+             patch("resolver.client_catalog._similar_candidate_items") as candidates:
+            candidates.return_value = None
+            self.assertEqual(query_similar_videos(object(), "one", user_id="user"), [])
+            candidates.return_value = {}
+            self.assertIsNone(query_similar_videos(object(), "one", user_id="user"))
+
     def test_dto_serialization_strict_allowlist(self):
         """Assert allowlisted fields are present and strictly no admin/filesystem/upstream fields leak."""
         video = VideoItem(
@@ -466,6 +479,20 @@ class TestClientCatalogUnit(unittest.TestCase):
 
 class TestClientCatalogPostgresIntegration(PgTestCase):
     """PostgreSQL integration tests against disposable database using repo wrapper and fixture conventions."""
+
+    def test_similar_videos_query_uses_real_postgres_and_visible_candidates(self):
+        with self.conn:
+            self.conn.execute("""
+                INSERT INTO videos (id, provider, title, studio, categories, duration, playable)
+                VALUES ('one', 'telegram', 'One', 'Studio', '["Category"]'::jsonb, 1800, 1),
+                       ('two', 'telegram', 'Two', 'Studio', '["Category"]'::jsonb, 1800, 1),
+                       ('hidden', 'telegram', 'Hidden', 'Studio', '["Category"]'::jsonb, 1800, 0),
+                       ('plain', 'telegram', 'Plain', NULL, '[]'::jsonb, 1800, 1)
+            """)
+        items = query_similar_videos(self.conn, "one", user_id="test-user")
+        self.assertEqual([item.id for item in items], ["two"])
+        self.assertEqual(query_similar_videos(self.conn, "plain", user_id="test-user"), [])
+        self.assertIsNone(query_similar_videos(self.conn, "missing", user_id="test-user"))
 
     def test_quality_tiers_split_the_catalogue_by_bitrate(self):
         """The quality filter is server side: tiers come from the stored bitrate."""

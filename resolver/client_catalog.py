@@ -1923,40 +1923,27 @@ def _recommendation_score(left: tuple, right: tuple) -> int:
             + 2 * bool(left[3] and left[3] == right[3]))
 
 
-def query_similar_videos(conn: Any, video_id: str, *, user_id: str, limit: int = 12) -> list[VideoItem] | None:
-    """Rank visible canonical catalog items against the current item and recent preferences."""
-    if hasattr(conn, "row_factory") and conn.row_factory is not Record:
-        conn.row_factory = Record
-    tables, columns = _tables_and_columns(conn)
-    target_id = _resolve_video_detail_target(conn, tables, video_id)
-    if target_id is None:
-        return None
-    target_row = _fetch_video_detail_row(conn, tables, columns, target_id, None, None)
-    if target_row is None:
-        return None
-    target = serialize_client_video(target_row, performers_catalog_map=_lookup_video_performers_catalog(conn, tables, target_row))
+def _recent_recommendation_ids(conn: Any, tables: set[str], user_id: str, table: str, order: str, extra: str = "") -> list[str]:
+    if table not in tables:
+        return []
+    result = conn.execute(
+        f"SELECT video_id FROM {table} WHERE user_id = %s {extra} ORDER BY {order} DESC, video_id LIMIT 50",
+        (user_id,),
+    ).fetchall()
+    result_ids = [str(_row_val(row, "video_id", row[0] if isinstance(row, tuple) else "")) for row in result]
+    if not result_ids:
+        return []
+    aliases: dict[str, str] = {}
+    if "video_sources" in tables:
+        for row in conn.execute("SELECT source_id, video_id FROM video_sources WHERE is_active = 1 AND source_id = ANY(%s)", (result_ids,)).fetchall():
+            aliases[str(row[0])] = str(row[1])
+    if "video_duplicate_decisions" in tables:
+        for row in conn.execute("SELECT loser_id, keeper_id FROM video_duplicate_decisions WHERE state = 'active' AND loser_id = ANY(%s)", (result_ids,)).fetchall():
+            aliases[str(row[0])] = str(row[1])
+    return [aliases.get(vid, vid) for vid in result_ids]
 
-    def recent(table: str, order: str, extra: str = "") -> list[str]:
-        if table not in tables:
-            return []
-        result = conn.execute(
-            f"SELECT video_id FROM {table} WHERE user_id = %s {extra} ORDER BY {order} DESC, video_id LIMIT 50",
-            (user_id,),
-        ).fetchall()
-        result_ids = [str(_row_val(row, "video_id", row[0] if isinstance(row, tuple) else "")) for row in result]
-        if not result_ids:
-            return []
-        aliases: dict[str, str] = {}
-        if "video_sources" in tables:
-            for row in conn.execute("SELECT source_id, video_id FROM video_sources WHERE is_active = 1 AND source_id = ANY(%s)", (result_ids,)).fetchall():
-                aliases[str(row[0])] = str(row[1])
-        if "video_duplicate_decisions" in tables:
-            for row in conn.execute("SELECT loser_id, keeper_id FROM video_duplicate_decisions WHERE state = 'active' AND loser_id = ANY(%s)", (result_ids,)).fetchall():
-                aliases[str(row[0])] = str(row[1])
-        return [aliases.get(vid, vid) for vid in result_ids]
 
-    favorites = recent("client_user_favorites", "created_at")
-    watched = recent("client_user_watch_progress", "last_watched_at", "AND last_watched_at >= now() - interval '90 days' AND (is_played OR played_percentage >= 80)")
+def _similar_candidate_items(conn: Any, tables: set[str], columns: set[str], target: VideoItem, target_id: str, favorites: list[str], watched: list[str]) -> dict[str, VideoItem] | None:
     disabled = _extract_disabled_channel_ids()
     conditions, params = _build_visibility_conditions(tables, columns, disabled_channel_ids=disabled, table_alias="v")
     overrides = "video_metadata_overrides" in tables
@@ -1971,7 +1958,7 @@ def query_similar_videos(conn: Any, video_id: str, *, user_id: str, limit: int =
     for performer in target.performers:
         _append_performer_filter(matches, match_params, conn, tables, columns, overrides, performer.id)
     if not matches:
-        return []
+        return None
     matches.append("v.id = ANY(%s)")
     match_params.append([target_id, *favorites, *watched])
     conditions.append("(" + " OR ".join(matches) + ")")
@@ -1982,28 +1969,51 @@ def query_similar_videos(conn: Any, video_id: str, *, user_id: str, limit: int =
     names, ids = _performer_lookup_keys(rows)
     performers = _lookup_performers_catalog(conn, tables, names=list(names), raw_ids=list(ids))
     items = {item.id: item for item in (serialize_client_video(row, performers_catalog_map=performers) for row in rows)}
+    return items
+
+
+def _recommendation_profile(video_ids: list[str], features: dict) -> tuple[set[str], set[str], set[str], set[str]]:
+    combined: tuple[set[str], set[str], set[str], set[str]] = (set(), set(), set(), set())
+    for vid in video_ids:
+        if vid in features:
+            entry = features[vid]
+            for index in range(3):
+                combined[index].update(entry[index])
+            if entry[3]:
+                combined[3].add(entry[3])
+    return combined
+
+
+def _matches_recommendation_profile(item_features: tuple, user_features: tuple) -> bool:
+    return any(item_features[i] & user_features[i] for i in range(3)) or bool(item_features[3] and item_features[3] in user_features[3])
+
+
+def query_similar_videos(conn: Any, video_id: str, *, user_id: str, limit: int = 12) -> list[VideoItem] | None:
+    """Rank visible canonical catalog items against the current item and recent preferences."""
+    if hasattr(conn, "row_factory") and conn.row_factory is not Record:
+        conn.row_factory = Record
+    tables, columns = _tables_and_columns(conn)
+    target_id = _resolve_video_detail_target(conn, tables, video_id)
+    if target_id is None:
+        return None
+    target_row = _fetch_video_detail_row(conn, tables, columns, target_id, None, None)
+    if target_row is None:
+        return None
+    target = serialize_client_video(target_row, performers_catalog_map=_lookup_video_performers_catalog(conn, tables, target_row))
+
+    favorites = _recent_recommendation_ids(conn, tables, user_id, "client_user_favorites", "created_at")
+    watched = _recent_recommendation_ids(conn, tables, user_id, "client_user_watch_progress", "last_watched_at", "AND last_watched_at >= now() - interval '90 days' AND (is_played OR played_percentage >= 80)")
+    items = _similar_candidate_items(conn, tables, columns, target, target_id, favorites, watched)
+    if items is None:
+        return []
     if target_id not in items:
         return None
     viewed = set()
     if "client_user_watch_progress" in tables:
         viewed = set(_lookup_progress_map(conn, user_id, list(items), "video_sources" in tables, "video_duplicate_decisions" in tables))
     features = {vid: _recommendation_features(item) for vid, item in items.items()}
-    def profile(video_ids: list[str]) -> tuple[set[str], set[str], set[str], set[str]]:
-        combined: tuple[set[str], set[str], set[str], set[str]] = (set(), set(), set(), set())
-        for vid in video_ids:
-            if vid in features:
-                entry = features[vid]
-                for index in range(3):
-                    combined[index].update(entry[index])
-                if entry[3]:
-                    combined[3].add(entry[3])
-        return combined
-
-    favorite_features = profile(favorites)
-    watch_features = profile(watched)
-
-    def matches_profile(item_features: tuple, user_features: tuple) -> bool:
-        return any(item_features[i] & user_features[i] for i in range(3)) or bool(item_features[3] and item_features[3] in user_features[3])
+    favorite_features = _recommendation_profile(favorites, features)
+    watch_features = _recommendation_profile(watched, features)
     ranked = []
     for vid, item in items.items():
         if vid == target_id:
@@ -2011,8 +2021,8 @@ def query_similar_videos(conn: Any, video_id: str, *, user_id: str, limit: int =
         score = _recommendation_score(features[target_id], features[vid])
         if not score:
             continue
-        score += 2 * matches_profile(features[vid], favorite_features)
-        score += matches_profile(features[vid], watch_features)
+        score += 2 * _matches_recommendation_profile(features[vid], favorite_features)
+        score += _matches_recommendation_profile(features[vid], watch_features)
         ranked.append((vid in viewed, -score, item.date_added or "", vid, item))
     ranked.sort(key=lambda row: row[3])
     ranked.sort(key=lambda row: row[2], reverse=True)
