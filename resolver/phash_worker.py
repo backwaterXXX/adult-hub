@@ -7,7 +7,6 @@ import json
 import os
 import re
 import signal
-import shutil
 import subprocess
 import sys
 import threading
@@ -16,7 +15,7 @@ import urllib.error
 import urllib.request
 from types import SimpleNamespace
 
-from common import db, phash_jobs
+from common import db, phash_jobs, phash_range_cache
 from common.app_version import __version__
 from common.logging_setup import configure_logging
 from common.worker_capabilities import publish_worker_capabilities
@@ -137,27 +136,10 @@ def _safe_error_detail(value: str) -> str:
 
 
 def _purge_expired_range_caches(now: float | None = None) -> int:
-    """Remove only pHash cache directories whose persisted ledger expired."""
-    now = time.time() if now is None else now
-    try:
-        entries = os.scandir(PHASH_RANGE_CACHE_DIR)
-    except FileNotFoundError:
-        return 0
-    removed = 0
-    with entries:
-        for entry in entries:
-            if not entry.is_dir(follow_symlinks=False) or len(entry.name) != 64:
-                continue
-            usage_path = os.path.join(entry.path, "usage.json")
-            try:
-                with open(usage_path, "r", encoding="utf-8") as handle:
-                    updated_at = float(json.load(handle)["updated_at"])
-            except (OSError, ValueError, KeyError, TypeError):
-                continue
-            if now - updated_at >= PHASH_RANGE_CACHE_TTL_SECONDS:
-                shutil.rmtree(entry.path)
-                removed += 1
-    return removed
+    """Remove the pHash cache directories whose ledger expired."""
+    return phash_range_cache.purge_expired(
+        PHASH_RANGE_CACHE_DIR, ttl_seconds=PHASH_RANGE_CACHE_TTL_SECONDS, now=now,
+    )
 
 
 def _maintain_lease(job: dict, leader, heartbeat_stop: threading.Event,
@@ -337,6 +319,8 @@ def main() -> int:
             _stop.wait(POLL_SECONDS)
             continue
         if time.monotonic() - last_cache_purge >= 3600:
+            # The visual duplicate worker fills the same cache and expires it on
+            # its own loop, so this one keeps touching the disk only when it works.
             _purge_range_caches_logged()
             last_cache_purge = time.monotonic()
         if leader is None:

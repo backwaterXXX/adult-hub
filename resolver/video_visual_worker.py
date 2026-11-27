@@ -10,7 +10,7 @@ import time
 import urllib.error
 import urllib.request
 
-from common import db
+from common import db, phash_range_cache
 from common.video_visual_jobs import (claim_next, finish_comparison, finish_failure,
                                      finish_signature, heartbeat, recover_expired)
 from sync.video_visual import compare_pair
@@ -155,6 +155,32 @@ def _run_cycle() -> None:
     _process_claimed_job(job)
 
 
+RANGE_CACHE_PURGE_SECONDS = 3600.0
+_last_range_purge = 0.0
+
+
+def _purge_range_caches(now: float | None = None) -> int:
+    """Expire the byte-range caches this worker also fills."""
+    return phash_range_cache.purge_expired(
+        os.getenv("PHASH_RANGE_CACHE_DIR", "/data/cache/phash-ranges"), now=now,
+    )
+
+
+def _purge_range_caches_due(clock=None) -> None:
+    """Run the range-cache expiry at most once an hour."""
+    global _last_range_purge
+    now = (clock or time.monotonic)()
+    if now - _last_range_purge < RANGE_CACHE_PURGE_SECONDS:
+        return
+    _last_range_purge = now
+    try:
+        removed = _purge_range_caches()
+        if removed:
+            LOG.info("Removed %d expired pHash range caches", removed)
+    except Exception as exc:
+        LOG.warning("Could not purge expired pHash range caches (%s)", type(exc).__name__)
+
+
 def main() -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
@@ -168,6 +194,7 @@ def main() -> int:
         try:
             recover_expired(DB_URL, force=first_cycle)
             first_cycle = False
+            _purge_range_caches_due()
             _run_cycle()
         except Exception:
             LOG.exception("Visual worker cycle failed")
