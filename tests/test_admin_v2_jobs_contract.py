@@ -414,7 +414,7 @@ class TestV2DuplicateRoutes(unittest.IsolatedAsyncioTestCase):
         routes = {route.path: route.endpoint for route in admin_v2_jobs.build_router(make_admin()).routes}
         conn = MagicMock()
         conn.execute.return_value.fetchone.return_value = (1,)
-        with patch('resolver.video_duplicates.scan_duplicate_index', return_value={'pairs': []}), \
+        with patch('resolver.video_duplicates.find_pair_suggestion', return_value=False), \
              patch('resolver.video_duplicates.enqueue_job', return_value='job-1') as enqueue, \
              patch('common.db.connect', return_value=conn):
             response = await routes['/api/v2/duplicates/actions'](request(

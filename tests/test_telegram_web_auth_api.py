@@ -33,7 +33,7 @@ class TestTelegramWebAuthApi(unittest.TestCase):
 
         self.mock_admin = SimpleNamespace(
             _admin_blocked=lambda req: False,
-            _write_token=lambda: "",
+            _write_token=lambda: "test-write-token",
             ADMIN_PUBLIC=False,
             JSONResponse=JSONResponse,
             asyncio=asyncio,
@@ -41,6 +41,7 @@ class TestTelegramWebAuthApi(unittest.TestCase):
         router = admin_v2_telegram_auth.build_router(self.mock_admin)
         self.app.include_router(router)
         self.client = TestClient(self.app, base_url="http://testserver")
+        self.headers = {"Origin": "http://testserver", "Authorization": "Bearer test-write-token"}
 
     def test_get_status_endpoint(self):
         with patch.object(
@@ -61,12 +62,17 @@ class TestTelegramWebAuthApi(unittest.TestCase):
             new_callable=AsyncMock,
         ) as mock_status:
             mock_status.return_value = {"ok": True, "status": "authorized", "authorized": True}
-            res = self.client.get("/internal/telegram/auth/status")
+            denied = self.client.get("/internal/telegram/auth/status")
+            self.assertEqual(denied.status_code, 403)
+            res = self.client.get(
+                "/internal/telegram/auth/status",
+                headers={"X-Internal-Token": "test-write-token"},
+            )
             self.assertEqual(res.status_code, 200)
             self.assertEqual(res.json()["status"], "authorized")
 
     def test_wake_worker_status_returned_in_submit_code(self):
-        headers = {"Origin": "http://testserver"}
+        headers = self.headers
         self.mock_admin._wake_worker = MagicMock()
         with patch.object(
             admin_v2_telegram_auth.get_telegram_login_manager(),
@@ -93,7 +99,7 @@ class TestTelegramWebAuthApi(unittest.TestCase):
         res = self.client.post(
             "/api/v2/telegram/auth/start",
             json={"phone": "+48123456789"},
-            headers={"Origin": "http://evil-attacker.com"},
+            headers={"Origin": "http://evil-attacker.com", "Authorization": "Bearer test-write-token"},
         )
         self.assertEqual(res.status_code, 403)
 
@@ -112,7 +118,7 @@ class TestTelegramWebAuthApi(unittest.TestCase):
             res = self.client.post(
                 "/api/v2/telegram/auth/start",
                 json={"phone": "+48123456789"},
-                headers={"Origin": "http://testserver"},
+                headers=self.headers,
             )
             self.assertEqual(res.status_code, 200)
             self.assertEqual(res.json()["phone_mask"], "+48 *** *** 789")
@@ -156,7 +162,7 @@ class TestTelegramWebAuthApi(unittest.TestCase):
             self.assertEqual(res.json()["state"], "authorized")
 
     def test_sensitive_parameters_redacted_from_responses(self):
-        headers = {"Origin": "http://testserver"}
+        headers = self.headers
         with patch.object(
             admin_v2_telegram_auth.get_telegram_login_manager(),
             "submit_password",
@@ -174,7 +180,7 @@ class TestTelegramWebAuthApi(unittest.TestCase):
 
     def test_invalid_whitespace_token_fails_closed(self):
         self.mock_admin._write_token = lambda: None  # Invalid token
-        headers = {"Origin": "http://testserver"}
+        headers = self.headers
         res = self.client.post(
             "/api/v2/telegram/auth/start",
             json={"phone": "+48123456789"},
@@ -184,7 +190,7 @@ class TestTelegramWebAuthApi(unittest.TestCase):
         self.assertIn("Admin write token configuration is invalid", res.json()["error"])
 
     def test_resend_code_endpoint(self):
-        headers = {"Origin": "http://testserver"}
+        headers = self.headers
         with patch.object(
             admin_v2_telegram_auth.get_telegram_login_manager(),
             "resend_code",
@@ -196,7 +202,7 @@ class TestTelegramWebAuthApi(unittest.TestCase):
             self.assertEqual(res.json()["expires_in_seconds"], 600)
 
     def test_cancel_login_endpoint(self):
-        headers = {"Origin": "http://testserver"}
+        headers = self.headers
         with patch.object(
             admin_v2_telegram_auth.get_telegram_login_manager(),
             "cancel_login",
@@ -208,7 +214,7 @@ class TestTelegramWebAuthApi(unittest.TestCase):
             self.assertTrue(res.json()["ok"])
 
     def test_account_id_validation_and_default_boundary_in_endpoints(self):
-        headers = {"Origin": "http://testserver"}
+        headers = self.headers
 
         # Traversal in GET query param -> 400 invalid_account_id
         res_get_trav = self.client.get("/api/v2/telegram/auth/status?account_id=../../traversal")
@@ -245,7 +251,7 @@ class TestTelegramWebAuthApi(unittest.TestCase):
             self.assertTrue(res_post_other.json()["ok"])
 
     def test_invalid_phone_in_start_endpoint_returns_400(self):
-        headers = {"Origin": "http://testserver"}
+        headers = self.headers
         res = self.client.post(
             "/api/v2/telegram/auth/start",
             json={"phone": "invalid_phone_number"},
@@ -255,7 +261,7 @@ class TestTelegramWebAuthApi(unittest.TestCase):
         self.assertEqual(res.json()["code"], "invalid_phone")
 
     def test_submit_password_endpoint_preserves_spaces(self):
-        headers = {"Origin": "http://testserver"}
+        headers = self.headers
         with patch.object(
             admin_v2_telegram_auth.get_telegram_login_manager(),
             "submit_password",

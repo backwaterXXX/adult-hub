@@ -214,11 +214,11 @@ class TestTelegramHeadAndRange(unittest.IsolatedAsyncioTestCase):
         ctype = dict(resp.headers).get("content-type", "")
         self.assertNotIn("multipart", ctype.lower())
 
-    async def test_range_with_unknown_file_size_preserves_206_and_offset(self):
-        """Round 2 Finding 10: Range requests with unknown file size must preserve 206,
+    async def test_range_with_unknown_file_size_returns_truthful_200(self):
+        """Unknown size cannot produce a valid 206: serve the full object as 200.
 
-        Content-Range bytes start-end/*, Content-Length, and exact requested offset
-        instead of downgrading to 200 and restarting from byte 0.
+        RFC 7233 needs ``Content-Range: bytes X-Y/complete`` on a 206; a
+        ``bytes X-/*`` response is invalid and makes players mis-seek.
         """
         _require_resolver(self)
         payload = bytes((i * 3 + 7) % 256 for i in range(20_000))
@@ -228,16 +228,13 @@ class TestTelegramHeadAndRange(unittest.IsolatedAsyncioTestCase):
             resp = await resolver_app._proxy_telegram_response(
                 _fake_request("GET", "bytes=500-999"), "tg://ref")
 
-        # Must be 206 Partial Content, NEVER downgraded to 200
-        self.assertEqual(resp.status_code, 206)
+        self.assertEqual(resp.status_code, 200)
         headers = dict(resp.headers)
-        self.assertEqual(headers.get("content-range"), "bytes 500-999/*")
-        self.assertEqual(headers.get("content-length"), "500")
-
-        # Must request exact partial range from provider, NEVER restart from 0
-        self.assertEqual(prov.download_calls, [("ref", 500, 500)])
+        self.assertNotIn("content-range", headers)
+        self.assertNotIn("content-length", headers)
+        self.assertEqual(prov.download_calls, [("ref", 0, None)])
         body = await response_body(resp)
-        self.assertEqual(body, payload[500:1000])
+        self.assertEqual(body, payload)
 
     async def test_range_with_file_size_error_fails_loudly_with_503(self):
         """Range requests requiring file size must fail loudly with 503 when size probe fails."""

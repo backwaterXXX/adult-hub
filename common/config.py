@@ -296,22 +296,41 @@ def get_admin_write_token(env: Mapping[str, str] | None = None) -> str:
     """Return the admin mutation bearer token.
 
     Accepts ADMIN_WRITE_TOKEN with legacy fallback to ADMIN_DUPLICATE_TOKEN.
-    Fails closed if the configured token is whitespace-only.
+    Fails closed if the configured token is whitespace-only. An unset or empty
+    token leaves the panel read-only: writes can no longer be authorized by a
+    matching Origin alone.
     """
     env_map = os.environ if env is None else env
     raw = env_map.get("ADMIN_WRITE_TOKEN")
     if raw is not None and raw != "" and not raw.strip():
         raise ConfigurationError(
             "Setting 'ADMIN_WRITE_TOKEN' cannot be whitespace-only. "
-            "Configure a valid token or leave empty/unset to enable unauthenticated admin writes."
+            "Configure a valid token; without one the admin panel is read-only."
         )
     legacy_raw = env_map.get("ADMIN_DUPLICATE_TOKEN")
     if legacy_raw is not None and legacy_raw != "" and not legacy_raw.strip():
         raise ConfigurationError(
             "Setting 'ADMIN_DUPLICATE_TOKEN' cannot be whitespace-only. "
-            "Configure a valid token or leave empty/unset to enable unauthenticated admin writes."
+            "Configure a valid token; without one the admin panel is read-only."
         )
     return (raw or "").strip() or (legacy_raw or "").strip()
+
+
+def get_internal_api_token(env: Mapping[str, str] | None = None) -> str:
+    """Return the bearer token used on resolver-internal service routes.
+
+    ``INTERNAL_API_TOKEN`` takes precedence; installations that already have an
+    admin write token can reuse it without new configuration. An empty result
+    means no token is configured (the internal routes then accept loopback
+    callers only).
+    """
+    env_map = os.environ if env is None else env
+    for key in ("INTERNAL_API_TOKEN", "ADMIN_WRITE_TOKEN", "ADMIN_DUPLICATE_TOKEN"):
+        raw = env_map.get(key)
+        if raw is None or raw == "":
+            continue
+        return raw.strip()
+    return ""
 
 
 def get_admin_public(env: Mapping[str, str] | None = None) -> bool:

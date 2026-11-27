@@ -357,6 +357,16 @@ def _run_dead_stream_filter(sp: _SyncPass) -> None:
             _core.logger.warning("Dead-stream filtering failed (keeping all): %s", e)
 
 
+def _run_dead_stream_expiry(sp: _SyncPass) -> None:
+    """Expire old denylist entries for sources confirmed healthy in this pass."""
+    if not _core.HIDE_DEAD_STREAMS:
+        return
+    try:
+        _core.expire_dead_streams(sp.conn, sp.providers_succeeded)
+    except Exception as e:
+        _core.logger.warning("Dead-stream denylist expiry failed (keeping entries): %s", e)
+
+
 def _run_final_flush(sp: _SyncPass) -> None:
     # 8. Flush any remaining videos (if any)
     # Leftovers belong to channels whose own pipeline flush already failed, so a
@@ -487,11 +497,19 @@ def _library_maintenance_pass(sp: _SyncPass) -> None:
     # 9. Clean up expired videos via retention policy + orphaned records.
     # Both use the success signal: absent, disabled and failed sources keep
     # every historical row, file and .strm URL.
+    if _core.stop_requested():
+        _core.logger.info(
+            "Sync interrupted before library maintenance; retention and orphan "
+            "cleanup keep their state for the next complete pass.")
+        return
     try:
         _core.cleanup_orphaned_records(_core.MEDIA_DIR, sp.conn, sp.providers_succeeded)
     except Exception as e:
         _core.logger.warning("Orphaned-record cleanup failed: %s", e)
-    _core.cleanup_retention(sp.conn, _core.MEDIA_DIR, _core.RETENTION_DAYS, sp.providers_succeeded)
+    try:
+        _core.cleanup_retention(sp.conn, _core.MEDIA_DIR, _core.RETENTION_DAYS, sp.providers_succeeded)
+    except Exception as e:
+        _core.logger.warning("Retention cleanup failed: %s", e)
     try:
         from sync.channel_backfill import reconcile_channel_names
 
@@ -574,7 +592,8 @@ def _build_source_rows(sp: _SyncPass, expected_sources: set, after_ids: dict) ->
     return source_rows
 
 
-def _write_pass_history(sp: _SyncPass, started_at: int, source_rows: list, failed_sources: list) -> None:
+def _write_pass_history(sp: _SyncPass, started_at: int, source_rows: list, failed_sources: list,
+                        pass_error: str | None = None) -> None:
     ended_at = int(_core.time.time())
     http_hosts = _core._ACTIVE_SYNC_METRICS["http_hosts"]
     http_summary = dict(_core._ACTIVE_SYNC_METRICS["http"])
@@ -587,12 +606,14 @@ def _write_pass_history(sp: _SyncPass, started_at: int, source_rows: list, faile
         "started_at": started_at, "ended_at": ended_at,
         "duration_seconds": max(0, ended_at - started_at),
         "managed_config_revision": int(getattr(_core.CONFIG, "managed_revision", 0)),
-        "sync_mode": sp.sync_mode, "success": not failed_sources, "source_filter": sp.source_filter,
+        "sync_mode": sp.sync_mode, "success": not failed_sources and not pass_error, "source_filter": sp.source_filter,
         "interrupted": _core.stop_requested(),
         "skip_telegram_channels": sp.skip_telegram_channels,
         "sources": source_rows, "stages": stage_summary,
         "http": {**http_summary, "hosts": http_hosts, "rate_limit": rate_limit_summary},
     }
+    if pass_error:
+        history_payload["error"] = pass_error
     fansdb_attempts = _core._ACTIVE_SYNC_METRICS.get("fansdb_scene_attempts")
     if fansdb_attempts is not None:
         history_payload["fansdb_scene_attempts"] = dict(fansdb_attempts)
@@ -610,6 +631,27 @@ def _finish_sync_pass(sp: _SyncPass, started_at: int) -> bool:
         return False
     _core.logger.info("Sync completed successfully.")
     return True
+
+
+def _abort_sync_pass(sp: _SyncPass, started_at: int, exc: BaseException) -> None:
+    """Persist a run history entry when a stage raises unexpectedly.
+
+    Without this the panel would keep showing the previous successful run even
+    though this pass failed halfway, and an operator could not tell an
+    interrupted pass from a completed one.
+    """
+    try:
+        expected_sources = _expected_sources(sp)
+        failed_sources = sorted(
+            expected_sources - sp.providers_succeeded - sp.source_warnings.keys())
+        after_ids = _core._video_id_snapshot(sp.conn)
+        source_rows = _build_source_rows(sp, expected_sources, after_ids)
+        _write_pass_history(
+            sp, started_at, source_rows, failed_sources,
+            pass_error=_core._safe_error_detail(exc),
+        )
+    except Exception as hist_exc:
+        _core.logger.warning("Could not persist the failed sync history entry: %s", hist_exc)
 
 
 def _refresh_catalog_caches(conn) -> None:
@@ -646,22 +688,27 @@ def _run_sync_locked(source_filter: Optional[str] = None, sync_mode: str = "sche
         sp = _SyncPass(conn=conn, sync_mode=sync_mode, source_filter=source_filter,
                        skip_telegram_channels=skip_telegram_channels)
         sp.recorder.target = getattr(conn, "_url", None)
-        schedule_stages.mark_interrupted_stages(conn, _SYNC_SCHEDULE)
-        sp.recorder.stages.update(schedule_stages.stage_states(conn, _SYNC_SCHEDULE))
-        _run_performer_catalog_stage(sp.recorder, conn)
-        _run_fansdb_catalog_stage(sp.recorder, conn)
-        sp.before_ids = _core._video_id_snapshot(conn)
-        _run_startup_maintenance(conn)
-        _run_telegram_scans(sp)
-        _run_dead_stream_filter(sp)
-        _run_final_flush(sp)
-        _run_stream_rewrite(sp)
-        sp.recorder.run_group("scene-identification", lambda problems: _run_scene_identification(sp, problems))
-        sp.recorder.run_group("metadata-backfill", lambda problems: _run_metadata_backfills(sp, problems))
-        _run_telegram_title_cleanup(sp)
-        sp.recorder.run("library-maintenance", None, lambda: _library_maintenance_pass(sp))
-        _run_duplicate_upkeep(sp)
-        _refresh_catalog_caches(conn)
+        try:
+            schedule_stages.mark_interrupted_stages(conn, _SYNC_SCHEDULE)
+            sp.recorder.stages.update(schedule_stages.stage_states(conn, _SYNC_SCHEDULE))
+            _run_performer_catalog_stage(sp.recorder, conn)
+            _run_fansdb_catalog_stage(sp.recorder, conn)
+            sp.before_ids = _core._video_id_snapshot(conn)
+            _run_startup_maintenance(conn)
+            _run_telegram_scans(sp)
+            _run_dead_stream_filter(sp)
+            _run_final_flush(sp)
+            _run_dead_stream_expiry(sp)
+            _run_stream_rewrite(sp)
+            sp.recorder.run_group("scene-identification", lambda problems: _run_scene_identification(sp, problems))
+            sp.recorder.run_group("metadata-backfill", lambda problems: _run_metadata_backfills(sp, problems))
+            _run_telegram_title_cleanup(sp)
+            sp.recorder.run("library-maintenance", None, lambda: _library_maintenance_pass(sp))
+            _run_duplicate_upkeep(sp)
+            _refresh_catalog_caches(conn)
+        except Exception as exc:
+            _abort_sync_pass(sp, started_at, exc)
+            raise
         return _finish_sync_pass(sp, started_at)
     finally:
         bind_active_metrics(None)

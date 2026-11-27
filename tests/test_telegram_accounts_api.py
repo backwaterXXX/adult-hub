@@ -36,7 +36,7 @@ class MockAdmin:
         return False
 
     def _write_token(self):
-        return ""
+        return "test-write-token"
 
     def _wake_worker(self, worker):
         return True
@@ -52,7 +52,7 @@ class TestTelegramAccountsApi(unittest.TestCase):
         router = admin_v2_telegram_auth.build_router(self.admin)
         self.app.include_router(router)
         self.client = TestClient(self.app)
-        self.headers = {"Origin": "http://testserver"}
+        self.headers = {"Origin": "http://testserver", "Authorization": "Bearer test-write-token"}
 
     def tearDown(self):
         set_memory_only_mode(False)

@@ -75,11 +75,36 @@ def job_identity(action: str, payload: dict) -> str:
     return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _load_existing_jobs_by_action(conn, actions: list[str]) -> dict[str, dict[str, str]]:
+    """Load and lock active jobs grouped by action and deduplication identity."""
+    from collections import defaultdict
+    existing_by_action: dict[str, dict[str, str]] = defaultdict(dict)
+    for action in actions:
+        # New rows carry the canonical identity in an indexed column; only
+        # legacy rows with no key need parsing.
+        for job_id, ident in conn.execute(
+                "SELECT id, dedupe_key FROM video_duplicate_jobs "
+                "WHERE action=%s AND state IN ('queued','processing') "
+                "AND dedupe_key IS NOT NULL ORDER BY created_at, id FOR UPDATE",
+                (action,)).fetchall():
+            existing_by_action[action].setdefault(str(ident), job_id)
+        for job_id, stored in conn.execute(
+                "SELECT id, payload FROM video_duplicate_jobs "
+                "WHERE action=%s AND state IN ('queued','processing') "
+                "AND dedupe_key IS NULL ORDER BY created_at, id FOR UPDATE",
+                (action,)).fetchall():
+            try:
+                ident = job_identity(action, json.loads(stored))
+                existing_by_action[action].setdefault(ident, job_id)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                pass
+    return existing_by_action
+
+
 def enqueue_jobs_batch(db_url: str | None, items: list[tuple[str, dict]]) -> list[str]:
     """Atomically enqueue multiple jobs in a single connection and transaction."""
     if not items:
         return []
-    from collections import defaultdict
     conn = connect_queue(db_url)
     try:
         actions = sorted({action for action, _ in items})
@@ -87,18 +112,7 @@ def enqueue_jobs_batch(db_url: str | None, items: list[tuple[str, dict]]) -> lis
             advisory_xact_lock(conn, "enqueue_job:" + action)
 
         # Lock equivalent rows so concurrent producers cannot double-enqueue.
-        existing_by_action: dict[str, dict[str, str]] = defaultdict(dict)
-        for action in actions:
-            for job_id, stored in conn.execute(
-                    "SELECT id, payload FROM video_duplicate_jobs "
-                    "WHERE action=%s AND state IN ('queued','processing') "
-                    "ORDER BY created_at, id FOR UPDATE",
-                    (action,)).fetchall():
-                try:
-                    ident = job_identity(action, json.loads(stored))
-                    existing_by_action[action].setdefault(ident, job_id)
-                except (ValueError, TypeError, KeyError, AttributeError):
-                    pass
+        existing_by_action = _load_existing_jobs_by_action(conn, actions)
 
         job_ids = []
         to_insert = []
@@ -111,13 +125,13 @@ def enqueue_jobs_batch(db_url: str | None, items: list[tuple[str, dict]]) -> lis
                 job_id = generate_job_id()
                 job_ids.append(job_id)
                 existing_by_action[action][ident] = job_id
-                to_insert.append((job_id, action, "queued", json.dumps(payload, ensure_ascii=False), None, now, now))
+                to_insert.append((job_id, action, "queued", json.dumps(payload, ensure_ascii=False), None, now, now, ident))
 
         if to_insert:
             conn.executemany(
                 "INSERT INTO video_duplicate_jobs "
-                "(id,action,state,payload,result,created_at,updated_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)", to_insert)
+                "(id,action,state,payload,result,created_at,updated_at,dedupe_key) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)", to_insert)
         conn.commit()
         return job_ids
     except Exception:

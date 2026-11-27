@@ -413,6 +413,10 @@ def wait_with_trigger(duration: float, *, allow_schedule: bool = True):
     from pathlib import Path
     trig = Path(TRIGGER_FILE)
     step = 1.0
+    # Poll the durable queue less often than the 1 s stop/trigger tick. A wake
+    # file or schedule still starts a worker immediately; only the database
+    # fallback for a lost wake signal waits for this interval.
+    queue_poll = max(1.0, float(os.getenv("SYNC_QUEUE_POLL_SECONDS", "5")))
     deadline = time.monotonic() + duration
     timers = _WaitTimers()
     while not stop_event.is_set():
@@ -422,7 +426,10 @@ def wait_with_trigger(duration: float, *, allow_schedule: bool = True):
         system_wake = _dispatch_system_schedules_due(timers)
         artwork_wake = _dispatch_artwork_schedule_due(timers)
         worker_wake = admin_wake or system_wake or artwork_wake
-        actions = _read_pending_actions(timers)
+        actions = set()
+        if time.monotonic() >= timers.next_queue_check:
+            actions = _read_pending_actions(timers)
+            timers.next_queue_check = time.monotonic() + queue_poll
         if "sync" in actions:
             # A wake file may be missing or overwritten by another action.
             # Claim through the runner; a failed claim must not fall through
@@ -438,6 +445,7 @@ def wait_with_trigger(duration: float, *, allow_schedule: bool = True):
             # Avoid respawning rapidly when an external full sync owns the
             # lock or the child fails. It alone owns recovery of processing.
             timers.next_worker_attempt = time.monotonic() + 5.0
+            timers.next_queue_check = time.monotonic() + queue_poll
             continue
         remaining = deadline - time.monotonic()
         if remaining <= 0:

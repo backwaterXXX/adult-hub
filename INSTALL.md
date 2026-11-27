@@ -137,7 +137,7 @@ adult-hub/
    docker compose up -d
    ```
 
-   Docker Compose starts PostgreSQL, executes schema migrations via an ephemeral `migration` container gated by `service_completed_successfully`, and brings up the Resolver API and the Sync worker (which also runs scheduled backups and queue processing).
+   Docker Compose starts PostgreSQL, executes schema migrations via an ephemeral `migration` container gated by `service_completed_successfully`, and brings up the Resolver API and the Sync worker (which also runs scheduled backups and queue processing). This applies to the standalone stack (`compose.standalone.yml` / the release Compose file).
 
 ### Interactive Telegram Authentication Service
 
@@ -345,7 +345,7 @@ python3 migrate_db.py status
 python3 migrate_db.py apply
 ```
 
-*(Note: In production, `make deploy` does not run migrations automatically; you must run `migrate_db.py apply` when deploying database schema updates.)*
+*(Note: The main `docker-compose.yml` stack uses an external PostgreSQL database and has no `migration` service. Run `migrate_db.py apply` against that database before starting or upgrading the services. The standalone Compose files run the `migration` service automatically and gate resolver/sync on it.)*
 
 #### Upgrading from a pre-0.6.0 database
 

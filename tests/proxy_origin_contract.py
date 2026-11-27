@@ -14,13 +14,14 @@ class TestProxyOriginContract(unittest.TestCase):
             result = []
             async def app(scope, receive, send):
                 result.append(admin_security.write_authorized(
-                    Request(scope), blocked=False, public=True, token=""))
+                    Request(scope), blocked=False, public=True, token="test-write-token"))
             middleware = ProxyHeadersMiddleware(app, trusted_hosts="127.0.0.1,::1,172.29.0.1")
             scope = {"type": "http", "http_version": "1.1", "method": "POST",
                      "scheme": "http", "path": "/admin/api/cache/clear", "raw_path": b"/admin/api/cache/clear",
                      "query_string": b"", "root_path": "", "client": (peer, 12345),
                      "server": ("172.29.0.2", 8090),
                      "headers": [(b"host", b"adult.example.com"), (b"origin", origin.encode()),
+                                 (b"authorization", b"Bearer test-write-token"),
                                  (b"x-forwarded-proto", b"https"),
                                  (b"x-forwarded-host", forwarded_host.encode())]}
             await middleware(scope, None, None)

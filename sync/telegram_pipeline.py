@@ -120,7 +120,11 @@ class _ChannelSync:
         self.channel_id = channel_id
         self.conn = conn
         self.media_dir = media_dir
-        self.collected = collected
+        # A channel owns its own batch. Sharing the caller's dict let entries
+        # collected by a failed channel A be flushed and published during the
+        # successful channel B pass, under B's source label.
+        self._caller_collected = collected
+        self.collected: Dict[str, Dict[str, Any]] = {}
         self.services = services
         self.sync_mode = sync_mode
         self.monotonic = getattr(services.time, "monotonic", _time.monotonic)

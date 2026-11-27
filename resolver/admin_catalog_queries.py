@@ -39,35 +39,48 @@ class CatalogUnavailable(Exception):
     """The database or required catalog table cannot serve this request."""
 
 
-def _missing_local_artwork_ids(conn, media_root: str | os.PathLike[str]) -> list[str] | None:
-    """Return videos whose registered stream has no sibling artwork file."""
+def _is_artwork_missing(root: Path, raw_path: Any) -> bool:
+    """Return True if raw_path is a valid .strm filename whose sibling .jpg is missing."""
+    if (not isinstance(raw_path, str) or not raw_path or raw_path in {".", ".."}
+            or "/" in raw_path or "\\" in raw_path
+            or any(ord(char) < 32 for char in raw_path)
+            or not raw_path.lower().endswith(".strm")):
+        return False
+    try:
+        artwork_info = (root / f"{raw_path[:-5]}.jpg").lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return stat.S_ISLNK(artwork_info.st_mode) or not stat.S_ISREG(artwork_info.st_mode)
+
+
+def _missing_local_artwork_ids(conn, media_root: str | os.PathLike[str],
+                               video_ids: list[str] | None = None) -> list[str] | None:
+    """Return videos whose registered stream has no sibling artwork file.
+
+    ``video_ids`` bounds the filesystem work to the rows that already matched
+    the other filters, so a narrow search does not stat the whole library.
+    """
     try:
         root = Path(media_root).resolve()
         if not stat.S_ISDIR(root.stat().st_mode):
             return None
         with os.scandir(root):
             pass
-        rows = conn.execute("SELECT video_id,file_path FROM synced_files").fetchall()
+        if video_ids is not None:
+            if not video_ids:
+                return []
+            rows = conn.execute(
+                "SELECT video_id,file_path FROM synced_files WHERE video_id = ANY(%s)",
+                (list(video_ids),),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT video_id,file_path FROM synced_files").fetchall()
     except (OSError, TypeError, ValueError):
         return None
 
-    missing: set[str] = set()
-    for row in rows:
-        video_id, raw_path = row[0], row[1]
-        if (not isinstance(raw_path, str) or not raw_path or raw_path in {".", ".."}
-                or "/" in raw_path or "\\" in raw_path
-                or any(ord(char) < 32 for char in raw_path)
-                or not raw_path.lower().endswith(".strm")):
-            continue
-        try:
-            artwork_info = (root / f"{raw_path[:-5]}.jpg").lstat()
-        except FileNotFoundError:
-            missing.add(str(video_id))
-        except OSError:
-            continue
-        else:
-            if stat.S_ISLNK(artwork_info.st_mode) or not stat.S_ISREG(artwork_info.st_mode):
-                missing.add(str(video_id))
+    missing = {str(row[0]) for row in rows if _is_artwork_missing(root, row[1])}
     return sorted(missing)
 
 
@@ -206,14 +219,30 @@ def _query_catalog_page(conn, query: dict[str, Any], media_root) -> dict[str, An
     has_files = "synced_files" in tables
     has_dead = "dead_streams" in tables
     has_overrides = "video_metadata_overrides" in tables
-    missing_local_artwork = (
-        _missing_local_artwork_ids(conn, media_root)
-        if "thumbnail" in query["missing"] and has_files and media_root is not None
-        else None
-    )
+    missing_local_artwork = None
     conditions: list[str] = []
     params: list[Any] = []
-    _add_filter_conditions(conditions, params, query, columns, has_overrides, has_dead, missing_local_artwork)
+    local_artwork_requested = (
+        "thumbnail" in query["missing"] and has_files and media_root is not None
+    )
+    _add_filter_conditions(
+        conditions, params, query, columns, has_overrides, has_dead, None,
+        skip_missing={"thumbnail"} if local_artwork_requested else (),
+    )
+    if local_artwork_requested:
+        join_dead = " LEFT JOIN dead_streams d ON d.video_id = v.id" if has_dead else ""
+        join_overrides = " LEFT JOIN video_metadata_overrides mo ON mo.video_id = v.id" if has_overrides else ""
+        base_where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        candidate_ids = [
+            str(row[0]) for row in conn.execute(
+                f"SELECT v.id FROM videos v{join_overrides}{join_dead}{base_where}", params,
+            ).fetchall()
+        ]
+        missing_local_artwork = _missing_local_artwork_ids(conn, media_root, candidate_ids)
+    _add_missing_conditions(
+        conditions, params, [field for field in query["missing"] if field == "thumbnail"],
+        columns, has_overrides, missing_local_artwork,
+    )
 
     where = " WHERE " + " AND ".join(conditions) if conditions else ""
     join_dead = " LEFT JOIN dead_streams d ON d.video_id = v.id" if has_dead else ""
@@ -315,14 +344,15 @@ def _row_projection(columns: set[str], query: dict[str, Any], has_files: bool, h
 
 def _add_filter_conditions(conditions: list[str], params: list[Any], query: dict[str, Any],
                            columns: set[str], has_overrides: bool, has_dead: bool,
-                           missing_local_artwork) -> None:
+                           missing_local_artwork, *, skip_missing=()) -> None:
     _add_search_condition(conditions, params, query["q"], columns, has_overrides)
     _add_channel_condition(conditions, params, query)
     _add_text_condition(conditions, params, "studio", query["studio"], columns, has_overrides)
     _add_text_condition(conditions, params, "performers", query["performer"], columns, has_overrides)
     _add_tag_condition(conditions, params, query["tag"], columns, has_overrides)
     _add_availability_condition(conditions, query["availability"], columns, has_dead)
-    _add_missing_conditions(conditions, params, query["missing"], columns, has_overrides, missing_local_artwork)
+    _add_missing_conditions(conditions, params, query["missing"], columns, has_overrides,
+                            missing_local_artwork, skip_missing=skip_missing)
     _add_duration_conditions(conditions, params, query, columns)
 
 
@@ -355,15 +385,30 @@ def _add_search_condition(conditions: list[str], params: list[Any], q, columns: 
                           has_overrides: bool) -> None:
     if not q:
         return
-    searchable = ["COALESCE(v.id, '')"]
-    searchable.extend(
-        f"COALESCE({_effective_value(name, columns, has_overrides)}::text, '')" if name in {"title", "plot", "performers", "studio", "tags"}
-        else f"COALESCE(v.{name}::text, '')"
-        for name in ("title", "performers", "studio", "plot", "tags") if name in columns
-    )
-    if searchable:
-        conditions.append("(" + " OR ".join(f"{expr} ILIKE %s" for expr in searchable) + ")")
-        params.extend([f"%{q}%"] * len(searchable))
+    pattern = f"%{q}%"
+    clauses: list[str] = []
+    if "id" in columns:
+        clauses.append("COALESCE(v.id, '') ILIKE %s")
+        params.append(pattern)
+    if "title" in columns:
+        if has_overrides:
+            # Split the override case so the base-title branch remains a plain
+            # trigram-indexable predicate; the effective value is preserved.
+            clauses.append(
+                "(((mo.fields IS NULL OR NOT (mo.fields ? 'title')) "
+                "AND COALESCE(v.title::text, '') ILIKE %s) "
+                "OR ((mo.fields ? 'title') AND COALESCE(mo.fields->>'title', '') ILIKE %s))"
+            )
+            params.extend([pattern, pattern])
+        else:
+            clauses.append("COALESCE(v.title::text, '') ILIKE %s")
+            params.append(pattern)
+    for name in ("performers", "studio", "plot", "tags"):
+        if name in columns:
+            clauses.append(f"COALESCE({_effective_value(name, columns, has_overrides)}::text, '') ILIKE %s")
+            params.append(pattern)
+    if clauses:
+        conditions.append("(" + " OR ".join(clauses) + ")")
 
 
 def _escape_channel_like_pattern(cid: str) -> str:
@@ -415,8 +460,10 @@ def _add_availability_condition(conditions: list[str], availability: str, column
 
 
 def _add_missing_conditions(conditions: list[str], params: list[Any], missing, columns: set[str],
-                            has_overrides: bool, missing_local_artwork) -> None:
+                            has_overrides: bool, missing_local_artwork, *, skip_missing=()) -> None:
     for field in missing:
+        if field in skip_missing:
+            continue
         if field == "thumbnail" and missing_local_artwork is not None:
             conditions.append(
                 f"({_missing_effective_clause(field, columns, has_overrides)} OR v.id = ANY(%s))"

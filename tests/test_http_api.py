@@ -330,7 +330,7 @@ class TestResolverHttpApi(BaseHttpApiTestCase):
                     self.assertEqual(response.status_code, 403, response.text)
 
 
-    def test_empty_token_allows_same_origin_writes_locally_and_publicly(self):
+    def test_empty_token_denies_writes_even_with_same_origin(self):
         for public, base in ((False, "http://localhost"), (True, "https://media.example.org")):
             with self.subTest(public=public), tempfile.TemporaryDirectory() as directory, self.admin_config(token="", public=public):
                 root = Path(directory)
@@ -340,8 +340,8 @@ class TestResolverHttpApi(BaseHttpApiTestCase):
                      patch.object(resolver_app.app.state, "admin_cache_clear", clear):
                     cached = self.request("POST", "/admin/api/v2/maintenance/cache/clear", base_url=base,
                         headers={"Origin": base})
-                self.assertEqual(cached.status_code, 200, cached.text)
-                clear.assert_called_once_with()
+                self.assertEqual(cached.status_code, 403, cached.text)
+                clear.assert_not_called()
 
 
     def test_public_mode_requires_configured_token_and_accepts_valid_credentials(self):
@@ -428,14 +428,17 @@ class TestResolverHttpApi(BaseHttpApiTestCase):
             with self.subTest(public=public, token=bool(token)), self.admin_config(token=token, public=public):
                 response = self.request("GET", "/admin/api/v2/capabilities", base_url="http://localhost")
                 self.assertEqual(response.status_code, 200)
-                self.assertTrue(response.json()["actions_enabled"])
-                self.assertFalse(response.json()["read_only"])
-                self.assertIsNone(response.json()["read_only_reason"])
-                self.assertEqual(response.json()["token_required"], bool(token))
+                self.assertEqual(response.json()["actions_enabled"], bool(token))
+                self.assertEqual(response.json()["read_only"], not bool(token))
+                self.assertEqual(
+                    response.json()["read_only_reason"],
+                    None if token else "admin_token_missing",
+                )
+                self.assertTrue(response.json()["token_required"])
                 self.assertTrue(response.json()["worker_ready"])
                 self.assertEqual(response.json()["worker"]["missing_actions"], [])
                 status = self.request("GET", "/admin/api/v2/status", base_url="http://localhost")
-                self.assertEqual(status.json()["capabilities"]["token_required"], bool(token))
+                self.assertTrue(status.json()["capabilities"]["token_required"])
                 self.assertNotIn("test-write-token", response.text)
 
 

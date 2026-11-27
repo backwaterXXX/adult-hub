@@ -66,6 +66,29 @@ def _telegram_channel_of_video(video_id: str) -> Optional[str]:
     return None
 
 
+def _canonical_telegram_channel(channel: str) -> str:
+    clean = (channel or "").strip()
+    if clean.startswith("-100"):
+        return clean[4:]
+    return clean.lstrip("-")
+
+
+def cleanup_source_identity(video_id: str, provider: Optional[str] = None) -> str:
+    """Stable key for the destructive-upkeep scale guard.
+
+    The guard must protect one source, not a whole provider: a small Telegram
+    channel that lost all of its files has to be refused even when the remaining
+    channels of that provider are healthy. Telegram's ``-100`` and bare channel
+    aliases map to the same identity.
+    """
+    prov = (provider or (video_id or "").split(":", 1)[0] or "").strip().lower()
+    if prov == "telegram":
+        channel = _telegram_channel_of_video(video_id)
+        if channel:
+            return "telegram:" + _canonical_telegram_channel(channel)
+    return prov
+
+
 def _normalized_success_set(providers_succeeded: Optional[Set[str]], config: Optional[Any] = None) -> Set[str]:
     out: Set[str] = set()
     for entry in providers_succeeded or ():

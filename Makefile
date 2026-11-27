@@ -8,7 +8,7 @@ SHELL := /bin/bash
 PYTHON ?= $(shell if [ -x .venv/bin/python ] && ! python3 -c 'import uvicorn, telethon' 2>/dev/null; then echo .venv/bin/python; else echo python3; fi)
 NODE ?= node
 COVERAGE ?= $(shell command -v coverage 2>/dev/null || (test -x .venv/bin/coverage && echo .venv/bin/coverage) || printf '%s' "$(PYTHON) -m coverage")
-RUFF ?= $(shell command -v ruff 2>/dev/null || (test -x .venv/bin/ruff && echo .venv/bin/ruff) || printf '%s' "$(HOME)/develop/bin/ruff")
+RUFF ?= $(shell command -v ruff 2>/dev/null || (test -x .venv/bin/ruff && echo .venv/bin/ruff) || printf '%s' "$(PYTHON) -m ruff")
 
 # Release images are tagged from VERSION, so a version bump has one place to
 # edit and `make deploy` can never build an image tagged with an old release.

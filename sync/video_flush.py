@@ -136,12 +136,25 @@ def flush_collected(
     source_name: str = "",
     *,
     raise_on_error: bool = False,
+    hide_dead_streams: bool = True,
     services: VideoPersistenceServices,
 ) -> int:
     """Flush collected videos to DB and media_dir, merging previously known genres and tags from DB.
     Clears the dictionary after writing to free memory and prevent re-writing."""
     if not collected:
         return 0
+    if hide_dead_streams:
+        # The denylist must be applied before publication, not only to the
+        # leftovers of a pass: a successful page flush empties ``collected``.
+        from sync.dead_streams import filter_dead_streams
+        removed = filter_dead_streams(collected, conn)
+        if removed:
+            services.logger.info(
+                "Skipped %d denylisted video(s)%s", len(removed),
+                f" ({source_name})" if source_name else "",
+            )
+        if not collected:
+            return 0
     _drop_short_videos(collected, source_name, services)
     if not collected:
         return 0
@@ -188,6 +201,7 @@ def publication_pending_ids(conn: db.Connection, limit: int) -> List[str]:
           AND NOT EXISTS (SELECT 1 FROM synced_files sf WHERE sf.video_id = v.id)
           AND NOT EXISTS (SELECT 1 FROM video_duplicate_decisions d
                           WHERE d.loser_id = v.id AND d.state = 'active')
+          AND NOT EXISTS (SELECT 1 FROM dead_streams ds WHERE ds.video_id = v.id)
         ORDER BY v.id
         LIMIT %s""", (MIN_VIDEO_DURATION_SECONDS, max(1, int(limit)))).fetchall()
     return [str(row[0]) for row in rows]

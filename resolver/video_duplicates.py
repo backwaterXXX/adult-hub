@@ -123,7 +123,7 @@ def _load_performer_aliases(conn, tables_available: set[str]) -> dict[str, str]:
     return aliases
 
 
-def _load_fingerprints(conn, tables_available: set[str]) -> tuple[dict[str, str], dict[str, str]]:
+def _load_fingerprints(conn, tables_available: set[str], video_ids: list[str] | None = None) -> tuple[dict[str, str], dict[str, str]]:
     oshashes: dict[str, str] = {}
     phashes: dict[str, str] = {}
     if "video_fingerprints" not in tables_available or "video_phash_provenance" not in tables_available:
@@ -132,13 +132,26 @@ def _load_fingerprints(conn, tables_available: set[str]) -> tuple[dict[str, str]
         "stash-phash-689a6b400625d6da2afb58a7f908c88bcdb6f8ab-v2:"
         "resolver-ffmpeg-stash-v2"
     )
+    id_clause = ""
+    extra: tuple[str, ...] = ()
+    if video_ids is not None:
+        if not video_ids:
+            return oshashes, phashes
+        placeholders = ",".join(["%s"] * len(video_ids))
+        id_clause = f" AND video_id IN ({placeholders})"
+        id_clause_alias = f" AND f.video_id IN ({placeholders})"
+        extra = tuple(video_ids)
+    else:
+        id_clause_alias = ""
     for video_id, algorithm, fingerprint in conn.execute(
-        """SELECT video_id,algorithm,fingerprint FROM video_fingerprints WHERE algorithm='OSHASH'
+        f"""SELECT video_id,algorithm,fingerprint FROM video_fingerprints WHERE algorithm='OSHASH'{id_clause}
            UNION ALL
            SELECT f.video_id,f.algorithm,f.fingerprint FROM video_fingerprints f
            JOIN video_phash_provenance p ON p.video_id=f.video_id
              AND p.fingerprint=f.fingerprint AND p.generator_version=%s
-           WHERE f.algorithm='PHASH'""", (current_phash_generator,)
+           WHERE f.algorithm='PHASH'{id_clause_alias}""",
+        (*(extra if video_ids is not None else ()), current_phash_generator,
+         *(extra if video_ids is not None else ())),
     ).fetchall():
         value = str(fingerprint or "").strip().lower()
         if not video_id or not re.fullmatch(r"[0-9a-f]{16}", value):
@@ -544,6 +557,115 @@ def find_duplicate_candidates(db_url: str | None, limit: int = 200, offset: int 
             "truncated": offset + limit < len(found), "offset": offset,
             "category": category, "scanned": scanned, "complete": scan_complete,
             "candidate_limit_reached": not scan_complete, "rules_version": RULES_VERSION}
+
+
+def _load_pair_decisions(conn, tables_available: set[str], ids: list[str]) -> set[str]:
+    """Return loser_ids for ids that are already hidden by an active decision or hide job."""
+    decisions: set[str] = set()
+    if "video_duplicate_decisions" in tables_available:
+        decisions.update(r[0] for r in conn.execute(
+            "SELECT loser_id FROM video_duplicate_decisions "
+            "WHERE state='active' AND loser_id IN (%s, %s)", tuple(ids)))
+    if "video_duplicate_jobs" not in tables_available:
+        return decisions
+    for (raw_payload,) in conn.execute(
+        "SELECT payload FROM video_duplicate_jobs WHERE action='hide' "
+        "AND state IN ('queued', 'running', 'processing')"
+    ):
+        try:
+            payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for loser_id in payload.get("loser_ids") or []:
+            if str(loser_id) in ids:
+                decisions.add(str(loser_id))
+    return decisions
+
+
+def _load_pair_rows(db_url: str | None, ids: list[str]):
+    """Load the two candidate rows and all pair-level decision/fingerprint context."""
+    try:
+        conn = db.connect(db_url)
+    except Exception:
+        logger.debug("Ignored exception in find_pair_suggestion", exc_info=True)
+        return None
+    conn.row_factory = db.Record
+    try:
+        cols = set(db.table_columns(conn, "videos"))
+        if "id" not in cols:
+            return None
+        select = _select_columns(cols)
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT {', '.join(select)} FROM videos WHERE id IN (%s, %s) ORDER BY id",
+            tuple(ids),
+        )]
+        if len(rows) != 2:
+            return None
+        tables_available = db.table_names(conn)
+        aliases = _load_performer_aliases(conn, tables_available)
+        oshashes, phashes = _load_fingerprints(conn, tables_available, ids)
+        decisions = _load_pair_decisions(conn, tables_available, ids)
+        dismissed = set()
+        if "video_duplicate_dismissals" in tables_available:
+            dismissed = {tuple(sorted((r[0], r[1]))) for r in conn.execute(
+                "SELECT left_id, right_id FROM video_duplicate_dismissals "
+                "WHERE active=1 AND left_id IN (%s, %s) AND right_id IN (%s, %s)",
+                tuple(ids) + tuple(ids))}
+        return rows, aliases, oshashes, phashes, decisions, dismissed
+    except Exception:
+        logger.debug("Ignored exception in find_pair_suggestion", exc_info=True)
+        return None
+    finally:
+        conn.close()
+
+
+def find_pair_suggestion(db_url: str | None, left_id: str, right_id: str) -> bool:
+    """Return whether one specific pair is still an active duplicate suggestion.
+
+    The dismiss path validates a single pair; recomputing the whole catalog index
+    made that click scale with the library and let a truncated scan reject valid
+    pairs. This loads just the two rows and reuses the same exact/heuristic/pHash
+    rules without any global candidate enumeration.
+    """
+    ids = sorted({str(left_id or "").strip(), str(right_id or "").strip()})
+    if len(ids) != 2 or not all(ids):
+        return False
+    loaded = _load_pair_rows(db_url, ids)
+    if loaded is None:
+        return False
+    rows, aliases, oshashes, phashes, decisions, dismissed = loaded
+
+    pair = tuple(ids)
+    if pair in dismissed or any(video_id in decisions for video_id in ids):
+        return False
+    for row in rows:
+        video_id = str(row.get("id") or "")
+        row["oshash"] = oshashes.get(video_id)
+        row["phash"] = phashes.get(video_id)
+    _prepare(rows, aliases)
+    inputs = _DuplicateInputs(
+        rows=rows, scanned=len(rows), aliases=aliases, oshashes=oshashes,
+        phashes=phashes, decisions=decisions, dismissed=dismissed,
+        dismissed_by_video=_index_dismissals(dismissed),
+    )
+    exact, _ = _exact_candidates(inputs, "")
+    if exact:
+        return True
+    if _pair_score(rows[0], rows[1]):
+        return True
+    left, right = rows[0], rows[1]
+    left_hash = phashes.get(str(left["id"]))
+    right_hash = phashes.get(str(right["id"]))
+    if left_hash and right_hash:
+        left_duration = _duration_values(left)
+        left_split, left_part = extract_part_identity(left)
+        if _near_phash_distance(
+            left, right, left_duration, int(left_hash, 16), left_split, left_part, phashes,
+        ) is not None:
+            return True
+    return False
 
 
 def scan_duplicate_index(db_url: str | None) -> dict:

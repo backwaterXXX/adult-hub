@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 import logging
 
+from sync.provider_registry import cleanup_source_identity
+from sync.catalog_deletion import delete_video_rows as _delete_video_rows, table_set as _table_set
+
 logger = logging.getLogger(__name__)
 
 
@@ -98,7 +101,7 @@ def cleanup_orphaned_records(media_dir: Path, conn: db.Connection,
     missing = []
     entries_by_source: Dict[str, int] = {}
     for file_path_str, video_id in cur.fetchall():
-        source = video_id.split(":", 1)[0]
+        source = cleanup_source_identity(video_id)
         entries_by_source[source] = entries_by_source.get(source, 0) + 1
         try:
             actual_path = services.resolve_media_path(file_path_str, media_dir)
@@ -122,6 +125,7 @@ def cleanup_orphaned_records(media_dir: Path, conn: db.Connection,
     services.logger.info(
         "Removing %d missing file records from database...", len(survivors)
     )
+    tables = _table_set(conn)
     with conn:
         for file_path_str, video_id, _source in survivors:
             conn.execute("DELETE FROM synced_files WHERE file_path = %s", (file_path_str,))
@@ -129,7 +133,7 @@ def cleanup_orphaned_records(media_dir: Path, conn: db.Connection,
                 "SELECT count(*) FROM synced_files WHERE video_id = %s", (video_id,)
             ).fetchone()[0]
             if count == 0:
-                conn.execute("DELETE FROM videos WHERE id = %s", (video_id,))
+                _delete_video_rows(conn, tables, video_id)
 
 
 def cleanup_retention(conn: db.Connection, media_dir: Path, retention_days: int,
@@ -163,11 +167,15 @@ def _purge_expired_videos(conn: db.Connection, media_dir: Path, expired: list, r
         services.logger.info("Retention check: no eligible non-Telegram videos expired within %s days.", retention_days)
         return
 
-    population = {row[0]: row[1] for row in conn.execute(
-        "SELECT provider, count(*) FROM videos GROUP BY provider").fetchall()}
-    blocked = _sources_blocked_by_scale(dict(Counter(p for _, _, p in expired)),
-                                        population, "retention", services.logger)
-    expired = [item for item in expired if item[2] not in blocked]
+    population: Dict[str, int] = {}
+    for vid, provider in conn.execute("SELECT id, provider FROM videos").fetchall():
+        key = cleanup_source_identity(vid, provider)
+        population[key] = population.get(key, 0) + 1
+    blocked = _sources_blocked_by_scale(dict(Counter(
+        cleanup_source_identity(vid, provider) for vid, _, provider in expired)),
+        population, "retention", services.logger)
+    expired = [item for item in expired
+               if cleanup_source_identity(item[0], item[2]) not in blocked]
     if not expired:
         return
 
@@ -176,13 +184,12 @@ def _purge_expired_videos(conn: db.Connection, media_dir: Path, expired: list, r
     )
     # Per-item transactions: a DB error must not roll back deletions that
     # already committed, leaving catalog rows pointing at deleted files.
+    tables = _table_set(conn)
     for vid_id, title, _provider in expired:
         _delete_retention_files(conn, media_dir, vid_id, services)
         try:
             with conn:
-                conn.execute("DELETE FROM video_categories WHERE video_id = %s", (vid_id,))
-                conn.execute("DELETE FROM synced_files WHERE video_id = %s", (vid_id,))
-                conn.execute("DELETE FROM videos WHERE id = %s", (vid_id,))
+                _delete_video_rows(conn, tables, vid_id)
         except Exception as exc:
             services.logger.warning(
                 "Retention: keeping catalog rows for %s after a DB error: %s", vid_id, exc
@@ -220,6 +227,7 @@ def purge_videos(conn: db.Connection, media_dir: Path, comp_ids: List[str], reas
     if not comp_ids:
         return 0
     purged = 0
+    tables = _table_set(conn)
     # Per-item transactions so one failed video cannot roll back the DB rows of
     # videos whose files were already deleted earlier in this loop.
     for video_id in comp_ids:
@@ -243,9 +251,7 @@ def purge_videos(conn: db.Connection, media_dir: Path, comp_ids: List[str], reas
                     except Exception:
                         logger.debug("Ignored exception in purge_videos", exc_info=True)
             with conn:
-                conn.execute("DELETE FROM video_categories WHERE video_id = %s", (video_id,))
-                conn.execute("DELETE FROM synced_files WHERE video_id = %s", (video_id,))
-                conn.execute("DELETE FROM videos WHERE id = %s", (video_id,))
+                _delete_video_rows(conn, tables, video_id)
             purged += 1
         except Exception as exc:
             services.logger.warning("Purge failed for %s: %s", video_id, exc)

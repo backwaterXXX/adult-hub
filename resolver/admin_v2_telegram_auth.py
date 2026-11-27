@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import hmac
 import json
 import logging
+import os
 from typing import Any, Dict
 
 from fastapi import APIRouter, Request
@@ -45,6 +48,47 @@ def _validate_endpoint_account(account_id_raw: Any, admin: Any):
             status_code=400,
         )
     return valid_id, None
+
+
+def _internal_token(admin: Any) -> str:
+    """Return the token guarding resolver-internal service routes."""
+    raw = os.getenv("INTERNAL_API_TOKEN")
+    if raw is None or raw == "":
+        raw = admin._write_token() or ""
+    return str(raw).strip()
+
+
+def _verify_internal_access(admin: Any, request: Request):
+    """Authorize a call from another service (sync) to an internal route.
+
+    The internal routes expose account/session state and used to be reachable
+    by any client that could open the published resolver port. A shared service
+    token is required. When no token is configured (private, pre-upgrade
+    installs) only loopback callers are accepted, so publishing the port still
+    does not expose them to the LAN.
+    """
+    token = _internal_token(admin)
+    if token:
+        supplied = request.headers.get("x-internal-token", "").strip()
+        if not supplied:
+            scheme, _, value = request.headers.get("authorization", "").partition(" ")
+            if scheme.lower() == "bearer":
+                supplied = value.strip()
+        if supplied and hmac.compare_digest(supplied.encode(), token.encode()):
+            return None
+        return _json_resp(
+            admin,
+            {"ok": False, "error": "Internal API access denied."},
+            status_code=403,
+        )
+    client = getattr(getattr(request, "client", None), "host", "") or ""
+    if client in ("127.0.0.1", "::1", "localhost", "testclient", "testserver"):
+        return None
+    return _json_resp(
+        admin,
+        {"ok": False, "error": "Internal API access denied."},
+        status_code=403,
+    )
 
 
 def _verify_write_access(admin: Any, request: Request):
@@ -104,11 +148,12 @@ async def _handle_internal_any_authorized(admin: Any) -> Any:
     from resolver.providers.telegram_authorization import authorized_account_ids
 
     try:
-        accounts = await authorized_account_ids([acc.account_id for acc in list_accounts()])
+        accounts = await asyncio.to_thread(list_accounts)
+        authorized = await authorized_account_ids([acc.account_id for acc in accounts])
     except Exception as exc:
         logger.warning("Telegram any-account authorization check failed (%s)", type(exc).__name__)
         return _json_resp(admin, {"ok": False, "error": "Telegram authorization check failed."}, status_code=503)
-    return _json_resp(admin, {"ok": True, "authorized": bool(accounts), "accounts": accounts})
+    return _json_resp(admin, {"ok": True, "authorized": bool(authorized), "accounts": authorized})
 
 
 async def _handle_status(admin: Any, manager: Any, request: Request, account_id: str) -> Any:
@@ -216,8 +261,10 @@ async def _handle_list_accounts(admin: Any, manager: Any, request: Request) -> A
     router = get_telegram_router()
     check_live = request.query_params.get("check_live", "false").lower() in ("true", "1", "yes")
 
-    accounts = list_accounts()
-    access_records = list_channel_access()
+    accounts, access_records = await asyncio.gather(
+        asyncio.to_thread(list_accounts),
+        asyncio.to_thread(list_channel_access),
+    )
     access_by_account: dict[str, list[dict]] = {}
     for r in access_records:
         access_by_account.setdefault(r.account_id, []).append(r.to_dict())
@@ -274,7 +321,7 @@ async def _handle_add_account(admin: Any, request: Request) -> Any:
 
     from resolver.providers.telegram_account_store import create_account
     label = str(data.get("label") or "").strip() or account
-    record = create_account(account, label=label, enabled=True)
+    record = await asyncio.to_thread(create_account, account, label=label, enabled=True)
     if not record:
         return _json_resp(admin,
             {"ok": False, "code": "account_exists", "error": f"Account '{account}' already exists."},
@@ -293,7 +340,7 @@ async def _handle_update_account(admin: Any, request: Request, account_id: str) 
         return err
 
     from resolver.providers.telegram_account_store import get_account, update_account
-    existing = get_account(account)
+    existing = await asyncio.to_thread(get_account, account)
     if not existing:
         return _json_resp(admin,
             {"ok": False, "code": "not_found", "error": f"Account '{account}' not found."},
@@ -317,7 +364,7 @@ async def _handle_update_account(admin: Any, request: Request, account_id: str) 
             )
         label = label.strip() or existing.label
 
-    updated = update_account(account, label=label, enabled=enabled)
+    updated = await asyncio.to_thread(update_account, account, label=label, enabled=enabled)
     return _json_resp(admin, {"ok": True, "account": updated.to_dict() if updated else existing.to_dict()})
 
 
@@ -352,7 +399,7 @@ async def _handle_delete_account(admin: Any, request: Request, account_id: str) 
     router = get_telegram_router()
     await router.reset_account_client(account)
     try:
-        deleted = delete_account(account)
+        deleted = await asyncio.to_thread(delete_account, account)
     except Exception as exc:
         return _json_resp(admin,
             {"ok": False, "code": "delete_failed", "error": f"Failed to delete account '{account}': {exc}"},
@@ -412,8 +459,9 @@ async def _handle_channels_access(admin: Any, request: Request) -> Any:
     if admin._admin_blocked(request):
         return _json_resp(admin, {"error": "Admin is only available locally."}, status_code=403)
 
+    import asyncio
     from resolver.providers.telegram_account_store import list_channel_access
-    records = list_channel_access()
+    records = await asyncio.to_thread(list_channel_access)
     return _json_resp(admin, {"ok": True, "channels": [r.to_dict() for r in records]})
 
 
@@ -447,6 +495,17 @@ def _register_account_routes(router: APIRouter, admin: Any, manager: Any) -> Non
         return await _handle_channels_access(admin, request)
 
 
+async def _handle_internal_status(admin: Any, manager: Any, request: Request, account_id: str) -> Any:
+    denied = _verify_internal_access(admin, request)
+    if denied:
+        return denied
+    account, err = _validate_endpoint_account(account_id, admin)
+    if err:
+        return err
+    check_live_param = request.query_params.get("check_live", "false").lower() in ("true", "1", "yes")
+    return await manager.get_status(account, check_live=check_live_param)
+
+
 def _register_auth_routes(router: APIRouter, admin: Any, manager: Any) -> None:
     @router.get("/api/v2/telegram/auth/status")
     async def get_status(request: Request, account_id: str = DEFAULT_ACCOUNT_ID):
@@ -454,14 +513,13 @@ def _register_auth_routes(router: APIRouter, admin: Any, manager: Any) -> None:
 
     @router.get("/internal/telegram/auth/status")
     async def get_internal_status(request: Request, account_id: str = DEFAULT_ACCOUNT_ID):
-        account, err = _validate_endpoint_account(account_id, admin)
-        if err:
-            return err
-        check_live_param = request.query_params.get("check_live", "false").lower() in ("true", "1", "yes")
-        return await manager.get_status(account, check_live=check_live_param)
+        return await _handle_internal_status(admin, manager, request, account_id)
 
     @router.get("/internal/telegram/auth/any")
     async def get_internal_any_authorized(request: Request):
+        denied = _verify_internal_access(admin, request)
+        if denied:
+            return denied
         return await _handle_internal_any_authorized(admin)
 
     @router.post("/api/v2/telegram/auth/start")

@@ -26,12 +26,12 @@ services:
       start_period: 10s
 
   migration:
-    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:0.6.0}
+    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:0.6.12}
     restart: "no"
     command:
       - python
       - -c
-      - from db_schema import init_db; conn = init_db(); conn.close()
+      - from sync.db_schema import init_db; conn = init_db(); conn.close()
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
@@ -45,7 +45,7 @@ services:
       - ${CONFIG_PATH:-./config.yaml}:/config/config.yaml:ro
 
   resolver:
-    image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:0.6.0}
+    image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:0.6.12}
     restart: unless-stopped
     ports:
       - "${RESOLVER_BIND_IP:-127.0.0.1}:${RESOLVER_PORT:-8090}:8090"
@@ -69,7 +69,7 @@ services:
     environment:
       - TZ=${TZ:-Europe/Warsaw}
       - PYTHONUNBUFFERED=1
-      - APP_VERSION=${APP_VERSION:-0.6.0}
+      - APP_VERSION=${APP_VERSION:-0.6.12}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - ADMIN_V2_MONITOR_BACKUPS=${ADMIN_V2_MONITOR_BACKUPS:-false}
       - RESOLVER_WATCHDOG_INTERVAL_SECONDS=${RESOLVER_WATCHDOG_INTERVAL_SECONDS:-10}
@@ -91,6 +91,7 @@ services:
       - ADULT_HUB_ENABLE_DESKTOP_API=${ADULT_HUB_ENABLE_DESKTOP_API:-false}
       - ADMIN_WRITE_TOKEN=${ADMIN_WRITE_TOKEN:-${ADMIN_DUPLICATE_TOKEN:-}}
       - ADMIN_DUPLICATE_TOKEN=${ADMIN_DUPLICATE_TOKEN:-}
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-${ADMIN_WRITE_TOKEN:-${ADMIN_DUPLICATE_TOKEN:-}}}
       - PUBLIC_DOMAIN=${PUBLIC_DOMAIN:-media.example.org}
       - FORWARDED_ALLOW_IPS=${FORWARDED_ALLOW_IPS:-${RESOLVER_TRUSTED_PROXY_IPS:-127.0.0.1,::1}}
       - MEDIA_DIR=/media/adult
@@ -125,7 +126,7 @@ services:
       - PHASH_SERVER_IDLE_BYTES_PER_SECOND=${PHASH_SERVER_IDLE_BYTES_PER_SECOND:-10000000}
 
   sync:
-    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:0.6.0}
+    image: ${SYNC_IMAGE:-ghcr.io/backwaterxxx/adult-hub-sync:0.6.12}
     restart: unless-stopped
     stop_grace_period: 4m
     mem_limit: 1g
@@ -162,12 +163,13 @@ services:
     environment:
       - TZ=${TZ:-Europe/Warsaw}
       - PYTHONUNBUFFERED=1
-      - APP_VERSION=${APP_VERSION:-0.6.0}
+      - APP_VERSION=${APP_VERSION:-0.6.12}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CONFIG_PATH=${CONFIG_PATH:-/config/config.yaml}
       - ADMIN_SOURCE_OVERRIDES_PATH=${ADMIN_SOURCE_OVERRIDES_PATH:-/data/admin-source-overrides.json}
       - ADMIN_WORKER_CAPABILITIES_PATH=${ADMIN_WORKER_CAPABILITIES_PATH:-/data/cache/worker-capabilities.json}
       - DATA_DIR=${DATA_DIR:-/data}
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-${ADMIN_WRITE_TOKEN:-${ADMIN_DUPLICATE_TOKEN:-}}}
       - RESOLVER_PUBLIC_URL=${RESOLVER_PUBLIC_URL:-${STANDALONE_STREAM_RESOLVER_URL:-http://resolver:8090}}
       - STREAM_PUBLIC_URL_TELEGRAM=${STREAM_PUBLIC_URL_TELEGRAM:-${STANDALONE_STREAM_PUBLIC_URL_TELEGRAM:-}}
       - RESOLVER_API_URL=${RESOLVER_API_URL:-http://resolver:8090}
@@ -205,7 +207,7 @@ services:
       - TELEGRAM_PHASH_TIMEOUT_SECONDS=${TELEGRAM_PHASH_TIMEOUT_SECONDS:-1200}
 
   telegram-auth:
-    image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:0.6.0}
+    image: ${RESOLVER_IMAGE:-ghcr.io/backwaterxxx/adult-hub-resolver:0.6.12}
     profiles: ["tools"]
     restart: "no"
     stdin_open: true

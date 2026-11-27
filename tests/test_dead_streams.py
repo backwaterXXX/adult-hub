@@ -109,6 +109,9 @@ class TestDeadStreams(PgTestCase):
         hide_dead_streams(collected, self.conn, services=self.services)
         self.assertNotIn("sample:dead1", collected)
         self.assertIn("sample:live1", collected)
+        # Filtering a batch never expires the evidence entry: a page is not a
+        # complete listing, so absence here proves nothing.
+        self.assertEqual(deadlisted_ids(self.conn), {"sample:dead1"})
 
 
 if __name__ == "__main__":

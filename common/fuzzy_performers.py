@@ -29,15 +29,15 @@ import json
 import os
 import re
 import sys
-import time  # noqa: F401 - fuzzy_merge resolves this from the facade globals
+import time
 import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from common.logging_setup import configure_logging
 
-from common.db import Connection, connect, table_names  # noqa: F401
+from common.db import Connection, connect, table_names
 
-from common.performers import is_valid_performer_name, is_safe_alias  # noqa: F401
+from common.performers import is_valid_performer_name, is_safe_alias
 
 # Sciezki domyslne
 DB_URL = os.getenv("DATABASE_URL", "")
@@ -190,13 +190,40 @@ def _noise_penalty(name: str) -> float:
     return score
 
 
+def _fuzzy_dependencies() -> dict:
+    """Explicit dependency surface for common.fuzzy_matching/fuzzy_merge.
+
+    The implementation modules used to receive ``globals()``, which silently
+    coupled them to every name in this module. Only the callbacks they actually
+    use are exported here.
+    """
+    return {
+        "connect": connect,
+        "DB_URL": DB_URL,
+        "extract_suffix_stem": extract_suffix_stem,
+        "is_safe_alias": is_safe_alias,
+        "is_valid_performer_name": is_valid_performer_name,
+        "json": json,
+        "_json_list": _json_list,
+        "logger": logger,
+        "make_backup": make_backup,
+        "_name_exists": _name_exists,
+        "normalize_clean_key": normalize_clean_key,
+        "performer_merge_revision": performer_merge_revision,
+        "score_canonical": score_canonical,
+        "strip_accents": strip_accents,
+        "table_names": table_names,
+        "time": time,
+    }
+
+
 def find_fuzzy_performer_candidates(
     db_url: Optional[str] = None,
     similarity_threshold: float = 0.88,
 ) -> Dict[str, Any]:
     """Compatibility facade for the fuzzy performer candidate scan."""
     from common.fuzzy_matching import find_fuzzy_performer_candidates as implementation
-    return implementation(db_url, similarity_threshold, _core=globals())
+    return implementation(db_url, similarity_threshold, _core=_fuzzy_dependencies())
 
 
 def make_backup(db_url: Optional[str] = None, backup_dir: Optional[Path] = None) -> Path:
@@ -213,16 +240,20 @@ def _fuzzy_merge_implementation():
 
 def preview_performer_merge(db_url: Optional[str], alias: str, canonical: str) -> Dict[str, Any]:
     return _fuzzy_merge_implementation().preview_performer_merge(
-        db_url, alias, canonical, _core=globals(),
+        db_url, alias, canonical, _core=_fuzzy_dependencies(),
     )
 
 
 def performer_merge_revision(conn: Connection, alias: str, canonical: str, *, legacy: bool = False) -> str:
-    return _fuzzy_merge_implementation().performer_merge_revision(conn, alias, canonical, _core=globals(), legacy=legacy)
+    return _fuzzy_merge_implementation().performer_merge_revision(
+        conn, alias, canonical, _core=_fuzzy_dependencies(), legacy=legacy,
+    )
 
 
 def _name_exists(conn: Connection, table: str, name: str) -> bool:
-    return _fuzzy_merge_implementation()._name_exists(conn, table, name, _core=globals())
+    return _fuzzy_merge_implementation()._name_exists(
+        conn, table, name, _core=_fuzzy_dependencies(),
+    )
 
 
 def execute_performer_merges(
@@ -232,7 +263,7 @@ def execute_performer_merges(
     skip_backup: bool = False,
 ) -> Dict[str, Any]:
     return _fuzzy_merge_implementation().execute_performer_merges(
-        db_url, media_dir, merges, skip_backup=skip_backup, _core=globals(),
+        db_url, media_dir, merges, skip_backup=skip_backup, _core=_fuzzy_dependencies(),
     )
 
 

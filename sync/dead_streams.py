@@ -230,25 +230,74 @@ def probe_stream_via_resolver_outcome(comp_id: str, *, services: DeadStreamServi
     return _outcome_from_proxy_mode(status, chunk)
 
 
-def hide_dead_streams(collected: Dict[str, Dict[str, Any]], conn: db.Connection, *,
-                      services: DeadStreamServices) -> None:
-    """Drop denylisted corpses from the catalog before they reach disk.
-
-    Availability evidence comes from the Admin worker (dead_streams rows); this
-    pass only filters collected IDs and prunes denylist entries that are no
-    longer listed upstream (allowing resurrection). Both the dead set and the
-    collected set must be non-empty: a partial fetch must not nuke the table."""
-    now = int(services.time.time())
+def filter_dead_streams(collected: Dict[str, Dict[str, Any]], conn: db.Connection) -> Set[str]:
+    """Remove denylisted IDs from a batch before it is persisted or published."""
     dead = deadlisted_ids(conn)
-    listed = set(collected)
-    for comp_id in [c for c in collected if c in dead]:
+    if not dead:
+        return set()
+    removed = {comp_id for comp_id in collected if comp_id in dead}
+    for comp_id in removed:
         del collected[comp_id]
-    if dead and listed:
+    return removed
+
+
+def _like_prefix(prefix: str) -> str:
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{escaped}%"
+
+
+def expire_dead_streams(
+    conn: db.Connection,
+    *,
+    providers_succeeded: Optional[Set[str]] = None,
+    services: DeadStreamServices,
+) -> int:
+    """Expire denylist entries older than the policy for checked sources.
+
+    Expiry is a TTL, not an inference from a partial page: an entry is removed
+    only when it is older than ``denylist_days`` *and* its provider/channel was
+    synchronized successfully in this pass. A source that failed or was
+    interrupted keeps every denylist entry, and no page's mere absence can
+    resurrect a video.
+    """
+    if not providers_succeeded:
+        return 0
+    now = int(services.time.time())
+    cutoff = now - services.denylist_days * 86400
+    removed = 0
+    for source in sorted(providers_succeeded):
+        source = (source or "").strip()
+        if not source:
+            continue
+        prefixes = [source + ":"]
+        if source.startswith("telegram:") and source.count(":") >= 1:
+            channel = source.split(":", 1)[1]
+            from common.managed_sources import channel_aliases
+            try:
+                aliases = channel_aliases(channel)
+            except Exception:
+                aliases = {channel}
+            prefixes = [f"telegram:{alias}:" for alias in sorted(aliases) if alias]
+        clauses = " OR ".join("video_id LIKE %s ESCAPE '\\'" for _ in prefixes)
+        params = [cutoff, *(_like_prefix(prefix) for prefix in prefixes)]
         try:
             with conn:
-                conn.execute(
-                    "DELETE FROM dead_streams WHERE detected_at < %s AND video_id NOT IN "
-                    f"({','.join(['%s'] * len(listed))})",
-                    (now - services.denylist_days * 86400, *listed))
+                cursor = conn.execute(
+                    f"DELETE FROM dead_streams WHERE detected_at < %s AND ({clauses})",
+                    tuple(params),
+                )
+                removed += int(getattr(cursor, "rowcount", 0) or 0)
         except Exception:
-            logger.debug("Ignored exception in hide_dead_streams", exc_info=True)
+            logger.debug("Ignored exception in expire_dead_streams", exc_info=True)
+    return removed
+
+
+def hide_dead_streams(collected: Dict[str, Dict[str, Any]], conn: db.Connection, *,
+                      services: DeadStreamServices) -> None:
+    """Drop denylisted corpses from a batch before they reach disk.
+
+    This only filters the batch; expiry is a separate, source-gated policy step
+    (``expire_dead_streams``). A batch is one page or one channel, never proof
+    that an absent video is gone upstream.
+    """
+    filter_dead_streams(collected, conn)

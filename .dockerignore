@@ -9,12 +9,22 @@ data/
 *.nfo
 *.jpg
 __pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
 *.pyd
+**/*.pyc
 # Build artefacts (stale copies of the shared package must not enter an image)
 build/
 **/build/
+.venv/
+node_modules/
+tests/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.log
+*.bak
 .env
 # Local / secret config (mounted at runtime, never baked into image)
 config.yaml
@@ -31,3 +41,4 @@ dupes_report.csv
 *.tmp
 docs/
 plans/
+release/

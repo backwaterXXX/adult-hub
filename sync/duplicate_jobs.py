@@ -1,5 +1,6 @@
 """Durable duplicate decision job execution."""
 import asyncio  # noqa: F401 -- duplicate_job_worker reads this through the compatibility facade
+import contextvars
 import hashlib  # noqa: F401 -- duplicate_job_metadata reads this through the compatibility facade
 import json
 import os
@@ -17,6 +18,12 @@ from psycopg.types.json import Jsonb  # noqa: F401 -- job handlers read this thr
 
 
 _JOB_STAGES = WORKING_STAGES
+# Lease of the job currently executed in this worker. Handlers that reach the
+# shared progress/finish helpers without threading a token still update only
+# the run that owns the row.
+_CURRENT_LEASE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "duplicate_job_lease", default=None,
+)
 _LONG_RUNNING_WORKER_ACTIONS = frozenset({
     "metadata_backfill", "telegram_fingerprint_scan", "source_remove", "phash_generation",
     "filesize_backfill", "dead_stream_quarantine",
@@ -178,11 +185,12 @@ def _orphan_families(families: dict, registered_streams: set[str],
 
 
 def _record_job_progress(conn, job_id: str, stage: str, *, completed=None, total=None,
-                         local_state=None) -> None:
+                         local_state=None, lease_token: str | None = None) -> None:
     """Persist a safe checkpoint without overwriting the worker recovery journal."""
     if stage not in _JOB_STAGES:
         raise ValueError("Unsupported job progress stage.")
     now = int(time.time())
+    token = lease_token or _CURRENT_LEASE.get()
     row = conn.execute("SELECT result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
     try:
         result = json.loads(row[0]) if row and row[0] else {}
@@ -202,23 +210,28 @@ def _record_job_progress(conn, job_id: str, stage: str, *, completed=None, total
     result["progress"] = progress
     if local_state is not None:
         result["local_state"] = local_state
+    sql = "UPDATE video_duplicate_jobs SET result=%s, updated_at=%s WHERE id=%s AND state='processing'"
+    params: list = [json.dumps(result, ensure_ascii=False), now, job_id]
+    if token:
+        sql += " AND lease_token=%s"
+        params.append(token)
     with conn:
-        conn.execute(
-            "UPDATE video_duplicate_jobs SET result=%s, updated_at=%s WHERE id=%s AND state='processing'",
-            (json.dumps(result, ensure_ascii=False), now, job_id),
-        )
+        conn.execute(sql, tuple(params))
 
 
-def _heartbeat_processing_job(db_url, job_id: str, stop_event: threading.Event, logger, interval: float = 10.0) -> None:
+def _heartbeat_processing_job(db_url, job_id: str, stop_event: threading.Event, logger,
+                              interval: float = 10.0, *, lease_token: str | None = None) -> None:
     """Refresh last-activity time while a worker is inside a long blocking operation."""
     while not stop_event.wait(interval):
         heartbeat_conn = None
         try:
             heartbeat_conn = db.connect(db_url)
-            heartbeat_conn.execute(
-                "UPDATE video_duplicate_jobs SET updated_at=%s WHERE id=%s AND state='processing'",
-                (int(time.time()), job_id),
-            )
+            sql = "UPDATE video_duplicate_jobs SET updated_at=%s WHERE id=%s AND state='processing'"
+            params: list = [int(time.time()), job_id]
+            if lease_token:
+                sql += " AND lease_token=%s"
+                params.append(lease_token)
+            heartbeat_conn.execute(sql, tuple(params))
             heartbeat_conn.commit()
         except Exception as exc:
             logger.debug("Could not update worker heartbeat (%s)", type(exc).__name__)
@@ -229,7 +242,8 @@ def _heartbeat_processing_job(db_url, job_id: str, stop_event: threading.Event, 
                 heartbeat_conn.close()
 
 
-def _store_job_result_field(conn, job_id: str, key: str, value) -> None:
+def _store_job_result_field(conn, job_id: str, key: str, value, *,
+                            lease_token: str | None = None) -> None:
     """Update recovery data without discarding progress events or other journal fields."""
     row = conn.execute("SELECT result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
     try:
@@ -239,14 +253,17 @@ def _store_job_result_field(conn, job_id: str, key: str, value) -> None:
     if not isinstance(result, dict):
         result = {}
     result[key] = value
+    token = lease_token or _CURRENT_LEASE.get()
+    sql = "UPDATE video_duplicate_jobs SET result=%s, updated_at=%s WHERE id=%s AND state='processing'"
+    params: list = [json.dumps(result, ensure_ascii=False), int(time.time()), job_id]
+    if token:
+        sql += " AND lease_token=%s"
+        params.append(token)
     with conn:
-        conn.execute(
-            "UPDATE video_duplicate_jobs SET result=%s, updated_at=%s WHERE id=%s AND state='processing'",
-            (json.dumps(result, ensure_ascii=False), int(time.time()), job_id),
-        )
+        conn.execute(sql, tuple(params))
 
 
-def _finish_job(conn, job_id: str, result: dict) -> None:
+def _finish_job(conn, job_id: str, result: dict, *, lease_token: str | None = None) -> bool:
     """Keep the compact activity history when replacing an active recovery journal with its outcome."""
     row = conn.execute("SELECT result FROM video_duplicate_jobs WHERE id=%s", (job_id,)).fetchone()
     try:
@@ -262,11 +279,16 @@ def _finish_job(conn, job_id: str, result: dict) -> None:
     events.append({"stage": "completed", "updated_at": now})
     finished["events"] = events
     finished["progress"] = {"stage": "completed", "updated_at": now}
+    token = lease_token or _CURRENT_LEASE.get()
+    sql = ("UPDATE video_duplicate_jobs SET state='done', lease_token=NULL, result=%s, "
+           "updated_at=%s WHERE id=%s AND state='processing'")
+    params: list = [json.dumps(finished, ensure_ascii=False), now, job_id]
+    if token:
+        sql += " AND lease_token=%s"
+        params.append(token)
     with conn:
-        conn.execute(
-            "UPDATE video_duplicate_jobs SET state='done', result=%s, updated_at=%s WHERE id=%s AND state='processing'",
-            (json.dumps(finished, ensure_ascii=False), now, job_id),
-        )
+        cursor = conn.execute(sql, tuple(params))
+    return bool(int(getattr(cursor, "rowcount", 0) or 0))
 
 
 def _metadata_update(conn, job_id: str, payload: dict, media_dir: Path, services) -> dict:

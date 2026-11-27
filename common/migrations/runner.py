@@ -29,6 +29,8 @@ from common.migrations.m0008_quality_tier_hd_cut import migration as quality_tie
 from common.migrations.m0009_video_channel_name_index import migration as video_channel_name_index
 from common.migrations.m0010_catalog_search_trigram_favorites_index import migration as catalog_search_indexes
 from common.migrations.m0011_video_title_sort import migration as video_title_sort
+from common.migrations.m0012_duplicate_job_lease import migration as duplicate_job_lease
+from common.migrations.m0013_duplicate_job_dedupe_key import migration as duplicate_job_dedupe_key
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     video_channel_name_index,
     catalog_search_indexes,
     video_title_sort,
+    duplicate_job_lease,
+    duplicate_job_dedupe_key,
 )
 
 
@@ -343,19 +347,29 @@ def recreate_database(
     """
     conn, owned = _resolve_connection(conn_or_url)
     try:
-        if preserve_user_state:
-            tables_to_drop = [
-                table for table in APPLICATION_TABLES if table not in PRESERVED_RECREATE_TABLES
-            ]
-        else:
-            tables_to_drop = list(APPLICATION_TABLES)
-        all_to_drop = (*tables_to_drop, SCHEMA_MIGRATIONS_TABLE)
-        with conn:
-            for table in all_to_drop:
-                conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+        # Hold the migration lock across the destructive drop and schema
+        # rebuild. If another container starts applying migrations between the
+        # drop and apply_migrations' own lock, it can observe a half-empty
+        # database or stamp a plan against the wrong schema.
+        conn.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_LOCK_ID,))
+        conn.commit()
+        try:
+            if preserve_user_state:
+                tables_to_drop = [
+                    table for table in APPLICATION_TABLES if table not in PRESERVED_RECREATE_TABLES
+                ]
+            else:
+                tables_to_drop = list(APPLICATION_TABLES)
+            all_to_drop = (*tables_to_drop, SCHEMA_MIGRATIONS_TABLE)
+            with conn:
+                for table in all_to_drop:
+                    conn.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
 
-        logger.info("Recreating database: dropped %d tables.", len(all_to_drop))
-        return apply_migrations(conn, **kwargs)
+            logger.info("Recreating database: dropped %d tables.", len(all_to_drop))
+            return apply_migrations(conn, **kwargs)
+        finally:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (MIGRATION_LOCK_ID,))
+            conn.commit()
     finally:
         if owned:
             conn.close()

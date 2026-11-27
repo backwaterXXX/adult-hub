@@ -21,14 +21,19 @@ class TestConnectionReconnect(PgTestCase):
         finally:
             conn.close()
 
-    def test_commit_and_context_exit_reopen_a_dropped_session(self):
+    def test_commit_and_context_exit_fail_loudly_after_a_dropped_session(self):
         conn = db.connect(self.db_url)
         try:
             conn._raw.close()
-
-            with conn:
-                conn.execute("SELECT 3")
-
+            with self.assertRaises(psycopg.OperationalError):
+                conn.commit()
+            # Reopen on a fresh statement, then drop the session between write and commit.
+            with self.assertRaises(psycopg.OperationalError):
+                with conn:
+                    conn.execute("SELECT 3")
+                    conn._raw.close()
+            # The next independent operation may still recover the connection.
+            self.assertEqual(conn.execute("SELECT 3").fetchone()[0], 3)
             self.assertFalse(conn._raw.closed)
         finally:
             conn.close()

@@ -237,7 +237,7 @@ class ReplaceUnauthorizedSessionRouteTests(SessionFixtureMixin, unittest.TestCas
                 return False
 
             def _write_token(self):
-                return ""
+                return "test-write-token"
 
             def _wake_worker(self, worker):
                 return True
@@ -247,7 +247,7 @@ class ReplaceUnauthorizedSessionRouteTests(SessionFixtureMixin, unittest.TestCas
             app.include_router(admin_v2_telegram_auth.build_router(RouteAdmin()))
         self.client = TestClient(app)
         self.url = f"/api/v2/telegram/accounts/{ACCOUNT}/session/replace-unauthorized"
-        self.headers = {"Origin": "http://testserver"}
+        self.headers = {"Origin": "http://testserver", "Authorization": "Bearer test-write-token"}
 
     def tearDown(self) -> None:
         self._stop_fixture()

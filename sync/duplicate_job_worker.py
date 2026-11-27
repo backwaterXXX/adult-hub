@@ -6,6 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from sync import duplicate_jobs as _core  # noqa: E402
+from common.queue_primitives import generate_lease_token  # noqa: E402
 from sync import duplicate_job_external_handlers as _external_handlers  # noqa: E402
 from sync.duplicate_job_undo import _run_undo  # noqa: E402
 from sync.duplicate_job_quarantine import _run_quarantine  # noqa: E402
@@ -36,16 +37,24 @@ def _claim_next_job(conn, worker_actions, deferred, services):
             return None
         job_id, action, payload_raw = job
         now = int(_core.time.time())
-        conn.execute("UPDATE video_duplicate_jobs SET state='processing', updated_at=%s WHERE id=%s AND state='queued'", (now, job_id))
+        lease_token = generate_lease_token()
+        updated = conn.execute(
+            "UPDATE video_duplicate_jobs SET state='processing', lease_token=%s, updated_at=%s "
+            "WHERE id=%s AND state='queued'",
+            (lease_token, now, job_id),
+        )
+        if not int(getattr(updated, "rowcount", 0) or 0):
+            conn.rollback()
+            return None
         conn.commit()
     except Exception:
         conn.rollback()
         services.logger.exception('Could not claim duplicate decision job')
         return None
-    return job_id, action, payload_raw, now
+    return job_id, action, payload_raw, now, lease_token
 
 
-def _load_job_payload(conn, job_id, action, payload_raw, services):
+def _load_job_payload(conn, job_id, action, payload_raw, services, lease_token):
     """Parse the job payload. Returns None after marking a corrupt job failed."""
     try:
         payload = _core.json.loads(payload_raw)
@@ -54,7 +63,11 @@ def _load_job_payload(conn, job_id, action, payload_raw, services):
     if not isinstance(payload, dict):
         failure = _core.json.dumps({'error': 'Corrupt job payload; marked failed without execution.'}, ensure_ascii=False)
         with conn:
-            conn.execute("UPDATE video_duplicate_jobs SET state='failed', result=%s, updated_at=%s WHERE id=%s AND state='processing'", (failure, int(_core.time.time()), job_id))
+            conn.execute(
+                "UPDATE video_duplicate_jobs SET state='failed', lease_token=NULL, result=%s, updated_at=%s "
+                "WHERE id=%s AND state='processing' AND lease_token=%s",
+                (failure, int(_core.time.time()), job_id, lease_token),
+            )
         services.logger.warning('Duplicate operation %s has a corrupt payload; marked failed', job_id)
         return None
     if action == 'performer_merge' and payload.get('expected_revision'):
@@ -163,7 +176,7 @@ def _compensate_moves(moved, services) -> None:
             services.logger.exception('Could not compensate duplicate operation file move')
 
 
-def _record_job_failure(conn, job_id, action, exc, services) -> None:
+def _record_job_failure(conn, job_id, action, exc, services, lease_token=None) -> None:
     """Mark a processing job failed and store the error message and failure code in its result."""
     previous = conn.execute('SELECT result FROM video_duplicate_jobs WHERE id=%s', (job_id,)).fetchone()
     try:
@@ -177,8 +190,14 @@ def _record_job_failure(conn, job_id, action, exc, services) -> None:
     failure_code = classify_job_failure(action, failure_result)
     if failure_code:
         failure_result['failure_code'] = failure_code
+    sql = ("UPDATE video_duplicate_jobs SET state='failed', lease_token=NULL, result=%s, "
+           "updated_at=%s WHERE id=%s AND state='processing'")
+    params: list = [_core.json.dumps(failure_result, ensure_ascii=False), int(_core.time.time()), job_id]
+    if lease_token:
+        sql += " AND lease_token=%s"
+        params.append(lease_token)
     with conn:
-        conn.execute("UPDATE video_duplicate_jobs SET state='failed', result=%s, updated_at=%s WHERE id=%s AND state='processing'", (_core.json.dumps(failure_result, ensure_ascii=False), int(_core.time.time()), job_id))
+        conn.execute(sql, tuple(params))
     services.logger.warning('Duplicate operation %s failed: %s', job_id, exc)
 
 
@@ -203,7 +222,11 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
     # Jobs left 'processing' belong to a crashed run of this same worker: every
     # caller holds .adult-hub-sync.lock exclusively, so no live worker can own
     # them and they are requeued immediately.
-    recovered = conn.execute("UPDATE video_duplicate_jobs SET state='queued', updated_at=%s WHERE state='processing' AND (action = ANY(%s) OR starts_with(action, %s))", (now, list(worker_actions), _AUDIT_REPAIR_ACTION_PREFIX)).rowcount
+    recovered = conn.execute(
+        "UPDATE video_duplicate_jobs SET state='queued', lease_token=NULL, updated_at=%s "
+        "WHERE state='processing' AND (action = ANY(%s) OR starts_with(action, %s))",
+        (now, list(worker_actions), _AUDIT_REPAIR_ACTION_PREFIX),
+    ).rowcount
     if recovered:
         services.logger.info('Requeued %s duplicate job(s) left processing by a dead worker', recovered)
     conn.commit()
@@ -216,43 +239,47 @@ def process_video_duplicate_jobs_locked(conn: _core.db.Connection, media_dir: _c
         claimed = _claim_next_job(conn, worker_actions, deferred, services)
         if claimed is None:
             break
-        job_id, action, payload_raw, now = claimed
-        payload = _load_job_payload(conn, job_id, action, payload_raw, services)
+        job_id, action, payload_raw, now, lease_token = claimed
+        lease_reset = _core._CURRENT_LEASE.set(lease_token)
+        payload = _load_job_payload(conn, job_id, action, payload_raw, services, lease_token)
         if payload is None:
+            _core._CURRENT_LEASE.reset(lease_reset)
             continue
-        _core._record_job_progress(conn, job_id, 'starting')
+        _core._record_job_progress(conn, job_id, 'starting', lease_token=lease_token)
         _handle_system_schedule_start(conn, job_id, action, payload)
         quarantine_root = services.jobs_lock_root(conn, media_dir) / 'duplicate-quarantine'
         run = _JobRun()
         early_result = _committed_result_without_rerun(conn, job_id, action, payload, services)
         if early_result is not None:
-            _core._finish_job(conn, job_id, early_result)
+            _core._finish_job(conn, job_id, early_result, lease_token=lease_token)
             _handle_system_schedule_finish(conn, job_id, action, payload, success=True)
+            _core._CURRENT_LEASE.reset(lease_reset)
             completed += 1
             continue
         heartbeat_stop = _core.threading.Event()
-        heartbeat = _core.threading.Thread(target=_core._heartbeat_processing_job, args=(getattr(conn, '_url', None) or _core.os.getenv('DATABASE_URL'), job_id, heartbeat_stop, services.logger), name=f'job-heartbeat-{job_id[:8]}', daemon=True)
+        heartbeat = _core.threading.Thread(target=_core._heartbeat_processing_job, args=(getattr(conn, '_url', None) or _core.os.getenv('DATABASE_URL'), job_id, heartbeat_stop, services.logger), kwargs={'lease_token': lease_token}, name=f'job-heartbeat-{job_id[:8]}', daemon=True)
         heartbeat.start()
         try:
             result = _execute_action(conn, job_id, action, payload, media_dir, services, quarantine_root, now, run)
-            _core._finish_job(conn, job_id, result)
+            _core._finish_job(conn, job_id, result, lease_token=lease_token)
             _handle_system_schedule_finish(conn, job_id, action, payload, success=True)
             completed += 1
         except _external_handlers.ChannelRemovalStillActive as retry_exc:
             with conn:
                 conn.execute(
-                    "UPDATE video_duplicate_jobs SET state='queued', updated_at=%s WHERE id=%s AND state='processing'",
-                    (int(_core.time.time()), job_id),
+                    "UPDATE video_duplicate_jobs SET state='queued', lease_token=NULL, updated_at=%s "
+                    "WHERE id=%s AND state='processing' AND lease_token=%s",
+                    (int(_core.time.time()), job_id, lease_token),
                 )
             deferred.append(job_id)
             services.logger.info("Channel removal is still active; deferred job %s to the next pass: %s", job_id, retry_exc)
-            continue
         except Exception as exc:
             if not run.catalog_committed and action != 'orphan_file_operation':
                 _compensate_moves(run.moved, services)
-            _record_job_failure(conn, job_id, action, exc, services)
+            _record_job_failure(conn, job_id, action, exc, services, lease_token)
             _handle_system_schedule_finish(conn, job_id, action, payload, success=False)
         finally:
             heartbeat_stop.set()
             heartbeat.join(timeout=2)
+            _core._CURRENT_LEASE.reset(lease_reset)
     return completed

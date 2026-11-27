@@ -247,13 +247,27 @@ _stream_semaphore = asyncio.Semaphore(RESOLVER_CONCURRENCY_LIMIT)
 
 cache = PersistentLRUCache()
 
+def _looks_like_legacy_telegram_id(text: str) -> bool:
+    """A prefixless historical Telegram ref: channel:message:unique."""
+    parts = text.split(":")
+    return (
+        len(parts) >= 3
+        and bool(parts[0]) and parts[0].lstrip("-").isdigit()
+        and bool(parts[-2]) and parts[-2].isdigit()
+        and bool(parts[-1])
+    )
+
+
 def parse_composite_id(video_id: str) -> Tuple[str, str]:
     """Split a ``provider:id`` composite on the FIRST colon.
 
     - Prefix registered -> ``(provider, rest)`` (rest keeps any further
       colons, e.g. ``telegram:ch:42:uniq`` -> ``("telegram", "ch:42:uniq")``).
     - No prefix -> Telegram-only ``("telegram", video_id)``.
-    - Unknown prefix -> ``ValueError`` (play endpoint maps it to HTTP 400).
+    - Prefixless historical Telegram refs (``-100123:42:uniq`` or
+      ``123:42:uniq``) also map to Telegram, keeping their full raw id.
+    - Any other unknown prefix -> ``ValueError`` (play endpoint maps it to
+      HTTP 400).
 
     Empty input maps to ``("telegram", "")`` and fails downstream.
     """
@@ -264,6 +278,8 @@ def parse_composite_id(video_id: str) -> Tuple[str, str]:
         prov, raw_id = text.split(":", 1)
         if prov in list_providers():
             return prov, raw_id
+        if _looks_like_legacy_telegram_id(text):
+            return "telegram", text
         raise ValueError(
             f"Unknown provider prefix '{prov}' in id {video_id!r}. "
             f"Available: {sorted(list_providers().keys())}"
@@ -303,6 +319,21 @@ async def _close_ctx(ctx) -> None:
         logger.debug("Ignored exception closing upstream stream context")
 
 
+def _public_peer_address(response) -> str | None:
+    """Best-effort peer address of the connection httpx actually opened."""
+    stream = (getattr(response, "extensions", None) or {}).get("network_stream")
+    getter = getattr(stream, "get_extra_info", None)
+    if not callable(getter):
+        return None
+    try:
+        address = getter("server_addr")
+    except Exception:
+        return None
+    if isinstance(address, tuple):
+        address = address[0] if address else None
+    return str(address) if address else None
+
+
 async def _safe_proxy_stream(client, url: str, *, headers: dict, timeout: "float | httpx.Timeout | None", method: str = "GET"):
     """Open a streaming request, checking every redirect before following it."""
     current = url
@@ -310,6 +341,18 @@ async def _safe_proxy_stream(client, url: str, *, headers: dict, timeout: "float
         await _validate_proxy_url_async(current)
         context = client.stream(method, current, headers=headers, timeout=timeout, follow_redirects=False)
         response = await context.__aenter__()
+        peer = _public_peer_address(response)
+        if peer is not None:
+            try:
+                public_peer = ipaddress.ip_address(peer.split("%", 1)[0]).is_global
+            except ValueError:
+                public_peer = False
+            if not public_peer:
+                # DNS can answer with a public address during validation and a
+                # private one for the real connection. The validation decision
+                # must match the socket that was actually opened.
+                await _close_ctx(context)
+                raise HTTPException(status_code=400, detail="Non-public stream addresses are not allowed")
         if response.status_code not in _REDIRECT_CODES:
             return context, response
         location = response.headers.get("location")
@@ -772,31 +815,58 @@ async def play_stream(
     return await proxy_fetch_response(request, stream_url, active_cache_key)
 
 
+def _peer_is_global(resp) -> Optional[bool]:
+    """Return True if peer IP is global (or unknown), False if non-global, None if invalid."""
+    peer = _public_peer_address(resp)
+    if peer is None:
+        return True
+    try:
+        return ipaddress.ip_address(peer.split("%", 1)[0]).is_global
+    except ValueError:
+        return None
+
+
 async def upstream_url_alive(url: str) -> Optional[bool]:
     """Check whether a cached upstream URL still serves content.
 
-    Returns True (alive), False (dead: 401/403/404/410, or 502/504 = the
-    upstream file is gone at the edge) or None (unknown: network
-    error/timeout/other 5xx — caller should keep using the cached URL).
+    Returns True (alive: final 200/206), False (dead: 401/403/404/410, or
+    502/504 = the upstream file is gone at the edge) or None (unknown:
+    network error/timeout/other 5xx/redirect loop — caller should keep using
+    the cached URL). Redirects are followed explicitly so a 301/302 is never
+    mistaken for proof that the bytes still exist.
     """
     try:
-        await _validate_proxy_url_async(url)
         client = await get_shared_client()
-        parsed = urlparse(url)
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Range": "bytes=0-0",
-        }
-        if parsed.netloc:
-            # Neutral: referer derives from the checked URL itself, no
-            # hardcoded provider domains.
-            headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
-        async with client.stream("GET", url, headers=headers, timeout=5.0, follow_redirects=False) as resp:
-            if resp.status_code in (200, 206, 301, 302, 307, 308):
-                return True
-            if resp.status_code in (401, 403, 404, 410, 502, 504):
-                return False
-            return None
+        current = url
+        for _ in range(6):
+            await _validate_proxy_url_async(current)
+            parsed = urlparse(current)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Range": "bytes=0-0",
+            }
+            if parsed.netloc:
+                # Neutral: referer derives from the checked URL itself, no
+                # hardcoded provider domains.
+                headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
+            async with client.stream("GET", current, headers=headers, timeout=5.0,
+                                     follow_redirects=False) as resp:
+                peer_ok = _peer_is_global(resp)
+                if peer_ok is not True:
+                    return peer_ok
+                status = resp.status_code
+                if status in (200, 206):
+                    return True
+                if status in (401, 403, 404, 410, 502, 504):
+                    return False
+                if status in _REDIRECT_CODES:
+                    location = resp.headers.get("location")
+                    if not location:
+                        return None
+                    current = urljoin(current, location)
+                    continue
+                return None
+        return None
     except Exception as e:
         logger.debug("Stream liveness check failed (treating as unknown): %s", e)
         return None

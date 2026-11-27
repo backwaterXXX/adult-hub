@@ -171,41 +171,57 @@ def _recompute_video_categories(cats_val, v_title, svc: DataMigrationServices) -
 
 
 def _migrate_video_category_rows(conn: db.Connection, cur, svc: DataMigrationServices) -> None:
-    updated_videos = 0
+    updates = []
     for vid_id, cats_val, v_title in cur.fetchall():
         try:
             new_val = _recompute_video_categories(cats_val, v_title, svc)
             if new_val != cats_val:
-                conn.execute("UPDATE videos SET categories = %s WHERE id = %s", (new_val, vid_id))
-                updated_videos += 1
+                updates.append((new_val, vid_id))
         except Exception:
             logger.debug("Ignored exception in migrate_categories", exc_info=True)
 
-    if updated_videos > 0:
-        svc.logger.info("Updated categories for %s videos in database.", updated_videos)
+    if updates:
+        conn.executemany("UPDATE videos SET categories = %s WHERE id = %s", updates)
+        svc.logger.info("Updated categories for %s videos in database.", len(updates))
 
 
 def _rebuild_video_categories_junction(conn: db.Connection) -> None:
     conn.execute("DELETE FROM video_categories")
     cur2 = conn.execute("SELECT id, categories FROM videos WHERE categories <> '[]'::jsonb")
+    rows = []
     for vid_id, cats_val in cur2.fetchall():
         try:
             for cat in json.loads(cats_val):
                 if cat and not cat.startswith("Browse"):
-                    conn.execute("INSERT INTO video_categories (video_id, category) VALUES (%s, %s) ON CONFLICT DO NOTHING", (vid_id, cat))
+                    rows.append((vid_id, cat))
         except Exception:
             logger.debug("Ignored exception in migrate_categories", exc_info=True)
+    if rows:
+        conn.executemany(
+            "INSERT INTO video_categories (video_id, category) VALUES (%s, %s) "
+            "ON CONFLICT DO NOTHING",
+            rows,
+        )
 
 
 def _sync_synced_files_category_column(conn: db.Connection) -> None:
-    cur3 = conn.execute("SELECT file_path, video_id FROM synced_files")
-    for f_path, vid_id in cur3.fetchall():
-        row = conn.execute("SELECT categories FROM videos WHERE id = %s", (vid_id,)).fetchone()
-        if row and row[0]:
-            try:
-                conn.execute("UPDATE synced_files SET category = %s WHERE file_path = %s", (", ".join(json.loads(row[0])), f_path))
-            except Exception:
-                logger.debug("Ignored exception in migrate_categories", exc_info=True)
+    cur3 = conn.execute(
+        "SELECT sf.file_path, v.categories FROM synced_files sf "
+        "LEFT JOIN videos v ON v.id = sf.video_id"
+    )
+    updates = []
+    for f_path, cats_val in cur3.fetchall():
+        if not cats_val:
+            continue
+        try:
+            updates.append((", ".join(json.loads(cats_val)), f_path))
+        except Exception:
+            logger.debug("Ignored exception in migrate_categories", exc_info=True)
+    if updates:
+        conn.executemany(
+            "UPDATE synced_files SET category = %s WHERE file_path = %s",
+            updates,
+        )
 
 
 def _record_category_mapping_version(conn: db.Connection, category_mapping_version: int) -> None:

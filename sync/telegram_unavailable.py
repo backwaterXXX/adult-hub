@@ -28,22 +28,71 @@ def _ref(video_id: str):
     return parts[0], int(parts[1]), parts[2]
 
 
+def _quarantine_folder(quarantine_dir: Path, video_id: str) -> Path:
+    return quarantine_dir / hashlib.sha256(video_id.encode()).hexdigest()
+
+
+_MANIFEST_NAME = ".quarantine-manifest.json"
+
+
+def _write_quarantine_manifest(folder: Path, video_id: str, moved: list[dict]) -> None:
+    """Journal the move so a crash before the DB write can be undone on restart."""
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / _MANIFEST_NAME).write_text(
+            json.dumps({"video_id": video_id, "files": moved}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _clear_quarantine_manifest(folder: Path) -> None:
+    try:
+        (folder / _MANIFEST_NAME).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _safe_quarantine_stream(media_dir: Path, relative_name: str) -> Path | None:
+    """Resolve a recorded stream with the same symlink policy as media cleanup."""
+    root = media_dir.resolve()
+    path = Path(str(relative_name))
+    if str(relative_name).startswith("/media/adult/"):
+        path = Path(str(relative_name)[len("/media/adult/"):])
+    elif path.is_absolute():
+        path = Path(path.name)
+    lexical = root / path
+    if not lexical.is_relative_to(root):
+        return None
+    cursor = root
+    for part in lexical.relative_to(root).parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            return None
+    try:
+        resolved = lexical.resolve()
+    except OSError:
+        return None
+    if not resolved.is_relative_to(root) or resolved.suffix != ".strm":
+        return None
+    return resolved
+
+
 def _quarantine_files(conn, video_id: str, media_dir: Path, quarantine_dir: Path) -> list[dict]:
     rows = conn.execute(
         "SELECT file_path FROM synced_files WHERE video_id=%s ORDER BY file_path", (video_id,)
     ).fetchall()
-    folder = quarantine_dir / hashlib.sha256(video_id.encode()).hexdigest()
+    folder = _quarantine_folder(quarantine_dir, video_id)
     moved = []
     try:
         for (relative_name,) in rows:
-            try:
-                stream = (media_dir / relative_name).resolve()
-                stream.relative_to(media_dir.resolve())
-            except (ValueError, OSError, TypeError):
+            stream = _safe_quarantine_stream(media_dir, relative_name)
+            if stream is None:
                 continue
             for suffix in (".strm", ".jpg", ".thumb_fail"):
                 source = stream.with_suffix(suffix)
-                if not source.is_file():
+                if source.is_symlink() or not source.is_file():
                     continue
                 destination = folder / source.name
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -52,7 +101,44 @@ def _quarantine_files(conn, video_id: str, media_dir: Path, quarantine_dir: Path
     except Exception:
         _restore_files(moved)
         raise
+    _write_quarantine_manifest(folder, video_id, moved)
     return moved
+
+
+def _recover_orphaned_quarantine(conn, quarantine_dir: Path, logger) -> int:
+    """Restore files moved by a run that crashed before recording the quarantine."""
+    try:
+        folders = list(quarantine_dir.iterdir()) if quarantine_dir.is_dir() else []
+    except OSError:
+        return 0
+    restored = 0
+    for folder in folders:
+        manifest_path = folder / _MANIFEST_NAME
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            video_id = str(manifest.get("video_id") or "")
+            files = manifest.get("files") or []
+            if not video_id or not isinstance(files, list):
+                continue
+            recorded = conn.execute(
+                "SELECT 1 FROM telegram_unavailable_quarantine WHERE video_id=%s", (video_id,)
+            ).fetchone()
+            decided = conn.execute(
+                "SELECT 1 FROM video_duplicate_decisions WHERE loser_id=%s AND state='active'",
+                (video_id,),
+            ).fetchone()
+            if recorded or decided:
+                _clear_quarantine_manifest(folder)
+                continue
+            _restore_files(files)
+            _clear_quarantine_manifest(folder)
+            restored += 1
+            logger.info("Restored quarantined files left by an interrupted run: %s", video_id)
+        except Exception as exc:
+            logger.warning("Could not recover orphaned quarantine folder %s: %s", folder, exc)
+    return restored
 
 
 def _restore_files(files: Any) -> None:
@@ -68,6 +154,8 @@ def _restore_files(files: Any) -> None:
             quarantined.unlink()
         else:
             shutil.move(str(quarantined), str(source))
+    for folder in {Path(item["quarantine"]).parent for item in files or []}:
+        _clear_quarantine_manifest(folder)
 
 
 def reconcile_telegram_channel(

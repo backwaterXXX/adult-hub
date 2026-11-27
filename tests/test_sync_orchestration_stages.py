@@ -244,9 +244,9 @@ class TestShutdownBetweenChannels(SyncPassHarness):
 
         self.sync()
 
-        gate = self.sink("cleanup_orphaned_records").args()[2]
-        self.assertEqual(gate, {"telegram:chan-one"})
-        self.assertIs(self.sink("cleanup_retention").args()[3], gate)
+        self.assertEqual(self.sink("rewrite_all_stream_files").args()[2], {"telegram:chan-one"})
+        self.assertFalse(self.sink("cleanup_orphaned_records").called)
+        self.assertFalse(self.sink("cleanup_retention").called)
 
     def test_no_enrichment_stage_starts_once_the_stop_is_requested(self):
         self.stop_after_scans(1)
@@ -263,13 +263,14 @@ class TestShutdownBetweenChannels(SyncPassHarness):
             with self.subTest(operation=sink):
                 self.assertFalse(self.sink(sink).called)
 
-    def test_the_interrupted_pass_still_finishes_the_work_it_cannot_resume(self):
+    def test_the_interrupted_pass_skips_library_maintenance_until_next_complete_pass(self):
         self.stop_after_scans(1)
 
         self.sync()
 
-        self.assertTrue(self.sink("cleanup_orphaned_records").called)
-        self.assertTrue(self.sink("cleanup_retention").called)
+        self.assertFalse(self.sink("cleanup_orphaned_records").called)
+        self.assertFalse(self.sink("cleanup_retention").called)
+        self.assertIs(self.history()["interrupted"], True)
 
 
 

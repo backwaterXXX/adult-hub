@@ -309,7 +309,12 @@ class TestCatalogReadContract(unittest.TestCase):
                         "availability": "all", "missing": [], "sort": sort, "offset": 50, "limit": 50,
                     })
                 list_sql, list_params = conn.queries[1]
-                self.assertIn(f"ORDER BY {expected_order}", list_sql)
+                expected_clause = (
+                    "ORDER BY lower(COALESCE(v.title::text, '')), v.id ASC"
+                    if sort == "title"
+                    else f"ORDER BY {expected_order}"
+                )
+                self.assertIn(expected_clause, list_sql)
                 self.assertEqual(result["page"], {
                     "limit": 50, "offset": 50, "total": 2, "total_exact": True,
                     "has_more": False, "has_previous": False, "next_cursor": None, "previous_cursor": None,

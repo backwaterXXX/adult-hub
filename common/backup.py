@@ -20,6 +20,29 @@ def _password_from_conninfo(conninfo: str) -> str:
         return ""
 
 
+def _conninfo_without_password(conninfo: str) -> str:
+    """Strip the password from a URI before it becomes a process argument.
+
+    ``pg_dump --dbname <uri>`` exposes every argv element through /proc, so the
+    secret must travel in ``PGPASSWORD`` instead (or a .pgpass file).
+    """
+    from urllib.parse import quote, urlsplit, urlunsplit
+    try:
+        parts = urlsplit(conninfo)
+        if parts.password is None:
+            return conninfo
+        user = quote(parts.username or "", safe="")
+        host = parts.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        netloc = (f"{user}@" if user else "") + host
+        if parts.port:
+            netloc += f":{parts.port}"
+        return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    except Exception:
+        return conninfo
+
+
 def _archive_is_valid(pg_restore: str, path, dest_dir, dest_name: str) -> bool:
     """Check a compressed custom-format dump without buffering it in RAM."""
     import gzip
@@ -62,7 +85,7 @@ def _dump_verified_archive(conninfo: str, pg_dump: str, pg_restore: str, env: di
     import shutil
     import subprocess
     proc = subprocess.run(
-        [pg_dump, "--dbname", conninfo, "--format", "custom",
+        [pg_dump, "--dbname", _conninfo_without_password(conninfo), "--format", "custom",
          "--no-owner", "--no-privileges", "--file", str(raw_tmp)],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env, check=False,
     )
@@ -197,7 +220,9 @@ def prune_old_backups(dest_dir, current_dest=None, keep_days: int | None = None,
     logger = logging.getLogger("common.backup")
     keep_days = _env_int(keep_days, "BACKUP_KEEP_DAYS", 7)
     keep_count = max(_env_int(keep_count, "BACKUP_KEEP_COUNT", 5), 1)
-    cutoff = _time.time() - max(keep_days, 1) * 86400
+    # 0 (or negative) disables age-based retention; it must not silently mean
+    # "prune everything older than one day".
+    cutoff = (_time.time() - keep_days * 86400) if keep_days > 0 else -1.0
     dest_path = _Path(dest_dir)
     cur_resolved = _Path(current_dest).resolve() if current_dest else None
     expired, families = _expired_and_families(dest_path, cutoff, cur_resolved, logger)
@@ -290,7 +315,7 @@ def pg_restore(dump_path: "object", db_url: str | None = None, *,
 
         cmd = [
             pg_restore_bin,
-            "--dbname", conninfo,
+            "--dbname", _conninfo_without_password(conninfo),
             "--no-owner",
             "--no-privileges",
         ]

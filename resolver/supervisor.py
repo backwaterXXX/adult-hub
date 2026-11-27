@@ -27,6 +27,12 @@ from common.logging_setup import configure_logging
 
 UVICORN_COMMAND = [
     "uvicorn", "resolver.app:app", "--host", "0.0.0.0", "--port", "8090",
+    # Be explicit about the proxy contract instead of relying on a pinned
+    # Uvicorn default: only peers listed in FORWARDED_ALLOW_IPS may set
+    # X-Forwarded-For/Proto/Host. Rate limits use request.client, so an
+    # untrusted peer must never be able to choose its own address.
+    "--proxy-headers",
+    "--forwarded-allow-ips", os.getenv("FORWARDED_ALLOW_IPS", "127.0.0.1,::1"),
     "--timeout-graceful-shutdown", "5",
 ]
 PHASH_WORKER_COMMAND = ["python3", "-m", "resolver.phash_worker"]

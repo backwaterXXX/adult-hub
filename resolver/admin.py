@@ -1,9 +1,9 @@
 """Local management router, separate from public playback routes.
 
 Reads are blocked for the exact PUBLIC_DOMAIN unless ADMIN_PUBLIC is enabled.
-Every mutation requires the same Origin. A configured admin token additionally
-requires Bearer authorization; an empty token enables writes without a token.
-ADMIN_PUBLIC controls access through the public domain.
+Every mutation requires the same Origin plus a configured non-empty admin
+Bearer token; Origin alone never authorizes a write. ADMIN_PUBLIC controls
+access through the public domain.
 """
 
 import asyncio  # noqa: F401 - shared by the split Admin v2 route modules
@@ -167,14 +167,17 @@ def _write_denied(request: Request):
     capabilities = _capabilities()
     if token is None:
         return JSONResponse({"error": "Admin write token configuration is invalid.", **capabilities}, status_code=403)
+    if not token:
+        return JSONResponse(
+            {"error": "Admin write token is not configured; the panel is read-only.", **capabilities},
+            status_code=403,
+        )
     if not admin_security.write_authorized(
             request, blocked=_admin_blocked(request), public=ADMIN_PUBLIC, token=token):
         if capabilities["read_only"]:
             message = "This panel is read-only."
-        elif token:
-            message = "Authorization and matching Origin required."
         else:
-            message = "Matching Origin required."
+            message = "Authorization and matching Origin required."
         return JSONResponse({"error": message, **capabilities}, status_code=403)
     if capabilities.get("read_only_reason") in {"worker_unavailable", "worker_incompatible"}:
         reason = capabilities["read_only_reason"]

@@ -311,10 +311,10 @@ class TelegramAccountRouter:
                 logger.debug("Could not tag Telegram client with account %s", valid_id, exc_info=True)
         return client
 
-    def _validate_affinity_account(
-        self, account_id: str, channel_id: Optional[str] = None
+    def _affinity_account_checks(
+        self, valid_id: str, channel_id: Optional[str] = None
     ) -> str:
-        valid_id = validate_account_id(account_id)
+        """Blocking part of affinity validation (DB reads and filesystem checks)."""
         acc = get_account(valid_id)
         if not acc:
             raise RuntimeError(f"Affinity account '{valid_id}' not found.")
@@ -352,6 +352,12 @@ class TelegramAccountRouter:
                         )
         return valid_id
 
+    async def _validate_affinity_account(
+        self, account_id: str, channel_id: Optional[str] = None
+    ) -> str:
+        valid_id = validate_account_id(account_id)
+        return await asyncio.to_thread(self._affinity_account_checks, valid_id, channel_id)
+
     async def get_client_for_account(self, account_id: str) -> Any:
         """Obtain or initialize the long-lived Telethon client for account_id."""
         valid_id = validate_account_id(account_id)
@@ -363,7 +369,7 @@ class TelegramAccountRouter:
                     await client.connect()
                 return client
 
-            acc = get_account(valid_id)
+            acc = await asyncio.to_thread(get_account, valid_id)
             session_path = (
                 acc.session_file
                 if acc and acc.session_file
@@ -416,7 +422,7 @@ class TelegramAccountRouter:
         - Known channel accessibility status with bounded recheck policy
         - Bounded concurrency limit per account
         """
-        accounts = list_accounts()
+        accounts = await asyncio.to_thread(list_accounts)
         if not accounts:
             raise RuntimeError("No Telegram accounts configured. Add or log in to an account.")
 
@@ -426,7 +432,7 @@ class TelegramAccountRouter:
         # Gather access status records
         access_map = {
             rec.account_id: rec
-            for rec in list_channel_access(channel_id=clean_channel)
+            for rec in await asyncio.to_thread(list_channel_access, channel_id=clean_channel)
         }
 
         now_ts = datetime.now(timezone.utc).timestamp()
@@ -482,7 +488,7 @@ class TelegramAccountRouter:
 
     async def select_eligible_account_general(self) -> str:
         """Select least-loaded enabled account not in cooldown when no channel is specified."""
-        accounts = list_accounts()
+        accounts = await asyncio.to_thread(list_accounts)
         if not accounts:
             raise RuntimeError("No Telegram accounts configured. Add or log in to an account.")
         candidates = [
@@ -528,7 +534,7 @@ class TelegramAccountRouter:
     ) -> Tuple[str, Any, Callable[[], None]]:
         """Lease a client without channel scoping."""
         if affinity_account:
-            account_id = self._validate_affinity_account(affinity_account)
+            account_id = await self._validate_affinity_account(affinity_account)
         else:
             account_id = await self.select_eligible_account_general()
 
@@ -611,7 +617,7 @@ class TelegramAccountRouter:
         """
         clean_channel = str(channel_id).strip()
         if affinity_account:
-            account_id = self._validate_affinity_account(affinity_account, channel_id=clean_channel)
+            account_id = await self._validate_affinity_account(affinity_account, channel_id=clean_channel)
         else:
             account_id = await self.select_eligible_account(clean_channel)
 

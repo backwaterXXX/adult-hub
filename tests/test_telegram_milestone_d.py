@@ -376,7 +376,7 @@ class TestMilestoneDStreaming(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(selected, "acc2")
 
             # Affinity validation must NOT reject an account at capacity
-            valid_id = router._validate_affinity_account("acc1")
+            valid_id = await router._validate_affinity_account("acc1")
             self.assertEqual(valid_id, "acc1")
 
             # Affinity lease acquisition waits for capacity instead of failing mid-stream

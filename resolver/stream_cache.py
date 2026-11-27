@@ -126,24 +126,34 @@ class PersistentLRUCache:
         now = time.time()
         with self._lock:
             if key in self._memory:
-                return self._get_from_memory(key, now)
-            if self._pg_ok or (self.db_url and now >= self._pg_recovery_at):
-                return self._get_from_postgres(key, now)
-            return None
-
-    def _get_from_memory(self, key: str, now: float) -> Optional[str]:
-        url, exp, last_persisted_access = self._memory[key]
-        if now < exp:
-            self._memory.move_to_end(key)
-            if now - last_persisted_access >= self._access_persist_interval_seconds:
+                url, persist = self._get_from_memory(key, now)
+            else:
+                url, persist = None, False
+        if persist:
+            if url is None:
+                self._pg_write("DELETE FROM stream_cache WHERE cache_key = %s", (key,))
+            else:
                 if self._pg_write(
                         "UPDATE stream_cache SET last_accessed = %s WHERE cache_key = %s",
                         (now, key)):
-                    self._memory[key] = (url, exp, now)
+                    with self._lock:
+                        current = self._memory.get(key)
+                        if current is not None and current[0] == url:
+                            self._memory[key] = (url, current[1], now)
+        if url is not None:
             return url
-        del self._memory[key]
-        self._pg_write("DELETE FROM stream_cache WHERE cache_key = %s", (key,))
+        if self._pg_ok or (self.db_url and now >= self._pg_recovery_at):
+            return self._get_from_postgres(key, now)
         return None
+
+    def _get_from_memory(self, key: str, now: float) -> tuple[Optional[str], bool]:
+        """Read one hot entry; returns (url, needs_db_write) without doing I/O."""
+        url, exp, last_persisted_access = self._memory[key]
+        if now < exp:
+            self._memory.move_to_end(key)
+            return url, now - last_persisted_access >= self._access_persist_interval_seconds
+        del self._memory[key]
+        return None, True
 
     def _get_from_postgres(self, key: str, now: float) -> Optional[str]:
         try:
@@ -161,9 +171,10 @@ class PersistentLRUCache:
             if row:
                 url, exp = row
                 if now < exp:
-                    self._memory[key] = (url, exp, now)
-                    if len(self._memory) > self.max_entries:
-                        self._memory.popitem(last=False)
+                    with self._lock:
+                        self._memory[key] = (url, exp, now)
+                        if len(self._memory) > self.max_entries:
+                            self._memory.popitem(last=False)
                     conn.execute("UPDATE stream_cache SET last_accessed = %s WHERE cache_key = %s", (now, key))
                     conn.commit()
                     self._consecutive_errors = 0
@@ -235,33 +246,38 @@ class PersistentLRUCache:
         """Drop one entry (used when a cached URL is found dead)."""
         with self._lock:
             self._memory.pop(key, None)
-            self._pg_write("DELETE FROM stream_cache WHERE cache_key = %s", (key,))
+        self._pg_write("DELETE FROM stream_cache WHERE cache_key = %s", (key,))
 
     def __len__(self) -> int:
         now = time.time()
         with self._lock:
             if now - self._cached_len_at < _CACHE_LEN_TTL:
                 return self._cached_len
-            if self._pg_ok:
-                try:
-                    conn = self._pg(now)
-                except Exception:
-                    conn = None
+            should_query = self._pg_ok
+        if should_query:
+            conn = None
+            try:
+                conn = self._pg(now)
                 if conn:
-                    try:
-                        cur = conn.execute(
-                            "SELECT count(*) FROM stream_cache WHERE expire_at > %s", (now,)
-                        )
-                        self._cached_len = cur.fetchone()[0]
+                    cur = conn.execute(
+                        "SELECT count(*) FROM stream_cache WHERE expire_at > %s", (now,)
+                    )
+                    count = cur.fetchone()[0]
+                    self._consecutive_errors = 0
+                    with self._lock:
+                        self._cached_len = count
                         self._cached_len_at = now
-                        return self._cached_len
-                    except Exception as e:
-                        self._handle_pg_error(e, now)
-                    finally:
-                        conn.close()
-            self._cached_len = sum(1 for _, exp, _ in self._memory.values() if exp > now)
+                    return count
+            except Exception as e:
+                self._handle_pg_error(e, now)
+            finally:
+                if conn is not None:
+                    conn.close()
+        with self._lock:
+            count = sum(1 for _, exp, _ in self._memory.values() if exp > now)
+            self._cached_len = count
             self._cached_len_at = now
-            return self._cached_len
+            return count
 
     def clear(self) -> int:
         """Clear persisted and in-memory entries and return the unique live count.

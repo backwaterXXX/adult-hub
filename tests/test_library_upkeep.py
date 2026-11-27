@@ -147,8 +147,13 @@ class TestDeadStreamDenylist(BaseUpkeepTest):
             self.assertNotIn("exampleweb:9", collected)
             self.assertIn("exampleweb:10", collected)
             left = {r[0] for r in conn.execute("SELECT video_id FROM dead_streams").fetchall()}
-            self.assertIn("exampleweb:9", left)   # still listed upstream -> stays denied
-            self.assertNotIn("exampleweb:gone", left)  # delisted -> pruned
+            self.assertEqual(left, {"exampleweb:9", "exampleweb:gone"})
+            # Expiry is a separate policy step: only an old entry whose source
+            # succeeded in this pass is released, and never because one page
+            # happened not to contain it.
+            sync_module.expire_dead_streams(conn, {"exampleweb"})
+            left = {r[0] for r in conn.execute("SELECT video_id FROM dead_streams").fetchall()}
+            self.assertEqual(left, set())
             conn.close()
 
 

@@ -296,16 +296,27 @@ def _restore_sources_snapshot(conn, video_id: str, snapshot: dict, k_id: str | N
 
 def _restore_snapshot_rows(conn, snapshot: dict) -> None:
     video = snapshot['video']
-    names = list(video)
+    valid_video_cols = set(_core.db.table_columns(conn, 'videos'))
+    names = [name for name in video if name in valid_video_cols]
+    if 'id' not in names:
+        raise ValueError('Snapshot video row has no id column.')
     updates = [name for name in names if name != 'id']
     assignments = ', '.join((f'{name}=EXCLUDED.{name}' for name in updates))
     conn.execute(f"INSERT INTO videos ({','.join(names)}) VALUES ({','.join(('%s' for _ in names))}) ON CONFLICT (id) DO UPDATE SET {assignments}", [video[n] for n in names])
     for table, records in (('synced_files', snapshot['synced_files']), ('video_categories', snapshot['categories'])):
+        valid_cols = set(_core.db.table_columns(conn, table))
         for record in records:
-            names = list(record)
+            # Snapshot keys are data, never trusted SQL identifiers.
+            names = [name for name in record if name in valid_cols]
+            if not names:
+                continue
             if table == 'synced_files':
+                if 'file_path' not in names:
+                    continue
                 conflict_sql = 'ON CONFLICT (file_path) DO UPDATE SET ' + ', '.join((f'{name}=EXCLUDED.{name}' for name in names if name != 'file_path'))
             else:
+                if 'video_id' not in names or 'category' not in names:
+                    continue
                 conflict_sql = 'ON CONFLICT (video_id, category) DO NOTHING'
             conn.execute(f"INSERT INTO {table} ({','.join(names)}) VALUES ({','.join(('%s' for _ in names))}) {conflict_sql}", [record[n] for n in names])
     override_snapshot = snapshot.get('metadata_overrides')

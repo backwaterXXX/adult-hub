@@ -24,13 +24,21 @@ def via_public_domain(request, public_domain: str) -> bool:
 
 
 def capabilities(*, enabled: bool, public: bool, token: str) -> dict:
-    reason = "admin_disabled" if not enabled else None
+    if not enabled:
+        reason = "admin_disabled"
+    elif not token:
+        # Mutations always require a configured non-empty bearer token.
+        reason = "admin_token_missing"
+    else:
+        reason = None
     return {"actions_enabled": reason is None, "read_only": reason is not None,
-            "read_only_reason": reason, "token_required": bool(token)}
+            "read_only_reason": reason, "token_required": True}
 
 
 def write_authorized(request, *, blocked: bool, public: bool, token: str | None) -> bool:
-    if blocked or token is None:
+    if blocked or not token:
+        # An unset/empty token can never authorize a mutation, even with a
+        # matching Origin: Origin is CSRF protection, not authentication.
         return False
     try:
         origin = urlsplit(request.headers.get("origin", ""))
@@ -44,8 +52,6 @@ def write_authorized(request, *, blocked: bool, public: bool, token: str | None)
             return ((parsed.hostname or "").lower(), parsed.port or (443 if parsed.scheme == "https" else 80))
         if not origin.hostname or origin.scheme != target.scheme or authority(origin) != authority(target):
             return False
-        if not token:
-            return True
         scheme, _, supplied = request.headers.get("authorization", "").partition(" ")
         return scheme.lower() == "bearer" and hmac.compare_digest(supplied.encode(), token.encode())
     except (ValueError, TypeError, AttributeError):

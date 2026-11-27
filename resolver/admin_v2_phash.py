@@ -255,6 +255,8 @@ def _route_get_phash_job(router, admin):
 def _route_get_phash_thumbnail(router, admin):
     @router.get("/api/v2/video-phash/thumbnail")
     async def get_phash_thumbnail(request: Request, video_id: str):
+        if not _phash_upload_enabled():
+            return admin.JSONResponse({"error": "Fingerprint generation is disabled."}, status_code=404)
         user = await _authorized_user(admin, _bearer_token(request))
         if user is None:
             return admin.JSONResponse({"error": "Unauthorized."}, status_code=401)

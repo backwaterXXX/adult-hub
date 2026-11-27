@@ -13,6 +13,22 @@ from common import db
 from resolver.providers.telegram_account import DEFAULT_ACCOUNT_ID, TelegramAccountContext, validate_account_id
 
 logger = logging.getLogger(__name__)
+_DEFAULT_DB_CONNECTION = db.connection
+
+
+@contextmanager
+def _read_connection(connect_timeout: int = 3) -> Iterator[db.Connection]:
+    """Borrow a pooled connection for hot-path reads, respecting test patches."""
+    if db.connection is not _DEFAULT_DB_CONNECTION or not hasattr(db, "pooled_connect"):
+        with db.connection(connect_timeout=connect_timeout) as c:
+            yield c
+        return
+    c = db.pooled_connect(connect_timeout=connect_timeout)
+    try:
+        with c:
+            yield c
+    finally:
+        c.close()
 
 
 @dataclass
@@ -148,7 +164,7 @@ def list_accounts(conn=None) -> List[TelegramAccountRecord]:
         if conn is not None:
             accounts = _execute(conn)
         else:
-            with db.connection(connect_timeout=3) as c:
+            with _read_connection(connect_timeout=3) as c:
                 accounts = _execute(c)
     except Exception as exc:
         logger.debug("Database query for telegram_accounts failed (falling back to memory): %s", exc)
@@ -215,7 +231,7 @@ def get_account(account_id: str, conn=None) -> Optional[TelegramAccountRecord]:
     try:
         if conn is not None:
             return _execute(conn)
-        with db.connection(connect_timeout=3) as c:
+        with _read_connection(connect_timeout=3) as c:
             return _execute(c)
     except Exception as exc:
         logger.debug("Database get_account for %s failed (falling back to memory): %s", valid_id, exc)
@@ -641,7 +657,7 @@ def list_channel_access(
     try:
         if conn is not None:
             return _execute(conn)
-        with db.connection(connect_timeout=3) as c:
+        with _read_connection(connect_timeout=3) as c:
             return _execute(c)
     except Exception as exc:
         logger.debug("Database list_channel_access failed: %s", exc)

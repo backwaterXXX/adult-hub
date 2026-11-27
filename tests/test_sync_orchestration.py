@@ -47,6 +47,7 @@ CORE_CALLS = (
     "reconcile_telegram_channel",
     "fetch_json_with_retry",
     "hide_dead_streams",
+    "expire_dead_streams",
     "flush_collected",
     "rewrite_all_stream_files",
     "backfill_performers_from_titles",

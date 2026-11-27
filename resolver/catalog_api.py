@@ -207,9 +207,13 @@ async def _local_artwork_response(ref: str):
         from fastapi.responses import FileResponse
         local_art = await asyncio.to_thread(_get_video_artwork_path, getattr(admin_mod, "HUB_DB_URL", None), f"telegram:{ref}", getattr(admin_mod, "MEDIA_DIR", "/media/adult"))
         if local_art is not None and local_art.is_file():
+            try:
+                head = local_art.read_bytes()[:16]
+            except OSError:
+                head = b""
             return FileResponse(
                 str(local_art),
-                media_type="image/jpeg",
+                media_type=_preview_media_type(head),
                 headers={"Cache-Control": "public, max-age=3600"},
             )
     except Exception:

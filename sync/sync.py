@@ -67,6 +67,8 @@ from sync.dead_streams import (
     RESOLVER_DEAD_MARKERS,
     deadlisted_ids,
     denylist_ids,
+    expire_dead_streams as _expire_dead_streams_impl,
+    filter_dead_streams,
     hide_dead_streams as _hide_dead_streams_impl,
     probe_playlist_url as _probe_playlist_url_impl,
     probe_stream_via_resolver as _probe_stream_via_resolver_impl,
@@ -206,10 +208,18 @@ def is_cleanup_allowed(video_id: str, provider: Optional[str] = None,
 def _check_resolver_auth(resolver_url: str) -> Optional[bool]:
     base_url = str(resolver_url).rstrip("/")
     try:
+        from common.config import get_internal_api_token
+        internal_token = get_internal_api_token()
+    except Exception:
+        internal_token = ""
+    headers = {"Accept": "application/json"}
+    if internal_token:
+        headers["X-Internal-Token"] = internal_token
+    try:
         import urllib.request
         req = urllib.request.Request(
             f"{base_url}/admin/internal/telegram/auth/any",
-            headers={"Accept": "application/json"},
+            headers=headers,
         )
         with urllib.request.urlopen(req, timeout=30.0) as resp:
             if resp.status == 200:
@@ -225,7 +235,7 @@ def _check_resolver_auth(resolver_url: str) -> Optional[bool]:
     for status_url in status_urls:
         try:
             import urllib.request
-            req = urllib.request.Request(status_url, headers={"Accept": "application/json"})
+            req = urllib.request.Request(status_url, headers=headers)
             with urllib.request.urlopen(req, timeout=30.0) as resp:
                 if resp.status == 200:
                     data = json.loads(resp.read().decode("utf-8"))
@@ -612,6 +622,7 @@ def flush_collected(collected: Dict[str, Dict[str, Any]], conn: db.Connection,
         media_dir=media_dir,
         source_name=source_name,
         raise_on_error=raise_on_error,
+        hide_dead_streams=HIDE_DEAD_STREAMS,
         services=_video_persistence_services(conn),
     )
 
@@ -691,6 +702,12 @@ def probe_stream_via_resolver_outcome(comp_id: str) -> str:
 
 def hide_dead_streams(collected: Dict[str, Dict[str, Any]], conn: db.Connection) -> None:
     return _hide_dead_streams_impl(collected, conn, services=_dead_stream_services())
+
+
+def expire_dead_streams(conn: db.Connection, providers_succeeded: Optional[Set[str]] = None) -> int:
+    return _expire_dead_streams_impl(
+        conn, providers_succeeded=providers_succeeded, services=_dead_stream_services(),
+    )
 
 
 

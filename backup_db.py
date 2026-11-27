@@ -30,11 +30,24 @@ from urllib.parse import urlparse
 BASE_DIR = Path(__file__).parent
 
 
+def _env_keep_days(default: int = 7) -> int:
+    raw = os.getenv("BACKUP_KEEP_DAYS")
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        print(f"ignoring invalid BACKUP_KEEP_DAYS={raw!r}; using {default}", file=sys.stderr)
+        return default
+    return value
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Adult-Hub PostgreSQL backup")
     ap.add_argument("--db-url", default=os.getenv("DATABASE_URL", ""))
     ap.add_argument("--dest-dir", default=str(BASE_DIR / "data" / "backups"))
-    ap.add_argument("--keep", type=int, default=int(os.getenv("BACKUP_KEEP_DAYS", "7")))
+    ap.add_argument("--keep", type=int, default=_env_keep_days(),
+                    help="Age-based retention in days; 0 disables age pruning (default: BACKUP_KEEP_DAYS or 7)")
     return ap.parse_args()
 
 
@@ -43,8 +56,25 @@ def _password(conninfo: str) -> str:
     return match.password or ""
 
 
+def _conninfo_without_password(conninfo: str) -> str:
+    from urllib.parse import quote, urlunparse
+    match = urlparse(conninfo)
+    if match.password is None:
+        return conninfo
+    host = match.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = (f"{quote(match.username or '', safe='')}@" if match.username else "") + host
+    if match.port:
+        netloc += f":{match.port}"
+    return urlunparse((match.scheme, netloc, match.path, match.params, match.query, match.fragment))
+
+
 def _prune_old_snapshots(dest_dir: Path, dest: Path, keep: int) -> int:
-    cutoff = time.time() - max(keep, 1) * 86400
+    if keep <= 0:
+        # --keep 0 disables age-based retention; it does not mean "delete all".
+        return 0
+    cutoff = time.time() - keep * 86400
     pruned = 0
     for old in dest_dir.glob("adulthub-*.dump.gz"):
         if old == dest:
@@ -65,6 +95,9 @@ def main() -> int:
     if not conninfo:
         print("DATABASE_URL is not set (use --db-url)", file=sys.stderr)
         return 1
+    if args.keep < 0:
+        print("--keep must be 0 (disabled) or a positive number of days", file=sys.stderr)
+        return 1
     pg_dump = shutil.which("pg_dump")
     pg_restore = shutil.which("pg_restore")
     if not pg_dump or not pg_restore:
@@ -81,7 +114,7 @@ def main() -> int:
     try:
         env = dict(os.environ, PGPASSWORD=_password(conninfo))
         proc = subprocess.run(
-            [pg_dump, "--dbname", conninfo, "--format", "custom",
+            [pg_dump, "--dbname", _conninfo_without_password(conninfo), "--format", "custom",
              "--no-owner", "--no-privileges", "--file", str(raw_tmp)],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env, check=False,
         )

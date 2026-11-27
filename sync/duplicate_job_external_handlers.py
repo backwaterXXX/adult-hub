@@ -680,7 +680,10 @@ def _action_filesize_backfill(conn, job_id, payload, media_dir, services):
 
 def _action_dead_stream_quarantine(conn, job_id, payload, media_dir, services):
     from urllib.parse import quote
-    from sync.telegram_unavailable import _quarantine_files, _ref
+    from sync.telegram_unavailable import (
+        _quarantine_files, _ref, _recover_orphaned_quarantine, _clear_quarantine_manifest,
+        _quarantine_folder,
+    )
     import httpx
 
     limit = payload.get("limit")
@@ -711,6 +714,7 @@ def _action_dead_stream_quarantine(conn, job_id, payload, media_dir, services):
     _core._record_job_progress(conn, job_id, "quarantining_dead_streams", completed=0, total=total)
 
     quarantine_root = services.jobs_lock_root(conn, media_dir) / "duplicate-quarantine"
+    _recover_orphaned_quarantine(conn, quarantine_root, services.logger)
     now = int(_core.time.time())
     checked = 0
     quarantined = 0
@@ -724,25 +728,40 @@ def _action_dead_stream_quarantine(conn, job_id, payload, media_dir, services):
                 resp = client.get(url)
                 if resp.status_code in (404, 410):
                     files = _quarantine_files(conn, video_id, media_dir, quarantine_root)
+                    folder = _quarantine_folder(quarantine_root, video_id)
                     ref = _ref(video_id)
                     chan_id = ref[0] if ref else ""
                     msg_id = ref[1] if ref else None
                     uniq_id = ref[2] if ref else ""
-                    with conn:
-                        conn.execute("UPDATE videos SET playable=0 WHERE id=%s", (video_id,))
-                        conn.execute(
-                            "INSERT INTO dead_streams (video_id, reason, detected_at) "
-                            "VALUES (%s, %s, %s) ON CONFLICT(video_id) DO UPDATE SET "
-                            "reason=EXCLUDED.reason, detected_at=EXCLUDED.detected_at",
-                            (video_id, "confirmed dead stream (404)", now),
-                        )
-                        conn.execute(
-                            "INSERT INTO telegram_unavailable_quarantine "
-                            "(video_id, channel_id, message_id, file_unique_id, status, miss_count, last_checked_at, files, last_error) "
-                            "VALUES (%s, %s, %s, %s, 'quarantined', 2, to_timestamp(%s), %s::jsonb, '') "
-                            "ON CONFLICT(video_id) DO UPDATE SET status='quarantined', miss_count=EXCLUDED.miss_count, last_checked_at=EXCLUDED.last_checked_at, files=EXCLUDED.files",
-                            (video_id, chan_id, msg_id, uniq_id, now, _core.json.dumps(files)),
-                        )
+                    try:
+                        with conn:
+                            conn.execute("UPDATE videos SET playable=0 WHERE id=%s", (video_id,))
+                            conn.execute(
+                                "INSERT INTO dead_streams (video_id, reason, detected_at) "
+                                "VALUES (%s, %s, %s) ON CONFLICT(video_id) DO UPDATE SET "
+                                "reason=EXCLUDED.reason, detected_at=EXCLUDED.detected_at",
+                                (video_id, "confirmed dead stream (404)", now),
+                            )
+                            conn.execute(
+                                "INSERT INTO telegram_unavailable_quarantine "
+                                "(video_id, channel_id, message_id, file_unique_id, status, miss_count, last_checked_at, files, last_error) "
+                                "VALUES (%s, %s, %s, %s, 'quarantined', 2, to_timestamp(%s), %s::jsonb, '') "
+                                "ON CONFLICT(video_id) DO UPDATE SET status='quarantined', miss_count=EXCLUDED.miss_count, last_checked_at=EXCLUDED.last_checked_at, files=EXCLUDED.files",
+                                (video_id, chan_id, msg_id, uniq_id, now, _core.json.dumps(files)),
+                            )
+                    except Exception:
+                        # The catalog write rolled back: put the files back so a
+                        # retry starts from the original, unquarantined state.
+                        from sync.telegram_unavailable import _restore_files
+                        try:
+                            _restore_files(files)
+                        except Exception as restore_exc:
+                            services.logger.warning(
+                                "Could not restore files after a failed quarantine DB write for %s: %s",
+                                video_id, restore_exc,
+                            )
+                        raise
+                    _clear_quarantine_manifest(folder)
                     quarantined += 1
                 elif resp.status_code == 200:
                     with conn:

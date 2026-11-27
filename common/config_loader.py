@@ -553,5 +553,8 @@ def load_config(
     if file_path is not None:
         logger.info("Loaded and validated configuration from %s", file_path)
     else:
-        logger.info("Loaded built-in configuration defaults (no config.yaml found)")
+        logger.warning(
+            "No config.yaml found; starting from built-in defaults. "
+            "Set CONFIG_PATH to the mounted configuration file if this is not a first run."
+        )
     return config

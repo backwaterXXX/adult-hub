@@ -201,16 +201,39 @@ class TestSafeProxyStream(ResolverHarness):
 
 
 class TestUpstreamLiveness(ResolverHarness):
-    def probe(self, module, status_code):
-        self.use_upstream(module, FakeResponse(status_code))
+    def probe(self, module, status_code, headers=None):
+        self.use_upstream(module, FakeResponse(status_code, headers=headers))
         return self.complete(module.upstream_url_alive("https://cdn.example.test/x.mp4"))
 
     def test_a_serving_status_counts_as_alive(self):
         module = self.load()
 
-        for status_code in (200, 206, 301, 302, 307, 308):
+        for status_code in (200, 206):
             with self.subTest(status_code=status_code):
                 self.assertIs(self.probe(module, status_code), True)
+
+    def test_redirect_without_location_or_loop_leaves_answer_unknown(self):
+        module = self.load()
+
+        for status_code in (301, 302, 307, 308):
+            with self.subTest(status_code=status_code):
+                self.assertIsNone(self.probe(module, status_code))
+
+    def test_redirect_is_followed_to_final_status(self):
+        module = self.load()
+        self.use_upstream(
+            module,
+            FakeResponse(302, headers={"location": "https://cdn.example.test/final.mp4"}),
+            FakeResponse(200),
+        )
+        self.assertIs(self.complete(module.upstream_url_alive("https://cdn.example.test/x.mp4")), True)
+
+        self.use_upstream(
+            module,
+            FakeResponse(301, headers={"location": "https://cdn.example.test/missing.mp4"}),
+            FakeResponse(404),
+        )
+        self.assertIs(self.complete(module.upstream_url_alive("https://cdn.example.test/x.mp4")), False)
 
     def test_a_gone_upstream_counts_as_dead(self):
         module = self.load()

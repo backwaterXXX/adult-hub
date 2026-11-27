@@ -629,8 +629,32 @@ CREATE TABLE public.video_duplicate_jobs (
     result text,
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL,
-    lease_token text
+    lease_token text,
+    dedupe_key text,
+    CONSTRAINT video_duplicate_jobs_processing_lease_check
+        CHECK (state <> 'processing'::text OR lease_token IS NOT NULL)
 );
+
+CREATE INDEX IF NOT EXISTS idx_video_duplicate_jobs_dedupe
+    ON public.video_duplicate_jobs (action, dedupe_key)
+    WHERE state IN ('queued', 'processing');
+
+CREATE OR REPLACE FUNCTION public.ensure_video_duplicate_job_lease()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+        BEGIN
+            IF NEW.state = 'processing'
+               AND (NEW.lease_token IS NULL OR NEW.lease_token = '') THEN
+                NEW.lease_token := md5(random()::text || clock_timestamp()::text);
+            END IF;
+            RETURN NEW;
+        END;
+    $$;
+
+CREATE TRIGGER video_duplicate_jobs_ensure_lease
+    BEFORE INSERT OR UPDATE ON public.video_duplicate_jobs
+    FOR EACH ROW EXECUTE FUNCTION public.ensure_video_duplicate_job_lease();
 
 CREATE TABLE public.video_fingerprints (
     video_id text NOT NULL,

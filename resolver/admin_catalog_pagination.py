@@ -23,8 +23,12 @@ def sort_clause(
     field = {"title": "title", "first_seen": "first_seen", "last_seen": "last_seen", "duration": "duration"}[sort]
     if field not in columns:
         return "v.id ASC"
-    if field == "title" and has_overrides:
-        return f"lower(COALESCE({effective_text_fn('title', columns, True)}, '')), v.id ASC"
+    if sort == "title":
+        # title_sort is a maintained, indexed projection of the effective title
+        # (including title overrides), so prefer it over recomputing lower(...).
+        if "title_sort" in columns:
+            return "v.title_sort ASC, v.id ASC"
+        return f"lower(COALESCE({effective_text_fn('title', columns, has_overrides)}, '')), v.id ASC"
     # Keep a stable tie-breaker even when several rows share the same value.
     return SORTS[sort]
 
@@ -37,6 +41,8 @@ def sort_value_expression(
     if field not in columns:
         return "v.id"
     if sort == "title":
+        if "title_sort" in columns:
+            return "v.title_sort"
         return f"lower(COALESCE({effective_text_fn('title', columns, has_overrides)}, ''))"
     return f"v.{field}"
 
@@ -137,6 +143,8 @@ def reverse_sort_clause(
         sort, columns, has_overrides, effective_text_fn=effective_text_fn,
     )
     field = {"title": "title", "first_seen": "first_seen", "last_seen": "last_seen", "duration": "duration"}[sort]
+    if sort == "title" and "title_sort" in columns:
+        return "v.title_sort DESC, v.id DESC"
     if sort != "title" and field in columns:
         return f"{expression} ASC NULLS FIRST, v.id DESC"
     return f"{expression} DESC, v.id DESC"

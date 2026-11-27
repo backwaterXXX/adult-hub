@@ -235,19 +235,20 @@ def _visual_pair_is_active(admin, ids):
         conn.close()
 
 
-async def _pair_is_active_suggestion(admin, ids, scan_duplicate_index):
-    scan = await admin.asyncio.to_thread(scan_duplicate_index, admin.HUB_DB_URL)
-    if any(_scan_pair_matches(pair, ids) for pair in scan["pairs"]):
+async def _pair_is_active_suggestion(admin, ids, find_pair_suggestion):
+    if await admin.asyncio.to_thread(
+        find_pair_suggestion, admin.HUB_DB_URL, ids[0], ids[1],
+    ):
         return True
-    return _visual_pair_is_active(admin, ids)
+    return await admin.asyncio.to_thread(_visual_pair_is_active, admin, ids)
 
 
-async def _enqueue_dismiss(admin, body, enqueue_job, scan_duplicate_index):
+async def _enqueue_dismiss(admin, body, enqueue_job, find_pair_suggestion):
     """Return (job_id, None) on success or (None, rejection response)."""
     ids = sorted([body["left_id"].strip(), body["right_id"].strip()])
     if not ids[0] or ids[0] == ids[1]:
         return None, admin.JSONResponse({"error": "Specify two different items."}, status_code=400)
-    if not await _pair_is_active_suggestion(admin, ids, scan_duplicate_index):
+    if not await _pair_is_active_suggestion(admin, ids, find_pair_suggestion):
         return None, admin.JSONResponse({"error": "This pair is no longer an active suggestion."}, status_code=409)
     job_id = enqueue_job(admin.HUB_DB_URL, "dismiss", {"left_id": ids[0], "right_id": ids[1]})
     return job_id, None
@@ -277,9 +278,9 @@ def _enqueue_undo(admin, action, body, enqueue_job):
 async def _execute_duplicate_action(admin, body):
     action = body["action"]
     try:
-        from resolver.video_duplicates import enqueue_job, scan_duplicate_index
+        from resolver.video_duplicates import enqueue_job, find_pair_suggestion
         if action == "dismiss":
-            job_id, rejection = await _enqueue_dismiss(admin, body, enqueue_job, scan_duplicate_index)
+            job_id, rejection = await _enqueue_dismiss(admin, body, enqueue_job, find_pair_suggestion)
         elif action in {"undo", "undismiss"}:
             job_id, rejection = _enqueue_undo(admin, action, body, enqueue_job)
         else:

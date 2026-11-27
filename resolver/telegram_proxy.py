@@ -67,28 +67,25 @@ async def _probe_total_size(
         return None
 
 
-def _range_headers(offset: int, length: Optional[int], total: Optional[int]) -> dict:
-    """Return 206 headers for a satisfiable range, or raise 416."""
+def _range_headers(offset: int, length: Optional[int], total: int) -> dict:
+    """Return 206 headers for a satisfiable range, or raise 416.
+
+    A 206 response requires a complete length in ``Content-Range``. Without a
+    known total the caller must answer a truthful 200 instead, never
+    ``Content-Range: bytes X-/*``.
+    """
     headers = {
         "Accept-Ranges": "bytes",
         "Content-Type": "application/octet-stream",
     }
-    if total is not None:
-        end = (offset + length - 1) if length is not None else (total - 1)
-        if end >= total:
-            end = total - 1
-        if end < offset:
-            raise HTTPException(status_code=416, detail="Range not satisfiable",
-                                headers={"Content-Range": f"bytes */{total}"})
-        headers["Content-Range"] = f"bytes {offset}-{end}/{total}"
-        headers["Content-Length"] = str(end - offset + 1)
-    else:
-        if length is not None:
-            end = offset + length - 1
-            headers["Content-Range"] = f"bytes {offset}-{end}/*"
-            headers["Content-Length"] = str(length)
-        else:
-            headers["Content-Range"] = f"bytes {offset}-/*"
+    end = (offset + length - 1) if length is not None else (total - 1)
+    if end >= total:
+        end = total - 1
+    if end < offset:
+        raise HTTPException(status_code=416, detail="Range not satisfiable",
+                            headers={"Content-Range": f"bytes */{total}"})
+    headers["Content-Range"] = f"bytes {offset}-{end}/{total}"
+    headers["Content-Length"] = str(end - offset + 1)
     return headers
 
 
@@ -258,12 +255,18 @@ async def proxy_telegram_response(
     total = await _probe_total_size(services, prov, ref, required=bool(rng_raw))
 
     rng = services.parse_range_request(rng_raw, total)
-    offset = rng[0] if rng else 0
-    length = rng[1] if rng else None
+    if total is None:
+        # Without a known file size no truthful 206 Content-Range exists. Ignore
+        # the range and serve the whole object as 200; a dishonest 206 would make
+        # players seek into a response whose extent they cannot validate.
+        offset, length = 0, None
+    else:
+        offset = rng[0] if rng else 0
+        length = rng[1] if rng else None
 
     is_head = (request.method or "GET").upper() == "HEAD"
     partial_headers = None
-    if rng is not None:
+    if rng is not None and total is not None:
         partial_headers = _range_headers(offset, length, total)
         if is_head:
             # Same truthful headers/status as GET without creating or

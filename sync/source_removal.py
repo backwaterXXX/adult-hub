@@ -274,28 +274,9 @@ def _remove_managed_files(paths, media_dir: Path, services, deleted_videos: int,
 
 def _delete_video_rows(conn, tables, video_id: str) -> int:
     """Delete one video's dependent rows and the video; returns the removed synced_files count."""
-    deleted_synced_files = 0
-    if "synced_files" in tables:
-        cur = conn.execute("DELETE FROM synced_files WHERE video_id=%s", (video_id,))
-        deleted_synced_files += getattr(cur, "rowcount", 0) or 0
-    if "video_sources" in tables:
-        conn.execute("DELETE FROM video_sources WHERE video_id=%s", (video_id,))
-    if "dead_streams" in tables:
-        conn.execute("DELETE FROM dead_streams WHERE video_id=%s", (video_id,))
-    if "video_duplicate_decisions" in tables:
-        conn.execute(
-            "DELETE FROM video_duplicate_decisions WHERE loser_id=%s OR keeper_id=%s",
-            (video_id, video_id),
-        )
-    if "video_duplicate_dismissals" in tables:
-        conn.execute(
-            "DELETE FROM video_duplicate_dismissals WHERE left_id=%s OR right_id=%s",
-            (video_id, video_id),
-        )
-    if "admin_quality_acknowledgements" in tables:
-        conn.execute("DELETE FROM admin_quality_acknowledgements WHERE video_id=%s", (video_id,))
-    conn.execute("DELETE FROM videos WHERE id=%s", (video_id,))
-    return deleted_synced_files
+    from sync.catalog_deletion import delete_video_rows
+
+    return delete_video_rows(conn, tables, video_id)
 
 
 def _delete_channel_sources(conn, tables, aliases, prefixes) -> None:

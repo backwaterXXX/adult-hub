@@ -151,8 +151,8 @@ def _split_sql_list(value: str) -> list[str]:
     return parts
 
 
-_TABLE_COLUMNS_CACHE: dict[tuple[str, str], list[str]] = {}
-"""Column lists for INSERTs without a column list, keyed by (database URL, table).
+_TABLE_COLUMNS_CACHE: dict[tuple[str, str, str], list[str]] = {}
+"""Column lists for INSERTs without a column list, keyed by (database URL, schema, table).
 
 Only non-empty results are cached, so a table created later in the process is picked up.
 Callers that change the schema must call clear_table_columns_cache().
@@ -169,7 +169,15 @@ def _adapt_no_column_insert(sql: str, connection=None) -> str:
     )
     if no_columns and connection is not None:
         table = no_columns.group(2).split(".")[-1].strip('"')
-        key = (str(getattr(connection, "_url", None) or ""), table)
+        schema = getattr(connection, "_column_cache_schema", None)
+        if schema is None:
+            row = connection.execute("SELECT current_schema()").fetchone()
+            schema = str(row[0] or "") if row else ""
+            try:
+                connection._column_cache_schema = schema
+            except Exception:
+                pass
+        key = (str(getattr(connection, "_url", None) or ""), schema, table)
         columns_cached = _TABLE_COLUMNS_CACHE.get(key)
         if columns_cached is None:
             rows = connection.execute(
@@ -451,11 +459,16 @@ class Connection:
         return Cursor(self, self._raw.cursor())
 
     def commit(self) -> None:
-        self._ensure_open()
+        if self._raw.closed:
+            # Reopening here would create a new empty transaction and report a
+            # success although the original work was rolled back by the server.
+            raise psycopg.OperationalError(
+                "connection lost before commit; the transaction was not committed")
         self._raw.commit()
 
     def rollback(self) -> None:
-        self._ensure_open()
+        if self._raw.closed:
+            return
         self._raw.rollback()
 
     def close(self) -> None:
@@ -465,11 +478,10 @@ class Connection:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self._ensure_open()
         if exc_type is None:
-            self._raw.commit()
+            self.commit()
         else:
-            self._raw.rollback()
+            self.rollback()
 
 
 def _open_raw(conninfo: str, connect_timeout: int) -> psycopg.Connection:
