@@ -28,6 +28,7 @@ from common.migrations.m0007_video_resolution_quality_tier import migration as v
 from common.migrations.m0008_quality_tier_hd_cut import migration as quality_tier_hd_cut
 from common.migrations.m0009_video_channel_name_index import migration as video_channel_name_index
 from common.migrations.m0010_catalog_search_trigram_favorites_index import migration as catalog_search_indexes
+from common.migrations.m0011_video_title_sort import migration as video_title_sort
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     quality_tier_hd_cut,
     video_channel_name_index,
     catalog_search_indexes,
+    video_title_sort,
 )
 
 
