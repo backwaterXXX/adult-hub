@@ -259,3 +259,64 @@ Older environment variables are automatically mapped to their canonical equivale
 ### Issue: "403 Forbidden: Origin header does not match"
 - **Cause**: Admin write operations require the browser `Origin` header to match `PUBLIC_DOMAIN` or the local host authority.
 - **Fix**: Ensure your reverse proxy forwards `Host` and `X-Forwarded-Proto` and that `PUBLIC_DOMAIN` in `.env` matches the domain in your browser URL bar.
+
+## 6. Quarantine & Retention Policy
+
+Blocked channels leave their catalog rows behind on purpose: the metadata, pHash
+fingerprints and source provenance are the only evidence of what those posts
+contained, and they are what lets the deduplication pass match the same scene
+when it appears on a channel that still works.
+
+Nothing removes these rows on a timer.
+
+### 6.1 What the quarantine holds
+
+| Location | Holds | Removed when |
+|---|---|---|
+| `telegram_unavailable_quarantine` (table) | one row per Telegram post that missed twice: `suspect` after the first miss, `quarantined` after the second, plus the moved file list | the post answers again (the row is deleted and the files move back), or an operator removes the channel |
+| `DATA_DIR/telegram-unavailable-quarantine/` | the poster and STRM files of quarantined posts, one folder per video id | the post answers again (files move back to the media tree) |
+| `DATA_DIR/duplicate-quarantine/<job id>/` | the files of items hidden or merged by a duplicate decision, kept for undo | undo restores them; there is no automatic expiry |
+
+Quarantined rows keep `playable = 0`, so the client catalog never lists them, but
+the row, its `video_sources`, its categories and its fingerprints stay in place.
+
+### 6.2 What is never deleted by a timer
+
+- **Telegram rows.** `sync.library_cleanup.cleanup_retention()` only considers
+  providers other than `telegram`, and `cleanup_orphaned_entries()` excludes every
+  video with a `quarantined` row through `NOT EXISTS`.
+- **Files of quarantined videos.** They were moved out of the media tree, so the
+  orphan detector cannot see them as missing files either.
+- **Rows of a channel that left the configuration.** `is_cleanup_allowed()`
+  requires the provider *and* the channel to be enabled in the current
+  configuration and to have synced successfully in this run, so a blocked channel
+  can never pass the gate.
+
+`sync.retention_days` prunes only non-Telegram providers that synced fine in the
+same run; the Telegram catalogue is out of its reach.
+
+### 6.3 What is deleted, and when
+
+- A duplicate decision (`hide`, `merge`) retires the losing row, but stores the
+  full row, its sources, categories and file list in
+  `video_duplicate_decisions.snapshot`, which undo restores. Active decisions are
+  retained by the history job.
+- Removing a channel through the admin job deletes that channel's own videos and
+  its quarantine rows after restoring the moved files. Videos that another active
+  source still serves are preserved (`_deletable_videos` counts them as
+  `preserved_shared`).
+- The monthly history retention (`common/history_retention.py`) prunes only
+  bookkeeping older than one month: `admin_action_events`, `admin_audit_events`,
+  `external_metadata_attempts`, `video_duplicate_jobs` and restored
+  `admin_orphan_quarantine` entries. Active decisions, active quarantines and
+  running jobs are skipped.
+
+### 6.4 Why the metadata earns its disk space
+
+The deduplication pass sorts candidate keepers by `playable` first, so a live
+duplicate always outranks a blocked one and a merge cannot retire working content
+in favour of a dead row. When the merge runs the other way, the loser's title,
+performers and tags are copied into the keeper, so a blocked post still enriches
+the live copy of the same scene. Deleting quarantined rows would therefore throw
+away the only record of those scenes and the fingerprints that recognise them.
+

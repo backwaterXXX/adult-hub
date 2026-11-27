@@ -1,5 +1,14 @@
-"""Bounded, reversible quarantine for Telegram posts missing from a healthy channel."""
+"""Bounded, reversible quarantine for Telegram posts missing from a healthy channel.
 
+A quarantined post keeps its catalog row, its sources, its categories and its
+fingerprints: only the local files move aside, and they move back as soon as the
+post answers again. Nothing here expires on a timer, and the cleanup paths skip
+quarantined rows (``library_cleanup``) and require an enabled, successfully synced
+channel before deleting anything (``is_cleanup_allowed``). That is deliberate:
+the metadata and pHash of a blocked channel are what let the deduplication pass
+recognise the same scene on a channel that still works. See CONFIGURATION.md,
+section 6.
+"""
 from __future__ import annotations
 
 import hashlib

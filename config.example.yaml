@@ -12,7 +12,9 @@ sync:
   run_on_startup: true              # Whether to run a sync immediately when the container starts.
                                     # With daily_at set, a slot that passed while the stack was down
                                     # runs at startup even when this is false.
-  retention_days: 30                # Remove videos not seen for this many days
+  retention_days: 30                # Remove non-Telegram videos not seen for this many days.
+                                    # Telegram rows and quarantined items are never pruned by it
+                                    # (see CONFIGURATION.md, section 6).
   retry_backoff_base_seconds: 30    # Initial retry delay after an error
   retry_backoff_max_seconds: 1800   # Maximum retry delay
   shutdown_grace_seconds: 180       # How long a restart waits for the running sync to reach its
