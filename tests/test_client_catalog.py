@@ -1185,6 +1185,38 @@ class TestClientCatalogPostgresIntegration(PgTestCase):
         self.assertEqual(res_lower.total_count, 1)
         self.assertEqual(res_lower.items[0].id, "telegram:-100123:1:100")
 
+    def test_title_sort_follows_metadata_overrides(self):
+        """``sort=title`` orders by the effective title and re-sorts after an override."""
+        with self.conn:
+            self.conn.execute("""
+                INSERT INTO videos (id, provider, title, duration, playable)
+                VALUES
+                    ('telegram:-100123:30:1', 'telegram', 'Beta', 600, 1),
+                    ('telegram:-100123:30:2', 'telegram', 'alpha', 600, 1),
+                    ('telegram:-100123:30:3', 'telegram', 'Gamma', 600, 1)
+            """)
+
+        def titles(direction=None):
+            res = query_catalog_videos(self.conn, sort="title", direction=direction)
+            return [item.title for item in res.items]
+
+        self.assertEqual(titles(), ["alpha", "Beta", "Gamma"])
+        self.assertEqual(titles("desc"), ["Gamma", "Beta", "alpha"])
+
+        with self.conn:
+            self.conn.execute("""
+                INSERT INTO video_metadata_overrides (video_id, fields, revision)
+                VALUES ('telegram:-100123:30:3', '{"title": "Aardvark"}'::jsonb, 1)
+            """)
+        self.assertEqual(titles(), ["Aardvark", "alpha", "Beta"])
+        self.assertEqual(titles("desc"), ["Beta", "alpha", "Aardvark"])
+
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM video_metadata_overrides WHERE video_id = 'telegram:-100123:30:3'"
+            )
+        self.assertEqual(titles(), ["alpha", "Beta", "Gamma"])
+
     def test_category_and_tag_filters_are_case_insensitive(self):
         """``G`` and ``g`` select the same videos, on both category paths."""
         with self.conn:

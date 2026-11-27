@@ -1046,10 +1046,18 @@ _CLIENT_SORT_CLAUSES = {
 }
 
 
-def client_sort_clause(sort: str, direction: str | None = None, *, effective_title: str) -> str:
+def client_sort_clause(
+    sort: str,
+    direction: str | None = None,
+    *,
+    effective_title: str,
+    title_sort: str | None = None,
+) -> str:
     """Build deterministic SQL ORDER BY clause with explicit or default ASC/DESC direction.
 
-    Canonical tie-breaker v.id ASC is always appended.
+    Canonical tie-breaker v.id ASC is always appended. ``title_sort`` is the
+    maintained lowercase column when the database has it; otherwise the clause
+    falls back to wrapping the joined effective title expression.
     """
     chosen_sort = sort if sort in {"latest", "title", "duration"} else "latest"
     if direction is not None:
@@ -1061,7 +1069,8 @@ def client_sort_clause(sort: str, direction: str | None = None, *, effective_tit
 
     dir_sql = "ASC" if clean_dir == "asc" else "DESC"
     if chosen_sort == "title":
-        return f"lower(COALESCE({effective_title}, '')) {dir_sql}, v.id ASC"
+        title_expr = title_sort or f"lower(COALESCE({effective_title}, ''))"
+        return f"{title_expr} {dir_sql}, v.id ASC"
     elif chosen_sort == "duration":
         return f"v.duration {dir_sql} NULLS LAST, v.id ASC"
     else:  # latest
@@ -1730,7 +1739,12 @@ def query_catalog_videos(
 
     # Sorting (omit random; default to latest)
     effective_title_expr = _effective_value("title", columns, has_overrides)
-    sort_sql = client_sort_clause(sort, direction, effective_title=effective_title_expr)
+    sort_sql = client_sort_clause(
+        sort,
+        direction,
+        effective_title=effective_title_expr,
+        title_sort="v.title_sort" if "title_sort" in columns else None,
+    )
 
     # Exact API Paging
     safe_offset = max(0, int(offset))
