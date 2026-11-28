@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from common import db
+from common.scene_titles import title_segments
 from common.telegram_metadata import extract_telegram_metadata
 from sync.scene_scraper_models import PART_MARKER_SQL
 from sync.scene_scraper_split_parts import (
@@ -58,6 +59,14 @@ def _candidate_rows(conn, channel: str, limit: int, force: bool = False):
     ).fetchall()
 
 
+def _has_title_cast(parts) -> bool:
+    """True when a title segment looks like a cast list (A & B, A and B)."""
+    return any(
+        "&" in segment or "," in segment or " and " in segment.casefold()
+        for segment in title_segments(parts[0]["title"])
+    )
+
+
 def _matched_parts(conn, channel: str) -> int:
     return int(conn.execute(
         "SELECT count(*) FROM videos WHERE provider='telegram' AND channel_name=%s "
@@ -74,6 +83,8 @@ def main() -> int:
     ap.add_argument("--show", type=int, default=20, help="matches to print")
     ap.add_argument("--force", action="store_true",
                     help="retry groups even when their retry cooldown has not elapsed")
+    ap.add_argument("--cast-only", action="store_true",
+                    help="only search groups whose title contains a cast segment")
     args = ap.parse_args()
 
     media_dir = Path(os.getenv("MEDIA_DIR") or "media/adult")
@@ -85,8 +96,11 @@ def main() -> int:
         eligible = []
         for parts_by_number in groups.values():
             group = _eligible_split_group(parts_by_number)
-            if group is not None:
-                eligible.append(group)
+            if group is None:
+                continue
+            if args.cast_only and not _has_title_cast(group[0]):
+                continue
+            eligible.append(group)
 
         print(f"Channel: {args.channel}")
         print(f"Matched parts before: {before}")
