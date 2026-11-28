@@ -435,6 +435,15 @@ NON_PERFORMER_LABELS = {
     # Generic title words that are not stage names.
     "young", "restless", "playful", "muscle", "friends", "double",
     "big", "toy", "pigboy", "cocksucker",
+    "big dicks", "big cocks", "big black", "big bro", "big guns",
+    "close the door", "club bang boys old",
+    "college muscle bottom", "cool twinks",
+    "daddy's bad boys my stepdad", "his boys",
+    "me everyday after school", "military gay xxx",
+    "newlywed twinks", "raw dog", "rock hard", "spank me hard",
+    "that's big", "the big lucas", "the young", "toys",
+    "twink boy media young", "twinks study hard", "young bang along",
+    "4 play",
 }
 
 SCENE_CODE_RE = re.compile(

@@ -86,6 +86,22 @@ def _deactivate_catalog_labels(conn, apply: bool) -> int:
     return len(ids)
 
 
+def _reject_label_proposals(conn, apply: bool) -> int:
+    rows = conn.execute(
+        "SELECT id, candidate FROM telegram_performer_proposals WHERE status='pending'"
+    ).fetchall()
+    ids = [int(proposal_id) for proposal_id, candidate in rows
+           if candidate and is_known_non_performer_label(candidate)]
+    print(f"pending performer proposals to reject: {len(ids)}")
+    if apply and ids:
+        with conn:
+            conn.execute(
+                "UPDATE telegram_performer_proposals SET status='rejected' "
+                "WHERE id = ANY(%s) AND status='pending'", (ids,)
+            )
+    return len(ids)
+
+
 def _clean_aliases(conn, apply: bool) -> int:
     rows = conn.execute("SELECT alias, canonical FROM performer_aliases").fetchall()
     bad = [
@@ -137,6 +153,7 @@ def main() -> int:
         for table in VIDEO_TABLES:
             _clean_named_table(conn, table, args.apply)
         _clean_aliases(conn, args.apply)
+        _reject_label_proposals(conn, args.apply)
         _deactivate_catalog_labels(conn, args.apply)
         if args.apply:
             _refresh_stats(conn)

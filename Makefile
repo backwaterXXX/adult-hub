@@ -22,7 +22,7 @@ export APP_VERSION
 # counters from leaking between concurrent suites.
 TEST_ENV = ADULT_HUB_REQUIRE_TEST_DATABASE=1 ADULT_HUB_TEST_PROFILE=full CONFIG_PATH=tests/fixtures/config_telegram_only.yaml TELEGRAM_FINGERPRINT_USAGE_PATH=/tmp/adulthub-test-fingerprint-usage-$$.json
 
-.PHONY: help install-dev lock test python-test coverage ui-contracts js-check proxy-origin lint deploy dev dev-down dev-logs setup update package-release
+.PHONY: help install-dev lock test python-test coverage ui-contracts js-check proxy-origin lint deploy dev dev-down dev-logs setup update package-release metadata-report
 
 help:
 	@printf '%s\n' \
@@ -41,7 +41,8 @@ help:
 	  'deploy         Build and restart the release stack with the VERSION image tag' \
 	  'dev            Start the isolated hot-reload resolver and ephemeral test database' \
 	  'dev-down       Stop the isolated development stack' \
-	  'dev-logs       Follow the isolated development resolver logs'
+	  'dev-logs       Follow the isolated development resolver logs' \
+	  'metadata-report Show metadata coverage overall and by channel'
 
 install-dev:
 	uv pip install -r requirements-dev.lock
@@ -94,6 +95,9 @@ proxy-origin:
 lint:
 	$(RUFF) check .
 	$(MAKE) js-lint
+
+metadata-report:
+	PYTHONPATH=. $(PYTHON) scripts/metadata_quality.py --limit 20
 
 setup:
 	@scripts/setup.sh
