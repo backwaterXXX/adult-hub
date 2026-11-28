@@ -17,6 +17,7 @@ except ImportError as exc:
     optional_import_failed(exc)
     FANS_AVAILABLE = False
 
+from common.scene_titles import SceneLookupUnavailable
 from sync.scene_scraper_models import ScrapedScene
 import sync.scene_scrapers as scene_scrapers
 import sync.scene_scraper_fingerprint_sources as fp_sources
@@ -825,7 +826,8 @@ class TestFansDBSceneDistinguishErrors(unittest.TestCase):
              patch.object(split_parts._core, "request_with_host_limit", return_value=mock_resp_err), \
              patch.object(split_parts, "_theporndb_candidates", return_value=[]), \
              patch.dict("os.environ", {"FANSDB_API_KEY": "test-key"}):
-            split_parts.search_split_scene("Split Creator Scene", duration=1200)
+            with self.assertRaises(SceneLookupUnavailable):
+                split_parts.search_split_scene("Split Creator Scene", duration=1200)
 
         metrics = scene_scrapers.get_fansdb_scene_metrics()
         self.assertEqual(metrics, {"matched": 0, "no_match": 0, "error": 1})

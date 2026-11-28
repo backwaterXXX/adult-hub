@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional, Tuple
 
 from common.performer_titles import parse_title_performers_with_known_map
-from common.scene_titles import lookup_title_variants, title_segments
+from common.scene_titles import SceneLookupUnavailable, lookup_title_variants, title_segments
 from sync import scene_scrapers as _core
 from sync.scene_scraper_models import PART_MARKER_SQL
 
@@ -279,13 +279,19 @@ def search_split_scene(
     if not query_title or runtime <= 0 or client is None:
         return None
 
+    failures: list[BaseException] = []
     for variant in lookup_title_variants(query_title):
-        scene = _search_split_variant(
+        scene, errors = _search_split_variant(
             variant, runtime=runtime, tolerance=tolerance, client=client,
             source_texts=source_texts, caption_performers=caption_performers,
         )
         if scene is not None:
             return scene
+        failures.extend(errors)
+    if failures:
+        raise SceneLookupUnavailable(
+            f"{len(failures)} scene catalogue lookup(s) failed; retry later"
+        )
     return None
 
 
@@ -297,8 +303,9 @@ def _search_split_variant(
     client: Any,
     source_texts: Iterable[str],
     caption_performers: Iterable[str],
-) -> Optional[_core.ScrapedScene]:
+) -> tuple[Optional[_core.ScrapedScene], list[BaseException]]:
     """Query each provider for one title spelling and accept at most one scene."""
+    failures: list[BaseException] = []
     providers = (
         ("stashdb", _stashdb_candidates),
         ("fansdb", _fansdb_candidates),
@@ -309,6 +316,7 @@ def _search_split_variant(
             candidates = fetch(query_title, client)
         except Exception as exc:
             _core.logger.warning("%s split-title lookup failed (%s)", source, type(exc).__name__)
+            failures.append(exc)
             continue
         if candidates is None:
             continue
@@ -320,10 +328,10 @@ def _search_split_variant(
             else:
                 _core.record_fansdb_scene_attempt("no_match")
         if len(accepted) == 1:
-            return next(iter(accepted.values()))
+            return next(iter(accepted.values())), failures
         if len(accepted) > 1:
             _core.logger.info("Rejected ambiguous %s split-title match for %r", source, query_title[:120])
-    return None
+    return None, failures
 
 
 def _accepted_scenes(candidates, query_title: str, runtime: int, tolerance: int,

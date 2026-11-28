@@ -6,6 +6,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 
 import sync.scene_scraper_backfill as backfill
+from common.scene_titles import SceneLookupUnavailable
 from sync.scene_scrapers import ScrapedScene
 import sync.scene_scraper_text_sources as scene_scraper_text_sources
 
@@ -89,6 +90,19 @@ class TestCaptionTitleBackfill(unittest.TestCase):
         search.assert_called_once_with("Demo Scene", duration=720, http_client=None, duration_tolerance=2)
         apply_scene.assert_called_once()
         self.assertEqual(record_attempt.call_args.args[4], "found")
+
+    def test_transient_lookup_failure_records_error_for_retry(self):
+        conn = _FakeConn(video_rows=[("telegram:channel:3:file", "Title: Demo Scene", 720)])
+        with patch.object(backfill._core, "record_attempt") as record_attempt, \
+             patch.object(scene_scraper_text_sources, "search_scene_by_exact_title",
+                          side_effect=SceneLookupUnavailable("429 Too Many Requests")):
+            checked, updated = backfill._backfill_caption_title_matches(
+                conn, Path("/tmp"), limit=5, sleep_sec=0, http_client=None,
+            )
+
+        self.assertEqual((checked, updated), (1, 0))
+        self.assertEqual(record_attempt.call_args.args[4], "error")
+        self.assertIsInstance(record_attempt.call_args.kwargs["error"], SceneLookupUnavailable)
 
 
 if __name__ == "__main__":

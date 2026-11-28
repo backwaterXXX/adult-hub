@@ -7,6 +7,10 @@ import re
 from common.performers import is_known_non_performer_label, strip_scene_suffix
 from common.title_cleaning import clean_title_text
 
+class SceneLookupUnavailable(RuntimeError):
+    """A transient provider failure; callers should retry instead of storing no_match."""
+
+
 _MEDIA_EXT_RE = re.compile(r"\.(?:mp4|mkv|avi|mov|wmv|webm|m4v|ts|mpg|mpeg)$", re.IGNORECASE)
 _YEAR_PARENS_RE = re.compile(r"\s*\((?:19|20)\d{2}\)")
 _LEADING_TAG_RE = re.compile(r"^\s*\[[^\]]*\]\s*")

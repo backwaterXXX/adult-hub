@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 import sync.scene_scraper_split_parts as split_parts
 import sync.scene_scraper_backfill as backfill
+from common.scene_titles import SceneLookupUnavailable
 from sync.scene_scrapers import ScrapedScene
 
 
@@ -145,6 +146,22 @@ class TestSplitSequenceBackfill(unittest.TestCase):
         self.assertEqual(search.call_args.kwargs["duration_tolerance"], 30)
         self.assertEqual(apply_scene.call_count, 2)
         self.assertEqual(record_attempt.call_count, 2)
+
+    def test_transient_search_failure_is_recorded_for_retry(self):
+        rows = [
+            ("telegram:-1001:10:a", "Demo Scene s1", "Demo Scene s1.mp4", "Demo Scene s1", 600, {}, None, True),
+            ("telegram:-1001:11:b", "Demo Scene s2", "Demo Scene s2.mp4", "Demo Scene s2", 615, {}, None, True),
+        ]
+        conn = _Conn(rows)
+        with patch.object(split_parts, "search_split_scene",
+                          side_effect=SceneLookupUnavailable("429 Too Many Requests")), \
+             patch.object(backfill._core, "record_attempt") as record_attempt:
+            checked, updated = backfill._backfill_split_part_matches(
+                conn, Path("/tmp"), limit=10, sleep_sec=0, http_client=None,
+            )
+
+        self.assertEqual((checked, updated), (2, 0))
+        self.assertEqual([call.args[4] for call in record_attempt.call_args_list], ["error", "error"])
 
     def test_does_not_search_incomplete_group(self):
         rows = [

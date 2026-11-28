@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from common import db
+from common.scene_titles import SceneLookupUnavailable
 from common.telegram_metadata import extract_telegram_metadata
 from sync.scene_scraper_text_sources import search_scene_by_exact_title
 
@@ -52,6 +53,19 @@ def _candidate_rows(conn, channel: str, limit: int, newest: bool = False,
     ).fetchall()
 
 
+def _search_with_retries(title: str, duration: int, video_id: str, *,
+                         retries: int, delay: float):
+    for attempt in range(max(0, int(retries)) + 1):
+        try:
+            return search_scene_by_exact_title(title, duration=duration, duration_tolerance=2)
+        except SceneLookupUnavailable as exc:
+            if attempt >= max(0, int(retries)):
+                print(f"  RETRY LATER {video_id} | {title[:80]} | {exc}")
+                return None
+            time.sleep(max(0.0, float(delay)))
+    return None
+
+
 def _counts(conn, channel: str) -> tuple[int, int]:
     row = conn.execute(
         """SELECT count(*) FILTER (WHERE performers='[]'::jsonb),
@@ -71,6 +85,10 @@ def main() -> int:
     ap.add_argument("--newest", action="store_true", help="sample newest videos first")
     ap.add_argument("--retry-no-match", action="store_true",
                     help="also retry rows whose last exact-title attempt was no_match")
+    ap.add_argument("--retries", type=int, default=2,
+                    help="retries after a transient catalogue error")
+    ap.add_argument("--retry-sleep", type=float, default=15.0,
+                    help="seconds between transient-error retries")
     args = ap.parse_args()
 
     media_dir = Path(os.getenv("MEDIA_DIR") or "media/adult")
@@ -91,9 +109,12 @@ def main() -> int:
                 time.sleep(args.sleep)
             metadata = extract_telegram_metadata(str(source_text or ""))
             title = str(metadata.get("title") or "").strip()
-            scene = search_scene_by_exact_title(
-                title, duration=int(duration or 0), duration_tolerance=2,
-            ) if title else None
+            if not title:
+                continue
+            scene = _search_with_retries(
+                title, int(duration or 0), str(video_id),
+                retries=args.retries, delay=args.retry_sleep,
+            )
             if scene is None:
                 continue
             accepted.append((str(video_id), title, scene))

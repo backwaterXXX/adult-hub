@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from common import db
-from common.scene_titles import title_segments
+from common.scene_titles import SceneLookupUnavailable, title_segments
 from common.telegram_metadata import extract_telegram_metadata
 from sync.scene_scraper_models import PART_MARKER_SQL
 from sync.scene_scraper_split_parts import (
@@ -67,6 +67,22 @@ def _has_title_cast(parts) -> bool:
     )
 
 
+def _search_with_retries(title: str, total_duration: int, source_texts, cast, *,
+                         retries: int, delay: float):
+    for attempt in range(max(0, int(retries)) + 1):
+        try:
+            return search_split_scene(
+                title, duration=total_duration, source_texts=source_texts,
+                caption_performers=cast, duration_tolerance=30,
+            )
+        except SceneLookupUnavailable as exc:
+            if attempt >= max(0, int(retries)):
+                print(f"  RETRY LATER {title[:80]} | {exc}")
+                return None
+            time.sleep(max(0.0, float(delay)))
+    return None
+
+
 def _matched_parts(conn, channel: str) -> int:
     return int(conn.execute(
         "SELECT count(*) FROM videos WHERE provider='telegram' AND channel_name=%s "
@@ -85,6 +101,10 @@ def main() -> int:
                     help="retry groups even when their retry cooldown has not elapsed")
     ap.add_argument("--cast-only", action="store_true",
                     help="only search groups whose title contains a cast segment")
+    ap.add_argument("--retries", type=int, default=2,
+                    help="retries after a transient catalogue error")
+    ap.add_argument("--retry-sleep", type=float, default=15.0,
+                    help="seconds between transient-error retries")
     args = ap.parse_args()
 
     media_dir = Path(os.getenv("MEDIA_DIR") or "media/adult")
@@ -116,9 +136,9 @@ def main() -> int:
             cast = list(dict.fromkeys(
                 name for part in parts for name in part["explicit_cast"] if str(name).strip()
             ))
-            scene = search_split_scene(
-                title, duration=total_duration, source_texts=source_texts,
-                caption_performers=cast, duration_tolerance=30,
+            scene = _search_with_retries(
+                title, total_duration, source_texts, cast,
+                retries=args.retries, delay=args.retry_sleep,
             )
             if scene is None:
                 continue

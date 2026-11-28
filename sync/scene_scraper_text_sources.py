@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 from urllib.parse import quote
 
-from common.scene_titles import lookup_title_variants
+from common.scene_titles import SceneLookupUnavailable, lookup_title_variants
 from sync import scene_scrapers as _core
 
 
@@ -495,13 +495,19 @@ def search_scene_by_exact_title(
     Telegram titles often carry a studio prefix or a scene suffix. Try the
     short, catalogue-friendly spelling first, then the cleaned full title.
     """
+    failures: list[BaseException] = []
     for variant in lookup_title_variants(title):
-        scene = _search_exact_title_variant(
+        scene, errors = _search_exact_title_variant(
             variant, duration=duration, http_client=http_client,
             duration_tolerance=duration_tolerance,
         )
         if scene is not None:
             return scene
+        failures.extend(errors)
+    if failures:
+        raise SceneLookupUnavailable(
+            f"{len(failures)} scene catalogue lookup(s) failed; retry later"
+        )
     return None
 
 
@@ -511,31 +517,35 @@ def _search_exact_title_variant(
     duration: int,
     http_client: Optional[Any],
     duration_tolerance: int,
-) -> Optional[_core.ScrapedScene]:
+) -> tuple[Optional[_core.ScrapedScene], list[BaseException]]:
     """Run the provider chain for one already-normalized title spelling."""
+    failures: list[BaseException] = []
     try:
         stashdb_scene = search_stashdb_scene_by_exact_title(
             title, duration=duration, http_client=http_client,
             duration_tolerance=duration_tolerance,
         )
         if stashdb_scene is not None:
-            return stashdb_scene
+            return stashdb_scene, failures
     except Exception as exc:
         _core.logger.warning("StashDB title lookup failed (%s)", type(exc).__name__)
+        failures.append(exc)
     try:
         fansdb_scene = search_fansdb_scene_by_exact_title(
             title, duration=duration, http_client=http_client,
             duration_tolerance=duration_tolerance,
         )
         if fansdb_scene is not None:
-            return fansdb_scene
+            return fansdb_scene, failures
     except Exception as exc:
         _core.logger.warning("FansDB title lookup failed (%s)", type(exc).__name__)
+        failures.append(exc)
     try:
         return search_tpdb_scene_by_exact_title(
             title, duration=duration, http_client=http_client,
             duration_tolerance=duration_tolerance,
-        )
+        ), failures
     except Exception as exc:
         _core.logger.warning("ThePornDB title lookup failed (%s)", type(exc).__name__)
-        return None
+        failures.append(exc)
+        return None, failures
