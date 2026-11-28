@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 from urllib.parse import quote
 
+from common.scene_titles import lookup_title_variants
 from sync import scene_scrapers as _core
 
 
@@ -489,7 +490,29 @@ def search_scene_by_exact_title(
     http_client: Optional[Any] = None,
     duration_tolerance: int = 2,
 ) -> Optional[_core.ScrapedScene]:
-    """Query StashDB, FansDB, and ThePornDB with strict acceptance."""
+    """Query StashDB, FansDB, and ThePornDB with strict acceptance.
+
+    Telegram titles often carry a studio prefix or a scene suffix. Try the
+    short, catalogue-friendly spelling first, then the cleaned full title.
+    """
+    for variant in lookup_title_variants(title):
+        scene = _search_exact_title_variant(
+            variant, duration=duration, http_client=http_client,
+            duration_tolerance=duration_tolerance,
+        )
+        if scene is not None:
+            return scene
+    return None
+
+
+def _search_exact_title_variant(
+    title: str,
+    *,
+    duration: int,
+    http_client: Optional[Any],
+    duration_tolerance: int,
+) -> Optional[_core.ScrapedScene]:
+    """Run the provider chain for one already-normalized title spelling."""
     try:
         stashdb_scene = search_stashdb_scene_by_exact_title(
             title, duration=duration, http_client=http_client,

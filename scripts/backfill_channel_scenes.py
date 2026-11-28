@@ -11,12 +11,10 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import time
 from pathlib import Path
 
 from common import db
-from common.performers import strip_scene_suffix
 from common.telegram_metadata import extract_telegram_metadata
 from sync.scene_scraper_text_sources import search_scene_by_exact_title
 
@@ -29,41 +27,15 @@ def _db_url() -> str:
 
 
 ATTEMPT_SOURCE = "telegram_caption_title_exact_v1"
-_YEAR_PARENS_RE = re.compile(r"\s*\((?:19|20)\d{2}\)")
-_DASH_PARTS_RE = re.compile(r"\s+[–—\-]\s+")
 
 
-def _title_variants(title: str) -> list[str]:
-    """Return conservative title spellings to try against external catalogs."""
-    base = _YEAR_PARENS_RE.sub("", str(title or "")).strip()
-    base = strip_scene_suffix(base).strip()
-    variants = [base]
-    parts = [part.strip() for part in _DASH_PARTS_RE.split(base) if part.strip()]
-    if len(parts) > 1:
-        variants.append(" - ".join(parts[1:]))
-        variants.append(parts[-1])
-    seen = set()
-    result = []
-    for value in variants:
-        key = value.casefold()
-        if value and key not in seen:
-            seen.add(key)
-            result.append(value)
-    return result
-
-
-def _find_scene(title: str, duration: int):
-    for variant in _title_variants(title):
-        scene = search_scene_by_exact_title(
-            variant, duration=duration, duration_tolerance=2,
-        )
-        if scene is not None:
-            return variant, scene
-    return None, None
-
-
-def _candidate_rows(conn, channel: str, limit: int, newest: bool = False):
+def _candidate_rows(conn, channel: str, limit: int, newest: bool = False,
+                    retry_no_match: bool = False):
     order = "v.first_seen DESC NULLS LAST, v.id DESC" if newest else "v.first_seen ASC NULLS FIRST, v.id ASC"
+    attempt_filter = (
+        "AND (a.entity_key IS NULL OR a.outcome='no_match')"
+        if retry_no_match else "AND a.entity_key IS NULL"
+    )
     return conn.execute(
         f"""SELECT v.id, v.source_text, v.duration
             FROM videos v
@@ -73,7 +45,7 @@ def _candidate_rows(conn, channel: str, limit: int, newest: bool = False):
               AND v.source_text IS NOT NULL AND btrim(v.source_text)<>''
               AND COALESCE((v.performer_resolution->>'priority')::integer,0)<70
               AND v.scene_match_external_id IS NULL
-              AND a.entity_key IS NULL
+              {attempt_filter}
             ORDER BY {order}
             LIMIT %s""",
         (ATTEMPT_SOURCE, channel, max(1, int(limit))),
@@ -97,13 +69,18 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="apply accepted matches (default: dry run)")
     ap.add_argument("--sleep", type=float, default=0.5, help="delay between lookups")
     ap.add_argument("--newest", action="store_true", help="sample newest videos first")
+    ap.add_argument("--retry-no-match", action="store_true",
+                    help="also retry rows whose last exact-title attempt was no_match")
     args = ap.parse_args()
 
     media_dir = Path(os.getenv("MEDIA_DIR") or "media/adult")
     conn = db.connect(_db_url())
     try:
         before_cast, before_matched = _counts(conn, args.channel)
-        rows = _candidate_rows(conn, args.channel, args.limit, newest=args.newest)
+        rows = _candidate_rows(
+            conn, args.channel, args.limit,
+            newest=args.newest, retry_no_match=args.retry_no_match,
+        )
         print(f"Channel: {args.channel}")
         print(f"Before: no cast={before_cast}, matched scenes={before_matched}")
         print(f"Candidates inspected: {len(rows)}")
@@ -114,12 +91,14 @@ def main() -> int:
                 time.sleep(args.sleep)
             metadata = extract_telegram_metadata(str(source_text or ""))
             title = str(metadata.get("title") or "").strip()
-            searched, scene = _find_scene(title, int(duration or 0)) if title else (None, None)
+            scene = search_scene_by_exact_title(
+                title, duration=int(duration or 0), duration_tolerance=2,
+            ) if title else None
             if scene is None:
                 continue
-            accepted.append((str(video_id), searched or title, scene))
+            accepted.append((str(video_id), title, scene))
             cast = ", ".join(str(name) for name in (scene.performers or []) if name)
-            print(f"  MATCH {video_id} | {searched or title} | {scene.source} "
+            print(f"  MATCH {video_id} | {title} | {scene.source} "
                   f"| cast: {cast[:100]}")
 
         print(f"Accepted matches: {len(accepted)}")

@@ -101,6 +101,24 @@ class TestSplitSceneSearch(unittest.TestCase):
         self.assertIsNotNone(with_cast)
 
 
+class TestSplitTitleCastEvidence(unittest.TestCase):
+    def test_trailing_title_cast_is_used_as_evidence(self):
+        from common.telegram_metadata import extract_telegram_metadata
+
+        row = (
+            "telegram:-1001:10:a",
+            "Raging Stallion - Overdrive Sc1 - Paul Wagner & Derek Kage s1",
+            "Raging Stallion - Overdrive Sc1 - Paul Wagner & Derek Kage s1.mp4",
+            "Raging Stallion - Overdrive Sc1 - Paul Wagner & Derek Kage s1",
+            600, {}, None, True,
+        )
+        entry = split_parts._split_part_entry(
+            row, extract_telegram_metadata, split_parts.parse_split_part_title,
+        )
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry[3]["explicit_cast"], ["Paul Wagner", "Derek Kage"])
+
+
 class TestSplitSequenceBackfill(unittest.TestCase):
     def test_searches_complete_group_once_with_summed_runtime_and_updates_each_part(self):
         rows = [

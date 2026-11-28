@@ -8,6 +8,8 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Iterable, Optional, Tuple
 
+from common.performer_titles import parse_title_performers_with_known_map
+from common.scene_titles import lookup_title_variants, title_segments
 from sync import scene_scrapers as _core
 from sync.scene_scraper_models import PART_MARKER_SQL
 
@@ -277,6 +279,26 @@ def search_split_scene(
     if not query_title or runtime <= 0 or client is None:
         return None
 
+    for variant in lookup_title_variants(query_title):
+        scene = _search_split_variant(
+            variant, runtime=runtime, tolerance=tolerance, client=client,
+            source_texts=source_texts, caption_performers=caption_performers,
+        )
+        if scene is not None:
+            return scene
+    return None
+
+
+def _search_split_variant(
+    query_title: str,
+    *,
+    runtime: int,
+    tolerance: int,
+    client: Any,
+    source_texts: Iterable[str],
+    caption_performers: Iterable[str],
+) -> Optional[_core.ScrapedScene]:
+    """Query each provider for one title spelling and accept at most one scene."""
     providers = (
         ("stashdb", _stashdb_candidates),
         ("fansdb", _fansdb_candidates),
@@ -365,6 +387,15 @@ def _import_split_helpers():
     return extract_telegram_metadata, parse_split_part_title, search_split_scene
 
 
+def _title_cast(base_title: str) -> list[str]:
+    """Extract cast-like names from a title segment such as 'A & B'."""
+    names = []
+    for segment in title_segments(base_title):
+        if "&" in segment or "," in segment or " and " in segment.casefold():
+            names.extend(parse_title_performers_with_known_map(segment))
+    return list(dict.fromkeys(name for name in names if name))
+
+
 def _split_part_entry(row, extract, parse):
     """(channel, base key, part number, part record) for one candidate row, or None when it is not a part."""
     video_id, title, filename, source_text, duration, resolution, matched_id, attempt_due = row
@@ -394,10 +425,11 @@ def _split_part_entry(row, extract, parse):
         "video_id": str(video_id), "title": base_title, "source_text": caption,
         "source_filename": str(filename or ""), "duration": part_duration,
         "resolution": resolution, "matched_id": str(matched_id or ""),
-        "attempt_due": bool(attempt_due), "explicit_cast": (
-            extracted.get("performer_names", [])
-            if extracted.get("performer_source") == "labeled_cast" else []
-        ),
+        "attempt_due": bool(attempt_due), "explicit_cast": list(dict.fromkeys([
+            * (extracted.get("performer_names", [])
+               if extracted.get("performer_source") == "labeled_cast" else []),
+            *_title_cast(base_title),
+        ])),
     }
     return channel, base_key, part_number, part
 

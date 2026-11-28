@@ -5,24 +5,9 @@ from __future__ import annotations
 import unittest
 
 from scripts.backfill_channel_performers import _clean_names
-from scripts.backfill_channel_scenes import _title_variants
 from scripts.metadata_quality import build_report
 
 from tests.pg_helper import PgTestCase
-
-
-class TitleVariantTests(unittest.TestCase):
-    def test_studio_prefix_and_scene_suffix_are_removed(self):
-        variants = _title_variants("Raw Strokes – Bareback Pursuit s1")
-        self.assertIn("Bareback Pursuit", variants)
-        self.assertIn("Raw Strokes – Bareback Pursuit", variants)
-
-    def test_year_and_multi_part_title_produce_a_short_variant(self):
-        variants = _title_variants("Gordi Films Switzerland – Raw & Kinky (2008) s2")
-        self.assertIn("Raw & Kinky", variants)
-
-    def test_plain_title_is_kept_once(self):
-        self.assertEqual(_title_variants("Lustful Desires"), ["Lustful Desires"])
 
 
 class CastCandidateFilterTests(unittest.TestCase):
