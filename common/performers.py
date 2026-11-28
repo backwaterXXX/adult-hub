@@ -231,7 +231,7 @@ def _normalize_literal_performers(names) -> List[str]:
             continue
         name = html.unescape(str(raw)).strip()
         name = _strip_name_descriptors(name)
-        if not name or is_non_performer_name(name):
+        if not name or is_non_performer_name(name) or is_known_non_performer_label(name):
             continue
         key = name.casefold()
         if name and key not in seen:
@@ -289,6 +289,7 @@ def _add_performer_candidate(name: str, out: List[str], seen_lower: Dict[str, in
     if (
         name_low in {"fucked", "fuck", "fucking", "fucker", "fuckers"}
         or name_low in SINGLE_WORD_STOPWORDS
+        or is_known_non_performer_label(name)
         or MEDIA_EXT_RE.search(name)
     ):
         return
@@ -400,6 +401,17 @@ STUDIO_SUFFIXES = (
     " productions", " production",
 )
 
+# Channel, series, and site labels that are routinely mistaken for cast. These
+# are exact-name labels, not fuzzy rules: a video called "BoyFun - Twink
+# Temptations" must not create a performer called "Boy Fun".
+NON_PERFORMER_LABELS = {
+    "naughty", "naughty and horny", "naughtyandhorny",
+    "boy fun", "boyfun",
+    "next door",
+    "coat west", "coatwest",
+    "discipline",
+}
+
 SCENE_CODE_RE = re.compile(
     r"^(?:[A-Z]{2,4}\d{2,}|SC\d+|MO\d+|CFS\d+|ACM\d+|CAPY[-_]?\d+|[A-Z]+\d+[-_]\d+)$",
     re.IGNORECASE,
@@ -417,6 +429,23 @@ PARTICLES = {"the", "de", "von", "la", "van", "del", "da", "di"}
 ACTION_VERBS = r"(?:flip fucks|flip fuck|flipfuck\w*|fucked by|fuck & DP|fucks & DPs|fucks|fuck|fucked|breeds with|breeds|breed|bottoms for|bottoms|takes|rides|dp\'s|dps|dpd|dp)"
 
 _NON_PERFORMER_NAME_KEYS = {"onlyfans", "of", "gangbang"}
+
+
+def _label_key(name: str) -> str:
+    """Fold case and punctuation so exact company labels compare consistently."""
+    return re.sub(r"[^a-z0-9]+", " ", str(name or "").casefold()).strip()
+
+
+_NON_PERFORMER_LABEL_KEYS = frozenset(
+    _label_key(label) for label in (*STUDIO_NAMES, *NON_PERFORMER_LABELS)
+)
+
+
+@lru_cache(maxsize=16384)
+def is_known_non_performer_label(name: str) -> bool:
+    """Return true for known studios, channels, and series that are never performers."""
+    key = _label_key(name)
+    return bool(key) and key in _NON_PERFORMER_LABEL_KEYS
 
 
 def is_non_performer_name(name: str) -> bool:
@@ -460,7 +489,7 @@ def _has_disallowed_name_chars(name: str) -> bool:
 
 def _is_rejected_clean_name(clean_name: str, clean_low: str) -> bool:
     """Return True when the whole cleaned candidate matches a studio, stopword, or scene pattern."""
-    if clean_low in STUDIO_NAMES or clean_low in SINGLE_WORD_STOPWORDS:
+    if is_known_non_performer_label(clean_name) or clean_low in SINGLE_WORD_STOPWORDS:
         return True
     if any(clean_low.endswith(sfx) for sfx in STUDIO_SUFFIXES):
         return True

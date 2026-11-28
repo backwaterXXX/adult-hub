@@ -68,6 +68,22 @@ class TestRefresh(PerformerStatsTestCase):
         self.assertEqual(state["row_count"], 2)
         self.assertTrue(state["config_fingerprint"])
 
+    def test_refresh_ignores_known_studio_and_channel_labels(self):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO videos (id, provider, title, duration, playable, performers) VALUES "
+                "('telegram:-100123:5:5', 'telegram', 'Five', 900, 1, "
+                "'[\"Naughty\", \"Anna Alpha\"]'::jsonb)"
+            )
+
+        refresh_performer_stats(self.conn)
+        names = {
+            row[0] for row in self.conn.execute(
+                "SELECT canonical_name FROM performer_stats"
+            ).fetchall()
+        }
+        self.assertEqual(names, {"Anna Alpha", "Bella Beta"})
+
     def test_refresh_replaces_previous_rows(self):
         refresh_performer_stats(self.conn)
         with self.conn:

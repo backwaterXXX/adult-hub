@@ -32,6 +32,7 @@ from common.db import Record
 from common.db import table_columns as _db_table_columns
 from common.db import table_names as _db_table_names
 from common.managed_sources import canonical_channel_id, channel_aliases
+from common.performers import is_known_non_performer_label
 from resolver.admin_catalog_queries import CatalogUnavailable, _effective_value
 from resolver.admin_catalog_serialization import _iso_time, _json_value, _row_value
 
@@ -3222,6 +3223,10 @@ def refresh_performer_stats(conn: Any) -> int:
         """,
         params,
     ).fetchall()
+    # Read-side backstop: a stale or imported row can still carry a studio or
+    # channel label as cast. Keep those labels out of the performer directory
+    # even when the source rows have not been repaired yet.
+    rows = [row for row in rows if not is_known_non_performer_label(str(row[1]))]
     fingerprint = _performer_stats_fingerprint()
     with conn:
         conn.execute(f"DELETE FROM {PERFORMER_STATS_TABLE}")

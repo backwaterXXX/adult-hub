@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 import logging
 
+from common.performers import is_known_non_performer_label
 from common.telegram_metadata import (
     build_cast_index,
     extract_telegram_metadata,
@@ -118,7 +119,8 @@ def _performer_resolution(cast_names, cast_source, exact_records, catalog, extra
         # Do not run legacy normalization here: it strips demonyms and
         # scene-like suffixes, which can be real parts of a performer name.
         performers = list(dict.fromkeys(
-            str(name).strip() for name in resolved_names if str(name).strip()
+            str(name).strip() for name in resolved_names
+            if str(name).strip() and not is_known_non_performer_label(name)
         ))
         return performers, {
             "status": "resolved" if all(resolved_ids) else "partial",
@@ -131,6 +133,11 @@ def _performer_resolution(cast_names, cast_source, exact_records, catalog, extra
             "title_source": extracted["title_source"],
             "version": 1,
         }
+    exact_records = [
+        row for row in exact_records
+        if str(row.get("name") or "").strip()
+        and not is_known_non_performer_label(row.get("name"))
+    ]
     if exact_records:
         performers = [str(row.get("name") or "").strip()
                       for row in exact_records if str(row.get("name") or "").strip()]

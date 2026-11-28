@@ -12,6 +12,7 @@ from common.performers import (
     STUDIO_SUFFIXES,
     SINGLE_WORD_STOPWORDS,
     TITLE_STOPWORDS,
+    is_known_non_performer_label,
     is_non_performer_name,
     is_valid_performer_name,
     strip_nationality_prefix,
@@ -174,12 +175,13 @@ def build_alias_index(records: Iterable[dict]) -> dict[str, list[dict]]:
         name = str(record.get("name") or "").strip()
         persisted = record.get("_persisted", True) is True
         if (not performer_id or is_non_performer_name(name)
+                or is_known_non_performer_label(name)
                 or len(re.findall(r"\w+", name, re.UNICODE)) < 2):
             continue
         trusted_aliases = {normalize_name(value) for value in record.get("trusted_aliases", [])}
         for alias in [name, *(record.get("aliases") or [])]:
             alias = str(alias or "").strip()
-            if is_non_performer_name(alias):
+            if is_non_performer_name(alias) or is_known_non_performer_label(alias):
                 continue
             key = normalize_name(alias)
             if not key or len(key) < 4:
@@ -344,6 +346,8 @@ def _is_reviewable_credit(candidate: str) -> bool:
     """Return False for labels, studios, and stopword-like candidates that must not be reviewed."""
     curr_low = candidate.lower()
     if is_non_performer_name(candidate) or curr_low in {"onlyfans", "of"}:
+        return False
+    if is_known_non_performer_label(candidate):
         return False
     if curr_low in STUDIO_NAMES or any(curr_low.endswith(sfx) for sfx in STUDIO_SUFFIXES):
         return False

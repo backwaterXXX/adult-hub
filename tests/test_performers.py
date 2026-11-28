@@ -12,6 +12,7 @@ try:
     )
     from common.performers import (
         normalize_performers,
+        is_known_non_performer_label,
         is_safe_alias,
         strip_nationality_prefix,
         strip_scene_suffix,
@@ -57,6 +58,21 @@ class TestPerformerHelpers(unittest.TestCase):
         self.assertEqual(
             normalize_performers(["Threesome Leo Grin"], preserve_literal=True),
             ["Leo Grin"],
+        )
+
+    def test_normalize_discards_studio_and_channel_labels(self):
+        for label in ("Naughty", "Boy Fun", "BoyFun", "Next Door", "Coat West",
+                      "Discipline", "Kristen Bjorn"):
+            with self.subTest(label=label):
+                self.assertTrue(is_known_non_performer_label(label))
+                self.assertFalse(is_valid_performer_name(label))
+                self.assertEqual(normalize_performers([label, "Malik Delgaty"]), ["Malik Delgaty"])
+                self.assertEqual(normalize_performers([label], preserve_literal=True), [])
+        self.assertEqual(parse_title_performers("AAEN Naughty and Horny #3357"), [])
+        self.assertEqual(parse_title_performers("BoyFun - Twink Temptations 2-1"), [])
+        self.assertEqual(
+            parse_title_performers("Next Door Raw - Grooming Roommates - Dante Martin, Chris Blades s4"),
+            ["Dante Martin", "Chris Blades"],
         )
 
     def test_normalize_unescapes_entities(self):

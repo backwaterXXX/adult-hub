@@ -41,6 +41,18 @@ class PerformerCatalogTests(unittest.TestCase):
         typo = next(p for p in proposals if p["reason"] == "possible_typo")
         self.assertEqual(typo["performer_id"], "local:alejandro martinez")
 
+    def test_studio_and_channel_labels_never_match_catalog(self):
+        records = [
+            {"id": "studio", "name": "Boy Fun", "aliases": []},
+            {"id": "channel", "name": "Next Door", "aliases": []},
+            {"id": "person", "name": "Malik Delgaty", "aliases": []},
+        ]
+        matched, proposals = match_catalog(
+            [("caption", "Boy Fun & Next Door - Malik Delgaty")], records,
+        )
+        self.assertEqual([person["id"] for person in matched], ["person"])
+        self.assertEqual(proposals, [])
+
     def test_ambiguous_alias_does_not_guess(self):
         records = [
             {"id": "p1", "name": "Alex One", "aliases": ["Alex"]},

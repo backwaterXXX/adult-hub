@@ -5,6 +5,7 @@ import logging
 from common import db
 from common.duration import passes_minimum_video_duration
 from common.performer_catalog import normalize_name
+from common.performers import is_known_non_performer_label
 from sync.studio_tags import looks_like_channel_label
 import time
 from dataclasses import dataclass
@@ -350,7 +351,8 @@ def _apply_stored_resolution(_row, fresh_perfs: list, effective_resolution):
                 try:
                     _db_perfs = json.loads(_row[2]) if isinstance(_row[2], str) else _row[2]
                     fresh_perfs = list(dict.fromkeys(
-                        str(value).strip() for value in _db_perfs if str(value).strip()
+                        str(value).strip() for value in _db_perfs
+                        if str(value).strip() and not is_known_non_performer_label(value)
                     ))
                 except Exception:
                     logger.debug("Ignored exception in sync_unique_video", exc_info=True)
