@@ -17,6 +17,7 @@ def build_router(admin):
     router = APIRouter(route_class=V2ErrorRoute)
     _route_fuzzy(router, admin)
     _route_proposals(router, admin)
+    _route_collision_groups(router, admin)
     _route_proposal_groups(router, admin)
     _route_reconcile(router, admin)
     _route_review_proposal_group(router, admin)
@@ -68,6 +69,47 @@ def _route_proposals(router, admin):
         except Exception:
             logger.warning("Request failed in proposals", exc_info=True)
             return admin.JSONResponse({"error": "Could not load performer proposals."}, status_code=503)
+
+
+def _route_collision_groups(router, admin):
+    @router.get("/api/v2/performers/collision-groups")
+    async def collision_groups(
+        request: Request,
+        limit: int = Query(20, ge=1, le=100),
+        offset: int = Query(0, ge=0, le=1_000_000),
+    ):
+        if admin._admin_blocked(request):
+            return admin.JSONResponse({"error": "Admin is only available locally."}, status_code=403)
+        try:
+            from common.performer_proposals import list_collision_groups
+            return await admin.asyncio.to_thread(
+                list_collision_groups, admin.HUB_DB_URL, limit, offset)
+        except Exception:
+            logger.warning("Request failed in collision_groups", exc_info=True)
+            return admin.JSONResponse({"error": "Could not load performer collision groups."}, status_code=503)
+
+    @router.post("/api/v2/performers/collision-groups/{signature}")
+    async def review_collision_group(request: Request, signature: str):
+        denied = admin._write_denied(request)
+        if denied is not None:
+            return denied
+        body, rejection = await _read_proposal_action_body(admin, request)
+        if rejection is not None:
+            return rejection
+        rejection = _proposal_action_rejection(admin, body)
+        if rejection is not None:
+            return rejection
+        try:
+            from common.performer_proposals import ProposalError, review_collision_group
+            return await admin.asyncio.to_thread(
+                review_collision_group, admin.HUB_DB_URL, signature, body,
+                wake_worker=admin._wake_worker,
+            )
+        except ProposalError as exc:
+            return admin.JSONResponse({"error": exc.message}, status_code=exc.status_code)
+        except Exception:
+            logger.warning("Request failed in review_collision_group", exc_info=True)
+            return admin.JSONResponse({"error": "Could not review performer collision group."}, status_code=503)
 
 
 def _route_proposal_groups(router, admin):

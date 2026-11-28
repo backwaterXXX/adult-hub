@@ -4,7 +4,7 @@
   const API = '/admin/api/v2/performers';
   const $ = (selector, root = document) => root.querySelector(selector);
   const PROPOSAL_PAGE_SIZE = 50;
-  const state = { loading: false, loadSeq: 0, rows: [], proposalOffset: 0, proposalTotal: 0, proposalSeq: 0, busy: new Set(), fuzzyGroups: [], fuzzyOffset: 0, fuzzyLoading: false, fuzzyScanned: false, fuzzyBatchRunning: false, fuzzyMerging: new Set(), fuzzyQueued: new Map(), fuzzyDismissed: new Set(), fuzzySwapped: new Map(), fuzzySelected: new Map() };
+  const state = { loading: false, loadSeq: 0, collisionSeq: 0, rows: [], proposalOffset: 0, proposalTotal: 0, proposalSeq: 0, busy: new Set(), fuzzyGroups: [], fuzzyOffset: 0, fuzzyLoading: false, fuzzyScanned: false, fuzzyBatchRunning: false, fuzzyMerging: new Set(), fuzzyQueued: new Map(), fuzzyDismissed: new Set(), fuzzySwapped: new Map(), fuzzySelected: new Map() };
   const MAX_SELECTED_MERGES = 10;
   let reviewActive = false;
   let nameVariantsActive = false;
@@ -20,6 +20,88 @@
   }
   async function post(url, body) {
     return window.AdminV2.postJson(url, body);
+  }
+  async function loadCollisions() {
+    const sequence = ++state.collisionSeq;
+    const host = $('#performerCollisionRows');
+    if (!host || !reviewVisible()) return;
+    try {
+      const data = await get(`${API}/collision-groups?limit=20&offset=0`);
+      if (sequence !== state.collisionSeq || !reviewVisible()) return;
+      renderCollisions(Array.isArray(data.items) ? data.items : [], Number(data.total) || 0);
+    } catch (error) {
+      if (sequence !== state.collisionSeq || !reviewVisible()) return;
+      host.replaceChildren(node('p', 'catalog-empty', `Could not load collisions. ${errorText(error)}`));
+      message('Could not load collisions.', 'error');
+    }
+  }
+  function renderCollisions(items, total) {
+    const host = $('#performerCollisionRows');
+    if (!host) return;
+    host.replaceChildren();
+    window.AdminV2.setFeedback($('#performerCollisionFeedback'), total
+      ? `${total.toLocaleString('en-US')} identity collisions; showing ${Math.min(items.length, 20)}.`
+      : 'No ambiguous aliases share more than one catalogue identity.');
+    if (!items.length) {
+      host.append(node('p', 'catalog-empty', 'No ambiguous alias collisions are waiting.'));
+      return;
+    }
+    for (const bucket of items) {
+      const card = node('article', 'performer-proposal');
+      card.dataset.collisionSignature = bucket.signature;
+      const heading = node('div', 'performer-proposal-heading');
+      const title = node('div', 'performer-proposal-title');
+      const names = (Array.isArray(bucket.performers) ? bucket.performers : []).map(person => person.name || person.id);
+      title.append(node('p', 'eyebrow', `${bucket.aliases_count} aliases · ${bucket.proposals} proposals`), node('h2', '', names.join(' / ')));
+      heading.append(title, node('span', 'status-pill pill-warning', 'Collision'));
+      const details = node('dl', 'performer-proposal-details');
+      const aliases = (Array.isArray(bucket.aliases) ? bucket.aliases : []).slice(0, 8).map(alias => alias.candidate).filter(Boolean);
+      const aliasGroup = node('div', 'performer-detail-collisions');
+      const aliasList = node('ul', 'performer-collision-list');
+      aliases.forEach(alias => aliasList.append(node('li', '', alias)));
+      aliasGroup.append(node('dt', '', 'Aliases'), aliasList);
+      details.append(aliasGroup);
+      const form = node('div', 'performer-proposal-controls');
+      const field = node('label', 'performer-catalog-field');
+      field.append(node('span', '', 'Assign every alias to one performer'));
+      const select = document.createElement('select');
+      select.setAttribute('aria-label', 'Choose collision performer');
+      select.add(new Option('Choose one of the colliding performers…', ''));
+      (Array.isArray(bucket.performers) ? bucket.performers : []).forEach(person => select.add(new Option(person.name || person.id, person.id)));
+      field.append(select);
+      form.append(field);
+      const actions = node('div', 'performer-proposal-actions');
+      const reject = node('button', 'button button-quiet', 'Reject all aliases'); reject.type = 'button';
+      const approve = node('button', 'button button-primary', 'Assign all aliases'); approve.type = 'button';
+      reject.addEventListener('click', () => reviewCollision(bucket, { action: 'reject' }, card));
+      approve.addEventListener('click', () => {
+        if (!select.value) { message('Choose one of the colliding performers first.'); select.focus(); return; }
+        reviewCollision(bucket, { action: 'approve', performer_id: select.value }, card);
+      });
+      actions.append(reject, approve);
+      card.append(heading, details, form, actions);
+      host.append(card);
+    }
+  }
+  async function reviewCollision(bucket, body, card) {
+    const key = `collision:${bucket.signature}`;
+    if (state.busy.has(key)) return;
+    state.busy.add(key);
+    card.querySelectorAll('button,input,select').forEach(control => { control.disabled = true; });
+    message(body.action === 'reject' ? 'Rejecting the collision…' : 'Assigning the collision…');
+    try {
+      const result = await post(`${API}/collision-groups/${encodeURIComponent(bucket.signature)}`, body);
+      if (!reviewVisible()) return;
+      state.pendingTotal = Math.max(0, Number(state.pendingTotal || 0) - Number(result.reviewed || 0));
+      await loadCollisions();
+      const refreshed = await loadProposalPage(state.proposalOffset);
+      if (refreshed && reviewVisible()) render();
+      message(body.action === 'reject' ? `Rejected ${result.reviewed || 0} proposals in the collision.` : `Assigned ${result.reviewed || 0} proposals in the collision.`);
+    } catch (error) {
+      if (!reviewVisible()) return;
+      message(errorText(error), 'error');
+      card.querySelectorAll('button,input,select').forEach(control => { control.disabled = false; });
+    } finally { state.busy.delete(key); }
   }
   async function loadCatalog(query, select, search, sequence) {
     const data = await get(`${API}/catalog?q=${encodeURIComponent(query)}&limit=100`);
@@ -555,6 +637,7 @@
     }
   }
   $('#performersRefresh')?.addEventListener('click', load);
+  $('#performerCollisionRefresh')?.addEventListener('click', loadCollisions);
   $('#performersReconcile')?.addEventListener('click', reconcileClearMatches);
   $('#fuzzyScan')?.addEventListener('click', scanFuzzy);
   $('#fuzzyReviewSelected')?.addEventListener('click', mergeSelected);
@@ -567,7 +650,7 @@
     nameVariantsActive = detail?.route === 'performers' && detail.performersTab === 'name-variants';
     state.loadSeq += 1;
     state.proposalSeq += 1;
-    if (reviewActive) load();
+    if (reviewActive) { load(); loadCollisions(); }
     if (nameVariantsActive) renderFuzzy();
   });
 })();

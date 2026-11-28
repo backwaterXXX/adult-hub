@@ -59,6 +59,80 @@ class TestPerformerProposalIntegration(PgTestCase):
         self.assertEqual(punctuation_only["items"], [])
         self.assertEqual(performer_proposals.list_pending_proposals(self.db_url, 10, 0)["items"][-1]["id"], third)
 
+    def test_collision_groups_can_be_reviewed_in_bulk(self):
+        self.conn.execute(
+            "INSERT INTO performer_catalog(id,source,source_id,name) VALUES (%s,'manual','p2','Second Canonical')",
+            ("p2",),
+        )
+        for performer_id in ("p1", "p2"):
+            for alias, normalized in (("Ambiguous One", "ambiguousone"), ("Ambiguous Two", "ambiguoustwo")):
+                self.conn.execute(
+                    "INSERT INTO performer_catalog_aliases(performer_id,alias,normalized,origin,approved) "
+                    "VALUES (%s,%s,%s,'manual',TRUE)",
+                    (performer_id, alias, normalized),
+                )
+                self.conn.execute(
+                    "INSERT INTO telegram_performer_proposals "
+                    "(video_id,candidate,normalized,matched_text,source_field,reason) "
+                    "VALUES ('telegram:proposal-1',%s,%s,%s,'caption','ambiguous_catalog_alias') "
+                    "ON CONFLICT (video_id,normalized) DO NOTHING",
+                    (alias, normalized, alias),
+                )
+        self.conn.commit()
+
+        groups = performer_proposals.list_collision_groups(self.db_url)
+        self.assertEqual(groups["total"], 1)
+        bucket = groups["items"][0]
+        self.assertEqual([row["name"] for row in bucket["performers"]],
+                         ["Canonical Name", "Second Canonical"])
+        self.assertEqual(bucket["aliases_count"], 2)
+        self.assertEqual(bucket["proposals"], 2)
+
+        result = performer_proposals.review_collision_group(
+            self.db_url, bucket["signature"], {"action": "reject"}, wake_worker=lambda _channel: None,
+        )
+        self.assertEqual(result["reviewed"], 2)
+        self.assertEqual(self.conn.execute(
+            "SELECT count(*) FROM telegram_performer_proposals WHERE status='pending'"
+        ).fetchone()[0], 0)
+
+    def test_collision_group_can_assign_all_aliases_to_one_performer(self):
+        self.conn.execute(
+            "INSERT INTO performer_catalog(id,source,source_id,name) VALUES (%s,'manual','p2','Second Canonical')",
+            ("p2",),
+        )
+        for performer_id in ("p1", "p2"):
+            for alias, normalized in (("Ambiguous One", "ambiguousone"), ("Ambiguous Two", "ambiguoustwo")):
+                self.conn.execute(
+                    "INSERT INTO performer_catalog_aliases(performer_id,alias,normalized,origin,approved) "
+                    "VALUES (%s,%s,%s,'manual',TRUE)",
+                    (performer_id, alias, normalized),
+                )
+                self.conn.execute(
+                    "INSERT INTO telegram_performer_proposals "
+                    "(video_id,candidate,normalized,matched_text,source_field,reason) "
+                    "VALUES ('telegram:proposal-1',%s,%s,%s,'caption','ambiguous_catalog_alias') "
+                    "ON CONFLICT (video_id,normalized) DO NOTHING",
+                    (alias, normalized, alias),
+                )
+        self.conn.commit()
+
+        bucket = performer_proposals.list_collision_groups(self.db_url)["items"][0]
+        result = performer_proposals.review_collision_group(
+            self.db_url, bucket["signature"],
+            {"action": "approve", "performer_id": "p1"},
+            wake_worker=lambda _channel: None,
+        )
+        self.assertEqual(result["reviewed"], 2)
+        self.assertEqual(result["performer"], "Canonical Name")
+        self.assertEqual(self.conn.execute(
+            "SELECT count(*) FROM telegram_performer_proposals WHERE status='approved' AND performer_id='p1'"
+        ).fetchone()[0], 2)
+        performers = json.loads(self.conn.execute(
+            "SELECT performers FROM videos WHERE id='telegram:proposal-1'"
+        ).fetchone()[0])
+        self.assertIn("Canonical Name", performers)
+
     def test_ambiguous_group_lists_the_colliding_catalog_performers(self):
         self.conn.execute(
             "INSERT INTO performer_catalog(id,source,source_id,name) VALUES (%s,'manual','p2','Second Canonical')",

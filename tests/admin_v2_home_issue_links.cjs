@@ -433,6 +433,8 @@ const context = {
   assert.equal(elements.get('statusAlerts').hidden, false, 'threshold alerts are surfaced above the overview');
   assert.match(textOf(elements.get('statusAlerts')), /Background work needs attention/);
   assert.match(textOf(elements.get('statusAlerts')), /7 background tasks failed/);
+  assert.match(textOf(elements.get('statusAlerts')), /Snooze 24h/,
+    'threshold alerts offer a bounded snooze action');
 
   // Grouped problems: five groups maximum, with occurrences, last detection, and a working link.
   const groupRows = elements.get('problemGroups').children;

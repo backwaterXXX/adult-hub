@@ -193,6 +193,11 @@
             <dialog id="personDetailDialog" class="source-detail performer-detail-drawer" aria-labelledby="personDetailTitle"><article class="source-detail-panel detail-drawer" tabindex="-1"><button class="drawer-close" type="button" aria-label="Close person details" data-close-dialog="personDetailDialog">×</button><div id="personDetailContent"></div></article></dialog>
           </div>
           <div class="library-pane" id="performerReviewPane" role="tabpanel" aria-labelledby="performerReviewTab">
+          <section id="performerCollisionPane" class="panel" aria-labelledby="performerCollisionTitle">
+            <div class="panel-heading"><div><p class="eyebrow">COLLISIONS</p><h2 id="performerCollisionTitle">Ambiguous aliases by identity collision</h2><p class="page-intro">Aliases that match more than one catalogue performer. Reject the whole collision or assign every alias to one performer.</p></div><div class="jobs-filter-actions"><button class="button button-quiet" id="performerCollisionRefresh" type="button">Refresh collisions</button></div></div>
+            <div id="performerCollisionFeedback" class="catalog-feedback" role="status">Ready to load collisions.</div>
+            <div id="performerCollisionRows" class="performer-proposal-list" aria-live="polite"></div>
+          </section>
           <section id="performerProposalsPane" class="panel" aria-labelledby="performerProposalsTitle">
             <div class="panel-heading"><div><p class="eyebrow">RECOGNITION PROPOSALS</p><h2 id="performerProposalsTitle" tabindex="-1">Names detected in titles</h2><p class="page-intro">Repeated names that are not yet matched to a catalogued performer. Resolve clear matches automatically; ambiguous identities stay queued without guessing.</p></div><div class="jobs-filter-actions"><button class="button button-quiet" id="performersRefresh" type="button">Refresh</button><button class="button button-primary" id="performersReconcile" type="button">Resolve clear matches</button></div></div>
             <div class="catalog-toolbar"><div id="performersFeedback" class="catalog-feedback" role="status">Ready to load repeated names.</div><span id="performersCount" class="catalog-feedback"></span></div>

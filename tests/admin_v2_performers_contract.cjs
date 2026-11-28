@@ -60,6 +60,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
 
 (async () => {
   const ids = ['taskReceipt', 'performerReviewPane', 'performerNameVariantsPane', 'performersFeedback', 'performerProposalRows', 'performersCount', 'performersState', 'performersRefresh', 'performersReconcile', 'performerProposalPagination',
+    'performerCollisionRows', 'performerCollisionFeedback', 'performerCollisionRefresh',
     'fuzzyCategory', 'fuzzyRows', 'fuzzyPagination', 'fuzzyPageInfo', 'fuzzyPrev', 'fuzzyNext', 'fuzzyFeedback',
     'fuzzyThreshold', 'fuzzyScan', 'fuzzyReviewSelected', 'fuzzyMergeDialog', 'fuzzyMergeContent', 'fuzzyMergeActions', 'fuzzyMergeClose'];
   const elements = Object.fromEntries(ids.map(id => [id, new Element(id === 'fuzzyMergeDialog' ? 'dialog' : 'div')]));
@@ -104,6 +105,14 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
           const offset = Number(new URLSearchParams(path.split('?')[1]).get('offset') || 0);
           return { items: proposals.slice(offset, offset + 50), total: proposals.length, pending: proposals.length, offset, limit: 50 };
         }
+        if (path.includes('/collision-groups?')) return { items: [{
+          signature: 'p1|p2',
+          performers: [{ id: 'p1', name: 'Canonical One' }, { id: 'p2', name: 'Canonical Two' }],
+          aliases: [{ key: 'ambiguousone', candidate: 'Ambiguous One', proposals: 1, videos: 1 }],
+          aliases_count: 1,
+          proposals: 1,
+          videos: 1,
+        }], total: 1, limit: 20, offset: 0 };
         if (path.includes('/catalog?')) return { items: [] };
         return { ok: true, stats: { total_unique_performers: 4, total_groups: 2 }, groups: [{
           category: 'diacritics', category_label: 'Diacritics', confidence: 0.95,
@@ -122,6 +131,7 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
       },
       async postJson(path, payload) {
         calls.push({ method: 'POST', path, payload });
+        if (path.includes('/collision-groups/')) return { ok: true, reviewed: 1 };
         const groupMatch = path.match(/\/proposal-groups\/([^/]+)\/([^/]+)$/);
         if (groupMatch) {
           if (deferReview) await new Promise((_, reject) => { rejectDeferredReview = () => reject(new Error('Review service unavailable.')); });
@@ -161,6 +171,14 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   await elements.performersRefresh.listeners.click();
   assert.match(calls[0].path, /\/proposal-groups\?limit=50&offset=0$/);
   assert.match(elements.performersCount.textContent, /^51 pending · 51 name groups$/);
+  const collisionCard = elements.performerCollisionRows.children[0];
+  assert.ok(collisionCard, 'collision groups render beside proposal groups');
+  assert.equal(collisionCard.dataset.collisionSignature, 'p1|p2');
+  const collisionReject = collisionCard.querySelectorAll('button').find(button => button.textContent === 'Reject all aliases');
+  assert.ok(collisionReject, 'a collision offers a bulk reject action');
+  await collisionReject.listeners.click();
+  assert.match(calls.find(call => call.method === 'POST' && call.path.includes('/performers/collision-groups/p1%7Cp2'))?.path || '',
+    /\/collision-groups\/p1%7Cp2$/);
   const ambiguousCard = elements.performerProposalRows.children[0];
   assert.equal(ambiguousCard.dataset.proposalKey, 'group-1');
   const collisionList = find(ambiguousCard, item => item.className === 'performer-collision-list');

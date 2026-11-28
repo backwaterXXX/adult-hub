@@ -9,7 +9,7 @@ import time
 import logging
 
 from fastapi import APIRouter, Request
-from common.admin_alerts import read_alerts
+from common.admin_alerts import read_alerts, snooze_alert
 from resolver.admin_v2_errors import V2ErrorRoute
 
 logger = logging.getLogger(__name__)
@@ -278,6 +278,29 @@ def _sanitize_db_stats(db):
     return db_result
 
 
+def _route_snooze_alert(router, admin):
+    @router.post("/api/v2/alerts/{kind}/snooze")
+    async def snooze_operator_alert(request: Request, kind: str):
+        denied = admin._write_denied(request)
+        if denied is not None:
+            return denied
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        hours = body.get("hours", 24) if isinstance(body, dict) else 24
+        if type(hours) is not int or not 1 <= hours <= 168:
+            return admin.JSONResponse({"error": "Snooze hours must be an integer between 1 and 168."}, status_code=400)
+        try:
+            result = await asyncio.to_thread(snooze_alert, admin.HUB_DB_URL, kind, hours)
+            return {"ok": True, **result}
+        except ValueError as exc:
+            return admin.JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception:
+            logger.warning("Request failed in snooze_operator_alert", exc_info=True)
+            return admin.JSONResponse({"error": "Could not snooze the alert."}, status_code=503)
+
+
 def _route_admin_v2_status(router, admin):
     @router.get("/api/v2/status")
     async def admin_v2_status(request: Request):
@@ -327,4 +350,5 @@ def build_router(admin):
     _route_admin_v2_capabilities(router, admin)
     _route_admin_v2_sync_status(router, admin)
     _route_admin_v2_status(router, admin)
+    _route_snooze_alert(router, admin)
     return router

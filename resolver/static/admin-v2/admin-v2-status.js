@@ -2,7 +2,7 @@
   'use strict';
   // Admin V2 header status chips, overview status cards, and the problem list.
   const AV = window.AdminV2;
-  const { $, V2_API, announce, create, first, getJson, issueFeedUrl, readIssueFiltersFromUrl, safeText,
+  const { $, V2_API, announce, create, first, getJson, postJson, issueFeedUrl, readIssueFiltersFromUrl, safeText,
     setHidden, setText, state } = AV;
   const displayTime = (...args) => AV.displayTime(...args);
   function renderServiceChip() {
@@ -215,9 +215,27 @@
     }
     host.hidden = false;
     host.className = 'state-banner state-stale';
+    const actions = create('div', 'state-banner-actions');
+    for (const item of items) {
+      const button = create('button', 'button button-quiet', 'Snooze 24h');
+      button.type = 'button';
+      button.setAttribute('aria-label', `Snooze ${item.kind || 'this'} alert for 24 hours`);
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          await postJson(`${V2_API}/alerts/${encodeURIComponent(item.kind)}/snooze`, { hours: 24 });
+          await loadStatus();
+        } catch (error) {
+          button.disabled = false;
+          announce(`Could not snooze the alert. ${error.message}`);
+        }
+      });
+      actions.append(button);
+    }
     host.replaceChildren(
       create('strong', '', 'Background work needs attention.'),
-      create('span', '', ` ${items.map(item => item.message).filter(Boolean).join(' ')}`)
+      create('span', '', ` ${items.map(item => item.message).filter(Boolean).join(' ')}`),
+      actions
     );
   }
   function renderStatus(data) {

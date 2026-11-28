@@ -40,6 +40,140 @@ def list_pending_proposals(db_url: str | None, limit: int = 100, offset: int = 0
         conn.close()
 
 
+def _collision_map(conn, keys: set[str]) -> dict[str, list[dict]]:
+    """Return the catalogue identities that make each ambiguous alias ambiguous."""
+    if not keys:
+        return {}
+    from common.performer_catalog import load_catalog, prepare_catalog
+
+    index = prepare_catalog(load_catalog(conn))["index"]
+    collisions: dict[str, list[dict]] = {}
+    for key in keys:
+        unique = {}
+        for record in index.get(key, []):
+            performer_id = str(record.get("id") or "")
+            if performer_id:
+                unique[performer_id] = {
+                    "id": performer_id,
+                    "name": str(record.get("name") or ""),
+                }
+        collisions[key] = sorted(
+            unique.values(), key=lambda row: (row["name"].casefold(), row["id"])
+        )
+    return collisions
+
+
+def _ambiguous_group_rows(conn) -> list[dict]:
+    rows = conn.execute("""
+        SELECT p.normalized,min(p.candidate),count(*),count(DISTINCT p.video_id),
+               min(p.matched_text),min(v.title)
+        FROM telegram_performer_proposals p
+        JOIN videos v ON v.id=p.video_id
+        LEFT JOIN video_metadata_overrides o ON o.video_id=p.video_id
+        WHERE p.status='pending' AND p.reason='ambiguous_catalog_alias'
+          AND NOT COALESCE(o.fields ? 'performers',FALSE)
+        GROUP BY p.normalized
+        ORDER BY count(*) DESC,min(p.normalized)
+    """).fetchall()
+    fields = ("key", "candidate", "proposals", "videos", "matched_text", "example_title")
+    return [dict(zip(fields, row)) for row in rows]
+
+
+def _collision_buckets(conn) -> list[dict]:
+    items = _ambiguous_group_rows(conn)
+    collisions = _collision_map(conn, {str(item["key"]) for item in items})
+    buckets: dict[str, dict] = {}
+    for item in items:
+        identities = collisions.get(str(item["key"]), [])
+        if len(identities) < 2:
+            continue
+        signature = "|".join(identity["id"] for identity in identities)
+        bucket = buckets.setdefault(signature, {
+            "signature": signature,
+            "performers": identities,
+            "aliases": [],
+            "proposals": 0,
+            "videos": 0,
+        })
+        bucket["aliases"].append({
+            "key": item["key"],
+            "candidate": item["candidate"],
+            "proposals": int(item["proposals"]),
+            "videos": int(item["videos"]),
+            "example_title": item["example_title"],
+        })
+        bucket["proposals"] += int(item["proposals"])
+        bucket["videos"] += int(item["videos"])
+    for bucket in buckets.values():
+        bucket["aliases"].sort(key=lambda row: (-row["proposals"], row["key"]))
+        bucket["aliases_count"] = len(bucket["aliases"])
+    return sorted(buckets.values(), key=lambda row: (-row["proposals"], row["signature"]))
+
+
+def list_collision_groups(db_url: str | None, limit: int = 20, offset: int = 0) -> dict:
+    """Group ambiguous aliases by the exact set of catalogue performers they collide with."""
+    safe_limit = max(1, min(int(limit), 100))
+    safe_offset = max(0, min(int(offset), 1_000_000))
+    conn = db.connect(db_url)
+    try:
+        buckets = _collision_buckets(conn)
+        page = buckets[safe_offset:safe_offset + safe_limit]
+        return {"items": page, "total": len(buckets), "limit": safe_limit, "offset": safe_offset}
+    finally:
+        conn.close()
+
+
+def review_collision_group(db_url: str | None, signature: str, body: dict, *,
+                           wake_worker: Callable[[str], None]) -> dict:
+    """Apply one decision to every pending alias that collides on the same identities."""
+    _validate_group_request("collision", "ambiguous_catalog_alias", body)
+    if not isinstance(signature, str) or not 1 <= len(signature) <= 2000:
+        raise ProposalError(400, "Invalid collision group.")
+    conn = db.connect(db_url)
+    try:
+        bucket = next((item for item in _collision_buckets(conn) if item["signature"] == signature), None)
+        if bucket is None:
+            return {"ok": True, "reviewed": 0}
+        keys = [row["key"] for row in bucket["aliases"]]
+        if body.get("action") == "reject":
+            with conn:
+                cursor = conn.execute("""
+                    UPDATE telegram_performer_proposals p SET status='rejected'
+                    WHERE p.status='pending' AND p.reason='ambiguous_catalog_alias'
+                      AND p.normalized=ANY(%s)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM video_metadata_overrides o
+                          WHERE o.video_id=p.video_id AND o.fields ? 'performers'
+                      )
+                """, (keys,))
+            return {"ok": True, "reviewed": int(getattr(cursor, "rowcount", 0) or 0)}
+        with conn:
+            performer_id, performer_name = _resolve_approval_target(conn, body.get("performer_id"), body)
+            rows = conn.execute("""
+                SELECT p.id,p.video_id,p.matched_text,p.candidate,p.reason
+                FROM telegram_performer_proposals p
+                WHERE p.status='pending' AND p.reason='ambiguous_catalog_alias'
+                  AND p.normalized=ANY(%s)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM video_metadata_overrides o
+                      WHERE o.video_id=p.video_id AND o.fields ? 'performers'
+                  )
+                ORDER BY p.id LIMIT 500 FOR UPDATE OF p
+            """, (keys,)).fetchall()
+            for row in rows:
+                alias = _proposal_alias(row)
+                _approve_proposal_alias(conn, performer_id, alias, performer_name)
+                _apply_approved_video_performers(conn, row[1], alias, performer_name)
+                conn.execute(
+                    "UPDATE telegram_performer_proposals SET status='approved',performer_id=%s WHERE id=%s",
+                    (performer_id, row[0]),
+                )
+            wake_worker("performers")
+            return {"ok": True, "reviewed": len(rows), "performer": performer_name}
+    finally:
+        conn.close()
+
+
 def list_pending_groups(db_url: str | None, limit: int = 50, offset: int = 0) -> dict:
     """Summarize repeated review work so one decision can cover its exact group."""
     safe_limit = max(1, min(int(limit), 100))
@@ -71,22 +205,7 @@ def list_pending_groups(db_url: str | None, limit: int = 50, offset: int = 0) ->
             str(item["key"]) for item in items
             if item["reason"] == "ambiguous_catalog_alias"
         }
-        collisions: dict[str, list[dict]] = {key: [] for key in ambiguous_keys}
-        if ambiguous_keys:
-            from common.performer_catalog import load_catalog, prepare_catalog
-            index = prepare_catalog(load_catalog(conn))["index"]
-            for key in ambiguous_keys:
-                unique = {}
-                for record in index.get(key, []):
-                    performer_id = str(record.get("id") or "")
-                    if performer_id:
-                        unique[performer_id] = {
-                            "id": performer_id,
-                            "name": str(record.get("name") or ""),
-                        }
-                collisions[key] = sorted(
-                    unique.values(), key=lambda row: (row["name"].casefold(), row["id"])
-                )
+        collisions = _collision_map(conn, ambiguous_keys)
         for item in items:
             item["collisions"] = collisions.get(str(item["key"]), [])
         return {"items": items, "total": int(total),
