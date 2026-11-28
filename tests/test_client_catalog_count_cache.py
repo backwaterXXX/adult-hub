@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from resolver import client_catalog
+from resolver import catalog_cache, client_catalog
 from resolver.client_catalog import query_catalog_performers
 from tests.pg_helper import PgTestCase
 
@@ -28,8 +28,8 @@ class _CountingConnection:
 
 class CatalogCountCacheTest(unittest.TestCase):
     def setUp(self):
-        client_catalog._COUNT_CACHE.clear()
-        self.addCleanup(client_catalog._COUNT_CACHE.clear)
+        catalog_cache._COUNT_CACHE.clear()
+        self.addCleanup(catalog_cache._COUNT_CACHE.clear)
 
     def test_repeated_queries_reuse_one_count(self):
         conn = _CountingConnection()
@@ -68,11 +68,11 @@ class CatalogCountCacheTest(unittest.TestCase):
 
     def test_expired_entries_are_recounted(self):
         conn = _CountingConnection()
-        with mock.patch.object(client_catalog, "_COUNT_CACHE_TTL_SECONDS", 0.01):
+        with mock.patch.object(catalog_cache, "_COUNT_CACHE_TTL_SECONDS", 0.01):
             client_catalog._catalog_total(conn, "SELECT count(*) FROM videos v", [])
-            client_catalog._COUNT_CACHE.update({
+            catalog_cache._COUNT_CACHE.update({
                 key: (value[0] - 1, value[1])
-                for key, value in client_catalog._COUNT_CACHE.items()
+                for key, value in catalog_cache._COUNT_CACHE.items()
             })
             client_catalog._catalog_total(conn, "SELECT count(*) FROM videos v", [])
 
@@ -80,7 +80,7 @@ class CatalogCountCacheTest(unittest.TestCase):
 
     def test_zero_ttl_disables_the_cache(self):
         conn = _CountingConnection()
-        with mock.patch.object(client_catalog, "_COUNT_CACHE_TTL_SECONDS", 0):
+        with mock.patch.object(catalog_cache, "_COUNT_CACHE_TTL_SECONDS", 0):
             client_catalog._catalog_total(conn, "SELECT count(*) FROM videos v", [])
             client_catalog._catalog_total(conn, "SELECT count(*) FROM videos v", [])
 
@@ -88,12 +88,12 @@ class CatalogCountCacheTest(unittest.TestCase):
 
     def test_cache_is_bounded(self):
         conn = _CountingConnection()
-        with mock.patch.object(client_catalog, "_COUNT_CACHE_MAX_ENTRIES", 2):
+        with mock.patch.object(catalog_cache, "_COUNT_CACHE_MAX_ENTRIES", 2):
             for index in range(5):
                 client_catalog._catalog_total(
                     conn, f"SELECT count(*) FROM videos v -- {index}", [])
 
-        self.assertLessEqual(len(client_catalog._COUNT_CACHE), 2)
+        self.assertLessEqual(len(catalog_cache._COUNT_CACHE), 2)
         self.assertEqual(conn.executions, 5)
 
 

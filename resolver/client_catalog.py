@@ -35,6 +35,13 @@ from common.managed_sources import canonical_channel_id, channel_aliases
 from common.performers import is_known_non_performer_label
 from resolver.admin_catalog_queries import CatalogUnavailable, _effective_value
 from resolver.admin_catalog_serialization import _iso_time, _json_value, _row_value
+from resolver.catalog_cache import (
+    catalog_result_cache_get as _catalog_result_cache_get,
+    catalog_result_cache_key as _catalog_result_cache_key,
+    catalog_result_cache_put as _catalog_result_cache_put,
+    catalog_total as _catalog_total,
+    clear_query_caches,
+)
 from resolver.catalog_user_state import _lookup_progress_map, _lookup_user_states
 
 # The catalog schema is fixed for the life of a deployment, but every read
@@ -1388,109 +1395,13 @@ def _performer_lookup_keys(rows: Any) -> tuple[set[str], set[str]]:
     return all_perf_names, all_perf_ids
 
 
-_COUNT_CACHE_TTL_SECONDS = float(os.getenv("CATALOG_COUNT_CACHE_TTL_SECONDS", "30"))
-_COUNT_CACHE_MAX_ENTRIES = 512
-_COUNT_CACHE: dict[tuple[str, str, tuple], tuple[float, int]] = {}
-_COUNT_CACHE_LOCK = threading.Lock()
-
-# Taxonomy (categories, studios, tags) and channel counts are catalog-wide: every
-# signed-in user sees the same list, and the sync process only rewrites them
-# between passes. Rebuilding them unnest the whole catalog (~165 ms for
-# categories, ~490 ms for tags) and count channel membership (~295 ms), so a
-# short shared snapshot keeps repeat screen loads off the CPU.
-_CATALOG_RESULT_CACHE_TTL_SECONDS = float(
-    os.getenv("CATALOG_RESULT_CACHE_TTL_SECONDS", "60")
-)
-_CATALOG_RESULT_CACHE_MAX_ENTRIES = 256
-_CATALOG_RESULT_CACHE: dict[tuple, tuple[float, Any]] = {}
-_CATALOG_RESULT_CACHE_LOCK = threading.Lock()
-
-
-def _catalog_result_cache_key(conn: Any, kind: str, *parts: Any) -> tuple:
-    """Identify one catalog-wide read by database, kind and request shape."""
-    database = str(getattr(getattr(conn, "info", None), "dbname", "") or "")
-    return (database, kind, *parts)
-
-
-def _catalog_result_cache_get(key: tuple) -> Any | None:
-    """Return a cached catalog read while it is younger than the TTL."""
-    ttl = _CATALOG_RESULT_CACHE_TTL_SECONDS
-    if ttl <= 0:
-        return None
-    now = time.monotonic()
-    with _CATALOG_RESULT_CACHE_LOCK:
-        cached = _CATALOG_RESULT_CACHE.get(key)
-        if cached is None or now - cached[0] >= ttl:
-            return None
-        value = cached[1]
-    if isinstance(value, PaginatedTaxonomy):
-        return replace(value, items=list(value.items))
-    if isinstance(value, dict):
-        return dict(value)
-    return value
-
-
-def _catalog_result_cache_put(key: tuple, value: Any) -> None:
-    """Remember one catalog-wide read for the next request."""
-    if _CATALOG_RESULT_CACHE_TTL_SECONDS <= 0:
-        return
-    with _CATALOG_RESULT_CACHE_LOCK:
-        if len(_CATALOG_RESULT_CACHE) >= _CATALOG_RESULT_CACHE_MAX_ENTRIES:
-            _CATALOG_RESULT_CACHE.clear()
-        _CATALOG_RESULT_CACHE[key] = (time.monotonic(), value)
-
-
-def _freeze_params(params: Sequence[Any]) -> tuple:
-    """Return a hashable form of the query parameters for the cache key."""
-    frozen = []
-    for value in params:
-        if isinstance(value, (list, tuple, set)):
-            frozen.append(tuple(value))
-        else:
-            frozen.append(value)
-    return tuple(frozen)
-
-
-def _catalog_total(conn: Any, sql: str, params: Sequence[Any], *, cache: bool = True) -> int:
-    """Return the exact row count for one filter set, reusing a short-lived result.
-
-    The page itself is index-ordered (~0.2 ms) while the ``count(*)`` behind the
-    pagination metadata scans the filtered catalog (~13 ms on 28k rows), so the
-    total dominates the request. A client paging through the same filter set asks
-    for the same total repeatedly, so a short TTL removes that work without
-    changing the contract: only the total is cached, and only for
-    ``CATALOG_COUNT_CACHE_TTL_SECONDS`` (30 s by default). A total written by
-    the sync process therefore trails the catalog by at most one TTL.
-    """
-    ttl = _COUNT_CACHE_TTL_SECONDS if cache else 0.0
-    if ttl <= 0:
-        return int(conn.execute(sql, params).fetchone()[0])
-    database = str(getattr(getattr(conn, "info", None), "dbname", "") or "")
-    key = (database, sql, _freeze_params(params))
-    now = time.monotonic()
-    with _COUNT_CACHE_LOCK:
-        cached = _COUNT_CACHE.get(key)
-        if cached is not None and now - cached[0] < ttl:
-            return cached[1]
-    total = int(conn.execute(sql, params).fetchone()[0])
-    with _COUNT_CACHE_LOCK:
-        if len(_COUNT_CACHE) >= _COUNT_CACHE_MAX_ENTRIES:
-            _COUNT_CACHE.clear()
-        _COUNT_CACHE[key] = (now, total)
-    return total
-
-
 def clear_catalog_count_cache() -> None:
     """Drop every cached catalog read so the next request rebuilds it.
 
-    Covers the exact pagination totals plus the shared taxonomy and channel
-    count snapshots. Tests truncate the catalog between cases, so they call
-    this after every reset.
+    Covers exact pagination totals, taxonomy/channel snapshots, schema metadata
+    and the category-mirror probe. Tests truncate the catalog between cases.
     """
-    with _COUNT_CACHE_LOCK:
-        _COUNT_CACHE.clear()
-    with _CATALOG_RESULT_CACHE_LOCK:
-        _CATALOG_RESULT_CACHE.clear()
+    clear_query_caches()
     with _SCHEMA_CACHE_LOCK:
         _SCHEMA_CACHE.clear()
     with _MIRROR_CACHE_LOCK:
