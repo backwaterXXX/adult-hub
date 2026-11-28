@@ -405,11 +405,36 @@ STUDIO_SUFFIXES = (
 # are exact-name labels, not fuzzy rules: a video called "BoyFun - Twink
 # Temptations" must not create a performer called "Boy Fun".
 NON_PERFORMER_LABELS = {
+    # Telegram channels and studios seen in titles.
     "naughty", "naughty and horny", "naughtyandhorny",
     "boy fun", "boyfun",
     "next door",
     "coat west", "coatwest",
     "discipline",
+    "otb",
+    "southern strokes", "southernstrokes",
+    "iomacho",
+    "pantheon",
+    "gordi films switzerland",
+    "bound boys",
+    "young bastards", "youngbastards",
+    "horny highschool twinks",
+    "lucas men", "lucas",
+    "men big",
+    "boy next door",
+    "hard cocks",
+    "young twinks",
+    "the twink",
+    "emo twinks",
+    "fuck boy",
+    "new boy",
+    "me crazy",
+    "locker room",
+    "body worship",
+    "throat-it-boy", "throat it boy",
+    # Generic title words that are not stage names.
+    "young", "restless", "playful", "muscle", "friends", "double",
+    "big", "toy", "pigboy", "cocksucker",
 }
 
 SCENE_CODE_RE = re.compile(
