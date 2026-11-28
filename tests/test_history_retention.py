@@ -89,6 +89,26 @@ class HistoryRetentionTest(PgTestCase):
         self.assertIsNone(self.conn.execute(
             "SELECT last_job_id FROM admin_schedules WHERE id='sch-1'").fetchone()[0])
 
+    def test_expired_visual_history_is_pruned_but_current_signatures_survive(self):
+        video_id = self._video("telegram:-100:10:visual")
+        self.conn.execute(
+            "INSERT INTO video_visual_history (kind,record,archived_at)"
+            f" VALUES ('signature','{{}}',{OLD}), ('comparison','{{}}',{RECENT})"
+        )
+        self.conn.execute(
+            "INSERT INTO video_visual_signatures "
+            "(video_id,algorithm_version,source_key,duration_seconds,signature) "
+            "VALUES (%s,'v1','current',600,'{}')", (video_id,)
+        )
+        self.conn.commit()
+
+        counts = prune_history(self.conn)
+
+        self.assertEqual(counts["video_visual_history"], 1)
+        rows = self.conn.execute("SELECT record FROM video_visual_history").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertIn(video_id, self._ids("video_visual_signatures", "video_id"))
+
     def test_active_and_reversible_history_is_kept(self):
         running = self._job("job-running", "processing")
         pending = self._job("job-pending", "queued")

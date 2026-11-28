@@ -104,6 +104,14 @@ def prune_history(conn: db.Connection | None = None) -> dict[str, int]:
                 DELETE FROM video_duplicate_dismissals d USING expired e
                 WHERE d.left_id=e.left_id AND d.right_id=e.right_id
             """,
+            "video_visual_history": """
+                WITH expired AS (
+                    SELECT id FROM video_visual_history
+                    WHERE archived_at < now() - interval '1 month'
+                    ORDER BY archived_at,id LIMIT %s FOR UPDATE SKIP LOCKED
+                )
+                DELETE FROM video_visual_history h USING expired e WHERE h.id=e.id
+            """,
             "video_duplicate_jobs": """
                 WITH expired AS (
                     SELECT j.id FROM video_duplicate_jobs j
