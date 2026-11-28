@@ -75,6 +75,16 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
     matched_text: `Text ${index + 1}`,
     example_title: `Film ${index + 1}`,
   }));
+  proposals[0] = {
+    ...proposals[0],
+    reason: 'ambiguous_catalog_alias',
+    candidate: 'Ambiguous Alias',
+    matched_text: 'Ambiguous Alias',
+    collisions: [
+      { id: 'p1', name: 'Canonical One' },
+      { id: 'p2', name: 'Canonical Two' },
+    ],
+  };
   let failReview = false;
   let deferReview = false, rejectDeferredReview;
   let navigateListener;
@@ -151,6 +161,15 @@ function deferred() { let resolve; const promise = new Promise(yes => { resolve 
   await elements.performersRefresh.listeners.click();
   assert.match(calls[0].path, /\/proposal-groups\?limit=50&offset=0$/);
   assert.match(elements.performersCount.textContent, /^51 pending · 51 name groups$/);
+  const ambiguousCard = elements.performerProposalRows.children[0];
+  assert.equal(ambiguousCard.dataset.proposalKey, 'group-1');
+  const collisionList = find(ambiguousCard, item => item.className === 'performer-collision-list');
+  assert.ok(collisionList, 'ambiguous groups list the colliding identities');
+  assert.deepEqual(collisionList.querySelectorAll('li').map(item => item.textContent),
+    ['Canonical One', 'Canonical Two']);
+  const collisionSelect = find(ambiguousCard, item => item.tagName === 'select');
+  assert.equal(collisionSelect.dataset.collisionCount, '2');
+  assert.deepEqual(collisionSelect.children.map(item => item.value), ['', 'p1', 'p2']);
   const nextPage = elements.performerProposalPagination.children.find(item => item.textContent === 'Next');
   await nextPage.listeners.click();
   assert.match(calls.find(call => call.method === 'GET' && /\/proposal-groups\?limit=50&offset=50$/.test(call.path))?.path || '',

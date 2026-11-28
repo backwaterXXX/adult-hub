@@ -331,6 +331,8 @@ async function fetch(url) {
     sync: syncFixture,
     runtime: { status: 'ok', version: '1.2.3', cache_entries: 5, providers: ['telegram'] },
     attention: { pending_tasks: 4 },
+    alerts: { available: true, items: [{ kind: 'failed_jobs', severity: 'warning', count: 7, threshold: 5,
+      message: '7 background tasks failed in the last 24 hours (threshold 5).' }] },
   };
   else if (String(url).includes('/library/videos?')) {
     const parsed = new URL(String(url), 'http://localhost');
@@ -428,6 +430,9 @@ const context = {
   assert.equal(tileValue(3), '987 (80%)', 'artwork coverage shows a formatted count and percentage');
   assert.equal(tileValue(4), '1,199 (97%)', 'OSHASH coverage shows a formatted count and percentage');
   assert.equal(tileValue(5), '321 (26%)', 'pHash coverage shows a formatted count and percentage');
+  assert.equal(elements.get('statusAlerts').hidden, false, 'threshold alerts are surfaced above the overview');
+  assert.match(textOf(elements.get('statusAlerts')), /Background work needs attention/);
+  assert.match(textOf(elements.get('statusAlerts')), /7 background tasks failed/);
 
   // Grouped problems: five groups maximum, with occurrences, last detection, and a working link.
   const groupRows = elements.get('problemGroups').children;

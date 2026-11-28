@@ -59,6 +59,31 @@ class TestPerformerProposalIntegration(PgTestCase):
         self.assertEqual(punctuation_only["items"], [])
         self.assertEqual(performer_proposals.list_pending_proposals(self.db_url, 10, 0)["items"][-1]["id"], third)
 
+    def test_ambiguous_group_lists_the_colliding_catalog_performers(self):
+        self.conn.execute(
+            "INSERT INTO performer_catalog(id,source,source_id,name) VALUES (%s,'manual','p2','Second Canonical')",
+            ("p2",),
+        )
+        for performer_id, alias in (("p1", "Ambiguous Alias"), ("p2", "Ambiguous Alias")):
+            self.conn.execute(
+                "INSERT INTO performer_catalog_aliases(performer_id,alias,normalized,origin,approved) "
+                "VALUES (%s,%s,%s,'manual',TRUE)",
+                (performer_id, alias, "ambiguousalias"),
+            )
+        self.conn.execute(
+            "INSERT INTO telegram_performer_proposals "
+            "(video_id,candidate,normalized,matched_text,source_field,reason) "
+            "VALUES ('telegram:proposal-1','Ambiguous Alias','ambiguousalias','Ambiguous Alias','caption','ambiguous_catalog_alias')"
+        )
+        self.conn.commit()
+
+        groups = performer_proposals.list_pending_groups(self.db_url)
+        item = next(item for item in groups["items"] if item["key"] == "ambiguousalias")
+        self.assertEqual(
+            [(row["id"], row["name"]) for row in item["collisions"]],
+            [("p1", "Canonical Name"), ("p2", "Second Canonical")],
+        )
+
     def test_legacy_profiles_are_searchable_and_promoted_on_approval(self):
         self.conn.execute(
             "INSERT INTO performer_bios(name,bio,aliases,updated_at) VALUES (%s,%s,%s,1)",

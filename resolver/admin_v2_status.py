@@ -9,6 +9,7 @@ import time
 import logging
 
 from fastapi import APIRouter, Request
+from common.admin_alerts import read_alerts
 from resolver.admin_v2_errors import V2ErrorRoute
 
 logger = logging.getLogger(__name__)
@@ -289,6 +290,7 @@ def _route_admin_v2_status(router, admin):
             asyncio.to_thread(_sync_history_for_status, admin),
         )
         runtime = await _runtime_status(admin, request)
+        alerts = await asyncio.to_thread(read_alerts, admin.HUB_DB_URL)
         # Keep the dashboard contract explicit: raw DB paths, exception text,
         # and arbitrary status-file keys are never returned to the browser.
         attention = _attention_fields(admin)
@@ -301,6 +303,7 @@ def _route_admin_v2_status(router, admin):
             "sync": sync_result,
             "attention": attention,
             "runtime": runtime,
+            "alerts": alerts,
             "capabilities": admin._capabilities(),
         }
 

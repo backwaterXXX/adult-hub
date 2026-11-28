@@ -64,6 +64,7 @@
   function renderProposalGroup(item) {
     const card = node('article', 'performer-proposal');
     card.dataset.proposalKey = item.key;
+    const collisions = Array.isArray(item.collisions) ? item.collisions : [];
     const heading = node('div', 'performer-proposal-heading');
     const title = node('div', 'performer-proposal-title');
     const reasonLabels = { uncatalogued_credit: 'Unknown name', possible_typo: 'Possible spelling variant', ambiguous_catalog_alias: 'Ambiguous catalogue alias' };
@@ -81,6 +82,19 @@
       const group = node('div', key ? `performer-detail-${key}` : '');
       const dd = node('dd', '', value || '—');
       group.append(node('dt', '', label), dd);
+      details.append(group);
+    }
+    if (item.reason === 'ambiguous_catalog_alias') {
+      const group = node('div', 'performer-detail-collisions');
+      const dd = node('dd');
+      if (collisions.length) {
+        const list = node('ul', 'performer-collision-list');
+        collisions.forEach(person => list.append(node('li', '', person.name || person.id)));
+        dd.append(list);
+      } else {
+        dd.textContent = 'No active catalogue identities were found for this alias.';
+      }
+      group.append(node('dt', '', 'Colliding performers'), dd);
       details.append(group);
     }
     const form = node('div', 'performer-proposal-controls');
@@ -108,8 +122,15 @@
     });
     const select = document.createElement('select');
     select.dataset.performerCatalog = 'true'; select.setAttribute('aria-label', 'Choose matching catalogue performer');
+    select.dataset.collisionCount = String(collisions.length);
     select.disabled = true;
     select.add(new Option('Search to see matching performers', ''));
+    if (collisions.length) {
+      select.replaceChildren(new Option('Choose one of the colliding performers…', ''));
+      collisions.forEach(person => select.add(new Option(person.name || person.id, person.id)));
+      select.disabled = false;
+      search.placeholder = 'Search another catalogue match…';
+    }
     catalogField.append(search, select);
     const localField = node('label', 'performer-local-field');
     localField.append(node('span', '', 'Or enter the correct performer name'));

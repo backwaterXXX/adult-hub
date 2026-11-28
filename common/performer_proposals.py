@@ -66,7 +66,30 @@ def list_pending_groups(db_url: str | None, limit: int = 50, offset: int = 0) ->
             LIMIT %s OFFSET %s
         """, (safe_limit, safe_offset)).fetchall()
         fields = ("key", "reason", "candidate", "proposals", "videos", "matched_text", "example_title")
-        return {"items": [dict(zip(fields, row)) for row in rows], "total": int(total),
+        items = [dict(zip(fields, row)) for row in rows]
+        ambiguous_keys = {
+            str(item["key"]) for item in items
+            if item["reason"] == "ambiguous_catalog_alias"
+        }
+        collisions: dict[str, list[dict]] = {key: [] for key in ambiguous_keys}
+        if ambiguous_keys:
+            from common.performer_catalog import load_catalog, prepare_catalog
+            index = prepare_catalog(load_catalog(conn))["index"]
+            for key in ambiguous_keys:
+                unique = {}
+                for record in index.get(key, []):
+                    performer_id = str(record.get("id") or "")
+                    if performer_id:
+                        unique[performer_id] = {
+                            "id": performer_id,
+                            "name": str(record.get("name") or ""),
+                        }
+                collisions[key] = sorted(
+                    unique.values(), key=lambda row: (row["name"].casefold(), row["id"])
+                )
+        for item in items:
+            item["collisions"] = collisions.get(str(item["key"]), [])
+        return {"items": items, "total": int(total),
                 "pending": int(conn.execute("SELECT count(*) FROM telegram_performer_proposals p LEFT JOIN video_metadata_overrides o ON o.video_id=p.video_id WHERE p.status='pending' AND NOT COALESCE(o.fields ? 'performers',FALSE)").fetchone()[0]),
                 "limit": safe_limit, "offset": safe_offset}
     finally:

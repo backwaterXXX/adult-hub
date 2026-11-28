@@ -204,7 +204,24 @@
       metric('pHash coverage', coverageLabel(db.phash_total, videos), '', '')
     );
   }
+  function renderStatusAlerts(alerts) {
+    const host = $('#statusAlerts');
+    if (!host) return;
+    const items = Array.isArray(alerts?.items) ? alerts.items : [];
+    if (!items.length) {
+      host.hidden = true;
+      host.replaceChildren();
+      return;
+    }
+    host.hidden = false;
+    host.className = 'state-banner state-stale';
+    host.replaceChildren(
+      create('strong', '', 'Background work needs attention.'),
+      create('span', '', ` ${items.map(item => item.message).filter(Boolean).join(' ')}`)
+    );
+  }
   function renderStatus(data) {
+    renderStatusAlerts(data.alerts);
     renderOverviewCards(data);
   }
   function renderIssues(payload, error, append = false) {
